@@ -11,11 +11,29 @@ namespace fui = freeink::ui;
 
 namespace {
 constexpr StrId menuItems[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    StrId::STR_JOIN_NETWORK, StrId::STR_CALIBRE_WIRELESS, StrId::STR_CREATE_HOTSPOT};
+    StrId::STR_JOIN_NETWORK,
+    StrId::STR_CALIBRE_WIRELESS,
+    StrId::STR_CREATE_HOTSPOT,
+#if FREEINK_CAP_USB_MSC
+    StrId::STR_USB_DRIVE,
+#endif
+};
 constexpr StrId menuDescs[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    StrId::STR_JOIN_DESC, StrId::STR_CALIBRE_DESC, StrId::STR_HOTSPOT_DESC};
-constexpr UIIcon menuIcons[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {UIIcon::Wifi, UIIcon::Library,
-                                                                             UIIcon::Hotspot};
+    StrId::STR_JOIN_DESC,
+    StrId::STR_CALIBRE_DESC,
+    StrId::STR_HOTSPOT_DESC,
+#if FREEINK_CAP_USB_MSC
+    StrId::STR_USB_DRIVE_DESC,
+#endif
+};
+constexpr UIIcon menuIcons[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
+    UIIcon::Wifi,
+    UIIcon::Library,
+    UIIcon::Hotspot,
+#if FREEINK_CAP_USB_MSC
+    UIIcon::None,
+#endif
+};
 }  // namespace
 
 NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -26,6 +44,11 @@ NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer
     item.label = I18N.get(menuItems[i]);
     item.subtitle = I18N.get(menuDescs[i]);
     item.icon = listIconFor(menuIcons[i], 32);  // subtitle rows carry the larger icon
+#if FREEINK_CAP_USB_MSC
+    if (menuItems[i] == StrId::STR_USB_DRIVE) {
+      item.icon = fui::bitmapFromIcon(icon_usb_32);
+    }
+#endif
     item.actionValue = static_cast<int16_t>(i);
     rowItems_[i] = item;
   }
@@ -46,6 +69,10 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
     mode = NetworkMode::CONNECT_CALIBRE;
   } else if (index == 2) {
     mode = NetworkMode::CREATE_HOTSPOT;
+#if FREEINK_CAP_USB_MSC
+  } else if (index == 3) {
+    mode = NetworkMode::USB_DRIVE;
+#endif
   }
   onModeSelected(mode);
 }
@@ -64,6 +91,8 @@ void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   props.count = static_cast<uint16_t>(MENU_ITEM_COUNT);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.subtitleText = screen.theme().smallText;
+  props.subtitleText.maxLines = 2;
   syncListViewport(screen, props, /*hasSubtitle=*/true);
   screen.list(props);
 }

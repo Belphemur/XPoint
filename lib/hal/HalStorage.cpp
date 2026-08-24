@@ -3,14 +3,29 @@
 #include <FS.h>  // need to be included before SdFat.h for compatibility with FS.h's File class
 #include <Logging.h>
 #include <SDCardManager.h>
+#if FREEINK_CAP_USB_MSC
+#include <UsbMassStorage.h>
+#endif
 
 #include <cassert>
+#include <new>
 
 #define SDCard SDCardManager::getInstance()
 
 HalStorage HalStorage::instance;
 
-HalStorage::HalStorage() {
+#if FREEINK_CAP_USB_MSC
+class HalStorage::UsbDriveContext {
+ public:
+  freeink::UsbMassStorage massStorage;
+};
+#endif
+
+HalStorage::HalStorage()
+#if FREEINK_CAP_USB_MSC
+    : usbDriveContext(new (std::nothrow) UsbDriveContext())
+#endif
+{
   // Recursive so the same task can re-enter StorageLock without self-deadlock.
   // openFileForRead/Write take the lock and then assign to a HalFile&
   // out-param; if that out-param already held an Impl, its destructor takes
@@ -20,6 +35,8 @@ HalStorage::HalStorage() {
   storageMutex = xSemaphoreCreateRecursiveMutex();
   assert(storageMutex != nullptr);
 }
+
+HalStorage::~HalStorage() = default;
 
 // begin() and ready() are only called from setup, no need to acquire mutex for them
 
@@ -34,6 +51,78 @@ class HalStorage::StorageLock {
   StorageLock() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
   ~StorageLock() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
 };
+
+#if FREEINK_CAP_USB_MSC && !FREEINK_SD_SDMMC
+#error "USB Drive requires an SDMMC-backed storage profile"
+#endif
+
+bool HalStorage::beginUsbDrive() {
+#if FREEINK_CAP_USB_MSC
+  StorageLock lock;
+  if (!usbDriveContext) {
+    LOG_ERR("USB", "USB Drive context allocation failed");
+    return false;
+  }
+
+  auto* const blockDevice = SDCard.detachFilesystemForRawAccess();
+  if (!blockDevice) {
+    LOG_ERR("USB", "USB Drive requires a mounted SDMMC filesystem");
+    return false;
+  }
+
+  if (!usbDriveContext->massStorage.begin(blockDevice)) {
+    LOG_ERR("USB", "USB Drive MSC initialization failed");
+    if (!SDCard.begin()) {
+      LOG_ERR("USB", "Unable to remount SD card after USB Drive startup failure");
+    }
+    return false;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool HalStorage::disconnectUsbDriveHost() {
+#if FREEINK_CAP_USB_MSC
+  StorageLock lock;
+  return usbDriveContext && usbDriveContext->massStorage.disconnectHost();
+#else
+  return false;
+#endif
+}
+
+void HalStorage::endUsbDrive() {
+#if FREEINK_CAP_USB_MSC
+  StorageLock lock;
+  if (usbDriveContext) usbDriveContext->massStorage.end();
+#endif
+}
+
+UsbDriveState HalStorage::usbDriveState() const {
+#if FREEINK_CAP_USB_MSC
+  StorageLock lock;
+  if (!usbDriveContext) return UsbDriveState::Unsupported;
+
+  switch (usbDriveContext->massStorage.state()) {
+    case freeink::UsbMassStorageState::WaitingForHost:
+      return UsbDriveState::WaitingForHost;
+    case freeink::UsbMassStorageState::Connected:
+      return UsbDriveState::Connected;
+    case freeink::UsbMassStorageState::Accessed:
+      return UsbDriveState::Accessed;
+    case freeink::UsbMassStorageState::Ejected:
+      return UsbDriveState::Ejected;
+    case freeink::UsbMassStorageState::Disconnected:
+      return UsbDriveState::Disconnected;
+    case freeink::UsbMassStorageState::IoError:
+      return UsbDriveState::IoError;
+    case freeink::UsbMassStorageState::Idle:
+      break;
+  }
+#endif
+  return UsbDriveState::Unsupported;
+}
 
 #define HAL_STORAGE_WRAPPED_CALL(method, ...) \
   HalStorage::StorageLock lock;               \
