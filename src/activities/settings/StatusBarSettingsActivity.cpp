@@ -11,6 +11,7 @@
 #include "ClockSyncActivity.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "activities/reader/ReadingStatsUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -292,8 +293,19 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
     title = tr(STR_EXAMPLE_CHAPTER);
   }
 
+#ifdef READING_STATS_ENABLED
+  char chapterTimeLeftBuf[24];
+  const char* chapterTimeLeft = nullptr;
+  if (SETTINGS.statusBarChapterTimeLeft) {
+    formatChapterTimeLeft(720, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
+    chapterTimeLeft = chapterTimeLeftBuf;
+  }
+#else
+  const char* chapterTimeLeft = nullptr;
+#endif
+
   // Anchor the preview as a footer directly above the button hints.
-  GUI.drawStatusBar(renderer, 75, 8, 32, title, metrics.buttonHintsHeight, 0, false);
+  GUI.drawStatusBar(renderer, 75, 8, 32, title, metrics.buttonHintsHeight, 0, false, false, false, chapterTimeLeft);
 
   renderer.drawCenteredText(UI_10_FONT_ID,
                             renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() -
