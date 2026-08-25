@@ -1,15 +1,25 @@
-name: CI (build)
+name: CI
+
+# CI for the CrossPoint Reader firmware + host unit tests.
+# Runs on the integration branch (develop), master, and every PR.
+# The `ci` job at the bottom is the single required status check.
 
 on:
   push:
-    branches: [master]
+    branches: [develop, master]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   clang-format:
+    name: clang-format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -34,6 +44,7 @@ jobs:
           git diff --exit-code || (echo "Please run 'bin/clang-format-fix' to fix formatting issues" && exit 1)
 
   cppcheck:
+    name: cppcheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -130,8 +141,8 @@ jobs:
       - name: Extract firmware stats
         run: |
           set -euo pipefail
-          ram_line="$(grep -E "RAM:\\s" -m1 pio.log || true)"
-          flash_line="$(grep -E "Flash:\\s" -m1 pio.log || true)"
+          ram_line="$(grep -E "RAM:\s" -m1 pio.log || true)"
+          flash_line="$(grep -E "Flash:\s" -m1 pio.log || true)"
           echo "ram_line=${ram_line}" >> "$GITHUB_OUTPUT"
           echo "flash_line=${flash_line}" >> "$GITHUB_OUTPUT"
           {
@@ -148,6 +159,7 @@ jobs:
           if-no-files-found: error
 
   unit-tests:
+    name: Host unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -159,11 +171,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
 
-      - name: Cache googletest source
+      - name: Cache googletest source (FetchContent)
         uses: actions/cache@v4
         with:
-          path: build/test/_deps/googletest-src
-          key: ${{ runner.os }}-googletest-${{ hashFiles('test/CMakeLists.txt') }}
+          path: build/test/_deps
+          key: ${{ runner.os }}-gtest-${{ hashFiles('test/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-gtest-
 
       - name: Configure
         run: cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -174,10 +187,10 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build/test --output-on-failure -j
 
-  # This job is used as the PR required actions check, allows for changes to other steps in the future without breaking
-  # PR requirements.
-  test-status:
-    name: Test Status
+  # This job is the single PR required status check. It allows changing the
+  # individual jobs above in the future without reconfiguring branch protection.
+  ci:
+    name: CI Status
     needs:
       - build
       - clang-format
@@ -186,8 +199,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Fail because needed jobs failed
-        # Fail if any job failed or was cancelled (skipped jobs are ok)
+      - name: Fail if any required job failed or was cancelled
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: exit 1
       - name: Success
