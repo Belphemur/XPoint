@@ -143,8 +143,7 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
     if (SETTINGS.shouldTrackReadingStats()) {
       // The DB key is derived from the cache path, which changes on this move,
       // so migrate the row to the new key.
-      ReadingStatsStore::getInstance().migrateBookKey(bookStatsDbKey(oldCachePath),
-                                                     bookStatsDbKey(newCachePath));
+      ReadingStatsStore::getInstance().migrateBookKey(bookStatsDbKey(oldCachePath), bookStatsDbKey(newCachePath));
     }
 #endif
     if (!Storage.rename(oldCachePath.c_str(), newCachePath.c_str())) {
@@ -215,8 +214,8 @@ void EpubReaderActivity::onExit() {
       }
     }
     ReadingStatsStore& store = ReadingStatsStore::getInstance();
-    const bool saved = store.transaction(
-        [&]() -> bool { return store.saveBook(bookId_, stats) && store.saveGlobal(globalStats); });
+    const bool saved =
+        store.transaction([&]() -> bool { return store.saveBook(bookId_, stats) && store.saveGlobal(globalStats); });
     if (!saved) {
       LOG_ERR("ERS", "Failed to save reading stats");
     }

@@ -1,8 +1,8 @@
 #include "GlobalReadingStats.h"
 
-#include <algorithm>
-
 #include <ReadingStatsStore.h>
+
+#include <algorithm>
 
 GlobalReadingStats GlobalReadingStats::load() {
   GlobalReadingStats stats;
@@ -10,9 +10,7 @@ GlobalReadingStats GlobalReadingStats::load() {
   return stats;
 }
 
-void GlobalReadingStats::save() const {
-  ReadingStats.saveGlobal(*this);
-}
+void GlobalReadingStats::save() const { ReadingStats.saveGlobal(*this); }
 
 bool GlobalReadingStats::resetLocal() {
   const GlobalReadingStats empty;
@@ -34,5 +32,6 @@ uint16_t GlobalReadingStats::currentReadingStreak(const ReadingStatsDate* today)
 }
 
 uint16_t GlobalReadingStats::displayLongestReadingStreak() const {
-  return std::max(longestReadingStreak, computeReadingHistoryLongestStreak(readingHistoryAnchorDay, readingHistoryBits));
+  return std::max(longestReadingStreak,
+                  computeReadingHistoryLongestStreak(readingHistoryAnchorDay, readingHistoryBits));
 }

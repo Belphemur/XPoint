@@ -18,7 +18,7 @@ class BookStatsActivity final : public UiListActivity {
 
  public:
   explicit BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
-                             BookReadingStats stats);
+                             const BookReadingStats& stats);
   void onEnter() override;
   void render(RenderLock&&) override;
 

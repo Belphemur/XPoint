@@ -31,7 +31,7 @@ std::string formatStatsDate(const ReadingStatsDate& date) {
 }  // namespace
 
 BookStatsActivity::BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
-                                     BookReadingStats stats)
+                                     const BookReadingStats& stats)
     : UiListActivity("BookStats", renderer, mappedInput, /*wantsTouchLongPress=*/false),
       bookTitle(std::move(title)),
       stats(stats) {}
