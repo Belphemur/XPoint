@@ -63,6 +63,10 @@ std::vector<EpubReaderMenuActivity::MenuItem> EpubReaderMenuActivity::buildMenuI
   items.push_back({MenuAction::GO_HOME, StrId::STR_GO_HOME_BUTTON});
   items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});
   items.push_back({MenuAction::DELETE_CACHE, StrId::STR_DELETE_CACHE});
+#ifdef READING_STATS_ENABLED
+  items.push_back({MenuAction::READING_STATS, StrId::STR_READING_STATS});
+  items.push_back({MenuAction::DELETE_STATS, StrId::STR_DELETE_BOOK_STATS});
+#endif
   return items;
 }
 

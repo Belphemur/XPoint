@@ -39,6 +39,60 @@ bool HalClock::getTime(uint8_t& hour, uint8_t& minute) const {
   return true;
 }
 
+namespace {
+bool isValidCalendarDate(uint16_t year, uint8_t month, uint8_t day) {
+  if (year < 2000 || year > 2099) return false;
+  if (month < 1 || month > 12) return false;
+  static constexpr uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  uint8_t maxDay = daysInMonth[month - 1];
+  if (month == 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) maxDay = 29;
+  return day >= 1 && day <= maxDay;
+}
+}  // namespace
+
+bool HalClock::getDateTime(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t& hour, uint8_t& minute) const {
+  if (!_available) return false;
+
+  const unsigned long now = millis();
+  if (_lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS) {
+    if (!_hasCachedDate) return false;
+    year = _cachedYear;
+    month = _cachedMonth;
+    day = _cachedDay;
+    hour = _cachedHour;
+    minute = _cachedMinute;
+    return true;
+  }
+
+  Rtc::DateTime dt;
+  if (!_sdkRtc.now(dt)) {
+    if (!_hasCachedDate) return false;
+    _lastPollMs = now;
+    year = _cachedYear;
+    month = _cachedMonth;
+    day = _cachedDay;
+    hour = _cachedHour;
+    minute = _cachedMinute;
+    return true;
+  }
+  _cachedHour = dt.hour;
+  _cachedMinute = dt.minute;
+  _lastPollMs = now;
+  _hasCachedTime = true;
+  if (isValidCalendarDate(dt.year, dt.month, dt.day)) {
+    _cachedYear = dt.year;
+    _cachedMonth = dt.month;
+    _cachedDay = dt.day;
+    _hasCachedDate = true;
+  }
+  year = _cachedYear;
+  month = _cachedMonth;
+  day = _cachedDay;
+  hour = _cachedHour;
+  minute = _cachedMinute;
+  return _hasCachedDate;
+}
+
 bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased, bool use12Hour) const {
   if (bufSize < (use12Hour ? 9u : 6u)) return false;
   uint8_t h, m;
@@ -98,6 +152,10 @@ bool HalClock::syncFromNTP() {
         _cachedHour = dt.hour;
         _cachedMinute = dt.minute;
         _hasCachedTime = true;
+        _cachedYear = dt.year;
+        _cachedMonth = dt.month;
+        _cachedDay = dt.day;
+        _hasCachedDate = true;
         LOG_INF("CLK", "RTC set to %04u-%02u-%02u %02u:%02u:%02u UTC", dt.year, dt.month, dt.day, dt.hour, dt.minute,
                 dt.second);
         return true;

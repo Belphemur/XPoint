@@ -21,6 +21,10 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#ifdef READING_STATS_ENABLED
+#include "BookStatsActivity.h"
+#include "activities/util/ConfirmationActivity.h"
+#endif
 #include "EpubReaderBookmarksActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderFootnotesActivity.h"
@@ -45,6 +49,16 @@ namespace {
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
+
+#ifdef READING_STATS_ENABLED
+// Minimum time a page must be shown before its dwell time counts toward
+// reading statistics (matches CrossInk's MIN_READING_STATS_PAGE_MS).
+constexpr unsigned long MIN_READING_STATS_PAGE_MS = 2000UL;
+// Minimum forward-page dwell (seconds) before it is recorded as a pace sample.
+constexpr uint32_t MIN_READING_PACE_SAMPLE_SECONDS = 2;
+// Pages shown longer than this are treated as idle and excluded from stats.
+constexpr uint32_t READING_IDLE_THRESHOLD_SECONDS = 600;
+#endif
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -157,6 +171,78 @@ EpubReaderActivity::~EpubReaderActivity() {
     epub.reset();
   }
 }
+
+void EpubReaderActivity::onEnter() {
+  ReaderActivity::onEnter();
+#ifdef READING_STATS_ENABLED
+  if (epub) {
+    stats = BookReadingStats::load(epub->getCachePath());
+    globalStats = GlobalReadingStats::load();
+    sessionReadingSeconds = 0;
+    hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
+  }
+#endif
+}
+
+void EpubReaderActivity::onExit() {
+#ifdef READING_STATS_ENABLED
+  if (SETTINGS.shouldTrackReadingStats()) {
+    recordCurrentPageReadingTime();
+    const uint32_t elapsedSecs = sessionReadingSeconds;
+    if (elapsedSecs >= 60) {
+      stats.sessionCount++;
+      globalStats.totalSessions++;
+    }
+    if (elapsedSecs >= 10) {
+      stats.totalReadingSeconds += elapsedSecs;
+      globalStats.totalReadingSeconds += elapsedSecs;
+      if (hasSessionStartLocalDateTime) {
+        stats.recordReadingSpan(sessionStartLocalDateTime, elapsedSecs);
+        globalStats.recordReadingSpan(sessionStartLocalDateTime, elapsedSecs);
+      }
+      if (elapsedSecs >= 120 && !stats.startDateManual && !stats.startDate.isValid() && hasSessionStartLocalDateTime) {
+        stats.startDate = sessionStartLocalDateTime.date;
+      }
+    }
+    if (epub) {
+      stats.save(epub->getCachePath());
+    }
+    globalStats.save();
+  }
+#endif
+  ReaderActivity::onExit();
+}
+
+#ifdef READING_STATS_ENABLED
+bool EpubReaderActivity::currentPageReadingSecondsForStats(uint32_t& seconds) const {
+  if (!SETTINGS.shouldTrackReadingStats() || pageShownAtMs == 0) return false;
+  const unsigned long elapsedMs = millis() - pageShownAtMs;
+  if (elapsedMs < MIN_READING_STATS_PAGE_MS) return false;
+  const unsigned long elapsedSeconds = elapsedMs / 1000;
+  if (elapsedSeconds == 0 || elapsedSeconds > READING_IDLE_THRESHOLD_SECONDS) return false;
+  seconds = static_cast<uint32_t>(elapsedSeconds);
+  return true;
+}
+
+void EpubReaderActivity::recordCurrentPageReadingTime() {
+  uint32_t seconds = 0;
+  if (!currentPageReadingSecondsForStats(seconds)) {
+    pageShownAtMs = 0;
+    return;
+  }
+  if (UINT32_MAX - sessionReadingSeconds < seconds) {
+    sessionReadingSeconds = UINT32_MAX;
+  } else {
+    sessionReadingSeconds += seconds;
+  }
+  pageShownAtMs = 0;
+}
+
+void EpubReaderActivity::recordForwardPagePaceSample(uint32_t seconds) {
+  if (seconds < MIN_READING_PACE_SAMPLE_SECONDS) return;
+  stats.recordForwardPageRead(seconds);
+}
+#endif
 
 bool EpubReaderActivity::loadBook() {
   auto loadedEpub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
@@ -833,6 +919,33 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       addBookmark();
       break;
     }
+#ifdef READING_STATS_ENABLED
+    case EpubReaderMenuActivity::MenuAction::READING_STATS: {
+      recordCurrentPageReadingTime();
+      BookReadingStats displayStats = stats;
+      if (SETTINGS.shouldTrackReadingStats()) {
+        displayStats.totalReadingSeconds += sessionReadingSeconds;
+      }
+      startActivityForResult(std::make_unique<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats),
+                             [this](const ActivityResult&) { openReaderMenu(); });
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::DELETE_STATS: {
+      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_BOOK_STATS),
+                                                                    epub->getTitle()),
+                             [this](const ActivityResult& result) {
+                               if (result.isCancelled) {
+                                 openReaderMenu();
+                                 return;
+                               }
+                               if (BookReadingStats::remove(epub->getCachePath())) {
+                                 stats = BookReadingStats{};
+                               }
+                               openReaderMenu();
+                             });
+      break;
+    }
+#endif
   }
 }
 
@@ -940,6 +1053,17 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     clearDeferredReposition();
   }
   if (isForwardTurn) {
+#ifdef READING_STATS_ENABLED
+    if (SETTINGS.shouldTrackReadingStats()) {
+      uint32_t dwellSeconds = 0;
+      if (currentPageReadingSecondsForStats(dwellSeconds)) {
+        recordCurrentPageReadingTime();
+        recordForwardPagePaceSample(dwellSeconds);
+      } else {
+        pageShownAtMs = 0;
+      }
+    }
+#endif
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       lastPageTurnTime = millis();
@@ -1290,6 +1414,9 @@ void EpubReaderActivity::renderBook() {
     renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
     lastRenderCompleteMs = millis();
+#ifdef READING_STATS_ENABLED
+    pageShownAtMs = millis();
+#endif
   }
 
   if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||

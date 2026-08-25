@@ -13,6 +13,11 @@
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
+#ifdef READING_STATS_ENABLED
+#include "BookReadingStats.h"
+#include "GlobalReadingStats.h"
+#include "ReadingStatsUtils.h"
+#endif
 
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
@@ -59,6 +64,19 @@ class EpubReaderActivity final : public ReaderActivity {
   static constexpr int MAX_FOOTNOTE_DEPTH = 3;
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
+
+#ifdef READING_STATS_ENABLED
+  BookReadingStats stats;
+  GlobalReadingStats globalStats;
+  ReadingStatsDateTime sessionStartLocalDateTime;
+  bool hasSessionStartLocalDateTime = false;
+  uint32_t sessionReadingSeconds = 0;
+  unsigned long pageShownAtMs = 0UL;
+
+  bool currentPageReadingSecondsForStats(uint32_t& seconds) const;
+  void recordCurrentPageReadingTime();
+  void recordForwardPagePaceSample(uint32_t seconds);
+#endif
 
   uint16_t buildViewportWidth = 0;
   uint16_t buildViewportHeight = 0;
@@ -123,6 +141,8 @@ class EpubReaderActivity final : public ReaderActivity {
       : ReaderActivity("EpubReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
   ~EpubReaderActivity() override;
 
+  void onEnter() override;
+  void onExit() override;
   void loop() override;
 
   bool pageTurn(bool isForward) override;

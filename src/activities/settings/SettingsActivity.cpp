@@ -13,6 +13,7 @@
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
+#include "GlobalStatsActivity.h"
 #include "KOReaderSettingsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
@@ -92,6 +93,9 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+#ifdef READING_STATS_ENABLED
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_READING_STATS, SettingAction::ReadingStats));
+#endif
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.insert(readerSettings.begin() + 1,
@@ -370,6 +374,11 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
         break;
+#ifdef READING_STATS_ENABLED
+      case SettingAction::ReadingStats:
+        startActivityForResult(std::make_unique<GlobalStatsActivity>(renderer, mappedInput), resultHandler);
+        break;
+#endif
       case SettingAction::None:
         // Do nothing
         break;
