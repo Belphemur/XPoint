@@ -12,6 +12,10 @@ class HalClock {
   mutable uint8_t _cachedHour = 0;
   mutable uint8_t _cachedMinute = 0;
   mutable bool _hasCachedTime = false;
+  mutable uint16_t _cachedYear = 2000;
+  mutable uint8_t _cachedMonth = 1;
+  mutable uint8_t _cachedDay = 1;
+  mutable bool _hasCachedDate = false;
   mutable unsigned long _lastPollMs = 0;
 
   static constexpr unsigned long CLOCK_POLL_MS = 10000;  // 10 seconds
@@ -26,6 +30,10 @@ class HalClock {
   // Get current hour (0-23) and minute (0-59).
   // Returns false if RTC is not available.
   bool getTime(uint8_t& hour, uint8_t& minute) const;
+
+  // Get current date and time. Returns false if RTC is not available or
+  // returns an invalid date.
+  bool getDateTime(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t& hour, uint8_t& minute) const;
 
   // Format time into a caller-provided buffer.
   // 24h mode produces "HH:MM" (needs >=6 bytes); 12h mode produces "H:MM AM"/"HH:MM PM" (needs >=9 bytes).
