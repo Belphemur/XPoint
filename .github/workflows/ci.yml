@@ -185,7 +185,7 @@ jobs:
         run: cmake --build build/test
 
       - name: Run tests
-        run: ctest --test-dir build/test --output-on-failure -j
+        run: ctest --test-dir build/test --output-on-failure -j"$(nproc)"
 
   # This job is the single PR required status check. It allows changing the
   # individual jobs above in the future without reconfiguring branch protection.
