@@ -5,13 +5,14 @@
 #include <new>
 
 #ifdef ARDUINO
-#include <esp_random.h>
 #include <HalStorage.h>
 #include <common/FsApiConstants.h>  // oflag_t, O_*
+#include <esp_random.h>
 #else
+#include <unistd.h>
+
 #include <cstdlib>
 #include <ctime>
-#include <unistd.h>
 #endif
 
 namespace sqlite_vfs_hal {
@@ -64,12 +65,13 @@ int halRead(sqlite3_file* pFile, void* zBuf, int iAmt, sqlite3_int64 iOfst) {
   if (!f->file.seek64(static_cast<uint64_t>(iOfst))) return SQLITE_IOERR_SEEK;
   const int n = f->file.read(zBuf, static_cast<size_t>(iAmt));
   if (n < 0) return SQLITE_IOERR_READ;
+  if (n < iAmt) return SQLITE_IOERR_SHORT_READ;
   return SQLITE_OK;
 #else
   if (fseeko(f->fp, static_cast<off_t>(iOfst), SEEK_SET) != 0) return SQLITE_IOERR_SEEK;
   const size_t n = fread(zBuf, 1, static_cast<size_t>(iAmt), f->fp);
   if (ferror(f->fp)) return SQLITE_IOERR_READ;
-  (void)n;
+  if (n < static_cast<size_t>(iAmt)) return SQLITE_IOERR_SHORT_READ;
   return SQLITE_OK;
 #endif
 }
@@ -247,7 +249,9 @@ int halCurrentTime(sqlite3_vfs*, double* prNow) {
 }
 
 int halCurrentTimeInt64(sqlite3_vfs*, sqlite3_int64* piNow) {
-  *piNow = static_cast<sqlite3_int64>(time(nullptr));
+  double julianDay = 0.0;
+  halCurrentTime(nullptr, &julianDay);
+  *piNow = static_cast<sqlite3_int64>(julianDay * 86400000.0);
   return SQLITE_OK;
 }
 
@@ -274,28 +278,28 @@ sqlite3_io_methods gHalIoMethods = {
 };
 
 sqlite3_vfs gHalVfs = {
-    3,                    /* iVersion */
-    sizeof(HalVfsFile),   /* szOsFile */
-    HAL_MAX_PATHNAME,     /* mxPathname */
-    nullptr,              /* pNext */
-    "hal",                /* zName */
-    nullptr,              /* pAppData */
-    halOpen,              /* xOpen */
-    halDelete,            /* xDelete */
-    halAccess,            /* xAccess */
-    halFullPathname,      /* xFullPathname */
-    nullptr,              /* xDlOpen */
-    nullptr,              /* xDlError */
-    nullptr,              /* xDlSym */
-    nullptr,              /* xDlClose */
-    halRandomness,        /* xRandomness */
-    halSleep,             /* xSleep */
-    halCurrentTime,       /* xCurrentTime */
-    nullptr,              /* xGetLastError */
-    halCurrentTimeInt64,  /* xCurrentTimeInt64 */
-    nullptr,              /* xSetSystemCall */
-    nullptr,              /* xGetSystemCall */
-    nullptr,              /* xNextSystemCall */
+    3,                   /* iVersion */
+    sizeof(HalVfsFile),  /* szOsFile */
+    HAL_MAX_PATHNAME,    /* mxPathname */
+    nullptr,             /* pNext */
+    "hal",               /* zName */
+    nullptr,             /* pAppData */
+    halOpen,             /* xOpen */
+    halDelete,           /* xDelete */
+    halAccess,           /* xAccess */
+    halFullPathname,     /* xFullPathname */
+    nullptr,             /* xDlOpen */
+    nullptr,             /* xDlError */
+    nullptr,             /* xDlSym */
+    nullptr,             /* xDlClose */
+    halRandomness,       /* xRandomness */
+    halSleep,            /* xSleep */
+    halCurrentTime,      /* xCurrentTime */
+    nullptr,             /* xGetLastError */
+    halCurrentTimeInt64, /* xCurrentTimeInt64 */
+    nullptr,             /* xSetSystemCall */
+    nullptr,             /* xGetSystemCall */
+    nullptr,             /* xNextSystemCall */
 };
 
 bool gRegistered = false;

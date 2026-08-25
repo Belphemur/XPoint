@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
-#include <unistd.h>
 
 #include "BookReadingStats.h"
 #include "GlobalReadingStats.h"
@@ -183,4 +184,116 @@ TEST_F(ReadingStatsStoreTest, BookDurationFormatting) {
   EXPECT_STREQ(buf, "1 min");
   BookReadingStats::formatDuration(5400, buf, sizeof(buf));
   EXPECT_STREQ(buf, "1h 30 min");
+}
+
+TEST_F(ReadingStatsStoreTest, CorruptDbRecovers) {
+  ReadingStatsStore& store = ReadingStatsStore::getInstance();
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+
+  GlobalReadingStats g;
+  g.totalReadingSeconds = 123;
+  ASSERT_TRUE(store.saveGlobal(g));
+  store.close();
+
+  // Corrupt the database by overwriting the header with garbage.
+  {
+    std::ofstream out(dbPath_, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(out.is_open());
+    out.write("NOT A SQLITE DATABASE", 21);
+  }
+
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+  EXPECT_TRUE(store.isReady());
+
+  // Schema must be usable after recovery.
+  BookReadingStats b;
+  b.totalReadingSeconds = 456;
+  ASSERT_TRUE(store.saveBook("/ corrupted-recovery", b));
+  BookReadingStats outStats;
+  ASSERT_TRUE(store.loadBook("/ corrupted-recovery", outStats));
+  EXPECT_EQ(outStats.totalReadingSeconds, 456u);
+}
+
+TEST_F(ReadingStatsStoreTest, IntegrityCheckDetectsCorruption) {
+  ReadingStatsStore& store = ReadingStatsStore::getInstance();
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+
+  GlobalReadingStats g;
+  g.totalReadingSeconds = 123;
+  ASSERT_TRUE(store.saveGlobal(g));
+  store.close();
+
+  // Overwrite the middle of the file to damage a page.
+  {
+    std::fstream fs(dbPath_, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(fs.is_open());
+    fs.seekp(4096, std::ios::beg);
+    const char garbage[] = "CORRUPT";
+    fs.write(garbage, sizeof(garbage) - 1);
+  }
+
+  // The store detects the corruption, removes the file, and recreates it.
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+  EXPECT_TRUE(store.isReady());
+
+  // The corrupted data is gone, but the schema is usable again.
+  GlobalReadingStats out;
+  EXPECT_FALSE(store.loadGlobal(out));
+  ASSERT_TRUE(store.saveGlobal(g));
+  ASSERT_TRUE(store.loadGlobal(out));
+  EXPECT_EQ(out.totalReadingSeconds, g.totalReadingSeconds);
+}
+
+TEST_F(ReadingStatsStoreTest, ReopenRoundTrip) {
+  ReadingStatsStore& store = ReadingStatsStore::getInstance();
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+
+  GlobalReadingStats g;
+  g.totalSessions = 5;
+  g.totalReadingSeconds = 9999;
+  g.totalPagesTurned = 42;
+  ASSERT_TRUE(store.saveGlobal(g));
+
+  BookReadingStats b;
+  b.sessionCount = 3;
+  b.totalReadingSeconds = 1234;
+  ASSERT_TRUE(store.saveBook("/ reopen/book", b));
+
+  // Close and reopen with a fresh connection.
+  store.close();
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+
+  GlobalReadingStats gOut;
+  ASSERT_TRUE(store.loadGlobal(gOut));
+  EXPECT_EQ(gOut.totalSessions, g.totalSessions);
+  EXPECT_EQ(gOut.totalReadingSeconds, g.totalReadingSeconds);
+  EXPECT_EQ(gOut.totalPagesTurned, g.totalPagesTurned);
+
+  BookReadingStats bOut;
+  ASSERT_TRUE(store.loadBook("/ reopen/book", bOut));
+  EXPECT_EQ(bOut.sessionCount, b.sessionCount);
+  EXPECT_EQ(bOut.totalReadingSeconds, b.totalReadingSeconds);
+}
+
+TEST_F(ReadingStatsStoreTest, BookKeyMigration) {
+  ReadingStatsStore& store = ReadingStatsStore::getInstance();
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+
+  const std::string keyA = "/.crosspoint/epub_old";
+  const std::string keyB = "/.crosspoint/epub_new";
+
+  BookReadingStats in;
+  in.totalReadingSeconds = 7777;
+  in.totalPagesTurned = 111;
+  ASSERT_TRUE(store.saveBook(keyA, in));
+
+  ASSERT_TRUE(store.migrateBookKey(keyA, keyB));
+
+  BookReadingStats out;
+  ASSERT_TRUE(store.loadBook(keyB, out));
+  EXPECT_EQ(out.totalReadingSeconds, in.totalReadingSeconds);
+  EXPECT_EQ(out.totalPagesTurned, in.totalPagesTurned);
+
+  BookReadingStats gone;
+  EXPECT_FALSE(store.loadBook(keyA, gone));
 }

@@ -11,13 +11,14 @@
 
 #ifdef READING_STATS_ENABLED
 
-#include <cstring>
 #include <sqlite3.h>
 
-#include "SQLiteVfsHal.h"
-#include "../../src/activities/reader/GlobalReadingStats.h"
+#include <cstring>
+
 #include "../../src/activities/reader/BookReadingStats.h"
+#include "../../src/activities/reader/GlobalReadingStats.h"
 #include "../../src/activities/reader/ReadingStatsUtils.h"
+#include "SQLiteVfsHal.h"
 
 #ifdef ARDUINO
 #include <HalStorage.h>
@@ -43,26 +44,11 @@ bool execSql(sqlite3* db, const char* sql) {
   return true;
 }
 
-// Runs a PRAGMA and captures the resulting single-column text value.
-std::string pragmaText(sqlite3* db, const char* pragma) {
-  std::string result;
-  sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, pragma, -1, &stmt, nullptr) != SQLITE_OK) return result;
-  if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_text(stmt, 0)) {
-    const auto* txt = sqlite3_column_text(stmt, 0);
-    result.assign(reinterpret_cast<const char*>(txt));
-  }
-  sqlite3_finalize(stmt);
-  return result;
-}
-
 bool bindU32(sqlite3_stmt* stmt, int idx, uint32_t v) {
   return sqlite3_bind_int64(stmt, idx, static_cast<sqlite3_int64>(v)) == SQLITE_OK;
 }
 
-uint32_t colU32(sqlite3_stmt* stmt, int idx) {
-  return static_cast<uint32_t>(sqlite3_column_int64(stmt, idx));
-}
+uint32_t colU32(sqlite3_stmt* stmt, int idx) { return static_cast<uint32_t>(sqlite3_column_int64(stmt, idx)); }
 
 }  // namespace
 
@@ -82,15 +68,14 @@ bool ReadingStatsStore::begin(const char* dbPath) {
   Storage.ensureDirectoryExists("/.crosspoint");
 #endif
 
-  if (sqlite3_vfs_find("hal") == nullptr) {
-    sqlite3_vfs_register(sqlite_vfs_hal::vfs(), 0);
-  }
+  // Register the custom HAL VFS (idempotent on subsequent calls).
+  sqlite_vfs_hal::vfs();
 
   const int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
   sqlite3* db = nullptr;
   const int rc = sqlite3_open_v2(dbPath_.c_str(), &db, flags, "hal");
   if (rc != SQLITE_OK) {
-    LOG_ERR("STATS", "open failed: %s", sqlite3_errmsg(db));
+    LOG_ERR("STATS", "open failed: %s", db ? sqlite3_errmsg(db) : "<no db handle>");
     if (db) sqlite3_close(db);
     return false;
   }
@@ -98,19 +83,34 @@ bool ReadingStatsStore::begin(const char* dbPath) {
 
   if (!runPragmas() || !createSchema()) {
     LOG_ERR("STATS", "init failed: %s", sqlite3_errmsg(static_cast<sqlite3*>(db_)));
+    const std::string corruptPath = dbPath_;
     close();
-    return false;
+#ifdef ARDUINO
+    const bool removed = Storage.remove(corruptPath.c_str());
+#else
+    const bool removed = (::remove(corruptPath.c_str()) == 0);
+#endif
+    if (!removed) {
+      LOG_ERR("STATS", "failed to remove corrupt db: %s", corruptPath.c_str());
+      return false;
+    }
+    return begin(corruptPath.c_str());
   }
 
   if (!verifyIntegrity()) {
     LOG_ERR("STATS", "integrity check failed; recreating db");
+    const std::string corruptPath = dbPath_;
     close();
 #ifdef ARDUINO
-    Storage.remove(dbPath_.c_str());
+    const bool removed = Storage.remove(corruptPath.c_str());
 #else
-    ::remove(dbPath_.c_str());
+    const bool removed = (::remove(corruptPath.c_str()) == 0);
 #endif
-    return begin(dbPath);
+    if (!removed) {
+      LOG_ERR("STATS", "failed to remove corrupt db: %s", corruptPath.c_str());
+      return false;
+    }
+    return begin(corruptPath.c_str());
   }
 
   LOG_INF("STATS", "opened %s", dbPath_.c_str());
@@ -135,14 +135,9 @@ bool ReadingStatsStore::ensureOpen() {
 bool ReadingStatsStore::runPragmas() {
   sqlite3* db = static_cast<sqlite3*>(db_);
   const char* pragmas[] = {
-      "PRAGMA page_size = 4096;",
-      "PRAGMA journal_mode = DELETE;",
-      "PRAGMA synchronous = NORMAL;",
-      "PRAGMA foreign_keys = ON;",
-      "PRAGMA temp_store = MEMORY;",
-      "PRAGMA mmap_size = 0;",
-      "PRAGMA cache_size = -128;",
-      "PRAGMA user_version = 1;",
+      "PRAGMA page_size = 4096;",  "PRAGMA journal_mode = DELETE;", "PRAGMA synchronous = NORMAL;",
+      "PRAGMA foreign_keys = ON;", "PRAGMA temp_store = MEMORY;",   "PRAGMA mmap_size = 0;",
+      "PRAGMA cache_size = -128;", "PRAGMA user_version = 1;",
   };
   for (const char* p : pragmas) {
     if (!execSql(db, p)) return false;
@@ -222,8 +217,18 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
 
 bool ReadingStatsStore::verifyIntegrity() {
   sqlite3* db = static_cast<sqlite3*>(db_);
-  const std::string result = pragmaText(db, "PRAGMA quick_check;");
-  return result == "ok";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nullptr) != SQLITE_OK) return false;
+  bool ok = true;
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    const auto* txt = sqlite3_column_text(stmt, 0);
+    if (!txt || std::strcmp(reinterpret_cast<const char*>(txt), "ok") != 0) {
+      ok = false;
+      break;
+    }
+  }
+  sqlite3_finalize(stmt);
+  return ok;
 }
 
 bool ReadingStatsStore::loadGlobal(GlobalReadingStats& out) {
@@ -250,8 +255,8 @@ bool ReadingStatsStore::loadGlobal(GlobalReadingStats& out) {
   out.timeOfDaySeconds[1] = colU32(stmt, 5);
   out.timeOfDaySeconds[2] = colU32(stmt, 6);
   out.timeOfDaySeconds[3] = colU32(stmt, 7);
-  for (int i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
-    out.dayOfWeekSeconds[i] = colU32(stmt, 8 + i);
+  for (size_t i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
+    out.dayOfWeekSeconds[i] = colU32(stmt, static_cast<int>(8 + i));
   }
   out.readingHistoryAnchorDay = colU32(stmt, 15);
   const void* blob = sqlite3_column_blob(stmt, 16);
@@ -295,8 +300,8 @@ bool ReadingStatsStore::saveGlobal(const GlobalReadingStats& stats) {
   bindU32(stmt, 6, stats.timeOfDaySeconds[1]);
   bindU32(stmt, 7, stats.timeOfDaySeconds[2]);
   bindU32(stmt, 8, stats.timeOfDaySeconds[3]);
-  for (int i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
-    bindU32(stmt, 9 + i, stats.dayOfWeekSeconds[i]);
+  for (size_t i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
+    bindU32(stmt, static_cast<int>(9 + i), stats.dayOfWeekSeconds[i]);
   }
   bindU32(stmt, 16, stats.readingHistoryAnchorDay);
   sqlite3_bind_blob(stmt, 17, stats.readingHistoryBits.data(), kHistoryBytes, SQLITE_TRANSIENT);
@@ -345,8 +350,8 @@ bool ReadingStatsStore::loadBook(const std::string& bookId, BookReadingStats& ou
   out.timeOfDaySeconds[1] = colU32(stmt, 16);
   out.timeOfDaySeconds[2] = colU32(stmt, 17);
   out.timeOfDaySeconds[3] = colU32(stmt, 18);
-  for (int i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
-    out.dayOfWeekSeconds[i] = colU32(stmt, 19 + i);
+  for (size_t i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
+    out.dayOfWeekSeconds[i] = colU32(stmt, static_cast<int>(19 + i));
   }
   sqlite3_finalize(stmt);
   return true;
@@ -405,8 +410,8 @@ bool ReadingStatsStore::saveBook(const std::string& bookId, const BookReadingSta
   bindU32(stmt, 18, stats.timeOfDaySeconds[1]);
   bindU32(stmt, 19, stats.timeOfDaySeconds[2]);
   bindU32(stmt, 20, stats.timeOfDaySeconds[3]);
-  for (int i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
-    bindU32(stmt, 21 + i, stats.dayOfWeekSeconds[i]);
+  for (size_t i = 0; i < READING_DAY_OF_WEEK_COUNT; ++i) {
+    bindU32(stmt, static_cast<int>(21 + i), stats.dayOfWeekSeconds[i]);
   }
   const int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
@@ -417,7 +422,8 @@ bool ReadingStatsStore::removeBook(const std::string& bookId) {
   if (!ensureOpen()) return false;
   sqlite3* db = static_cast<sqlite3*>(db_);
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "DELETE FROM book_stats WHERE book_id = ?;", -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (sqlite3_prepare_v2(db, "DELETE FROM book_stats WHERE book_id = ?;", -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
   sqlite3_bind_text(stmt, 1, bookId.c_str(), -1, SQLITE_TRANSIENT);
   const int rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
@@ -425,17 +431,43 @@ bool ReadingStatsStore::removeBook(const std::string& bookId) {
   return sqlite3_changes(db) > 0;
 }
 
-bool ReadingStatsStore::recordSession(const std::string& bookId, int64_t startEpoch, int64_t durationSec, int32_t pagesTurned) {
+bool ReadingStatsStore::migrateBookKey(const std::string& oldBookId, const std::string& newBookId) {
+  if (oldBookId == newBookId) return true;
+  if (!ensureOpen()) return false;
+
+  BookReadingStats stats;
+  if (!loadBook(oldBookId, stats)) return false;
+  if (!saveBook(newBookId, stats)) return false;
+
+  sqlite3* db = static_cast<sqlite3*>(db_);
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, "UPDATE reading_sessions SET book_id = ? WHERE book_id = ?;", -1, &stmt, nullptr) !=
+      SQLITE_OK)
+    return false;
+  sqlite3_bind_text(stmt, 1, newBookId.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 2, oldBookId.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+
+  return removeBook(oldBookId);
+}
+
+bool ReadingStatsStore::recordSession(const std::string& bookId, int64_t startEpoch, int64_t durationSec,
+                                      int32_t pagesTurned) {
   if (!ensureOpen()) return false;
   sqlite3* db = static_cast<sqlite3*>(db_);
   // Foreign key requires a book_stats row; ensure one exists (empty defaults).
   sqlite3_stmt* stmt = nullptr;
-  if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO book_stats (book_id) VALUES (?);", -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO book_stats (book_id) VALUES (?);", -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
   sqlite3_bind_text(stmt, 1, bookId.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
-  if (sqlite3_prepare_v2(db, "INSERT INTO reading_sessions (book_id, start_epoch, duration_sec, pages_turned) VALUES (?, ?, ?, ?);", -1, &stmt, nullptr) != SQLITE_OK) return false;
+  if (sqlite3_prepare_v2(
+          db, "INSERT INTO reading_sessions (book_id, start_epoch, duration_sec, pages_turned) VALUES (?, ?, ?, ?);",
+          -1, &stmt, nullptr) != SQLITE_OK)
+    return false;
   sqlite3_bind_text(stmt, 1, bookId.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_int64(stmt, 2, startEpoch);
   sqlite3_bind_int64(stmt, 3, durationSec);
@@ -468,6 +500,7 @@ bool ReadingStatsStore::saveGlobal(const GlobalReadingStats&) { return false; }
 bool ReadingStatsStore::loadBook(const std::string&, BookReadingStats&) { return false; }
 bool ReadingStatsStore::saveBook(const std::string&, const BookReadingStats&) { return false; }
 bool ReadingStatsStore::removeBook(const std::string&) { return false; }
+bool ReadingStatsStore::migrateBookKey(const std::string&, const std::string&) { return false; }
 bool ReadingStatsStore::recordSession(const std::string&, int64_t, int64_t, int32_t) { return false; }
 
 #endif  // READING_STATS_ENABLED

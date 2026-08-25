@@ -54,8 +54,9 @@ bool HalClock::getDateTime(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t
   if (!_available) return false;
 
   const unsigned long now = millis();
-  if (_lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS) {
-    if (!_hasCachedDate) return false;
+  // Date/time fast path is only valid when we already have a cached calendar
+  // date. A recent time-only poll from getTime() must not satisfy this.
+  if (_hasCachedDate && _lastPollMs != 0 && (now - _lastPollMs) < CLOCK_POLL_MS) {
     year = _cachedYear;
     month = _cachedMonth;
     day = _cachedDay;
@@ -66,6 +67,7 @@ bool HalClock::getDateTime(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t
 
   Rtc::DateTime dt;
   if (!_sdkRtc.now(dt)) {
+    // Without a fresh read we will only return a date we have already validated.
     if (!_hasCachedDate) return false;
     _lastPollMs = now;
     year = _cachedYear;
@@ -75,22 +77,29 @@ bool HalClock::getDateTime(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t
     minute = _cachedMinute;
     return true;
   }
+
   _cachedHour = dt.hour;
   _cachedMinute = dt.minute;
   _lastPollMs = now;
   _hasCachedTime = true;
+
+  // Only cache and return dates that pass validation; never propagate a stale
+  // date after the RTC starts reporting an invalid calendar.
   if (isValidCalendarDate(dt.year, dt.month, dt.day)) {
     _cachedYear = dt.year;
     _cachedMonth = dt.month;
     _cachedDay = dt.day;
     _hasCachedDate = true;
+
+    year = _cachedYear;
+    month = _cachedMonth;
+    day = _cachedDay;
+    hour = _cachedHour;
+    minute = _cachedMinute;
+    return true;
   }
-  year = _cachedYear;
-  month = _cachedMonth;
-  day = _cachedDay;
-  hour = _cachedHour;
-  minute = _cachedMinute;
-  return _hasCachedDate;
+
+  return false;
 }
 
 bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased, bool use12Hour) const {

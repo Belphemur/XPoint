@@ -38,6 +38,10 @@ class ReadingStatsStore {
   bool saveBook(const std::string& bookId, const BookReadingStats& stats);
   bool removeBook(const std::string& bookId);
 
+  // Re-key a book row after the EPUB cache directory is renamed. Returns true
+  // if the old key existed and was moved, false otherwise (including no row).
+  bool migrateBookKey(const std::string& oldBookId, const std::string& newBookId);
+
   // Appends a row to reading_sessions (local-only, never synced).
   bool recordSession(const std::string& bookId, int64_t startEpoch, int64_t durationSec, int32_t pagesTurned);
 

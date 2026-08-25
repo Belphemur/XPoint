@@ -23,6 +23,7 @@
 #include "DictionaryWordSelectActivity.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
+#include "ReadingStatsStore.h"
 #include "activities/util/ConfirmationActivity.h"
 #endif
 #include "EpubReaderBookmarksActivity.h"
@@ -138,6 +139,9 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
 
   const std::string newCachePath = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(dstPath));
   if (!oldCachePath.empty() && Storage.exists(oldCachePath.c_str())) {
+#ifdef READING_STATS_ENABLED
+    ReadingStatsStore::getInstance().migrateBookKey(oldCachePath, newCachePath);
+#endif
     if (!Storage.rename(oldCachePath.c_str(), newCachePath.c_str())) {
       LOG_ERR("ERS", "Failed to rename cache dir %s -> %s (non-fatal)", oldCachePath.c_str(), newCachePath.c_str());
     }
@@ -186,7 +190,7 @@ void EpubReaderActivity::onEnter() {
 
 void EpubReaderActivity::onExit() {
 #ifdef READING_STATS_ENABLED
-  if (SETTINGS.shouldTrackReadingStats()) {
+  if (epub && SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
     const uint32_t elapsedSecs = sessionReadingSeconds;
     if (elapsedSecs >= 60) {
@@ -204,9 +208,7 @@ void EpubReaderActivity::onExit() {
         stats.startDate = sessionStartLocalDateTime.date;
       }
     }
-    if (epub) {
-      stats.save(epub->getCachePath());
-    }
+    stats.save(epub->getCachePath());
     globalStats.save();
   }
 #endif
@@ -314,6 +316,10 @@ bool EpubReaderActivity::loadBook() {
 
 void EpubReaderActivity::openReaderMenu() {
   pendingManualTurn = 0;
+#ifdef READING_STATS_ENABLED
+  recordCurrentPageReadingTime();
+  pageShownAtMs = 0;
+#endif
   const int currentPage = section ? section->currentPage + 1 : 0;
   const int totalPages = section ? section->estimatedTotalPages() : 0;
   float bookProgress = 0.0f;
@@ -711,6 +717,10 @@ void EpubReaderActivity::jumpToPercent(int percent) {
 }
 
 void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action) {
+#ifdef READING_STATS_ENABLED
+  recordCurrentPageReadingTime();
+  pageShownAtMs = millis();
+#endif
   auto progressChangeResultHandler = [this](const ActivityResult& result) {
     loadCachedBookmarks();
     if (result.isCancelled) {
@@ -931,18 +941,20 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       break;
     }
     case EpubReaderMenuActivity::MenuAction::DELETE_STATS: {
-      startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_BOOK_STATS),
-                                                                    epub->getTitle()),
-                             [this](const ActivityResult& result) {
-                               if (result.isCancelled) {
-                                 openReaderMenu();
-                                 return;
-                               }
-                               if (BookReadingStats::remove(epub->getCachePath())) {
-                                 stats = BookReadingStats{};
-                               }
-                               openReaderMenu();
-                             });
+      startActivityForResult(
+          std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE_BOOK_STATS), epub->getTitle()),
+          [this](const ActivityResult& result) {
+            if (result.isCancelled) {
+              openReaderMenu();
+              return;
+            }
+            if (BookReadingStats::remove(epub->getCachePath())) {
+              stats = BookReadingStats{};
+              sessionReadingSeconds = 0;
+              hasSessionStartLocalDateTime = false;
+            }
+            openReaderMenu();
+          });
       break;
     }
 #endif
@@ -1052,39 +1064,38 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     RenderLock lock;
     clearDeferredReposition();
   }
-  if (isForwardTurn) {
+
 #ifdef READING_STATS_ENABLED
-    if (SETTINGS.shouldTrackReadingStats()) {
-      uint32_t dwellSeconds = 0;
-      if (currentPageReadingSecondsForStats(dwellSeconds)) {
-        recordCurrentPageReadingTime();
-        recordForwardPagePaceSample(dwellSeconds);
-      } else {
-        pageShownAtMs = 0;
-      }
+  uint32_t dwellSeconds = 0;
+  const bool haveDwell = currentPageReadingSecondsForStats(dwellSeconds);
+  if (SETTINGS.shouldTrackReadingStats()) {
+    recordCurrentPageReadingTime();
+    if (isForwardTurn && haveDwell) {
+      recordForwardPagePaceSample(dwellSeconds);
+      if (stats.totalPagesTurned < UINT32_MAX) stats.totalPagesTurned++;
+      if (globalStats.totalPagesTurned < UINT32_MAX) globalStats.totalPagesTurned++;
     }
+  }
 #endif
+
+  if (isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       lastPageTurnTime = millis();
-      return true;
     } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
       section.reset();
       lastPageTurnTime = millis();
-      return true;
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
       lastPageTurnTime = millis();
-      return true;
     }
   } else {
     if (section->currentPage > 0) {
       section->currentPage--;
       lastPageTurnTime = millis();
-      return true;
     } else if (currentSpineIndex > 0) {
       RenderLock lock;
       nextPageNumber = 0;
@@ -1092,10 +1103,15 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       currentSpineIndex--;
       section.reset();
       lastPageTurnTime = millis();
-      return true;
+    } else {
+      return false;
     }
   }
-  return false;
+
+#ifdef READING_STATS_ENABLED
+  pageShownAtMs = millis();
+#endif
+  return true;
 }
 
 bool EpubReaderActivity::skipPages(int amount) {

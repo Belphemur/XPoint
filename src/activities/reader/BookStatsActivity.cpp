@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "ReadingStatsUtils.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
@@ -17,6 +18,13 @@ namespace {
 std::string formatStatsDuration(uint32_t seconds) {
   char buf[32];
   BookReadingStats::formatDuration(seconds, buf, sizeof(buf));
+  return std::string(buf);
+}
+
+std::string formatStatsDate(const ReadingStatsDate& date) {
+  if (!date.isValid()) return std::string("--");
+  char buf[32];
+  formatReadingStatsShortDate(date, buf, sizeof(buf));
   return std::string(buf);
 }
 
@@ -36,7 +44,7 @@ void BookStatsActivity::onEnter() {
 void BookStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
-  const size_t n = 15;
+  const size_t n = 20;
   valueCache.reserve(n);
   rowItems.reserve(n);
 
@@ -54,6 +62,11 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_PAGES_LBL), std::to_string(stats.totalPagesTurned));
   const uint32_t avgSession = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
+  addRow(tr(STR_STATS_AVG_PAGE_PACE), formatStatsDuration(stats.avgSecondsPerForwardPage));
+  addRow(tr(STR_STATS_EST_TIME_LEFT), formatStatsDuration(stats.estimatedTimeLeftSeconds));
+  addRow(tr(STR_STATS_COMPLETED), stats.isCompleted ? tr(STR_YES) : tr(STR_NO));
+  addRow(tr(STR_STATS_STARTED), formatStatsDate(stats.startDate));
+  addRow(tr(STR_STATS_FINISHED), formatStatsDate(stats.finishedDate));
   addRow(tr(STR_STATS_MORNING), formatStatsDuration(stats.timeOfDaySeconds[0]));
   addRow(tr(STR_STATS_AFTERNOON), formatStatsDuration(stats.timeOfDaySeconds[1]));
   addRow(tr(STR_STATS_EVENING), formatStatsDuration(stats.timeOfDaySeconds[2]));
@@ -67,9 +80,7 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_SUN), formatStatsDuration(stats.dayOfWeekSeconds[6]));
 }
 
-void BookStatsActivity::activateIndex(const int index) {
-  (void)index;
-}
+void BookStatsActivity::activateIndex(const int index) { (void)index; }
 
 bool BookStatsActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

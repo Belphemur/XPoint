@@ -75,7 +75,7 @@ The stock `Sqlite3Esp32` opens databases through an **esp-idf POSIX VFS** (e.g. 
 PRAGMAs (embedded-tuned):
 - `PRAGMA journal_mode=DELETE` (explicit; the default, but set to be clear).
 - `PRAGMA synchronous=NORMAL` — the app crashes/loses power only between commits (which are atomic under rollback journal); NORMAL avoids full fsync per transaction while staying safe for this access pattern.
-- `PRAGMA foreign_keys=ON`, `PRAGMA temp_store=MEMORY` (no temp b-tree churn on SD), `PRAGMA mmap_size=0` (no mmap on SD), `PRAGMA page_size=4096`, `PRAGMA cache_size=-128` (~512 KB, PSRAM-backed on x4pro).
+- `PRAGMA foreign_keys=ON`, `PRAGMA temp_store=MEMORY` (no temp b-tree churn on SD), `PRAGMA mmap_size=0` (no mmap on SD), `PRAGMA page_size=4096`, `PRAGMA cache_size=-128` (128 KiB, PSRAM-backed on x4pro).
 - `PRAGMA integrity_check` after any unclean recovery / on open-failure path.
 - **Placement:** DB file `/.crosspoint/reading_stats.db`. Heap for the page cache from PSRAM on x4pro (`BOARD_HAS_PSRAM`).
 
@@ -117,7 +117,7 @@ The "873 vs 1372 LoC" framing was misleading: whatever CrossInk adds beyond 873 
 Replaces CrossInk's two binary files with tables in `/.crosspoint/reading_stats.db`.
 
 ```sql
-PRAGMA journal_mode=WAL;
+PRAGMA journal_mode=DELETE;
 PRAGMA foreign_keys=ON;
 PRAGMA user_version = 1;   -- future migration hook (aligns with CrossPoint's
                             -- cache-versioning discipline: book.bin v10 / section.bin v41)
@@ -204,7 +204,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_book ON reading_sessions(book_id);
 | File | Purpose |
 |------|---------|
 | `lib/SQLite/SQLiteVfsHal.h/.cpp` | Custom `sqlite3_vfs` "hal" over `HalStorage`; host build uses a POSIX backend behind the same interface (so `test/` can exercise it). `xDeviceCharacteristics` reports `xSectorSize=512` and **no** `ATOMIC`/`POWERSAFE_OVERWRITE`. DELETE journal (no `xShm*`). Single-connection invariant documented. |
-| `lib/SQLite/ReadingStatsStore.h/.cpp` | Opens `/.crosspoint/reading_stats.db`, runs PRAGMAs (`journal_mode=DELETE`, `foreign_keys`, `user_version=1`, `synchronous=NORMAL`, `temp_store=MEMORY`, `mmap_size=0`, `page_size=4096`, `cache_size` capped to ~-128 ⇒ 512 KB), `integrity_check` on recovery. Provides `loadGlobal()/saveGlobal()` (UPSERT), `loadBook(id)/saveBook(id)/removeBook(id)`, `recordSession(...)`. Single lazily-opened `sqlite3*` handle, used only from the main/reader task. |
+| `lib/SQLite/ReadingStatsStore.h/.cpp` | Opens `/.crosspoint/reading_stats.db`, runs PRAGMAs (`journal_mode=DELETE`, `foreign_keys`, `user_version=1`, `synchronous=NORMAL`, `temp_store=MEMORY`, `mmap_size=0`, `page_size=4096`, `cache_size` capped to ~-128 ⇒ 128 KiB), `integrity_check` on recovery. Provides `loadGlobal()/saveGlobal()` (UPSERT), `loadBook(id)/saveBook(id)/removeBook(id)`, `recordSession(...)`. Single lazily-opened `sqlite3*` handle, used only from the main/reader task. |
 | `src/activities/reader/ReadingStatsUtils.{h,cpp}` | Copied from CrossInk (pure helpers, no file I/O). |
 | `src/activities/reader/GlobalReadingStats.{h,cpp}` | Rewritten `load()/save()/recordReadingSpan()` to read/write the `global_stats` row via `ReadingStatsStore` instead of `global_stats.bin`. Bucketing/streak math unchanged. `save()` is an UPSERT. |
 | `src/activities/reader/BookReadingStats.{h,cpp}` | Rewritten `load(cachePath)/save()/remove()` to map to the `book_stats` row keyed by the cache-path string. Pace/math unchanged. |
@@ -214,7 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_book ON reading_sessions(book_id);
 ### Reading stats — changed
 | File | Change |
 |------|--------|
-| `lib/hal/HalStorage.{h,cpp}` | **Add `HalFile::truncate(uint64_t)` and `HalFile::sync()`** (forward to SdFat `FsFile::truncate`/`sync`, under `storageMutex`). Required by the VFS for WAL checkpoint. |
+| `lib/hal/HalStorage.{h,cpp}` | **Add `HalFile::truncate(uint64_t)` and `HalFile::sync()`** (forward to SdFat `FsFile::truncate`/`sync`, under `storageMutex`). Required by the VFS for xTruncate/xSync. |
 | `src/activities/reader/EpubReaderActivity.cpp` | Port CrossInk's session lifecycle (`onEnter` load + session start; `onExit` commit with ≥10s/≥60s thresholds; `recordReadingSpan` + `recordForwardPageRead` on dwell; completion-prompt trigger; `READING_STATS` + `DELETE_STATS` menu actions). Guarded by `READING_STATS_ENABLED`. `book_id` = `epub->getCachePath()`. |
 | `src/activities/reader/TxtReaderActivity.cpp` / `XtcReaderActivity.cpp` | Same session wiring if CrossPoint tracks their reading (mirror CrossInk's EPUB+XTC support). |
 | `src/activities/reader/EpubReaderMenuActivity.h` | Add `READING_STATS` (and `DELETE_STATS` if not present) to `MenuAction`, gated by `READING_STATS_ENABLED`. |
@@ -252,11 +252,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_book ON reading_sessions(book_id);
 ## 7. Risks & open questions
 
 - **R1 (highest):** the custom VFS locking semantics under DELETE journal. Mitigated by the single-connection invariant (one `sqlite3*`, main/reader task only); validate with `PRAGMA integrity_check` after recovery and via host `test/` round-trips **before** device flashing.
-- **R2:** SQLite RAM footprint on x4pro. Mitigation: `cache_size` capped (~-128 ⇒ 512 KB), 4 KB pages, PSRAM allocation; measure heap via Serial. Confirm Sqlite3Esp32 routes allocations to PSRAM under `BOARD_HAS_PSRAM`.
+- **R2:** SQLite RAM footprint on x4pro. Mitigation: `cache_size` capped (~-128 ⇒ 128 KiB), 4 KB pages, PSRAM allocation; measure heap via Serial. Confirm Sqlite3Esp32 routes allocations to PSRAM under `BOARD_HAS_PSRAM`.
 - **R3 (resolved, C4):** `book_id` = full cache-path string (e.g. `epub->getCachePath()`), **not** the bare `std::hash` at `EpubReaderActivity.cpp:125`.
 - **R4 (resolved):** `clockUtcOffsetQ` (`CrossPointSettings.h:216`, uint8_t, 48=UTC+0, quarter-hour bias) matches CrossInk's expectation; port-friendly.
 - **R5 (resolved):** `FreeInkApp.h` exists in this freeink-sdk pin; font-downloader divergence is UI-base drift only, and D5 is now a verify-only pass (C1).
-- **R6 (new, blocking):** `HalFile` needs `truncate()` + `sync()` added (D3b) before the VFS can checkpoint WAL.
+- **R6 (new, blocking):** `HalFile` needs `truncate()` + `sync()` added (D3b) before the VFS can service xTruncate/xSync.
 
 ---
 
