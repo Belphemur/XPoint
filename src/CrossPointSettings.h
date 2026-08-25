@@ -207,6 +207,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepScreenCoverFilter = NO_FILTER;
   // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
+  uint8_t statusBarChapterTimeLeft = 1;
   uint8_t statusBarBookProgressPercentage = 1;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;
@@ -299,6 +300,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t moveFinishedToReadFolder = 0;
   // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
   uint8_t backShortToFileBrowser = 0;
+  // Track reading statistics into the SQLite database (0 = disabled, 1 = enabled)
+  uint8_t trackReadingStats = 1;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
@@ -335,6 +338,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint16_t getPowerButtonDuration() const {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
+  bool shouldTrackReadingStats() const { return trackReadingStats != 0; }
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader
@@ -354,6 +358,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // stall it behind the SD write inside saveToFile(). Don't add one back.
   struct StatusBarSpec {
     bool showChapterPageCount = false;
+    bool showChapterTimeLeft = false;
     bool showBookProgressPercent = false;
     uint8_t titleMode = HIDE_TITLE;  // STATUS_BAR_TITLE
     bool showBattery = false;
@@ -371,7 +376,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Visibility of the text lane. Clock hardware presence is the caller's
     // concern: pass halClock.isAvailable(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
-      return showChapterPageCount || showBookProgressPercent || showsTitle() || showBattery ||
+      return showChapterPageCount || showChapterTimeLeft || showBookProgressPercent || showsTitle() || showBattery ||
              (showsClock() && clockAvailable);
     }
   };
