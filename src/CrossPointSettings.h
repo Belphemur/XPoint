@@ -293,6 +293,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t moveFinishedToReadFolder = 0;
   // Short press Back goes to file browser instead of home (0 = disabled, 1 = enabled)
   uint8_t backShortToFileBrowser = 0;
+  // Track reading statistics into the SQLite database (0 = disabled, 1 = enabled)
+  uint8_t trackReadingStats = 1;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
@@ -329,6 +331,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint16_t getPowerButtonDuration() const {
     return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
   }
+  bool shouldTrackReadingStats() const { return trackReadingStats != 0; }
   int getReaderFontId() const;
 
   // Drop the SD font selection and fall back to the built-in family. The reader
