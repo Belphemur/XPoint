@@ -27,7 +27,11 @@ class EpubReaderMenuActivity final : public UiListActivity {
     GO_HOME,
     SYNC,
     DELETE_CACHE,
-    DICTIONARY
+    DICTIONARY,
+#ifdef READING_STATS_ENABLED
+    READING_STATS,
+    DELETE_STATS,
+#endif
   };
 
   struct MenuItem {
@@ -49,7 +53,7 @@ class EpubReaderMenuActivity final : public UiListActivity {
   // fixed-capacity array avoids any heap allocation for the row list. Labels
   // are set once in the constructor (buildMenuRowItems()); buildScreen()
   // only refreshes rows whose values reflect live state.
-  static constexpr size_t MAX_MENU_ITEMS = 16;
+  static constexpr size_t MAX_MENU_ITEMS = 18;
   freeink::ui::ListItem menuRowItems[MAX_MENU_ITEMS]{};
   void buildMenuRowItems();
 
