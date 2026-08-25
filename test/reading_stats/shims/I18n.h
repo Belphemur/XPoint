@@ -1,0 +1,58 @@
+#pragma once
+
+// Host test shim for I18n.h — supplies just enough for BookReadingStats.cpp
+// (which uses tr(STR_STATS_LESS_THAN_MIN) in formatDuration).
+
+enum class StrId {
+  STR_STATS_LESS_THAN_MIN = 0,
+  STR_STATS_DURATION_MIN,
+  STR_STATS_DURATION_HM,
+  STR_STATS_COMPLETED,
+  STR_STATS_STARTED,
+  STR_STATS_FINISHED,
+  STR_STATS_AVG_PAGE_PACE,
+  STR_STATS_EST_TIME_LEFT,
+  STR_TIME_LEFT_MIN,
+  STR_TIME_LEFT_LESS_THAN_MIN,
+  STR_YES,
+  STR_NO,
+};
+
+class I18n {
+ public:
+  static I18n& getInstance() {
+    static I18n instance;
+    return instance;
+  }
+  const char* get(StrId id) const {
+    switch (id) {
+      case StrId::STR_STATS_LESS_THAN_MIN:
+        return "< 1 min";
+      case StrId::STR_STATS_DURATION_MIN:
+        return "%lu min";
+      case StrId::STR_STATS_DURATION_HM:
+        return "%luh %lu min";
+      case StrId::STR_STATS_COMPLETED:
+        return "Completed";
+      case StrId::STR_STATS_STARTED:
+        return "Started";
+      case StrId::STR_STATS_FINISHED:
+        return "Finished";
+      case StrId::STR_STATS_AVG_PAGE_PACE:
+        return "Avg Page Pace";
+      case StrId::STR_STATS_EST_TIME_LEFT:
+        return "Est Time Left";
+      case StrId::STR_TIME_LEFT_MIN:
+        return "~%lu min left";
+      case StrId::STR_TIME_LEFT_LESS_THAN_MIN:
+        return "< 1 min left";
+      case StrId::STR_YES:
+        return "Yes";
+      case StrId::STR_NO:
+        return "No";
+    }
+    return "";
+  }
+};
+
+#define tr(id) I18n::getInstance().get(StrId::id)
