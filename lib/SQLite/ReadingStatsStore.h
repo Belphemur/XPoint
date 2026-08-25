@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 struct GlobalReadingStats;
@@ -44,6 +45,11 @@ class ReadingStatsStore {
 
   // Appends a row to reading_sessions (local-only, never synced).
   bool recordSession(const std::string& bookId, int64_t startEpoch, int64_t durationSec, int32_t pagesTurned);
+
+  // Runs `body` inside an explicit SQLite transaction (BEGIN ... COMMIT/ROLLBACK).
+  // Fails without calling body if the database is not open. All writes inside the
+  // body share a single commit, reducing SD fsyncs.
+  bool transaction(std::function<bool()> body);
 
  private:
   ReadingStatsStore();

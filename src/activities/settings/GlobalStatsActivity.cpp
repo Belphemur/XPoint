@@ -5,6 +5,7 @@
 
 #include <cstdio>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/ReadingStatsUtils.h"
@@ -38,7 +39,11 @@ GlobalStatsActivity::GlobalStatsActivity(GfxRenderer& renderer, MappedInputManag
 
 void GlobalStatsActivity::onEnter() {
   UiListActivity::onEnter();
-  globalStats = GlobalReadingStats::load();
+#ifdef READING_STATS_ENABLED
+  if (SETTINGS.shouldTrackReadingStats()) {
+    globalStats = GlobalReadingStats::load();
+  }
+#endif
   rebuildRowItems();
 }
 
@@ -65,7 +70,8 @@ void GlobalStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_TIME_LBL), formatStatsDuration(globalStats.totalReadingSeconds));
   addRow(tr(STR_STATS_PAGES_LBL), std::to_string(globalStats.totalPagesTurned));
   addRow(tr(STR_STATS_COMPLETED_LBL), std::to_string(globalStats.completedBooks));
-  const uint32_t avgSession = globalStats.totalSessions > 0 ? globalStats.totalReadingSeconds / globalStats.totalSessions : 0;
+  const uint32_t avgSession =
+      globalStats.totalSessions > 0 ? globalStats.totalReadingSeconds / globalStats.totalSessions : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
   addRow(tr(STR_STATS_READING_STREAK_LBL), formatStreak(globalStats.currentReadingStreak(today)));
   addRow(tr(STR_STATS_LONGEST_STREAK_LBL), formatStreak(globalStats.displayLongestReadingStreak()));
@@ -82,9 +88,7 @@ void GlobalStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_SUN), formatStatsDuration(globalStats.dayOfWeekSeconds[6]));
 }
 
-void GlobalStatsActivity::activateIndex(const int index) {
-  (void)index;
-}
+void GlobalStatsActivity::activateIndex(const int index) { (void)index; }
 
 bool GlobalStatsActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

@@ -1,8 +1,8 @@
 #include "ReadingStatsUtils.h"
 
-#include <cstdio>
-
 #include <HalClock.h>
+
+#include <cstdio>
 
 #include "CrossPointSettings.h"
 
@@ -268,6 +268,8 @@ bool getCurrentLocalReadingStatsDateTime(ReadingStatsDateTime& outDateTime) {
   return outDateTime.isValid();
 }
 
+bool readingStatsTrackingEnabled() { return SETTINGS.shouldTrackReadingStats(); }
+
 uint16_t readingSpanDaysInclusive(const ReadingStatsDate& start, const ReadingStatsDate& end) {
   if (!start.isValid() || !end.isValid() || compareReadingStatsDate(end, start) < 0) {
     return 0;
@@ -444,6 +446,21 @@ uint16_t computeReadingHistoryLongestStreak(const uint32_t anchorDay,
     }
   }
   return best;
+}
+
+std::string bookStatsDbKey(const std::string& cachePath) {
+  // FNV-1a 64-bit over the cache-path string. Cheap, no allocation beyond the
+  // result, no file I/O. Produces a fixed 16-char hex key for the DB PRIMARY KEY.
+  constexpr uint64_t kOffsetBasis = 14695981039346656037ULL;
+  constexpr uint64_t kPrime = 1099511628211ULL;
+  uint64_t hash = kOffsetBasis;
+  for (const unsigned char c : cachePath) {
+    hash ^= static_cast<uint64_t>(c);
+    hash *= kPrime;
+  }
+  char buf[17];
+  snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
+  return std::string(buf);
 }
 
 uint16_t computeReadingHistoryCurrentStreak(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits,

@@ -14,6 +14,7 @@
 #include <sqlite3.h>
 
 #include <cstring>
+#include <functional>
 
 #include "../../src/activities/reader/BookReadingStats.h"
 #include "../../src/activities/reader/GlobalReadingStats.h"
@@ -61,6 +62,9 @@ ReadingStatsStore& ReadingStatsStore::getInstance() {
 }
 
 bool ReadingStatsStore::begin(const char* dbPath) {
+  if (!readingStatsTrackingEnabled()) {
+    return false;
+  }
   if (db_ != nullptr) return true;
   dbPath_ = dbPath;
 
@@ -219,16 +223,18 @@ bool ReadingStatsStore::verifyIntegrity() {
   sqlite3* db = static_cast<sqlite3*>(db_);
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nullptr) != SQLITE_OK) return false;
-  bool ok = true;
-  while (sqlite3_step(stmt) == SQLITE_ROW) {
+  bool sawOk = false;
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
     const auto* txt = sqlite3_column_text(stmt, 0);
     if (!txt || std::strcmp(reinterpret_cast<const char*>(txt), "ok") != 0) {
-      ok = false;
-      break;
+      sqlite3_finalize(stmt);
+      return false;
     }
+    sawOk = true;
   }
   sqlite3_finalize(stmt);
-  return ok;
+  return sawOk && rc == SQLITE_DONE;
 }
 
 bool ReadingStatsStore::loadGlobal(GlobalReadingStats& out) {
@@ -477,6 +483,21 @@ bool ReadingStatsStore::recordSession(const std::string& bookId, int64_t startEp
   return rc == SQLITE_DONE;
 }
 
+bool ReadingStatsStore::transaction(std::function<bool()> body) {
+  if (!ensureOpen()) return false;
+  sqlite3* db = static_cast<sqlite3*>(db_);
+  if (!execSql(db, "BEGIN;")) return false;
+  if (!body()) {
+    execSql(db, "ROLLBACK;");
+    return false;
+  }
+  if (!execSql(db, "COMMIT;")) {
+    execSql(db, "ROLLBACK;");
+    return false;
+  }
+  return true;
+}
+
 #else  // !READING_STATS_ENABLED
 
 // No-op stub: reading stats are compiled out on non-PSRAM devices.
@@ -502,5 +523,6 @@ bool ReadingStatsStore::saveBook(const std::string&, const BookReadingStats&) { 
 bool ReadingStatsStore::removeBook(const std::string&) { return false; }
 bool ReadingStatsStore::migrateBookKey(const std::string&, const std::string&) { return false; }
 bool ReadingStatsStore::recordSession(const std::string&, int64_t, int64_t, int32_t) { return false; }
+bool ReadingStatsStore::transaction(std::function<bool()>) { return false; }
 
 #endif  // READING_STATS_ENABLED

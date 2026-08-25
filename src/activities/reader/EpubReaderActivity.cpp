@@ -140,7 +140,12 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
   const std::string newCachePath = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(dstPath));
   if (!oldCachePath.empty() && Storage.exists(oldCachePath.c_str())) {
 #ifdef READING_STATS_ENABLED
-    ReadingStatsStore::getInstance().migrateBookKey(oldCachePath, newCachePath);
+    if (SETTINGS.shouldTrackReadingStats()) {
+      // The DB key is derived from the cache path, which changes on this move,
+      // so migrate the row to the new key.
+      ReadingStatsStore::getInstance().migrateBookKey(bookStatsDbKey(oldCachePath),
+                                                     bookStatsDbKey(newCachePath));
+    }
 #endif
     if (!Storage.rename(oldCachePath.c_str(), newCachePath.c_str())) {
       LOG_ERR("ERS", "Failed to rename cache dir %s -> %s (non-fatal)", oldCachePath.c_str(), newCachePath.c_str());
@@ -179,8 +184,9 @@ EpubReaderActivity::~EpubReaderActivity() {
 void EpubReaderActivity::onEnter() {
   ReaderActivity::onEnter();
 #ifdef READING_STATS_ENABLED
-  if (epub) {
-    stats = BookReadingStats::load(epub->getCachePath());
+  if (epub && SETTINGS.shouldTrackReadingStats()) {
+    bookId_ = bookStatsDbKey(epub->getCachePath());
+    stats = BookReadingStats::load(bookId_);
     globalStats = GlobalReadingStats::load();
     sessionReadingSeconds = 0;
     hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
@@ -208,8 +214,12 @@ void EpubReaderActivity::onExit() {
         stats.startDate = sessionStartLocalDateTime.date;
       }
     }
-    stats.save(epub->getCachePath());
-    globalStats.save();
+    ReadingStatsStore& store = ReadingStatsStore::getInstance();
+    const bool saved = store.transaction(
+        [&]() -> bool { return store.saveBook(bookId_, stats) && store.saveGlobal(globalStats); });
+    if (!saved) {
+      LOG_ERR("ERS", "Failed to save reading stats");
+    }
   }
 #endif
   ReaderActivity::onExit();
@@ -719,7 +729,7 @@ void EpubReaderActivity::jumpToPercent(int percent) {
 void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action) {
 #ifdef READING_STATS_ENABLED
   recordCurrentPageReadingTime();
-  pageShownAtMs = millis();
+  pageShownAtMs = 0;
 #endif
   auto progressChangeResultHandler = [this](const ActivityResult& result) {
     loadCachedBookmarks();
@@ -948,10 +958,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               openReaderMenu();
               return;
             }
-            if (BookReadingStats::remove(epub->getCachePath())) {
+            if (SETTINGS.shouldTrackReadingStats() && BookReadingStats::remove(bookId_)) {
               stats = BookReadingStats{};
               sessionReadingSeconds = 0;
-              hasSessionStartLocalDateTime = false;
+              hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
             }
             openReaderMenu();
           });

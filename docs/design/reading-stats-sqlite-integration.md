@@ -145,8 +145,9 @@ CREATE TABLE IF NOT EXISTS global_stats (
   longest_reading_streak      INTEGER NOT NULL DEFAULT 0
 );
 
--- One row per book. book_id = the book's cache-path string (see §4 note), NOT a
--- bare std::hash (implementation-defined across libstdc++/libc++ and not collision-free).
+-- One row per book. book_id = a fixed-length (16-char hex) FNV-1a hash of the
+-- book's cache-path string (see §4 note), NOT the raw path and NOT a bare
+-- std::hash (implementation-defined across libstdc++/libc++ and not collision-free).
 CREATE TABLE IF NOT EXISTS book_stats (
   book_id                     TEXT PRIMARY KEY,
   session_count               INTEGER NOT NULL DEFAULT 0,
@@ -190,10 +191,11 @@ CREATE TABLE IF NOT EXISTS reading_sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_book ON reading_sessions(book_id);
 ```
 
-- **`book_id` (correction C4):** key on the **full cache-path string** used by CrossPoint's EPUB cache (the directory that currently holds `stats_v*.bin`), e.g. `epub->getCachePath()`. Do **not** key on the bare `std::hash<std::string>` (`EpubReaderActivity.cpp:125`) — it is implementation-defined and not collision-free. The full path is already stable per book and survives re-opens. (If path length is a concern, hash it with a documented, stable algorithm + store the path too, but the PK stays the path string.)
+- **`book_id` (correction C4, finalized):** key on a **fixed-length (16-char hex) FNV-1a hash of the book's cache-path string** via `bookStatsDbKey()` in `ReadingStatsUtils` — `book_id = bookStatsDbKey(epub->getCachePath())`. Do **not** key on the bare `std::hash<std::string>` (`EpubReaderActivity.cpp:125`) — it is implementation-defined and not collision-free. Do **not** use the raw cache path as the PK (variable-length, leaks a path). Do **not** hash file *content* (KOReader's `KOReaderDocumentId` samples the EPUB at offsets — heavy I/O + memory on a lean device) and do **not** add a KOReader dependency for this. The FNV-1a hash is O(path length), in-memory, no file I/O. Because the cache dir is renamed on move-to-`/Read`, the key changes there, so `moveFinishedBookToReadFolder` keeps a `migrateBookKey(oldKey, newKey)` call (both ends run through `bookStatsDbKey`).
 - The `ReadingStatsUtils` date/bucket/history-bitmap helpers are **reused verbatim** (they are pure C++, no file I/O). The bitmap (anchor + 92-byte `reading_history_bits`) is stored as a `BLOB` rather than split — keeping CrossInk's anchor-day + `READING_HISTORY_BYTES` streak math byte-for-byte intact (no normalization win from splitting; it only adds write amplification). `GlobalReadingStats::recordReadingSpan` keeps using `recordReadingSpanIntoHistory` etc.; only the *load/save* path changes to SQL.
 - **`saveGlobal()` uses an UPSERT** (`INSERT ... ON CONFLICT(id) DO UPDATE`) instead of read-then-write, removing a read round-trip and a race window.
 - Bucket columns are **4 + 7 plain INTEGERs** (greenfield schema) rather than JSON text — cheaper to read/write and indexable.
+- **Indexes (deliberately minimal for SD wear-leveling):** `book_stats` is read by its `book_id` PRIMARY KEY (already indexed); `global_stats` is a single-row `id=1` PK lookup (no extra index); `reading_sessions` is **write-only** in the current design (insert + migrate/cascade-delete by `book_id`), never SELECTed back, so the only index is `idx_sessions_book ON reading_sessions(book_id)` (supports the FK/delete). No time-range or other read index is added — speculative indexes only increase SD write amplification. Revisit only if a read path (e.g. a reading-history view) is introduced.
 - Migration: there is **no prior data** in CrossPoint, so no upgrade path is needed. `user_version` is set for future migrations only.
 
 ---
@@ -215,7 +217,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_book ON reading_sessions(book_id);
 | File | Change |
 |------|--------|
 | `lib/hal/HalStorage.{h,cpp}` | **Add `HalFile::truncate(uint64_t)` and `HalFile::sync()`** (forward to SdFat `FsFile::truncate`/`sync`, under `storageMutex`). Required by the VFS for xTruncate/xSync. |
-| `src/activities/reader/EpubReaderActivity.cpp` | Port CrossInk's session lifecycle (`onEnter` load + session start; `onExit` commit with ≥10s/≥60s thresholds; `recordReadingSpan` + `recordForwardPageRead` on dwell; completion-prompt trigger; `READING_STATS` + `DELETE_STATS` menu actions). Guarded by `READING_STATS_ENABLED`. `book_id` = `epub->getCachePath()`. |
+| `src/activities/reader/EpubReaderActivity.cpp` | Port CrossInk's session lifecycle (`onEnter` load + session start; `onExit` commit with ≥10s/≥60s thresholds; `recordReadingSpan` + `recordForwardPageRead` on dwell; completion-prompt trigger; `READING_STATS` + `DELETE_STATS` menu actions). Guarded by `READING_STATS_ENABLED`. `book_id` = `bookStatsDbKey(epub->getCachePath())` (fixed-length FNV-1a hash). |
 | `src/activities/reader/TxtReaderActivity.cpp` / `XtcReaderActivity.cpp` | Same session wiring if CrossPoint tracks their reading (mirror CrossInk's EPUB+XTC support). |
 | `src/activities/reader/EpubReaderMenuActivity.h` | Add `READING_STATS` (and `DELETE_STATS` if not present) to `MenuAction`, gated by `READING_STATS_ENABLED`. |
 | `src/SettingsList.h` / settings activity | Add "Reading Stats" entry (global stats viewer) when enabled. |
@@ -253,7 +255,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_book ON reading_sessions(book_id);
 
 - **R1 (highest):** the custom VFS locking semantics under DELETE journal. Mitigated by the single-connection invariant (one `sqlite3*`, main/reader task only); validate with `PRAGMA integrity_check` after recovery and via host `test/` round-trips **before** device flashing.
 - **R2:** SQLite RAM footprint on x4pro. Mitigation: `cache_size` capped (~-128 ⇒ 128 KiB), 4 KB pages, PSRAM allocation; measure heap via Serial. Confirm Sqlite3Esp32 routes allocations to PSRAM under `BOARD_HAS_PSRAM`.
-- **R3 (resolved, C4):** `book_id` = full cache-path string (e.g. `epub->getCachePath()`), **not** the bare `std::hash` at `EpubReaderActivity.cpp:125`.
+- **R3 (resolved, C4):** `book_id` = fixed-length (16-char hex) FNV-1a hash of the cache-path string via `bookStatsDbKey()`, **not** the bare `std::hash` at `EpubReaderActivity.cpp:125` and **not** the raw path.
 - **R4 (resolved):** `clockUtcOffsetQ` (`CrossPointSettings.h:216`, uint8_t, 48=UTC+0, quarter-hour bias) matches CrossInk's expectation; port-friendly.
 - **R5 (resolved):** `FreeInkApp.h` exists in this freeink-sdk pin; font-downloader divergence is UI-base drift only, and D5 is now a verify-only pass (C1).
 - **R6 (new, blocking):** `HalFile` needs `truncate()` + `sync()` added (D3b) before the VFS can service xTruncate/xSync.

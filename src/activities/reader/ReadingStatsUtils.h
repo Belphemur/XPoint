@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 constexpr size_t READING_TIME_BUCKET_COUNT = 4;
 constexpr size_t READING_DAY_OF_WEEK_COUNT = 7;
@@ -40,6 +41,12 @@ bool readingStatsDateFromDayIndex(uint32_t dayIndex, ReadingStatsDate& outDate);
 uint8_t readingStatsDayOfWeekIndex(const ReadingStatsDate& date);  // Monday = 0
 ReadingTimeBucket readingTimeBucketForHour(uint8_t hour);
 bool getCurrentLocalReadingStatsDateTime(ReadingStatsDateTime& outDateTime);
+
+// Lightweight accessor for CrossPointSettings::shouldTrackReadingStats().
+// Defined in ReadingStatsUtils.cpp so library code (e.g. lib/SQLite) can gate
+// on the setting without including the heavy CrossPointSettings.h header.
+bool readingStatsTrackingEnabled();
+
 uint16_t readingSpanDaysInclusive(const ReadingStatsDate& start, const ReadingStatsDate& end);
 uint16_t readingSpanDaysElapsed(const ReadingStatsDate& start, const ReadingStatsDate& end);
 void formatReadingStatsShortDate(const ReadingStatsDate& date, char* buf, size_t len);
@@ -57,3 +64,12 @@ void mergeReadingHistory(uint32_t& targetAnchorDay, std::array<uint8_t, READING_
 uint16_t computeReadingHistoryLongestStreak(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits);
 uint16_t computeReadingHistoryCurrentStreak(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits,
                                             const ReadingStatsDate* today);
+
+// Lean, dependency-free database key for a book's reading stats.
+// Derives a fixed-length (16 hex char) key from the book's cache path by hashing
+// the path string with FNV-1a. The cache path is already available in memory when
+// the book loads, so this avoids any file I/O / content hashing (kept cheap for
+// the memory-constrained device). The key is stable for a given cache location;
+// if the cache dir is renamed (e.g. move-to-Read) the key changes and the caller
+// is expected to migrate the row via ReadingStatsStore::migrateBookKey().
+std::string bookStatsDbKey(const std::string& cachePath);

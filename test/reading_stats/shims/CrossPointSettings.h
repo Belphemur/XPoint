@@ -8,6 +8,8 @@
 class CrossPointSettings {
  public:
   uint8_t clockUtcOffsetQ = 48;
+  uint8_t trackReadingStats = 1;
+  bool shouldTrackReadingStats() const { return trackReadingStats != 0; }
   static CrossPointSettings& getInstance() {
     static CrossPointSettings instance;
     return instance;
