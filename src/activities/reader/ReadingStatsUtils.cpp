@@ -1,10 +1,13 @@
 #include "ReadingStatsUtils.h"
 
 #include <HalClock.h>
+#include <I18n.h>
 
 #include <cstdio>
 
+#include "BookReadingStats.h"
 #include "CrossPointSettings.h"
+#include "GlobalReadingStats.h"
 
 namespace {
 constexpr const char* MONTH_NAMES[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -319,7 +322,7 @@ void formatCompactReadingDuration(const uint32_t seconds, char* buf, const size_
     return;
   }
 
-  const uint32_t minutes = (seconds + 30U) / 60U;
+  const uint32_t minutes = (seconds >= UINT32_MAX - 30U) ? (UINT32_MAX / 60U) : ((seconds + 30U) / 60U);
   if (minutes < 60) {
     snprintf(buf, len, "%lum", static_cast<unsigned long>(minutes));
     return;
@@ -332,6 +335,60 @@ void formatCompactReadingDuration(const uint32_t seconds, char* buf, const size_
   } else {
     snprintf(buf, len, "%luh %lum", static_cast<unsigned long>(hours), static_cast<unsigned long>(remainingMinutes));
   }
+}
+
+std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
+                                                         const GlobalReadingStats& globalStats) {
+  if (bookStats.paceSampleCount >= MIN_BOOK_PACE_SAMPLES && bookStats.avgSecondsPerForwardPage > 0) {
+    return bookStats.avgSecondsPerForwardPage;
+  }
+  if (globalStats.totalPagesTurned >= MIN_GLOBAL_PACE_PAGE_TURNS) {
+    const uint32_t pace = globalStats.totalReadingSeconds / globalStats.totalPagesTurned;
+    if (pace > 0) {
+      return pace;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<uint32_t> estimateChapterTimeLeftSeconds(const BookReadingStats& bookStats,
+                                                       const GlobalReadingStats& globalStats,
+                                                       const uint16_t pagesRemaining) {
+  const auto pace = resolveReadingPaceSecondsPerPage(bookStats, globalStats);
+  if (!pace) {
+    return std::nullopt;
+  }
+  if (pagesRemaining == 0) {
+    return 0u;
+  }
+  const uint64_t total = static_cast<uint64_t>(*pace) * static_cast<uint64_t>(pagesRemaining);
+  return static_cast<uint32_t>(total > UINT32_MAX ? UINT32_MAX : total);
+}
+
+std::optional<uint32_t> estimateBookTimeLeftSeconds(const BookReadingStats& bookStats,
+                                                    const GlobalReadingStats& globalStats,
+                                                    const uint32_t estimatedRemainingPages) {
+  const auto pace = resolveReadingPaceSecondsPerPage(bookStats, globalStats);
+  if (!pace) {
+    return std::nullopt;
+  }
+  if (estimatedRemainingPages == 0) {
+    return 0u;
+  }
+  const uint64_t total = static_cast<uint64_t>(*pace) * static_cast<uint64_t>(estimatedRemainingPages);
+  return static_cast<uint32_t>(total > UINT32_MAX ? UINT32_MAX : total);
+}
+
+void formatChapterTimeLeft(const uint32_t seconds, char* buf, const size_t len) {
+  if (!buf || len == 0) {
+    return;
+  }
+  if (seconds < 60) {
+    snprintf(buf, len, "%s", tr(STR_TIME_LEFT_LESS_THAN_MIN));
+    return;
+  }
+  const uint32_t minutes = (seconds >= UINT32_MAX - 30U) ? (UINT32_MAX / 60U) : ((seconds + 30U) / 60U);
+  snprintf(buf, len, tr(STR_TIME_LEFT_MIN), static_cast<unsigned long>(minutes));
 }
 
 void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT>& timeOfDaySeconds,

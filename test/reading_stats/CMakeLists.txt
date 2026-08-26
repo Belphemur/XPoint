@@ -43,3 +43,19 @@ target_compile_definitions(ReadingStatsStoreTest PRIVATE READING_STATS_ENABLED=1
 target_link_libraries(ReadingStatsStoreTest PRIVATE crosspoint_test_common GTest::gtest_main)
 
 gtest_discover_tests(ReadingStatsStoreTest)
+
+add_executable(ReadingStatsUtilsTest
+  ReadingStatsUtilsTest.cpp
+  ${REPO_ROOT}/src/activities/reader/ReadingStatsUtils.cpp
+)
+
+target_include_directories(ReadingStatsUtilsTest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/shims
+  ${REPO_ROOT}/src/activities/reader
+)
+
+target_compile_definitions(ReadingStatsUtilsTest PRIVATE READING_STATS_ENABLED=1)
+
+target_link_libraries(ReadingStatsUtilsTest PRIVATE crosspoint_test_common GTest::gtest_main)
+
+gtest_discover_tests(ReadingStatsUtilsTest)

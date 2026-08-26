@@ -12,6 +12,8 @@ enum class StrId {
   STR_STATS_FINISHED,
   STR_STATS_AVG_PAGE_PACE,
   STR_STATS_EST_TIME_LEFT,
+  STR_TIME_LEFT_MIN,
+  STR_TIME_LEFT_LESS_THAN_MIN,
   STR_YES,
   STR_NO,
 };
@@ -40,6 +42,10 @@ class I18n {
         return "Avg Page Pace";
       case StrId::STR_STATS_EST_TIME_LEFT:
         return "Est Time Left";
+      case StrId::STR_TIME_LEFT_MIN:
+        return "~%lu min left";
+      case StrId::STR_TIME_LEFT_LESS_THAN_MIN:
+        return "< 1 min left";
       case StrId::STR_YES:
         return "Yes";
       case StrId::STR_NO:

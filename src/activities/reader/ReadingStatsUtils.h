@@ -3,9 +3,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
+struct BookReadingStats;
+struct GlobalReadingStats;
+
 constexpr size_t READING_TIME_BUCKET_COUNT = 4;
+constexpr uint16_t MIN_BOOK_PACE_SAMPLES = 10;
+constexpr uint32_t MIN_GLOBAL_PACE_PAGE_TURNS = 50;
 constexpr size_t READING_DAY_OF_WEEK_COUNT = 7;
 constexpr size_t READING_HISTORY_DAYS = 730;
 constexpr size_t READING_HISTORY_BYTES = (READING_HISTORY_DAYS + 7) / 8;
@@ -52,6 +58,15 @@ uint16_t readingSpanDaysElapsed(const ReadingStatsDate& start, const ReadingStat
 void formatReadingStatsShortDate(const ReadingStatsDate& date, char* buf, size_t len);
 void formatReadingStatsMonthToken(const ReadingStatsDate& date, char* buf, size_t len);
 void formatCompactReadingDuration(uint32_t seconds, char* buf, size_t len);
+
+std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
+                                                         const GlobalReadingStats& globalStats);
+std::optional<uint32_t> estimateChapterTimeLeftSeconds(const BookReadingStats& bookStats,
+                                                       const GlobalReadingStats& globalStats, uint16_t pagesRemaining);
+std::optional<uint32_t> estimateBookTimeLeftSeconds(const BookReadingStats& bookStats,
+                                                    const GlobalReadingStats& globalStats,
+                                                    uint32_t estimatedRemainingPages);
+void formatChapterTimeLeft(uint32_t seconds, char* buf, size_t len);
 
 void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT>& timeOfDaySeconds,
                                   std::array<uint32_t, READING_DAY_OF_WEEK_COUNT>& dayOfWeekSeconds,
