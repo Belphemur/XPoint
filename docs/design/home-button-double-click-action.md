@@ -22,7 +22,7 @@ merely delivered ~300 ms late while the firmware listens for a second click.
 
 | Gesture | Behavior |
 | --- | --- |
-| Single Home click | Delivered after the 300 ms double-click window expires with no second click. Routing unchanged (`handleHomeGesture()` → `goHome()`). |
+| Single Home click | Delivered after the double-click window expires with no second click. Runs the configured `homeButtonTapAction` via `executeHomeButtonAction()` (default `GO_BACK` → climb one activity level, falling back to home at the top of the stack). On the device home screen the single click is a no-op, as nothing consumes it. |
 | Second click within 300 ms | Runs the configured `homeButtonDoubleClickAction`; the pending single click is discarded. |
 | Home hold | Unaffected (SDK suppresses the short tap for a hold). Cancels a pending single click if one is somehow armed. |
 

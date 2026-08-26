@@ -153,7 +153,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()). One
   // shared catalog for tap / double click / long press. Persisted as uint8_t;
   // APPEND-ONLY: the first three indices were shipped by the double-click-only
-  // version, so stored 0/1/2 must keep meaning Off/Frontlight/Go Home.
+  // version, so stored 0/1/2 must keep meaning Off/Frontlight/Go Home. New
+  // actions are appended at the end so older saved values keep their meaning.
   enum HOME_BUTTON_ACTION {
     HOME_ACT_OFF = 0,
     HOME_ACT_FRONTLIGHT = 1,
@@ -161,6 +162,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     HOME_ACT_READER_MENU = 3,
     HOME_ACT_SLEEP = 4,
     HOME_ACT_SCREENSHOT = 5,
+    HOME_ACT_GO_BACK = 6,  // pop one activity level (falls to Home at the top)
     HOME_BUTTON_ACTION_COUNT
   };
 
@@ -340,7 +342,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()).
   // OFF on the tap keeps single clicks instant (the arbiter is bypassed);
   // OFF on double click / long press just makes that gesture do nothing.
-  uint8_t homeButtonTapAction = HOME_ACT_GO_HOME;
+  // Tap defaults to GO_BACK so a single press climbs one menu level, like
+  // the X4's back swipe (the old GO_HOME exit-to-main-menu stays selectable).
+  uint8_t homeButtonTapAction = HOME_ACT_GO_BACK;
   uint8_t homeButtonDoubleClickAction = HOME_ACT_FRONTLIGHT;
   uint8_t homeButtonLongPressAction = HOME_ACT_READER_MENU;
   // Frontlight quick-panel state. Category-less SettingsList entries persist
