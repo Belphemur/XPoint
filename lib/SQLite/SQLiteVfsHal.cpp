@@ -6,6 +6,7 @@
 
 #ifdef ARDUINO
 #include <HalStorage.h>
+#include <Logging.h>
 #include <common/FsApiConstants.h>  // oflag_t, O_*
 #include <esp_random.h>
 #else
@@ -13,6 +14,10 @@
 
 #include <cstdlib>
 #include <ctime>
+
+#define LOG_INF(...) ((void)0)
+#define LOG_DBG(...) ((void)0)
+#define LOG_ERR(module, fmt, ...) fprintf(stderr, "[%s] " fmt "\n", module, ##__VA_ARGS__)
 #endif
 
 namespace sqlite_vfs_hal {
@@ -35,11 +40,23 @@ struct HalVfsFile {
 
 extern sqlite3_io_methods gHalIoMethods;
 
+// Failure-point logging: every IOERR below carries its exact operation in the
+// log, so an on-device "disk I/O error" can be attributed to a layer (VFS op
+// + path) instead of surfacing as SQLite's opaque generic message. Host builds
+// keep the stderr shim above; error paths only, so no steady-state noise.
+#define HAL_LOG_IOERR(op, f) LOG_ERR("STATS-VFS", "%s failed on %s", (op), (f)->path)
+
 int halClose(sqlite3_file* pFile) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
   const bool deleteOnClose = (f->openFlags & SQLITE_OPEN_DELETEONCLOSE) != 0;
 #ifdef ARDUINO
-  f->file.close();
+  if (!f->file.close()) {
+    // os_unix also reports close failures; the handle is gone either way.
+    HAL_LOG_IOERR("close", f);
+    const int rc = SQLITE_IOERR_CLOSE;
+    f->~HalVfsFile();
+    return rc;
+  }
 #else
   if (f->fp) {
     fclose(f->fp);
@@ -62,9 +79,15 @@ int halRead(sqlite3_file* pFile, void* zBuf, int iAmt, sqlite3_int64 iOfst) {
   if (iAmt <= 0) return SQLITE_OK;
   std::memset(zBuf, 0, static_cast<size_t>(iAmt));
 #ifdef ARDUINO
-  if (!f->file.seek64(static_cast<uint64_t>(iOfst))) return SQLITE_IOERR_SEEK;
+  if (!f->file.seek64(static_cast<uint64_t>(iOfst))) {
+    HAL_LOG_IOERR("read(seek)", f);
+    return SQLITE_IOERR_SEEK;
+  }
   const int n = f->file.read(zBuf, static_cast<size_t>(iAmt));
-  if (n < 0) return SQLITE_IOERR_READ;
+  if (n < 0) {
+    HAL_LOG_IOERR("read", f);
+    return SQLITE_IOERR_READ;
+  }
   if (n < iAmt) return SQLITE_IOERR_SHORT_READ;
   return SQLITE_OK;
 #else
@@ -79,9 +102,16 @@ int halRead(sqlite3_file* pFile, void* zBuf, int iAmt, sqlite3_int64 iOfst) {
 int halWrite(sqlite3_file* pFile, const void* zBuf, int iAmt, sqlite3_int64 iOfst) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
 #ifdef ARDUINO
-  if (!f->file.seek64(static_cast<uint64_t>(iOfst))) return SQLITE_IOERR_SEEK;
+  if (!f->file.seek64(static_cast<uint64_t>(iOfst))) {
+    HAL_LOG_IOERR("write(seek)", f);
+    return SQLITE_IOERR_SEEK;
+  }
   const size_t n = f->file.write(static_cast<const uint8_t*>(zBuf), static_cast<size_t>(iAmt));
-  return (n == static_cast<size_t>(iAmt)) ? SQLITE_OK : SQLITE_IOERR_WRITE;
+  if (n != static_cast<size_t>(iAmt)) {
+    HAL_LOG_IOERR("write", f);
+    return SQLITE_IOERR_WRITE;
+  }
+  return SQLITE_OK;
 #else
   if (fseeko(f->fp, static_cast<off_t>(iOfst), SEEK_SET) != 0) return SQLITE_IOERR_SEEK;
   const size_t n = fwrite(zBuf, 1, static_cast<size_t>(iAmt), f->fp);
@@ -92,7 +122,11 @@ int halWrite(sqlite3_file* pFile, const void* zBuf, int iAmt, sqlite3_int64 iOfs
 int halTruncate(sqlite3_file* pFile, sqlite3_int64 size) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
 #ifdef ARDUINO
-  return f->file.truncate(static_cast<uint64_t>(size)) ? SQLITE_OK : SQLITE_IOERR_TRUNCATE;
+  if (!f->file.truncate(static_cast<uint64_t>(size))) {
+    HAL_LOG_IOERR("truncate", f);
+    return SQLITE_IOERR_TRUNCATE;
+  }
+  return SQLITE_OK;
 #else
   return (ftruncate(fileno(f->fp), static_cast<off_t>(size)) == 0) ? SQLITE_OK : SQLITE_IOERR_TRUNCATE;
 #endif
@@ -101,7 +135,11 @@ int halTruncate(sqlite3_file* pFile, sqlite3_int64 size) {
 int halSync(sqlite3_file* pFile, int /*flags*/) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
 #ifdef ARDUINO
-  return f->file.sync() ? SQLITE_OK : SQLITE_IOERR_FSYNC;
+  if (!f->file.sync()) {
+    HAL_LOG_IOERR("sync", f);
+    return SQLITE_IOERR_FSYNC;
+  }
+  return SQLITE_OK;
 #else
   if (fflush(f->fp) != 0) return SQLITE_IOERR_FSYNC;
   return (fsync(fileno(f->fp)) == 0) ? SQLITE_OK : SQLITE_IOERR_FSYNC;
@@ -196,9 +234,25 @@ int halOpen(sqlite3_vfs*, const char* zName, sqlite3_file* pFile, int flags, int
 
 int halDelete(sqlite3_vfs*, const char* zName, int /*syncDir*/) {
 #ifdef ARDUINO
-  return Storage.remove(zName) ? SQLITE_OK : SQLITE_IOERR_DELETE;
+  if (!Storage.remove(zName)) {
+    // Match os_unix: deleting a file that is already gone is reported
+    // distinctly (callers tolerate it), anything else is a hard IOERR.
+    if (Storage.exists(zName)) {
+      LOG_ERR("STATS-VFS", "delete failed on %s", zName);
+      return SQLITE_IOERR_DELETE;
+    }
+    return SQLITE_IOERR_DELETE_NOENT;
+  }
+  return SQLITE_OK;
 #else
-  return (::remove(zName) == 0) ? SQLITE_OK : SQLITE_IOERR_DELETE;
+  if (::remove(zName) != 0) {
+    if (::access(zName, F_OK) == 0) {
+      LOG_ERR("STATS-VFS", "delete failed on %s", zName);
+      return SQLITE_IOERR_DELETE;
+    }
+    return SQLITE_IOERR_DELETE_NOENT;
+  }
+  return SQLITE_OK;
 #endif
 }
 

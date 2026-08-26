@@ -131,6 +131,14 @@ bool HalStorage::openFileForWrite(const char* moduleName, const String& path, Ha
 
 bool HalStorage::removeDir(const char* path) { HAL_STORAGE_WRAPPED_CALL(removeDir, path); }
 
+// ready()/SD-card getters touch no filesystem state that needs serialization;
+// sdUsedBytes() itself takes the storage lock through the wrapped call.
+uint64_t HalStorage::sdTotalBytes() const { return ready() ? SDCard.sdTotalBytes() : 0; }
+uint64_t HalStorage::sdUsedBytes() {
+  if (!ready()) return 0;
+  HAL_STORAGE_WRAPPED_CALL(sdUsedBytes);
+}
+
 // HalFile implementation
 // Allow doing file operations while ensuring thread safety via HalStorage's mutex.
 // Please keep the list below in sync with the HalFile.h header

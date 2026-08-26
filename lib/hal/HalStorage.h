@@ -45,6 +45,12 @@ class HalStorage {
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file);
   bool removeDir(const char* path);
 
+  // Card capacity in bytes (0 if not mounted). Cheap: cached by the SDK at mount.
+  uint64_t sdTotalBytes() const;
+  // Used space in bytes (0 if not mounted). Cached ~20s by the SDK, but the
+  // first call per TTL window scans the FAT — error-path logging only.
+  uint64_t sdUsedBytes();
+
   static HalStorage& getInstance() { return instance; }
 
   class StorageLock;  // private class, used internally

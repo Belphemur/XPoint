@@ -51,6 +51,56 @@ bool bindU32(sqlite3_stmt* stmt, int idx, uint32_t v) {
 
 uint32_t colU32(sqlite3_stmt* stmt, int idx) { return static_cast<uint32_t>(sqlite3_column_int64(stmt, idx)); }
 
+// Bounded init: one normal attempt plus one clean recreate (see begin()).
+constexpr int kMaxInitAttempts = 2;
+// Refuse a from-scratch recreate when the card has less than this free: schema
+// pages plus the rollback journal need ~tens of KiB, and a nearly-full card
+// surfaces as the same opaque SQLITE_IOERR as any other media failure.
+constexpr uint64_t kMinFreeBytesForCreate = 64ull * 1024;
+
+// Logs a SQLite error including the extended result code. Plain errmsg
+// collapses every SQLITE_IOERR_* variant (WRITE/FSYNC/READ/DELETE/NOMEM...)
+// into the same "disk I/O error" string, which made on-device [STATS]
+// failures impossible to attribute to a layer; the numeric codes do not.
+void logSqliteError(const char* where, void* dbHandle) {
+  sqlite3* db = static_cast<sqlite3*>(dbHandle);
+  LOG_ERR("STATS", "%s failed: primary=%d extended=%d msg=%s", where, sqlite3_errcode(db), sqlite3_extended_errcode(db),
+          sqlite3_errmsg(db));
+}
+
+// Removes the database plus its rollback/WAL sidecars (-journal/-wal/-shm).
+// Recreation must clear the sidecars too: leaving them behind would hand any
+// stale journal to the freshly created database, and the old .db's journal
+// blocks are not reclaimed until the sidecar is removed as well.
+void removeDbFiles(const std::string& dbPath) {
+#ifdef ARDUINO
+  Storage.remove(dbPath.c_str());
+  Storage.remove((dbPath + "-journal").c_str());
+  Storage.remove((dbPath + "-wal").c_str());
+  Storage.remove((dbPath + "-shm").c_str());
+#else
+  ::remove(dbPath.c_str());
+  ::remove((dbPath + "-journal").c_str());
+  ::remove((dbPath + "-wal").c_str());
+  ::remove((dbPath + "-shm").c_str());
+#endif
+}
+
+#ifdef ARDUINO
+// Logs card usage so "SD full / failing" is distinguishable from a firmware
+// bug in the failure log. Error-path only (freeClusterCount scans the FAT).
+void logSdSpace(const char* context) {
+  const uint64_t total = Storage.sdTotalBytes();
+  if (total == 0) {
+    LOG_ERR("STATS", "%s: SD capacity unknown", context);
+    return;
+  }
+  const uint64_t used = Storage.sdUsedBytes();
+  LOG_ERR("STATS", "%s: SD %llu/%llu KiB used (%llu KiB free)", context, (unsigned long long)(used / 1024),
+          (unsigned long long)(total / 1024), (unsigned long long)((total - used) / 1024));
+}
+#endif
+
 }  // namespace
 
 ReadingStatsStore::ReadingStatsStore() = default;
@@ -76,49 +126,43 @@ bool ReadingStatsStore::begin(const char* dbPath) {
   sqlite_vfs_hal::vfs();
 
   const int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
-  sqlite3* db = nullptr;
-  const int rc = sqlite3_open_v2(dbPath_.c_str(), &db, flags, "hal");
-  if (rc != SQLITE_OK) {
-    LOG_ERR("STATS", "open failed: %s", db ? sqlite3_errmsg(db) : "<no db handle>");
-    if (db) sqlite3_close(db);
-    return false;
-  }
-  db_ = db;
-
-  if (!runPragmas() || !createSchema()) {
-    LOG_ERR("STATS", "init failed: %s", sqlite3_errmsg(static_cast<sqlite3*>(db_)));
-    const std::string corruptPath = dbPath_;
-    close();
-#ifdef ARDUINO
-    const bool removed = Storage.remove(corruptPath.c_str());
-#else
-    const bool removed = (::remove(corruptPath.c_str()) == 0);
-#endif
-    if (!removed) {
-      LOG_ERR("STATS", "failed to remove corrupt db: %s", corruptPath.c_str());
+  for (int attempt = 1; attempt <= kMaxInitAttempts; ++attempt) {
+    sqlite3* db = nullptr;
+    const int rc = sqlite3_open_v2(dbPath_.c_str(), &db, flags, "hal");
+    if (rc != SQLITE_OK) {
+      LOG_ERR("STATS", "open failed: primary=%d extended=%d msg=%s", rc, db ? sqlite3_extended_errcode(db) : rc,
+              db ? sqlite3_errmsg(db) : "<no db handle>");
+      if (db) sqlite3_close(db);
       return false;
     }
-    return begin(corruptPath.c_str());
-  }
+    db_ = db;
 
-  if (!verifyIntegrity()) {
-    LOG_ERR("STATS", "integrity check failed; recreating db");
-    const std::string corruptPath = dbPath_;
+    if (runPragmas() && createSchema() && verifyIntegrity()) {
+      LOG_INF("STATS", "opened %s%s", dbPath_.c_str(), attempt > 1 ? " (recreated)" : "");
+      return true;
+    }
+
+    logSqliteError("init", db_);
     close();
+    if (attempt >= kMaxInitAttempts) break;
+
 #ifdef ARDUINO
-    const bool removed = Storage.remove(corruptPath.c_str());
-#else
-    const bool removed = (::remove(corruptPath.c_str()) == 0);
-#endif
-    if (!removed) {
-      LOG_ERR("STATS", "failed to remove corrupt db: %s", corruptPath.c_str());
+    logSdSpace("init failed");
+    const uint64_t totalBytes = Storage.sdTotalBytes();
+    if (totalBytes == 0) return false;  // card gone; recreating cannot help
+    const uint64_t freeBytes = totalBytes - Storage.sdUsedBytes();
+    if (freeBytes < kMinFreeBytesForCreate) {
+      LOG_ERR("STATS", "SD nearly full (%llu KiB free); keeping existing stats db",
+              (unsigned long long)(freeBytes / 1024));
       return false;
     }
-    return begin(corruptPath.c_str());
-  }
+#endif
 
-  LOG_INF("STATS", "opened %s", dbPath_.c_str());
-  return true;
+    LOG_ERR("STATS", "attempt %d/%d failed; recreating %s", attempt, kMaxInitAttempts, dbPath_.c_str());
+    // Sidecars included, so the retry starts from a known-clean state.
+    removeDbFiles(dbPath_);
+  }
+  return false;
 }
 
 void ReadingStatsStore::close() {

@@ -244,6 +244,52 @@ TEST_F(ReadingStatsStoreTest, IntegrityCheckDetectsCorruption) {
   EXPECT_EQ(out.totalReadingSeconds, g.totalReadingSeconds);
 }
 
+// Regression for the on-device double init failure: after a crash mid-write,
+// recreate must clear stale -journal/-wal/-shm sidecars along with the .db, so
+// the fresh database cannot inherit a hot journal from the previous one.
+TEST_F(ReadingStatsStoreTest, RecreateClearsStaleSidecars) {
+  ReadingStatsStore& store = ReadingStatsStore::getInstance();
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+  GlobalReadingStats g;
+  g.totalSessions = 7;
+  ASSERT_TRUE(store.saveGlobal(g));
+  store.close();
+
+  // Simulate a battery cut during a later write: a garbage rollback journal
+  // is left behind next to the (valid) database.
+  {
+    std::ofstream journal(dbPath_ + "-journal", std::ios::binary);
+    ASSERT_TRUE(journal.is_open());
+    journal << "stale-hot-journal-garbage";
+  }
+
+  // A normal reopen recovers by rolling the journal back...
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+  store.close();
+
+  // ...but the recreate path must also wipe sidecars when it deletes the db:
+  // leave another stale journal behind and force recreation via corruption.
+  {
+    std::ofstream journal(dbPath_ + "-journal", std::ios::binary);
+    ASSERT_TRUE(journal.is_open());
+    journal << "stale-hot-journal-garbage";
+  }
+  {
+    std::fstream fs(dbPath_, std::ios::in | std::ios::out | std::ios::binary);
+    ASSERT_TRUE(fs.is_open());
+    fs.seekp(0, std::ios::beg);
+    const char garbage[] = "CORRUPTED-HEADER";
+    fs.write(garbage, sizeof(garbage) - 1);
+  }
+  ASSERT_TRUE(store.begin(dbPath_.c_str()));
+  EXPECT_TRUE(store.isReady());
+
+  // Fresh schema; no residue from any journal replay.
+  GlobalReadingStats out;
+  EXPECT_FALSE(store.loadGlobal(out));
+  removeIfExists(dbPath_ + "-journal");
+}
+
 TEST_F(ReadingStatsStoreTest, ReopenRoundTrip) {
   ReadingStatsStore& store = ReadingStatsStore::getInstance();
   ASSERT_TRUE(store.begin(dbPath_.c_str()));
