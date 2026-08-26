@@ -1816,15 +1816,13 @@ void EpubReaderActivity::renderStatusBar() const {
         chapterTimeLeft = chapterTimeLeftBuf;
       } else {
         // Pace not learned yet (fewer than 50 global / 10 book page turns recorded).
-        // Show a visible "--" placeholder so the slot reads as active rather than broken.
-        snprintf(chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf), "--");
-        chapterTimeLeft = chapterTimeLeftBuf;
+        // Show a localized placeholder so the slot reads as active rather than broken.
+        chapterTimeLeft = tr(STR_TIME_LEFT_UNAVAILABLE);
       }
     } else {
       // Tracking off but the element is enabled: keep the slot visible per the
       // user's chosen position so the setting is clearly doing something.
-      snprintf(chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf), "--");
-      chapterTimeLeft = chapterTimeLeftBuf;
+      chapterTimeLeft = tr(STR_TIME_LEFT_UNAVAILABLE);
     }
   }
 #else

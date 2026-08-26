@@ -221,10 +221,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
 
+#ifdef READING_STATS_ENABLED
     std::vector<StrId> statusBarChapterTimeLeftValues(CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT);
     statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_HIDE] = StrId::STR_HIDE;
     statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT] = StrId::STR_DIR_RIGHT;
     statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_LEFT] = StrId::STR_DIR_LEFT;
+#endif
 
     std::vector<SettingInfo> v = {
         // --- Display ---

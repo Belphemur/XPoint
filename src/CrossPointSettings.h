@@ -383,7 +383,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // stall it behind the SD write inside saveToFile(). Don't add one back.
   struct StatusBarSpec {
     bool showChapterPageCount = false;
-    bool showChapterTimeLeft = false;
+    bool showChapterTimeLeft = true;  // matches chapterTimeLeftMode default (RIGHT)
     bool showBookProgressPercent = false;
     uint8_t titleMode = HIDE_TITLE;  // STATUS_BAR_TITLE
     bool showBattery = false;

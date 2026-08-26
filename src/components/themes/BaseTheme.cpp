@@ -993,21 +993,23 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     leftClusterWidth += bookmarkStatusIconWidth + bookmarkGap;
   }
 
-  // Draw Chapter Time Left (position follows the status-bar setting: LEFT docks
-  // it into the left cluster, RIGHT into the right cluster; HIDE skips it). The
-  // caller passes either the computed "N min" string or a "--" placeholder while
-  // the reading pace is still being learned.
-  if (chapterTimeLeft && chapterTimeLeft[0] != '\0' && sb.showsChapterTimeLeft()) {
-    const int width = renderer.getTextWidth(SMALL_FONT_ID, chapterTimeLeft);
+  // Draw Chapter Time Left. Position follows the status-bar setting: LEFT docks
+  // it into the left cluster, RIGHT into the right cluster; HIDE skips it. When
+  // the element is enabled but the caller has no value yet (e.g. XTC/TXT have no
+  // chapter, or the reading pace is still being learned), draw a localized
+  // placeholder so the slot reads as active rather than broken.
+  if (sb.showsChapterTimeLeft()) {
+    const char* ctl = (chapterTimeLeft && chapterTimeLeft[0] != '\0') ? chapterTimeLeft : tr(STR_TIME_LEFT_UNAVAILABLE);
+    const int width = renderer.getTextWidth(SMALL_FONT_ID, ctl);
     if (sb.chapterTimeLeftMode == CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_LEFT) {
       const int gap = leftClusterWidth > 0 ? 10 : 0;
       const int x = leftClusterX + leftClusterWidth + gap;
-      renderer.drawText(SMALL_FONT_ID, x, textY, chapterTimeLeft);
+      renderer.drawText(SMALL_FONT_ID, x, textY, ctl);
       leftClusterWidth += width + gap;
     } else {  // STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT
       const int gap = rightClusterWidth > 0 ? 10 : 0;
       const int x = rightClusterX - rightClusterWidth - gap - width;
-      renderer.drawText(SMALL_FONT_ID, x, textY, chapterTimeLeft);
+      renderer.drawText(SMALL_FONT_ID, x, textY, ctl);
       rightClusterWidth += width + gap;
     }
   }
