@@ -1872,12 +1872,23 @@ void EpubReaderActivity::renderStatusBar() const {
 #ifdef READING_STATS_ENABLED
   char chapterTimeLeftBuf[24];
   const char* chapterTimeLeft = nullptr;
-  if (sb.showChapterTimeLeft && SETTINGS.shouldTrackReadingStats() && section && section->estimatedTotalPages() > 0) {
-    const int pagesRemaining = std::max(0, static_cast<int>(section->estimatedTotalPages()) - section->currentPage - 1);
-    auto timeLeft = estimateChapterTimeLeftSeconds(stats, globalStats, static_cast<uint16_t>(pagesRemaining));
-    if (timeLeft) {
-      formatChapterTimeLeft(*timeLeft, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
-      chapterTimeLeft = chapterTimeLeftBuf;
+  if (sb.showChapterTimeLeft) {
+    if (SETTINGS.shouldTrackReadingStats() && section && section->estimatedTotalPages() > 0) {
+      const int pagesRemaining =
+          std::max(0, static_cast<int>(section->estimatedTotalPages()) - section->currentPage - 1);
+      auto timeLeft = estimateChapterTimeLeftSeconds(stats, globalStats, static_cast<uint16_t>(pagesRemaining));
+      if (timeLeft) {
+        formatChapterTimeLeft(*timeLeft, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
+        chapterTimeLeft = chapterTimeLeftBuf;
+      } else {
+        // Pace not learned yet (fewer than 50 global / 10 book page turns recorded).
+        // Show a localized placeholder so the slot reads as active rather than broken.
+        chapterTimeLeft = tr(STR_TIME_LEFT_UNAVAILABLE);
+      }
+    } else {
+      // Tracking off but the element is enabled: keep the slot visible per the
+      // user's chosen position so the setting is clearly doing something.
+      chapterTimeLeft = tr(STR_TIME_LEFT_UNAVAILABLE);
     }
   }
 #else

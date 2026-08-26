@@ -22,6 +22,7 @@ namespace {
 // DS3231 RTC is present so X4 devices don't see them at all.
 enum MenuItem {
   ITEM_CHAPTER_PAGE_COUNT = 0,
+  ITEM_CHAPTER_TIME_LEFT,  // X3/X4 (reading-stats builds); HIDE/RIGHT/LEFT
   ITEM_BOOK_PROGRESS_PERCENTAGE,
   ITEM_PROGRESS_BAR,
   ITEM_PROGRESS_BAR_THICKNESS,
@@ -42,6 +43,7 @@ static_assert(FULL_MENU_ITEMS == StatusBarSettingsActivity::MAX_STATUS_BAR_ITEMS
 
 const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_CHAPTER_PAGE_COUNT,
+    StrId::STR_CHAPTER_TIME_LEFT,
     StrId::STR_BOOK_PROGRESS_PERCENTAGE,
     StrId::STR_PROGRESS_BAR,
     StrId::STR_PROGRESS_BAR_THICKNESS,
@@ -85,6 +87,10 @@ const StrId xtcStatusBarNames[XTC_STATUS_BAR_ITEMS] = {StrId::STR_HIDE, StrId::S
 constexpr int STATUS_BAR_CLOCK_ITEMS = CrossPointSettings::STATUS_BAR_CLOCK_MODE_COUNT;
 const StrId statusBarClockNames[STATUS_BAR_CLOCK_ITEMS] = {StrId::STR_HIDE, StrId::STR_DIR_RIGHT, StrId::STR_DIR_LEFT};
 
+constexpr int CHAPTER_TIME_LEFT_ITEMS = CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT;
+const StrId chapterTimeLeftNames[CHAPTER_TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_DIR_RIGHT,
+                                                             StrId::STR_DIR_LEFT};
+
 const int verticalPreviewTextPadding = 40;
 }  // namespace
 
@@ -125,6 +131,11 @@ void StatusBarSettingsActivity::onEnter() {
     SETTINGS.statusBarClock = CrossPointSettings::STATUS_BAR_CLOCK_MODE::STATUS_BAR_CLOCK_HIDE;
   }
 
+  if (SETTINGS.statusBarChapterTimeLeftMode >= CHAPTER_TIME_LEFT_ITEMS) {
+    SETTINGS.statusBarChapterTimeLeftMode =
+        CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE::STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT;
+  }
+
   // Labels never change (unlike the values, which track live SETTINGS
   // state), so they're set once here rather than every buildScreen() call.
   for (int i = 0; i < visibleItemCount; i++) {
@@ -152,6 +163,13 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_CHAPTER_PAGE_COUNT:
       SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
       break;
+    case ITEM_CHAPTER_TIME_LEFT:
+      optionPopup.show(StrId::STR_CHAPTER_TIME_LEFT, chapterTimeLeftNames, CHAPTER_TIME_LEFT_ITEMS,
+                       SETTINGS.statusBarChapterTimeLeftMode, [this](int idx) {
+                         SETTINGS.statusBarChapterTimeLeftMode = idx;
+                         SETTINGS.saveToFile();
+                       });
+      return;
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
       break;
@@ -208,6 +226,10 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
   switch (index) {
     case ITEM_CHAPTER_PAGE_COUNT:
       return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
+    case ITEM_CHAPTER_TIME_LEFT:
+      return I18N.get(chapterTimeLeftNames[SETTINGS.statusBarChapterTimeLeftMode < CHAPTER_TIME_LEFT_ITEMS
+                                               ? SETTINGS.statusBarChapterTimeLeftMode
+                                               : 0]);
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
     case ITEM_PROGRESS_BAR:
@@ -296,7 +318,7 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
 #ifdef READING_STATS_ENABLED
   char chapterTimeLeftBuf[24];
   const char* chapterTimeLeft = nullptr;
-  if (SETTINGS.statusBarChapterTimeLeft) {
+  if (SETTINGS.statusBarChapterTimeLeftMode != CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_HIDE) {
     formatChapterTimeLeft(720, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
     chapterTimeLeft = chapterTimeLeftBuf;
   }
