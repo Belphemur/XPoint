@@ -157,11 +157,20 @@ and the generator auto-fills the other languages from English.
 In `EpubReaderActivity::loop()` (exact placement below):
 
 ```cpp
-if (SETTINGS.touchReaderControls && mappedInput.hasTouch() &&
-    SETTINGS.touchLongPressAction != CrossPointSettings::TOUCH_LP_IGNORE) {
+// Gate 1 — feature enabled on this board (explicit OFF check, not bare truthiness)
+if (SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF &&
+    mappedInput.hasTouch() &&
+    // Gate 2 — user did not opt out of the gesture
+    SETTINGS.touchLongPressAction != CrossPointSettings::TOUCH_LP_IGNORE &&
+    // Gate 3 — not mid-popup: don't re-enter from the transient "no dictionary" toast
+    !showDictionaryMessage &&
+    // Gate 4 — not mid auto-page-turn: coords would be stale after the flip
+    !automaticPageTurnActive) {
   int lx = 0, ly = 0;
   if (mappedInput.wasScreenLongPress(lx, ly)) {   // self-suppresses the contact
-    // dispatch on SETTINGS.touchLongPressAction
+    // pass the action explicitly — the activity must NOT read the mutable global
+    const auto mode = static_cast<TouchLongPressMode>(SETTINGS.touchLongPressAction);
+    openDictionaryWordSelect(lx, ly, mode);
     return;
   }
 }
@@ -213,27 +222,42 @@ point where it first touched down.
 
 ### Dictionary action (default)
 
-Extend the existing entry point with an optional coordinate:
+Extend the existing entry point with an optional coordinate **and an
+explicit mode**. The activity must never read the mutable global
+`SETTINGS.touchLongPressAction`: the existing normal-dictionary callers
+(confirm-hold `:595`, home-hold `:622`, menu Look Up `:948`) all pass no mode and
+must stay in Dictionary mode even when the touch setting is Footnote — otherwise
+the global would silently flip every dictionary open into footnote mode.
 
 ```cpp
-void EpubReaderActivity::openDictionaryWordSelect(int touchX = -1, int touchY = -1);
+// Explicit contract: the activity never reads the mutable global.
+enum class TouchLongPressMode { Dictionary, Footnote };
+
+void EpubReaderActivity::openDictionaryWordSelect(
+    int touchX = -1, int touchY = -1,
+    TouchLongPressMode mode = TouchLongPressMode::Dictionary);
 ```
 
 It already loads the current `Page` and computes the oriented margins
-(`EpubReaderActivity.cpp:416-436`); it forwards the coordinate to the activity,
-whose constructor gains `initialX/initialY` (default `-1`). In `onEnter()`,
-**after** `extractWords()`:
+(`EpubReaderActivity.cpp:416-436`); it forwards the coordinate **and the mode**
+to the activity, whose constructor gains `initialX/initialY` (default `-1`) and
+`mode` (default `Dictionary`). In `onEnter()`, **after** `extractWords()`:
 
 ```cpp
 if (initialX >= 0) {
   const int hit = wordAt(initialX, initialY);   // existing, with finger slop
   if (hit >= 0) {
     selected = hit;
-    performLookup();                            // immediate, per design decision
+    if (mode == TouchLongPressMode::Footnote && isFootnoteMarker(words[hit].text)) {
+      // resolve to href, return it via ActivityResult; reader calls navigateToHref
+    } else {
+      performLookup();                           // immediate, per design decision
+    }
     return;
   }
 }
-// no word under the finger → existing mid-page default highlight
+// no word under the finger (or a Footnote-mode miss on a non-marker) → existing
+// mid-page default highlight
 ```
 
 `wordAt()` already applies `SLOP = 4` px around each box for finger error
@@ -290,10 +314,24 @@ not the reader. The reader has no word geometry — resolving a coordinate to wo
 *text* requires `extractWords()`, a private method that builds the word vector
 (`DictionaryWordSelectActivity.cpp:60-109`). Duplicating it reader-side would
 copy ~50 lines **and** add a new per-gesture heap allocation in the reader. So
-the Footnote action opens the same activity with the same `initialX/initialY`,
-and the activity branches on entry: marker → return the href to the reader via
-its `ActivityResult` so the reader calls `navigateToHref`; no match → fall
-through to the dictionary lookup.
+the Footnote action opens the same activity with the same `initialX/initialY` and
+`mode = TouchLongPressMode::Footnote`, and the activity branches on entry.
+
+**The fallback rule, stated where it is defined** (so two implementations cannot
+diverge): after the word hit,
+
+- if the hit word normalizes to a `FootnoteEntry.number` → return the href via
+  `ActivityResult`; the reader calls `navigateToHref(href, true)`.
+- else if the touched token is **purely numeric** (e.g. `1`, `12`) and matched
+  no entry → **do NOT fall through to the dictionary** (a numeric lookup is a
+  guaranteed miss and a wasted popup). Fall back to the mid-page highlight (or a
+  silent no-op) exactly as a whitespace miss does.
+- else (a real word, not a marker) → `performLookup()`, the normal dictionary
+  path.
+
+This numeric-exception is part of the contract, not just a limitation: a
+footnote-bearing page commonly has many bare numbers in body text, and sending
+every one of them to the dictionary would make the Footnote action feel broken.
 
 Returning the href through the result (rather than navigating from inside the
 child) matters: it lets the reader `finish()` word-select **first**, so the
@@ -303,14 +341,21 @@ the exact call pattern of the existing power-button footnote path
 signature at `EpubReaderActivity.h:177`), so the existing Back-restore path
 (`:655-659`, `pwrBtnFootnoteBack`) engages unchanged.
 
-The activity must read the footnote list from the **`Page` it owns**
-(`page->footnotes`), not the reader's `currentPageFootnotes`: the reader
-`std::move`s that vector out of the page on load
-(`EpubReaderActivity.cpp:1516`), so whichever side is consulted, only one of the
-two holds the entries. Since `openDictionaryWordSelect()` re-loads the page via
-`section->loadPage(...)`, the freshly-loaded `Page` carries its own footnotes —
-pass them, or hand the activity a reference to `currentPageFootnotes`; pick one
-explicitly at implementation time and assert it is non-empty in the host test.
+**The footnote list is read from the activity's *owned* `Page`
+(`page->footnotes`) — decided, no implementation-time choice left.** This is the
+only correct source. `openDictionaryWordSelect()` loads a **fresh** `Page` via
+`section->loadPage(section->currentPage)` and `std::move`s it into the activity
+(`EpubReaderActivity.cpp:421-433`); the activity stores it as
+`std::unique_ptr<Page> page` (`DictionaryWordSelectActivity.h:51`). That fresh
+page still carries its own `footnotes` vector (footnotes are attached during
+parsing, `ChapterHtmlSlimParser.cpp:2105-2112`, and are only stripped from the
+*reader's* separate page object when the reader does
+`currentPageFootnotes = std::move(p->footnotes)` at `:1516`). The activity's page
+and the reader's `currentPageFootnotes` are therefore two distinct copies; the
+reader's is empty inside the activity and must never be consulted. So the
+activity branches on `page->footnotes` after `extractWords()`, with no
+shared-state ambiguity. Assert in the host test that the owned page's
+`footnotes` vector is non-empty for a footnote-bearing test page.
 
 **Explicitly rejected: real link boxes.** Carrying a marker's word index into
 `PageLine`/`Page` would give exact hit-testing (and would be reusable for
@@ -459,17 +504,37 @@ Host unit tests (`test/` already has 17 suites + CMakeLists, run by
 
 ## Files touched
 
+This PR **ships only the design document** — no source changes. The rows below
+are the plan for the implementation, split so the reader can see what lands in
+which future change.
+
+**Shipped in this PR**
+
+| File | Change |
+| --- | --- |
+| `docs/design/touch-long-press-dictionary.md` | this document |
+
+**Planned — implementation (future commits, once this design is approved)**
+
 | File | Change |
 | --- | --- |
 | `src/CrossPointSettings.h` | `TOUCH_LONG_PRESS_ACTION` enum + `touchLongPressAction` field |
 | `src/SettingsList.h` | new Enum row, erased when `!hasTouch()` |
-| `src/main.cpp` | Home-hold fall-through when the board has no Confirm trigger (separate commit) |
 | `lib/I18n/translations/english.yaml` | `STR_TOUCH_LONG_PRESS` row label only (values reuse existing keys; `I18nKeys.h` is generated + gitignored) |
-| `src/activities/reader/EpubReaderActivity.{h,cpp}` | long-press trigger + dispatch; `openDictionaryWordSelect(x, y)`; footnote match |
-| `src/activities/reader/DictionaryWordSelectActivity.{h,cpp}` | `initialX/initialY` → immediate lookup in `onEnter()`; footnote-marker branch returning the href via `ActivityResult` |
-| `freeink-sdk` | **unchanged** — no submodule bump; board fields are read via `BoardConfig::ACTIVE.*` |
+| `src/activities/reader/EpubReaderActivity.{h,cpp}` | long-press trigger + dispatch with explicit `TouchLongPressMode`; `openDictionaryWordSelect(x, y, mode)`; footnote href → `navigateToHref` |
+| `src/activities/reader/DictionaryWordSelectActivity.{h,cpp}` | `initialX/initialY` + `mode` → immediate lookup in `onEnter()`; footnote-marker branch returning the href via `ActivityResult` |
 | `docs/dictionary.md`, `USER_GUIDE.md` | document the gesture and the setting |
-| `test/` | host tests for the footnote match helper |
+| `test/` | host tests: `wordAt` × 4 orientations; footnote marker normalisation incl. numeric-miss suppression |
+
+**Planned — separate commit (the X4 Pro "Long-press Menu" finding)**
+
+| File | Change |
+| --- | --- |
+| `src/main.cpp` | Home-hold fall-through when the board has no Confirm trigger, so a configured `longPressMenuFunction` is not permanently shadowed (see "Related finding" section) |
+
+**`freeink-sdk`**: **unchanged** — no submodule bump; board fields are read via
+`BoardConfig::ACTIVE.*` (the app already does this at `UIThemeTokens.h:29`,
+`main.cpp:500`).
 
 ## Review pass applied
 
