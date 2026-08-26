@@ -238,6 +238,11 @@ bool executeHomeButtonAction(uint8_t action) {
       ScreenshotUtil::takeScreenshot(renderer);
       return true;
     }
+    case CrossPointSettings::HOME_ACT_GO_BACK:
+      // Climb one activity level; at the top of the stack this falls back to
+      // the home screen (mirroring the X4's left-edge back swipe).
+      activityManager.popActivity();
+      return true;
     default:
       return false;
   }
@@ -313,11 +318,12 @@ bool handleX4ProHomeDoubleClick() {
       return true;
 
     case HomeTapTracker::Step::WindowExpired:
-      // Deliver the single click late — except where nothing consumes
-      // wasHomeGesture() (the device home screen), which would leak the latch
-      // into the next non-home screen. OFF taps are swallowed everywhere.
+      // Deliver the single click late, honoring the configured tap action.
+      // The device home screen consumes no action (and would leak the latch
+      // into the next screen), so it stays off-limits to the deferred tap.
+      // OFF taps are swallowed everywhere.
       if (SETTINGS.homeButtonTapAction != CrossPointSettings::HOME_ACT_OFF && !activityManager.isOnHomeScreen()) {
-        mappedInputManager.queueDeferredHomeGesture();
+        executeHomeButtonAction(SETTINGS.homeButtonTapAction);
       }
       if (tap) {
         // A stalled loop can deliver the expiry and the next physical tap on
@@ -325,7 +331,7 @@ bool handleX4ProHomeDoubleClick() {
         homeTapTracker.arm(millis());
         return true;
       }
-      return false;  // no Home event left this frame: the latch delivers below
+      return false;  // no Home event left this frame: the action already ran
 
     case HomeTapTracker::Step::None:
       break;
