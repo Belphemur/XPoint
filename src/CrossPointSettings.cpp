@@ -235,7 +235,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
 CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   StatusBarSpec spec;
   spec.showChapterPageCount = statusBarChapterPageCount != 0;
-  spec.showChapterTimeLeft = statusBarChapterTimeLeft != 0;
+  spec.showChapterTimeLeft = statusBarChapterTimeLeftMode != STATUS_BAR_CHAPTER_TIME_LEFT_HIDE;
+  spec.chapterTimeLeftMode = statusBarChapterTimeLeftMode;
   spec.showBookProgressPercent = statusBarBookProgressPercentage != 0;
   spec.titleMode = statusBarTitle;
   spec.showBattery = statusBarBattery != 0;
