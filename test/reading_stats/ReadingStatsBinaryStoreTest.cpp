@@ -116,6 +116,18 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   const auto main = readFileBytes(GLOBAL_PATH);
   EXPECT_EQ(readLe32At(main, 1), 9u);  // second save's totalSessions
 
+  // Third save: rotation must also work when a .bak already exists (the
+  // production code removes it first because FatFile::rename refuses existing
+  // destinations — this exercises exactly that path).
+  GlobalReadingStats g3;
+  g3.totalSessions = 12;
+  g3.save();
+  const auto main3 = readFileBytes(GLOBAL_PATH);
+  ASSERT_EQ(main3.size(), 159u);
+  EXPECT_EQ(readLe32At(main3, 1), 12u);
+  const auto bak3 = readFileBytes(GLOBAL_BAK_PATH);
+  EXPECT_EQ(readLe32At(bak3, 1), 9u);
+
   // Corrupt the main file; load must recover from the backup.
   HalFile f;
   ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
@@ -123,7 +135,7 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   f.write(garbage, sizeof(garbage));
 
   GlobalReadingStats out = GlobalReadingStats::load();
-  EXPECT_EQ(out.totalSessions, 3u);  // from .bak
+  EXPECT_EQ(out.totalSessions, 9u);  // from .bak: the last value that was rotated
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, GlobalNewerFormatBlocksSaves) {
@@ -263,4 +275,100 @@ TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5)));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 4)));
   EXPECT_FALSE(Storage.exists(std::string(BOOK_DIR) + "/stats.bin"));
+}
+
+// A corrupt stats_v5.bin must not shadow a valid older record: the loader
+// falls through to the next candidate instead of starting fresh.
+TEST_F(ReadingStatsBinaryStoreTest, CorruptV5FallsBackToV4) {
+  // Garbage v5 (right size, wrong version).
+  std::vector<uint8_t> corruptV5(73, 0);
+  corruptV5[0] = 0xEE;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 5), f));
+    f.write(corruptV5.data(), corruptV5.size());
+  }
+  // Valid v4 with real data.
+  std::vector<uint8_t> v4(69, 0);
+  v4[0] = 4;
+  v4[1] = 8;   // sessionCount = 8
+  v4[3] = 77;  // totalReadingSeconds = 77
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 4), f));
+    f.write(v4.data(), v4.size());
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 8u);
+  EXPECT_EQ(out.totalReadingSeconds, 77u);
+}
+
+// Global legacy records (v1 13 B / v2 17 B) are valid inputs and must load —
+// including when they are the only file present.
+TEST_F(ReadingStatsBinaryStoreTest, GlobalLegacyRecordsLoad) {
+  // v2: 17 bytes [ver=2, sessions, seconds, pages, completedBooks]
+  std::vector<uint8_t> v2(17, 0);
+  v2[0] = 2;
+  v2[1] = 21;  // totalSessions = 21
+  v2[13] = 4;  // completedBooks = 4
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
+    f.write(v2.data(), v2.size());
+  }
+
+  const GlobalReadingStats out2 = GlobalReadingStats::load();
+  EXPECT_EQ(out2.totalSessions, 21u);
+  EXPECT_EQ(out2.completedBooks, 4u);
+  EXPECT_EQ(out2.timeOfDaySeconds[0], 0u);  // absent in v2
+
+  // v1: 13 bytes, no completedBooks field.
+  Storage.clear();
+  std::vector<uint8_t> v1(13, 0);
+  v1[0] = 1;
+  v1[1] = 33;  // totalSessions = 33
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
+    f.write(v1.data(), v1.size());
+  }
+  const GlobalReadingStats out1 = GlobalReadingStats::load();
+  EXPECT_EQ(out1.totalSessions, 33u);
+  EXPECT_EQ(out1.completedBooks, 0u);
+
+  // And saving after loading a legacy record writes the CURRENT format back.
+  out1.save();
+  const auto bytes = readFileBytes(GLOBAL_PATH);
+  ASSERT_EQ(bytes.size(), 159u);
+  EXPECT_EQ(bytes[0], 3);
+}
+
+// After an explicit reset, saves must resume even if the destructive-save
+// guard had been latched earlier by a newer-format file.
+TEST_F(ReadingStatsBinaryStoreTest, ResetClearsNewerFormatGuard) {
+  std::vector<uint8_t> future(160, 0);
+  future[0] = 99;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
+    f.write(future.data(), future.size());
+  }
+  (void)GlobalReadingStats::load();  // latches the guard
+
+  GlobalReadingStats blocked;
+  blocked.totalSessions = 55;
+  blocked.save();
+  // Still refused: the file is untouched (version byte 99, zeroed sessions).
+  const auto refused = readFileBytes(GLOBAL_PATH);
+  ASSERT_EQ(refused.size(), 160u);
+  EXPECT_EQ(refused[0], 99);
+  EXPECT_EQ(readLe32At(refused, 1), 0u);
+
+  ASSERT_TRUE(GlobalReadingStats::resetLocal());
+
+  GlobalReadingStats resumed;
+  resumed.totalSessions = 56;
+  resumed.save();
+  EXPECT_EQ(readLe32At(readFileBytes(GLOBAL_PATH), 1), 56u);  // saves work again
 }

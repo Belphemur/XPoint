@@ -83,6 +83,7 @@ class HalStorage {
   bool rename(const std::string& from, const std::string& to) {
     auto it = files_.find(from);
     if (it == files_.end()) return false;
+    if (files_.count(to) != 0) return false;  // FatFile::rename fails on existing destination
     files_[to] = it->second;
     files_.erase(it);
     return true;

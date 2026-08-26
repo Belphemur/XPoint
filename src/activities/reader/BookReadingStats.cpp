@@ -45,22 +45,11 @@ std::string statsFileNameForVersion(const uint8_t version) {
 }
 
 // Current file first, then the previous versioned name (for future bumps),
-// then crossink's original unversioned stats.bin.
-bool openStatsFileForRead(const std::string& cachePath, HalFile& f) {
-  const std::string currentName = statsFileNameForVersion(STATS_FILE_VERSION);
-  if (Storage.openFileForRead("STATS", cachePath + "/" + currentName, f)) {
-    return true;
-  }
-  const std::string previousName = statsFileNameForVersion(STATS_FILE_VERSION - 1);
-  if (Storage.openFileForRead("STATS", cachePath + "/" + previousName, f)) {
-    LOG_DBG("STATS", "Migrating %s to %s", previousName.c_str(), currentName.c_str());
-    return true;
-  }
-  if (Storage.openFileForRead("STATS", cachePath + "/" + LEGACY_STATS_FILE_NAME, f)) {
-    LOG_DBG("STATS", "Migrating legacy %s to %s", LEGACY_STATS_FILE_NAME, currentName.c_str());
-    return true;
-  }
-  return false;
+// then crossink's original unversioned stats.bin. The caller validates each
+// opened candidate; openCandidateNames() just enumerates the names in order.
+std::vector<std::string> openCandidateNames() {
+  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
+          LEGACY_STATS_FILE_NAME};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
@@ -100,42 +89,31 @@ ReadingStatsDate readDate(const uint8_t* data, const int offset) {
   }
   return date;
 }
-}  // namespace
-
-BookReadingStats BookReadingStats::load(const std::string& cachePath) {
-  BookReadingStats stats;
-  HalFile f;
-  if (!openStatsFileForRead(cachePath, f)) {
-    return stats;
+// Decodes a v4 record (69 bytes, same layout as v5 without the trailing
+// estimatedTimeLeftSeconds). Returns false if size/version don't match v4.
+bool decodeV4(const uint8_t* data, const int n, BookReadingStats& stats) {
+  if (n != STATS_FILE_SIZE_V4 || data[0] != STATS_FILE_VERSION - 1) return false;
+  readCommonStats(data, stats);
+  stats.isCompleted = data[11] != 0;
+  stats.avgSecondsPerForwardPage = readLe16(data, 12);
+  stats.paceSampleCount = readLe16(data, 14);
+  const uint8_t flags = data[16];
+  stats.startDateManual = (flags & FLAG_START_DATE_MANUAL) != 0;
+  stats.finishedDateManual = (flags & FLAG_FINISHED_DATE_MANUAL) != 0;
+  stats.startDate = readDate(data, 17);
+  stats.finishedDate = readDate(data, 21);
+  for (size_t i = 0; i < stats.timeOfDaySeconds.size(); ++i) {
+    stats.timeOfDaySeconds[i] = readLe32(data, 25 + static_cast<int>(i) * 4);
   }
-  uint8_t data[STATS_FILE_SIZE] = {};
-  const int n = f.read(data, STATS_FILE_SIZE);
-  f.close();
-
-  // v4 (69 bytes): same layout without estimatedTimeLeftSeconds.
-  if (n == STATS_FILE_SIZE_V4 && data[0] == STATS_FILE_VERSION - 1) {
-    readCommonStats(data, stats);
-    stats.isCompleted = data[11] != 0;
-    stats.avgSecondsPerForwardPage = readLe16(data, 12);
-    stats.paceSampleCount = readLe16(data, 14);
-    const uint8_t flags = data[16];
-    stats.startDateManual = (flags & FLAG_START_DATE_MANUAL) != 0;
-    stats.finishedDateManual = (flags & FLAG_FINISHED_DATE_MANUAL) != 0;
-    stats.startDate = readDate(data, 17);
-    stats.finishedDate = readDate(data, 21);
-    for (size_t i = 0; i < stats.timeOfDaySeconds.size(); ++i) {
-      stats.timeOfDaySeconds[i] = readLe32(data, 25 + static_cast<int>(i) * 4);
-    }
-    for (size_t i = 0; i < stats.dayOfWeekSeconds.size(); ++i) {
-      stats.dayOfWeekSeconds[i] = readLe32(data, 41 + static_cast<int>(i) * 4);
-    }
-    return stats;
+  for (size_t i = 0; i < stats.dayOfWeekSeconds.size(); ++i) {
+    stats.dayOfWeekSeconds[i] = readLe32(data, 41 + static_cast<int>(i) * 4);
   }
+  return true;
+}
 
-  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) {
-    LOG_DBG("STATS", "Stats missing or version mismatch, starting fresh");
-    return stats;
-  }
+// Decodes a v5 record (73 bytes). Returns false on size/version mismatch.
+bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
+  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
   readCommonStats(data, stats);
   stats.isCompleted = data[11] != 0;
   stats.avgSecondsPerForwardPage = readLe16(data, 12);
@@ -152,7 +130,35 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     stats.dayOfWeekSeconds[i] = readLe32(data, 41 + static_cast<int>(i) * 4);
   }
   stats.estimatedTimeLeftSeconds = readLe32(data, 69);
-  return stats;
+  return true;
+}
+}  // namespace
+
+BookReadingStats BookReadingStats::load(const std::string& cachePath) {
+  // Try each candidate in order and stop at the first one that decodes. A
+  // corrupt current-version file must not shadow a valid older record.
+  for (const std::string& name : openCandidateNames()) {
+    HalFile f;
+    if (!Storage.openFileForRead("STATS", cachePath + "/" + name, f)) continue;
+    uint8_t data[STATS_FILE_SIZE] = {};
+    const int n = f.read(data, STATS_FILE_SIZE);
+    f.close();
+
+    BookReadingStats candidate;
+    if (decodeV5(data, n, candidate)) return candidate;
+    if (decodeV4(data, n, candidate)) {
+      LOG_DBG("STATS", "Migrating %s to %s", name.c_str(), statsFileNameForVersion(STATS_FILE_VERSION).c_str());
+      return candidate;
+    }
+    // Legacy unversioned stats.bin carries the v5 layout in crossink exports;
+    // anything else is garbage — try the next candidate.
+    if (name == LEGACY_STATS_FILE_NAME && decodeV5(data, n, candidate)) {
+      LOG_DBG("STATS", "Migrating legacy %s", LEGACY_STATS_FILE_NAME);
+      return candidate;
+    }
+  }
+  LOG_DBG("STATS", "Stats missing or version mismatch, starting fresh");
+  return BookReadingStats{};
 }
 
 void BookReadingStats::save(const std::string& cachePath) const {

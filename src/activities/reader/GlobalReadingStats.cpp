@@ -81,9 +81,36 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   StatsLoadOutcome outcome;
   outcome.fileSize = f.fileSize();
 
-  // A file smaller than the current record cannot plausibly be from a newer
-  // format: it is a torn write. Report Invalid so load() falls through to the
-  // backup instead of latching the destructive-save guard.
+  // Legacy records are SMALLER than the current layout: v1 = 13 B
+  // [version,totalSessions,totalReadingSeconds,totalPagesTurned], v2 = 17 B
+  // (+ completedBooks). Anything else shorter than the current record cannot
+  // plausibly be a newer format — it is a torn write. Report Invalid so load()
+  // falls through to the backup instead of latching the destructive-save guard.
+  constexpr int GLOBAL_STATS_FILE_SIZE_V1 = 13;
+  constexpr int GLOBAL_STATS_FILE_SIZE_V2 = 17;
+  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V1)) {
+    uint8_t data[GLOBAL_STATS_FILE_SIZE_V1] = {};
+    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V1) != GLOBAL_STATS_FILE_SIZE_V1) return outcome;
+    outcome.version = data[0];
+    if (outcome.version != 1) return outcome;
+    out.totalSessions = readLe32(data, 1);
+    out.totalReadingSeconds = readLe32(data, 5);
+    out.totalPagesTurned = readLe32(data, 9);
+    outcome.result = StatsLoadResult::Ok;
+    return outcome;
+  }
+  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V2)) {
+    uint8_t data[GLOBAL_STATS_FILE_SIZE_V2] = {};
+    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V2) != GLOBAL_STATS_FILE_SIZE_V2) return outcome;
+    outcome.version = data[0];
+    if (outcome.version != 2) return outcome;
+    out.totalSessions = readLe32(data, 1);
+    out.totalReadingSeconds = readLe32(data, 5);
+    out.totalPagesTurned = readLe32(data, 9);
+    out.completedBooks = readLe32(data, 13);
+    outcome.result = StatsLoadResult::Ok;
+    return outcome;
+  }
   if (outcome.fileSize < static_cast<size_t>(GLOBAL_STATS_FILE_SIZE)) {
     return outcome;
   }
@@ -241,8 +268,12 @@ void GlobalReadingStats::save() const {
 
 bool GlobalReadingStats::resetLocal() {
   // Deliberately bypasses the backup rotation AND the destructive-save guard:
-  // this is the explicit "wipe my stats" action.
-  return saveToFile(GlobalReadingStats{}, GLOBAL_STATS_PATH, nullptr);
+  // this is the explicit "wipe my stats" action. On success, also clear the
+  // guard — there is no newer-format data left on disk to protect, and leaving
+  // it set would silently freeze all future saves after a reset.
+  const bool ok = saveToFile(GlobalReadingStats{}, GLOBAL_STATS_PATH, nullptr);
+  if (ok) s_blockDestructiveSave = false;
+  return ok;
 }
 
 void GlobalReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStart, const uint32_t seconds) {
