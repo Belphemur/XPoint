@@ -301,7 +301,13 @@ bool handleX4ProHomeDoubleClick() {
 
   const bool tapArmed = SETTINGS.homeButtonTapAction != CrossPointSettings::HOME_ACT_OFF ||
                         SETTINGS.homeButtonDoubleClickAction != CrossPointSettings::HOME_ACT_OFF;
-  if (!tapArmed) return false;  // both tap gestures off: zero-latency clicks
+  if (!tapArmed) {
+    // Disabled mid-window (settings can change under us, e.g. via the web API):
+    // drop the armed state so re-enabling later cannot expire a stale window
+    // into an unexpected deferred Home gesture.
+    homeTapTracker.disarm();
+    return false;  // both tap gestures off: zero-latency clicks
+  }
 
   const bool tap = gpio.wasHomeKeyTapped();
   if (tap && !homeTapTracker.armed) {
