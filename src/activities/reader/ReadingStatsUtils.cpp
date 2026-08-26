@@ -343,7 +343,10 @@ std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats&
     return bookStats.avgSecondsPerForwardPage;
   }
   if (globalStats.totalPagesTurned >= MIN_GLOBAL_PACE_PAGE_TURNS) {
-    return globalStats.totalReadingSeconds / globalStats.totalPagesTurned;
+    const uint32_t pace = globalStats.totalReadingSeconds / globalStats.totalPagesTurned;
+    if (pace > 0) {
+      return pace;
+    }
   }
   return std::nullopt;
 }
