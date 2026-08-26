@@ -221,6 +221,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
 
+    std::vector<StrId> statusBarChapterTimeLeftValues(CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT);
+    statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_HIDE] = StrId::STR_HIDE;
+    statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT] = StrId::STR_DIR_RIGHT;
+    statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_LEFT] = StrId::STR_DIR_LEFT;
+
     std::vector<SettingInfo> v = {
         // --- Display ---
         SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
@@ -429,8 +434,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_CHAPTER_PAGE_COUNT, &CrossPointSettings::statusBarChapterPageCount,
                             "statusBarChapterPageCount", StrId::STR_CUSTOMISE_STATUS_BAR),
 #ifdef READING_STATS_ENABLED
-        SettingInfo::Toggle(StrId::STR_CHAPTER_TIME_LEFT, &CrossPointSettings::statusBarChapterTimeLeft,
-                            "statusBarChapterTimeLeft", StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::Enum(StrId::STR_CHAPTER_TIME_LEFT, &CrossPointSettings::statusBarChapterTimeLeftMode,
+                          std::move(statusBarChapterTimeLeftValues), "statusBarChapterTimeLeftMode",
+                          StrId::STR_CUSTOMISE_STATUS_BAR),
 #endif
         SettingInfo::Toggle(StrId::STR_BOOK_PROGRESS_PERCENTAGE, &CrossPointSettings::statusBarBookProgressPercentage,
                             "statusBarBookProgressPercentage", StrId::STR_CUSTOMISE_STATUS_BAR),
