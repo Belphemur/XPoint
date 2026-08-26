@@ -58,6 +58,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     STATUS_BAR_CLOCK_MODE_COUNT
   };
 
+  // Chapter-time-left status-bar placement, mirroring STATUS_BAR_CLOCK_MODE.
+  // HIDE keeps it off entirely; RIGHT/LEFT dock it into the matching cluster.
+  enum STATUS_BAR_CHAPTER_TIME_LEFT_MODE {
+    STATUS_BAR_CHAPTER_TIME_LEFT_HIDE = 0,
+    STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT = 1,
+    STATUS_BAR_CHAPTER_TIME_LEFT_LEFT = 2,
+    STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT
+  };
+
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
     LANDSCAPE_CW = 1,   // 800x480 logical coordinates, rotated 180° (swap top/bottom)
@@ -221,7 +230,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepScreenCoverFilter = NO_FILTER;
   // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
-  uint8_t statusBarChapterTimeLeft = 1;
+  // Chapter-time-left status-bar placement. Supersedes the old unreleased
+  // boolean key; stale values are ignored and fall back to the default.
+  uint8_t statusBarChapterTimeLeftMode = STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT;
   uint8_t statusBarBookProgressPercentage = 1;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;
@@ -378,21 +389,23 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // stall it behind the SD write inside saveToFile(). Don't add one back.
   struct StatusBarSpec {
     bool showChapterPageCount = false;
-    bool showChapterTimeLeft = false;
+    bool showChapterTimeLeft = true;  // matches chapterTimeLeftMode default (RIGHT)
     bool showBookProgressPercent = false;
     uint8_t titleMode = HIDE_TITLE;  // STATUS_BAR_TITLE
     bool showBattery = false;
     bool showBatteryPercent = false;
     uint8_t clockMode = STATUS_BAR_CLOCK_HIDE;  // STATUS_BAR_CLOCK_MODE
     bool clock12h = false;
-    uint8_t clockUtcOffsetQ = 48;             // 48 = UTC+0
-    uint8_t progressBarMode = HIDE_PROGRESS;  // STATUS_BAR_PROGRESS_BAR
-    uint8_t progressBarHeightPx = 0;          // (thickness+1)*2; 0 when the bar is hidden
-    uint8_t xtcMode = XTC_STATUS_BAR_HIDE;    // XTC_STATUS_BAR_MODE
+    uint8_t clockUtcOffsetQ = 48;                                      // 48 = UTC+0
+    uint8_t chapterTimeLeftMode = STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT;  // STATUS_BAR_CHAPTER_TIME_LEFT_MODE
+    uint8_t progressBarMode = HIDE_PROGRESS;                           // STATUS_BAR_PROGRESS_BAR
+    uint8_t progressBarHeightPx = 0;                                   // (thickness+1)*2; 0 when the bar is hidden
+    uint8_t xtcMode = XTC_STATUS_BAR_HIDE;                             // XTC_STATUS_BAR_MODE
 
     bool showsProgressBar() const { return progressBarMode != HIDE_PROGRESS; }
     bool showsTitle() const { return titleMode != HIDE_TITLE; }
     bool showsClock() const { return clockMode != STATUS_BAR_CLOCK_HIDE; }
+    bool showsChapterTimeLeft() const { return chapterTimeLeftMode != STATUS_BAR_CHAPTER_TIME_LEFT_HIDE; }
     // Visibility of the text lane. Clock hardware presence is the caller's
     // concern: pass halClock.isAvailable(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
