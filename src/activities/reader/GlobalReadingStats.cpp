@@ -267,12 +267,16 @@ void GlobalReadingStats::save() const {
 }
 
 bool GlobalReadingStats::resetLocal() {
-  // Deliberately bypasses the backup rotation AND the destructive-save guard:
-  // this is the explicit "wipe my stats" action. On success, also clear the
-  // guard — there is no newer-format data left on disk to protect, and leaving
-  // it set would silently freeze all future saves after a reset.
+  // Deliberately bypasses the destructive-save guard: this is the explicit
+  // "wipe my stats" action. On success, also clear the guard — there is no
+  // newer-format data left on disk to protect, and leaving it set would
+  // silently freeze all future saves after a reset. The .bak is removed too,
+  // so a later torn primary cannot resurrect pre-reset data from it.
   const bool ok = saveToFile(GlobalReadingStats{}, GLOBAL_STATS_PATH, nullptr);
-  if (ok) s_blockDestructiveSave = false;
+  if (ok) {
+    if (Storage.exists(GLOBAL_STATS_BAK_PATH)) Storage.remove(GLOBAL_STATS_BAK_PATH);
+    s_blockDestructiveSave = false;
+  }
   return ok;
 }
 

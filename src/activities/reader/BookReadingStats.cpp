@@ -136,7 +136,9 @@ bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
 
 BookReadingStats BookReadingStats::load(const std::string& cachePath) {
   // Try each candidate in order and stop at the first one that decodes. A
-  // corrupt current-version file must not shadow a valid older record.
+  // corrupt current-version file must not shadow a valid older record. No
+  // rename happens here — the next save() writes the current version in place;
+  // the LOG_DBG lines only record which legacy source was picked up.
   for (const std::string& name : openCandidateNames()) {
     HalFile f;
     if (!Storage.openFileForRead("STATS", cachePath + "/" + name, f)) continue;
@@ -147,13 +149,7 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     BookReadingStats candidate;
     if (decodeV5(data, n, candidate)) return candidate;
     if (decodeV4(data, n, candidate)) {
-      LOG_DBG("STATS", "Migrating %s to %s", name.c_str(), statsFileNameForVersion(STATS_FILE_VERSION).c_str());
-      return candidate;
-    }
-    // Legacy unversioned stats.bin carries the v5 layout in crossink exports;
-    // anything else is garbage — try the next candidate.
-    if (name == LEGACY_STATS_FILE_NAME && decodeV5(data, n, candidate)) {
-      LOG_DBG("STATS", "Migrating legacy %s", LEGACY_STATS_FILE_NAME);
+      LOG_DBG("STATS", "Loaded %s (older version); next save writes v%u", name.c_str(), STATS_FILE_VERSION);
       return candidate;
     }
   }
