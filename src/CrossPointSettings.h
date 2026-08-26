@@ -340,7 +340,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // key and the bottom edge is free; elsewhere it stays at the Tap default.
   uint8_t showReaderMenu = READER_MENU_TAP;
   // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()).
-  // OFF on the tap keeps single clicks instant (the arbiter is bypassed);
+  // OFF on the tap makes a single tap a no-op; the arbiter is fully bypassed
+  // (zero-latency legacy routing) only when BOTH tap and double-click are OFF.
   // OFF on double click / long press just makes that gesture do nothing.
   // Tap defaults to GO_BACK so a single press climbs one menu level, like
   // the X4's back swipe (the old GO_HOME exit-to-main-menu stays selectable).
