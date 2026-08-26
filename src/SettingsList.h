@@ -187,7 +187,8 @@ inline std::vector<StrId> buildLongPressMenuValues() {
 
 inline std::vector<StrId> buildHomeButtonValues() {
   static constexpr StrId VALUES[] = {StrId::STR_STATE_OFF,   StrId::STR_FRONTLIGHT, StrId::STR_GO_HOME_BUTTON,
-                                     StrId::STR_READER_MENU, StrId::STR_SLEEP,      StrId::STR_SCREENSHOT_BUTTON};
+                                     StrId::STR_READER_MENU, StrId::STR_SLEEP,      StrId::STR_SCREENSHOT_BUTTON,
+                                     StrId::STR_GO_BACK};
   return {VALUES, VALUES + std::size(VALUES)};
 }
 
