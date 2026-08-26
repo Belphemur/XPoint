@@ -143,9 +143,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()). One
   // shared catalog for tap / double click / long press. Persisted as uint8_t;
-  // APPEND-ONLY: the first three indices were shipped by the double-click-only
-  // version, so stored 0/1/2 must keep meaning Off/Frontlight/Go Home. New
-  // actions are appended at the end so older saved values keep their meaning.
+  // APPEND-ONLY: values 0-2 (Off/Frontlight/Go Home) shipped in the
+  // double-click-only version, so stored 0/1/2 must keep that meaning. Values
+  // 3-6 (Reader Menu/Sleep/Screenshot/Go Back) were appended later; older
+  // saved configurations keep their meaning because nothing was renumbered.
   enum HOME_BUTTON_ACTION {
     HOME_ACT_OFF = 0,
     HOME_ACT_FRONTLIGHT = 1,

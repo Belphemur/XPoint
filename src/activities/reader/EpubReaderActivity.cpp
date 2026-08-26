@@ -237,9 +237,8 @@ bool EpubReaderActivity::loadBook() {
   return true;
 }
 
-bool EpubReaderActivity::openShortcutMenu() const {
-  // openReaderMenu() mutates reader state; the const-override just forwards.
-  const_cast<EpubReaderActivity*>(this)->openReaderMenu();
+bool EpubReaderActivity::openShortcutMenu() {
+  openReaderMenu();
   return true;
 }
 

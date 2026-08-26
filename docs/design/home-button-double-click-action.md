@@ -32,8 +32,9 @@ when the window expires.
 | Home hold | Unaffected (SDK suppresses the short tap for a hold). Cancels a pending single click if one is somehow armed. |
 
 Actions (`HOME_BUTTON_ACTION`, persisted as `uint8_t`, shared by all three
-gestures via `buildHomeButtonValues()`; APPEND-ONLY — values 0–5 shipped with
-the double-click feature, so older saved configs keep their meaning):
+gestures via `buildHomeButtonValues()`; APPEND-ONLY — values 0–2 (Off/Frontlight/Go
+Home) shipped in the double-click-only version, and values 3–6 (Reader Menu/Sleep/
+Screenshot/Go Back) were appended later; older saved configs keep their meaning):
 
 | Value | Meaning |
 | --- | --- |

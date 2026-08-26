@@ -225,7 +225,12 @@ bool toggleFrontlightByShortcut(const char* source) {
 
 }
 
-// Run a configured capacitive Home-key action. Returns true when something ran.
+// Run a configured capacitive Home-key action.
+// Returns true when the gesture was consumed/acknowledged (always, for any
+// recognized action enum value). The return signals "the Home event was
+// handled, stop dispatching it elsewhere" — NOT "the underlying effect ran":
+// HOME_ACT_OFF is a deliberate no-op yet returns true (the tap was still
+// consumed), and HOME_ACT_FRONTLIGHT may skip when Frontlight.present()==false.
 // Reader-only actions (Reader Menu) no-op outside the reader; Sleep and
 // Screenshot are global. GO_HOME uses goHome() so the home screen re-renders.
 void enterDeepSleep(bool fromTimeout);
@@ -317,8 +322,6 @@ bool handleX4ProHomeDoubleClick() {
   const bool tap = gpio.wasHomeKeyTapped();
   if (tap && !homeTapTracker.armed) {
     // First tap: start the window and hold the frame so no screen acts on it.
-    // A fresh tap also beats any stale deferred gesture queued earlier.
-    mappedInputManager.clearDeferredHomeGesture();
     homeTapTracker.arm(millis());
     return true;
   }

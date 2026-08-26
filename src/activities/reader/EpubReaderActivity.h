@@ -147,7 +147,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void activateMoreRow(int row);
   // Activity override: the reader's contextual menu is what a Home-key
   // long press opens (CrossInk-style configurable long-press action).
-  bool openShortcutMenu() const override;
+  bool openShortcutMenu() override;
   void openDictionaryWordSelect();
   bool launchKOReaderSync();
   unsigned long confirmLongPressThreshold() const;
