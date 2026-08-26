@@ -185,8 +185,9 @@ inline std::vector<StrId> buildLongPressMenuValues() {
   return {VALUES, VALUES + count};
 }
 
-inline std::vector<StrId> buildHomeDoubleClickValues() {
-  static constexpr StrId VALUES[] = {StrId::STR_STATE_OFF, StrId::STR_FRONTLIGHT, StrId::STR_GO_HOME_BUTTON};
+inline std::vector<StrId> buildHomeButtonValues() {
+  static constexpr StrId VALUES[] = {StrId::STR_STATE_OFF,   StrId::STR_FRONTLIGHT, StrId::STR_GO_HOME_BUTTON,
+                                     StrId::STR_READER_MENU, StrId::STR_SLEEP,      StrId::STR_SCREENSHOT_BUTTON};
   return {VALUES, VALUES + std::size(VALUES)};
 }
 
@@ -335,8 +336,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES},
             "shortPwrBtn", StrId::STR_CAT_CONTROLS),
 #endif
-        SettingInfo::Enum(StrId::STR_HOME_DOUBLE_CLICK, &CrossPointSettings::homeButtonDoubleClickAction,
-                          buildHomeDoubleClickValues(), "homeButtonDoubleClickAction", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_HOME_BUTTON_TAP, &CrossPointSettings::homeButtonTapAction, buildHomeButtonValues(),
+                          "homeButtonTapAction", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_HOME_BUTTON_DOUBLE_CLICK, &CrossPointSettings::homeButtonDoubleClickAction,
+                          buildHomeButtonValues(), "homeButtonDoubleClickAction", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_HOME_LONG_PRESS, &CrossPointSettings::homeButtonLongPressAction,
+                          buildHomeButtonValues(), "homeButtonLongPressAction", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &CrossPointSettings::pwrBtnFootnoteBack,
                             "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,
@@ -480,7 +485,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   if (!BoardConfig::hasHomeKey()) {
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) {
-                             return s.nameId == StrId::STR_SHOW_READER_MENU || s.nameId == StrId::STR_HOME_DOUBLE_CLICK;
+                             return s.nameId == StrId::STR_SHOW_READER_MENU || s.nameId == StrId::STR_HOME_BUTTON_TAP ||
+                                    s.nameId == StrId::STR_HOME_BUTTON_DOUBLE_CLICK ||
+                                    s.nameId == StrId::STR_HOME_LONG_PRESS;
                            }),
             v.end());
   }
