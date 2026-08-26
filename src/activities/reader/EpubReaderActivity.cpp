@@ -219,7 +219,7 @@ void EpubReaderActivity::onExit() {
       const uint64_t chapterEnd = epub->getCumulativeSpineItemSize(currentSpineIndex);
       const uint64_t chapterStart =
           currentSpineIndex >= 1 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
-      const uint64_t chapterBytes = chapterEnd - chapterStart;
+      const uint64_t chapterBytes = (chapterEnd > chapterStart) ? (chapterEnd - chapterStart) : 0;
       const float sectionProg = (section && chapterPages > 0)
                                     ? (static_cast<float>(section->currentPage + 1) / static_cast<float>(chapterPages))
                                     : 0.0f;

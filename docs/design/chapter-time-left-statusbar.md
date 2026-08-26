@@ -25,8 +25,8 @@ arithmetic on already-loaded members at render time.
 
 ### What is shown
 
-- A short text element in the status bar's text lane: `~12 min left`,
-  `~1h 5 min left`, or `< 1 min left`.
+- A short text element in the status bar's text lane: `~12 min left` or
+  `< 1 min left` (minutes-only; the `h/min` form is used only in the stats screen).
 - The `~` prefix matches the existing convention for estimated values (the
   estimated page count marker in `BaseTheme::drawStatusBar()`,
   `src/components/themes/BaseTheme.cpp:905-924`).
@@ -214,11 +214,11 @@ the rendered chapter. That is a possible follow-up, not part of this design.
    A book-level estimate (e.g. `totalReadingSeconds × (100 − progress%) /
    progress%`, or pace × estimated remaining pages via byte-ratio) could populate
    it in `onExit()`. In scope for this feature, or a separate PR?
-6. **String length in narrow layouts:** `~1h 25 min left` plus battery + clock in
+6. **String length in narrow layouts:** `~12 min left` plus battery + clock in
    the left cluster on an 800-wide landscape screen is fine; on a 480-wide
    portrait screen with all left-cluster elements on, the title truncation point
-   moves right. Is trimming to `~85 min`-style (minutes only, no hours) preferred
-   for the status bar, keeping the h/min form only in the stats screen?
+   moves right. The status bar uses minutes-only (`~N min left`) per the locked
+   decision in §7; the `h/min` form is reserved for the stats screen.
 
 ## 8. Implementation plan skeleton (no code)
 

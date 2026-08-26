@@ -322,7 +322,7 @@ void formatCompactReadingDuration(const uint32_t seconds, char* buf, const size_
     return;
   }
 
-  const uint32_t minutes = (seconds + 30U) / 60U;
+  const uint32_t minutes = (seconds >= UINT32_MAX - 30U) ? (UINT32_MAX / 60U) : ((seconds + 30U) / 60U);
   if (minutes < 60) {
     snprintf(buf, len, "%lum", static_cast<unsigned long>(minutes));
     return;
@@ -342,8 +342,7 @@ std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats&
   if (bookStats.paceSampleCount >= MIN_BOOK_PACE_SAMPLES && bookStats.avgSecondsPerForwardPage > 0) {
     return bookStats.avgSecondsPerForwardPage;
   }
-  if (globalStats.totalPagesTurned >= MIN_GLOBAL_PACE_PAGE_TURNS && globalStats.totalPagesTurned > 0 &&
-      globalStats.totalReadingSeconds > 0) {
+  if (globalStats.totalPagesTurned >= MIN_GLOBAL_PACE_PAGE_TURNS) {
     return globalStats.totalReadingSeconds / globalStats.totalPagesTurned;
   }
   return std::nullopt;
@@ -385,7 +384,7 @@ void formatChapterTimeLeft(const uint32_t seconds, char* buf, const size_t len) 
     snprintf(buf, len, "%s", tr(STR_TIME_LEFT_LESS_THAN_MIN));
     return;
   }
-  const uint32_t minutes = (seconds + 30U) / 60U;
+  const uint32_t minutes = (seconds >= UINT32_MAX - 30U) ? (UINT32_MAX / 60U) : ((seconds + 30U) / 60U);
   snprintf(buf, len, tr(STR_TIME_LEFT_MIN), static_cast<unsigned long>(minutes));
 }
 
