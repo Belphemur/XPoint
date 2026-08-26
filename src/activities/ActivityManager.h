@@ -99,6 +99,11 @@ class ActivityManager {
   // ever consume a queued gesture.
   bool isOnHomeScreen() const;
 
+  // Run the current activity's contextual menu on behalf of a global shortcut.
+  // False when no activity is up, a transition is pending, or the screen has
+  // no menu (see Activity::openShortcutMenu).
+  bool openShortcutMenuOnCurrent();
+
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);
 
