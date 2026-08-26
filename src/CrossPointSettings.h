@@ -141,12 +141,18 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SHORT_PWRBTN_COUNT
   };
 
-  // Action for a capacitive Home-key double click. Persisted as uint8_t; append-only.
-  enum HOME_BUTTON_DOUBLE_CLICK_ACTION {
-    HB_DBL_OFF = 0,
-    HB_DBL_FRONTLIGHT = 1,
-    HB_DBL_GO_HOME = 2,
-    HOME_BUTTON_DOUBLE_CLICK_ACTION_COUNT
+  // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()). One
+  // shared catalog for tap / double click / long press. Persisted as uint8_t;
+  // APPEND-ONLY: the first three indices were shipped by the double-click-only
+  // version, so stored 0/1/2 must keep meaning Off/Frontlight/Go Home.
+  enum HOME_BUTTON_ACTION {
+    HOME_ACT_OFF = 0,
+    HOME_ACT_FRONTLIGHT = 1,
+    HOME_ACT_GO_HOME = 2,
+    HOME_ACT_READER_MENU = 3,
+    HOME_ACT_SLEEP = 4,
+    HOME_ACT_SCREENSHOT = 5,
+    HOME_BUTTON_ACTION_COUNT
   };
 
   // Long-press Confirm action while reading an EPUB. The setting cycles through these values.
@@ -314,9 +320,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // up-swipe). Only surfaced on home-key boards, where Home is the capacitive
   // key and the bottom edge is free; elsewhere it stays at the Tap default.
   uint8_t showReaderMenu = READER_MENU_TAP;
-  // Capacitive Home-key double click action (boards with BoardConfig::hasHomeKey()).
-  // OFF keeps single clicks instant (the arbiter is bypassed).
-  uint8_t homeButtonDoubleClickAction = HB_DBL_FRONTLIGHT;
+  // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()).
+  // OFF on the tap keeps single clicks instant (the arbiter is bypassed);
+  // OFF on double click / long press just makes that gesture do nothing.
+  uint8_t homeButtonTapAction = HOME_ACT_GO_HOME;
+  uint8_t homeButtonDoubleClickAction = HOME_ACT_FRONTLIGHT;
+  uint8_t homeButtonLongPressAction = HOME_ACT_READER_MENU;
   // Frontlight quick-panel state. Category-less SettingsList entries persist
   // these without adding them to the regular Settings screen.
   uint8_t frontlightBrightness = 60;
