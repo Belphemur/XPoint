@@ -1,6 +1,6 @@
 # Reading Stats — Binary File Persistence (replaces SQLite design)
 
-**Status:** Design / architecture plan — OpenCode optimization pass applied (see §9), pending implementation.
+**Status:** Implemented on this branch (design + OpenCode optimization pass in §9).
 **Target repo:** `Belphemur/crosspoint-reader` (branch `develop`)
 **Source of the format:** `uxjulia/crossink` (`development`) binary stats files, adapted for CrossPoint.
 **Primary build target:** `x4pro` (ESP32-S3, PSRAM, SDMMC, touch)

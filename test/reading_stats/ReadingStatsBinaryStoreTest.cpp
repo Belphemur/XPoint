@@ -49,7 +49,8 @@ void seedBookRecordV5(const std::string& path, uint16_t sessions, uint32_t secon
   data[2] = (sessions >> 8) & 0xFF;
   data[3] = seconds & 0xFF;
   data[4] = (seconds >> 8) & 0xFF;
-  Storage.openFileForWrite("TEST", path, *(new HalFile()));
+  data[5] = (seconds >> 16) & 0xFF;
+  data[6] = (seconds >> 24) & 0xFF;
   HalFile f;
   ASSERT_TRUE(Storage.openFileForWrite("TEST", path, f));
   f.write(data.data(), data.size());
@@ -60,9 +61,9 @@ class ReadingStatsBinaryStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
     Storage.clear();
-    GlobalReadingStats fresh;  // reset the destructive-save latch between tests
-    // Directly touching the private latch is impossible; loading a missing
-    // file leaves it false, which is what a fresh instance expects.
+    // Reset the destructive-save latch: loading a missing file leaves it false
+    // (load() only latches on a detected newer-format record).
+    GlobalReadingStats::load();
   }
 };
 

@@ -81,6 +81,7 @@ uint16_t computeReadingHistoryCurrentStreak(uint32_t anchorDay, const std::array
                                             const ReadingStatsDate* today);
 
 // Lean, dependency-free database key for a book's reading stats.
-// [RETAINED for host-test compatibility; the binary store keys records by the
-// cache path directly, so this is no longer used on device.]
+// [Dead code since the binary-store migration: the store keys records by the
+// cache path directly. Kept only because ReadingStatsUtilsTest still exercises
+// it; remove together with that test when doing a cleanup pass.]
 std::string bookStatsDbKey(const std::string& cachePath);

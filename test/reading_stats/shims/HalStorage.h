@@ -43,6 +43,7 @@ class HalFile {
   }
 
   size_t fileSize() const { return blob_ ? blob_->bytes.size() : 0; }
+  size_t position() const { return blob_ ? blob_->pos : 0; }
   bool flush() { return true; }
   bool sync() { return true; }
   bool close() { return true; }
