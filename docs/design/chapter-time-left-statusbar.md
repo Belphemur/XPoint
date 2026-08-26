@@ -2,7 +2,7 @@
 
 **Status:** Design / architecture plan — pending review
 **Date:** 2026-08-25
-**Depends on:** reading-stats SQLite integration (merged on `develop`; see `docs/design/reading-stats-sqlite-integration.md`)
+**Depends on:** reading-stats integration (merged on `develop`; persistence redesigned to versioned binary files in `docs/design/reading-stats-binary-files.md`)
 
 ## 1. Goal and summary
 
@@ -120,11 +120,11 @@ re-opened book shows an estimate from page 1.
 
 The status-bar estimate reads only `stats` / `globalStats` (RAM members since
 `onEnter`) and `section` (already dereferenced by the same function). It never
-touches `ReadingStatsStore`. This satisfies the wear-leveling contract of the
-merged design (D3, `reading-stats-sqlite-integration.md:68-82`): single writer,
-DELETE journal, writes batched in `onExit()` (`EpubReaderActivity.cpp:216-221`),
-**no DB I/O on the render path**. The estimator must stay a pure function over
-its inputs so this invariant is structural, not conventional.
+performs file I/O. This satisfies the wear-leveling contract of the stats
+design (`reading-stats-binary-files.md`, §3.3): writes batched at session exit,
+one sequential record write per commit, **no I/O on the render path**. The
+estimator must stay a pure function over its inputs so this invariant is
+structural, not conventional.
 
 ## 4. Required code touch-points
 
@@ -154,8 +154,8 @@ tracking.**
   per commit), an unbounded row count per book, a `user_version` bump with a
   migration, and a larger `book_stats` surface — all to improve an estimate that
   is displayed with a `~` marker by design.
-- **The merged design deliberately keeps writes minimal** (aggregate rows only,
-  batch at exit; `reading-stats-sqlite-integration.md:196-199`). Per-chapter
+- **The stats design deliberately keeps writes minimal** (aggregate records only,
+  batch at exit; `reading-stats-binary-files.md` §3.3). Per-chapter
   tracking cuts against that decision.
 
 If per-chapter accuracy is ever wanted, the cheaper path is *not* persistence:
