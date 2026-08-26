@@ -72,8 +72,6 @@ class EpubReaderActivity final : public ReaderActivity {
   bool hasSessionStartLocalDateTime = false;
   uint32_t sessionReadingSeconds = 0;
   unsigned long pageShownAtMs = 0UL;
-  // Fixed-length hashed DB key for this book (derived from the cache path).
-  std::string bookId_;
 
   bool currentPageReadingSecondsForStats(uint32_t& seconds) const;
   void recordCurrentPageReadingTime();

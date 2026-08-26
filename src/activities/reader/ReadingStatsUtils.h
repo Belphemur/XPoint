@@ -81,10 +81,6 @@ uint16_t computeReadingHistoryCurrentStreak(uint32_t anchorDay, const std::array
                                             const ReadingStatsDate* today);
 
 // Lean, dependency-free database key for a book's reading stats.
-// Derives a fixed-length (16 hex char) key from the book's cache path by hashing
-// the path string with FNV-1a. The cache path is already available in memory when
-// the book loads, so this avoids any file I/O / content hashing (kept cheap for
-// the memory-constrained device). The key is stable for a given cache location;
-// if the cache dir is renamed (e.g. move-to-Read) the key changes and the caller
-// is expected to migrate the row via ReadingStatsStore::migrateBookKey().
+// [RETAINED for host-test compatibility; the binary store keys records by the
+// cache path directly, so this is no longer used on device.]
 std::string bookStatsDbKey(const std::string& cachePath);

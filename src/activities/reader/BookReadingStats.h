@@ -6,9 +6,11 @@
 
 #include "ReadingStatsUtils.h"
 
-// Per-book reading statistics, persisted in the SQLite reading_stats.db
-// `book_stats` table keyed by the EPUB cache path string (see
-// lib/SQLite/ReadingStatsStore.h).
+// Per-book reading statistics, persisted to <cachePath>/stats_v5.bin (73-byte
+// versioned record inside the book's cache dir; see
+// docs/design/reading-stats-binary-files.md). The record's lifetime matches the
+// cache dir exactly: created with it, deleted with it, and moved with it on
+// move-to-/read — no key migration or orphan cleanup needed.
 struct BookReadingStats {
   uint16_t sessionCount = 0;
   uint32_t totalReadingSeconds = 0;

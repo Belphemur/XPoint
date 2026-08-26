@@ -23,7 +23,6 @@
 #include "DictionaryWordSelectActivity.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
-#include "ReadingStatsStore.h"
 #include "activities/util/ConfirmationActivity.h"
 #endif
 #include "EpubReaderBookmarksActivity.h"
@@ -139,13 +138,8 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
 
   const std::string newCachePath = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(dstPath));
   if (!oldCachePath.empty() && Storage.exists(oldCachePath.c_str())) {
-#ifdef READING_STATS_ENABLED
-    if (SETTINGS.shouldTrackReadingStats()) {
-      // The DB key is derived from the cache path, which changes on this move,
-      // so migrate the row to the new key.
-      ReadingStatsStore::getInstance().migrateBookKey(bookStatsDbKey(oldCachePath), bookStatsDbKey(newCachePath));
-    }
-#endif
+    // No stats handling needed here: per-book stats live INSIDE the cache dir,
+    // so renaming the dir moves the stats file with the book.
     if (!Storage.rename(oldCachePath.c_str(), newCachePath.c_str())) {
       LOG_ERR("ERS", "Failed to rename cache dir %s -> %s (non-fatal)", oldCachePath.c_str(), newCachePath.c_str());
     }
@@ -184,8 +178,7 @@ void EpubReaderActivity::onEnter() {
   ReaderActivity::onEnter();
 #ifdef READING_STATS_ENABLED
   if (epub && SETTINGS.shouldTrackReadingStats()) {
-    bookId_ = bookStatsDbKey(epub->getCachePath());
-    stats = BookReadingStats::load(bookId_);
+    stats = BookReadingStats::load(epub->getCachePath());
     globalStats = GlobalReadingStats::load();
     sessionReadingSeconds = 0;
     hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
@@ -234,12 +227,12 @@ void EpubReaderActivity::onExit() {
         }
       }
     }
-    ReadingStatsStore& store = ReadingStatsStore::getInstance();
-    const bool saved =
-        store.transaction([&]() -> bool { return store.saveBook(bookId_, stats) && store.saveGlobal(globalStats); });
-    if (!saved) {
-      LOG_ERR("ERS", "Failed to save reading stats");
-    }
+    // Two independent sequential-record writes (per-book + global). The global
+    // save is atomic (tmp -> verify -> .bak rotate -> rename) on its own, so a
+    // failure between them degrades gracefully: the book record may be ahead
+    // of the aggregate until the next session commit.
+    stats.save(epub->getCachePath());
+    globalStats.save();
   }
 #endif
   ReaderActivity::onExit();
@@ -978,7 +971,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
               openReaderMenu();
               return;
             }
-            if (SETTINGS.shouldTrackReadingStats() && BookReadingStats::remove(bookId_)) {
+            if (SETTINGS.shouldTrackReadingStats() && epub && BookReadingStats::remove(epub->getCachePath())) {
               stats = BookReadingStats{};
               sessionReadingSeconds = 0;
               hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
