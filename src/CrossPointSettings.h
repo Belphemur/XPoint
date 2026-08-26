@@ -202,6 +202,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepScreenCoverFilter = NO_FILTER;
   // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
+  uint8_t statusBarChapterTimeLeft = 1;
   uint8_t statusBarBookProgressPercentage = 1;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;
@@ -351,6 +352,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // stall it behind the SD write inside saveToFile(). Don't add one back.
   struct StatusBarSpec {
     bool showChapterPageCount = false;
+    bool showChapterTimeLeft = false;
     bool showBookProgressPercent = false;
     uint8_t titleMode = HIDE_TITLE;  // STATUS_BAR_TITLE
     bool showBattery = false;
@@ -368,7 +370,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Visibility of the text lane. Clock hardware presence is the caller's
     // concern: pass halClock.isAvailable(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
-      return showChapterPageCount || showBookProgressPercent || showsTitle() || showBattery ||
+      return showChapterPageCount || showChapterTimeLeft || showBookProgressPercent || showsTitle() || showBattery ||
              (showsClock() && clockAvailable);
     }
   };

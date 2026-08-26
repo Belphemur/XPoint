@@ -213,6 +213,27 @@ void EpubReaderActivity::onExit() {
         stats.startDate = sessionStartLocalDateTime.date;
       }
     }
+    if (epub) {
+      const uint16_t chapterPages = section ? section->estimatedTotalPages() : 0;
+      const uint64_t bookSize = epub->getBookSize();
+      const uint64_t chapterEnd = epub->getCumulativeSpineItemSize(currentSpineIndex);
+      const uint64_t chapterStart =
+          currentSpineIndex >= 1 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
+      const uint64_t chapterBytes = chapterEnd - chapterStart;
+      const float sectionProg = (section && chapterPages > 0)
+                                    ? (static_cast<float>(section->currentPage + 1) / static_cast<float>(chapterPages))
+                                    : 0.0f;
+      const float bookProgress = epub->calculateProgress(currentSpineIndex, sectionProg);
+      if (bookSize > 0 && chapterBytes > 0 && chapterPages > 0 && bookProgress >= 0.0f && bookProgress <= 1.0f) {
+        const uint64_t bookPagesEstimate = static_cast<uint64_t>(chapterPages) * bookSize / chapterBytes;
+        const uint32_t remainingPages =
+            static_cast<uint32_t>((1.0f - bookProgress) * static_cast<float>(bookPagesEstimate));
+        auto timeLeft = estimateBookTimeLeftSeconds(stats, globalStats, remainingPages);
+        if (timeLeft) {
+          stats.estimatedTimeLeftSeconds = *timeLeft;
+        }
+      }
+    }
     ReadingStatsStore& store = ReadingStatsStore::getInstance();
     const bool saved =
         store.transaction([&]() -> bool { return store.saveBook(bookId_, stats) && store.saveGlobal(globalStats); });
@@ -1774,8 +1795,23 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub ? epub->getTitle() : "";
   }
 
+#ifdef READING_STATS_ENABLED
+  char chapterTimeLeftBuf[24];
+  const char* chapterTimeLeft = nullptr;
+  if (sb.showChapterTimeLeft && SETTINGS.shouldTrackReadingStats() && section && section->estimatedTotalPages() > 0) {
+    const int pagesRemaining = std::max(0, static_cast<int>(section->estimatedTotalPages()) - section->currentPage - 1);
+    auto timeLeft = estimateChapterTimeLeftSeconds(stats, globalStats, static_cast<uint16_t>(pagesRemaining));
+    if (timeLeft) {
+      formatChapterTimeLeft(*timeLeft, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
+      chapterTimeLeft = chapterTimeLeftBuf;
+    }
+  }
+#else
+  const char* chapterTimeLeft = nullptr;
+#endif
+
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section ? section->isBuilding() : false);
+                    section ? section->isBuilding() : false, chapterTimeLeft);
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
