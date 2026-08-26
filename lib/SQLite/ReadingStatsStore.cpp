@@ -3,8 +3,9 @@
 #ifdef ARDUINO
 #include <Logging.h>
 #else
-#include <cstdio>
 #include <unistd.h>  // ::access, F_OK for removeDbFiles' host branch
+
+#include <cstdio>
 #define LOG_INF(...) ((void)0)
 #define LOG_DBG(...) ((void)0)
 #define LOG_ERR(module, fmt, ...) fprintf(stderr, "[%s] " fmt "\n", module, ##__VA_ARGS__)
