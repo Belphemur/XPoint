@@ -12,6 +12,7 @@
 #else
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdlib>
 #include <ctime>
 
@@ -33,6 +34,15 @@ struct HalVfsFile {
   int openFlags;
 #ifdef ARDUINO
   HalFile file;
+  // Rollback-journal write buffer (mirrors Sqlite3Esp32's esp32.cpp VFS):
+  // journal traffic is many small writes at alternating offsets (header @0,
+  // page records, nRec rewrite @0), the access pattern SdFat's cache handles
+  // worst over the SDMMC bounce-buffer path. Buffering coalesces it into one
+  // contiguous write per flush (sync/read/size/close). ~8 KiB internal RAM,
+  // allocated only while a journal file is open (i.e. inside a transaction).
+  uint8_t* journalBuf = nullptr;
+  int journalBufLen = 0;
+  sqlite3_int64 journalBufOfst = 0;
 #else
   FILE* fp = nullptr;
 #endif
@@ -46,21 +56,78 @@ extern sqlite3_io_methods gHalIoMethods;
 // keep the stderr shim above; error paths only, so no steady-state noise.
 #define HAL_LOG_IOERR(op, f) LOG_ERR("STATS-VFS", "%s failed on %s", (op), (f)->path)
 
+#ifdef ARDUINO
+constexpr int kJournalBufSize = 8192;  // matches SQLITE_ESP32VFS_BUFFERSZ
+
+bool isJournalFile(const HalVfsFile* f) { return (f->openFlags & SQLITE_OPEN_MAIN_JOURNAL) != 0; }
+
+// Writes buffered journal data through to the SD card. No-op when empty.
+int halFlushJournalBuffer(HalVfsFile* f) {
+  if (f->journalBufLen == 0) return SQLITE_OK;
+  if (!f->file.seek64(static_cast<uint64_t>(f->journalBufOfst))) {
+    HAL_LOG_IOERR("journal write(seek)", f);
+    f->journalBufLen = 0;
+    return SQLITE_IOERR_SEEK;
+  }
+  const size_t n = f->file.write(f->journalBuf, static_cast<size_t>(f->journalBufLen));
+  const int expected = f->journalBufLen;
+  f->journalBufLen = 0;
+  if (n != static_cast<size_t>(expected)) {
+    HAL_LOG_IOERR("journal write", f);
+    return SQLITE_IOERR_WRITE;
+  }
+  return SQLITE_OK;
+}
+
+// Appends data to the journal buffer, flushing whenever the new data is not
+// the exact continuation of the buffered region (the reference VFS does the
+// same: contiguous appends coalesce, anything else flushes first).
+int halBufferedJournalWrite(HalVfsFile* f, const uint8_t*& zBuf, int& iAmt, sqlite3_int64& iOfst) {
+  while (iAmt > 0) {
+    if (f->journalBufLen == kJournalBufSize || f->journalBufOfst + f->journalBufLen != iOfst) {
+      const int rc = halFlushJournalBuffer(f);
+      if (rc != SQLITE_OK) return rc;
+      // After a non-contiguous flush the buffer is empty; restart the region.
+      f->journalBufOfst = iOfst;
+    }
+    const int nCopy = kJournalBufSize - f->journalBufLen;
+    const int chunk = nCopy < iAmt ? nCopy : iAmt;
+    std::memcpy(f->journalBuf + f->journalBufLen, zBuf, static_cast<size_t>(chunk));
+    f->journalBufLen += chunk;
+    zBuf += chunk;
+    iOfst += chunk;
+    iAmt -= chunk;
+  }
+  return SQLITE_OK;
+}
+#endif
+
 int halClose(sqlite3_file* pFile) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
   const bool deleteOnClose = (f->openFlags & SQLITE_OPEN_DELETEONCLOSE) != 0;
+  int rc = SQLITE_OK;
 #ifdef ARDUINO
-  if (!f->file.close()) {
-    // os_unix also reports close failures; the handle is gone either way.
+  // Flush any buffered journal data before the handle goes away. A failed
+  // flush is reported (os_unix does the same) even though the OS handle is
+  // released regardless.
+  rc = halFlushJournalBuffer(f);
+#endif
+#ifdef ARDUINO
+  if (!f->file.close() && rc == SQLITE_OK) {
     HAL_LOG_IOERR("close", f);
-    const int rc = SQLITE_IOERR_CLOSE;
-    f->~HalVfsFile();
-    return rc;
+    rc = SQLITE_IOERR_CLOSE;
   }
 #else
   if (f->fp) {
     fclose(f->fp);
     f->fp = nullptr;
+  }
+#endif
+#ifdef ARDUINO
+  if (f->journalBuf) {
+    delete[] f->journalBuf;
+    f->journalBuf = nullptr;
+    f->journalBufLen = 0;
   }
 #endif
   if (deleteOnClose) {
@@ -71,7 +138,7 @@ int halClose(sqlite3_file* pFile) {
 #endif
   }
   f->~HalVfsFile();
-  return SQLITE_OK;
+  return rc;
 }
 
 int halRead(sqlite3_file* pFile, void* zBuf, int iAmt, sqlite3_int64 iOfst) {
@@ -79,6 +146,10 @@ int halRead(sqlite3_file* pFile, void* zBuf, int iAmt, sqlite3_int64 iOfst) {
   if (iAmt <= 0) return SQLITE_OK;
   std::memset(zBuf, 0, static_cast<size_t>(iAmt));
 #ifdef ARDUINO
+  // Buffered journal data must reach the file before it can be read back
+  // (SQLite reads journal headers/records during rollback and commit).
+  int rc = halFlushJournalBuffer(f);
+  if (rc != SQLITE_OK) return rc;
   if (!f->file.seek64(static_cast<uint64_t>(iOfst))) {
     HAL_LOG_IOERR("read(seek)", f);
     return SQLITE_IOERR_SEEK;
@@ -102,6 +173,13 @@ int halRead(sqlite3_file* pFile, void* zBuf, int iAmt, sqlite3_int64 iOfst) {
 int halWrite(sqlite3_file* pFile, const void* zBuf, int iAmt, sqlite3_int64 iOfst) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
 #ifdef ARDUINO
+  // Journal files take the buffered path (coalesces SQLite's small writes at
+  // alternating offsets into contiguous SD transfers); everything else is
+  // written straight through as before.
+  if (isJournalFile(f)) {
+    const uint8_t* cursor = static_cast<const uint8_t*>(zBuf);
+    return halBufferedJournalWrite(f, cursor, iAmt, iOfst);
+  }
   if (!f->file.seek64(static_cast<uint64_t>(iOfst))) {
     HAL_LOG_IOERR("write(seek)", f);
     return SQLITE_IOERR_SEEK;
@@ -135,6 +213,9 @@ int halTruncate(sqlite3_file* pFile, sqlite3_int64 size) {
 int halSync(sqlite3_file* pFile, int /*flags*/) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
 #ifdef ARDUINO
+  // Sync is the durability point: buffered journal data must hit the card.
+  int rc = halFlushJournalBuffer(f);
+  if (rc != SQLITE_OK) return rc;
   if (!f->file.sync()) {
     HAL_LOG_IOERR("sync", f);
     return SQLITE_IOERR_FSYNC;
@@ -149,7 +230,10 @@ int halSync(sqlite3_file* pFile, int /*flags*/) {
 int halFileSize(sqlite3_file* pFile, sqlite3_int64* pSize) {
   HalVfsFile* f = reinterpret_cast<HalVfsFile*>(pFile);
 #ifdef ARDUINO
-  *pSize = static_cast<sqlite3_int64>(f->file.fileSize64());
+  // The reported size must include data still sitting in the journal buffer.
+  const sqlite3_int64 buffered = (f->journalBufLen > 0) ? f->journalBufOfst + f->journalBufLen : 0;
+  const sqlite3_int64 onDisk = static_cast<sqlite3_int64>(f->file.fileSize64());
+  *pSize = buffered > onDisk ? buffered : onDisk;
   return SQLITE_OK;
 #else
   const off_t cur = ftello(f->fp);
@@ -199,6 +283,18 @@ int halOpen(sqlite3_vfs*, const char* zName, sqlite3_file* pFile, int flags, int
   const bool create = (flags & SQLITE_OPEN_CREATE) != 0;
 
 #ifdef ARDUINO
+  // Rollback journals get the write buffer (see HalVfsFile). new is not
+  // nothrow on ESP32 (-fno-exceptions): use the nothrow form and fail open.
+  if ((flags & SQLITE_OPEN_MAIN_JOURNAL) != 0) {
+    f->journalBuf = new (std::nothrow) uint8_t[kJournalBufSize];
+    if (!f->journalBuf) {
+      f->~HalVfsFile();
+      return SQLITE_NOMEM;
+    }
+  }
+#endif
+
+#ifdef ARDUINO
   oflag_t oflag = O_RDONLY;
   if (readOnly) {
     oflag = O_RDONLY;
@@ -246,11 +342,12 @@ int halDelete(sqlite3_vfs*, const char* zName, int /*syncDir*/) {
   return SQLITE_OK;
 #else
   if (::remove(zName) != 0) {
-    if (::access(zName, F_OK) == 0) {
-      LOG_ERR("STATS-VFS", "delete failed on %s", zName);
-      return SQLITE_IOERR_DELETE;
-    }
-    return SQLITE_IOERR_DELETE_NOENT;
+    // errno must be read before any intervening call can clobber it; only a
+    // genuine ENOENT maps to the tolerated NOENT code.
+    const int err = errno;
+    if (err == ENOENT) return SQLITE_IOERR_DELETE_NOENT;
+    LOG_ERR("STATS-VFS", "delete failed on %s", zName);
+    return SQLITE_IOERR_DELETE;
   }
   return SQLITE_OK;
 #endif

@@ -4,6 +4,7 @@
 #include <Logging.h>
 #else
 #include <cstdio>
+#include <unistd.h>  // ::access, F_OK for removeDbFiles' host branch
 #define LOG_INF(...) ((void)0)
 #define LOG_DBG(...) ((void)0)
 #define LOG_ERR(module, fmt, ...) fprintf(stderr, "[%s] " fmt "\n", module, ##__VA_ARGS__)
@@ -72,18 +73,25 @@ void logSqliteError(const char* where, void* dbHandle) {
 // Recreation must clear the sidecars too: leaving them behind would hand any
 // stale journal to the freshly created database, and the old .db's journal
 // blocks are not reclaimed until the sidecar is removed as well.
-void removeDbFiles(const std::string& dbPath) {
+// Returns true only if every existing file was removed.
+bool removeDbFiles(const std::string& dbPath) {
+  bool ok = true;
 #ifdef ARDUINO
-  Storage.remove(dbPath.c_str());
-  Storage.remove((dbPath + "-journal").c_str());
-  Storage.remove((dbPath + "-wal").c_str());
-  Storage.remove((dbPath + "-shm").c_str());
+  const char* const suffixes[] = {"", "-journal", "-wal", "-shm"};
+  for (const char* suffix : suffixes) {
+    const std::string path = dbPath + suffix;
+    if (!Storage.exists(path.c_str())) continue;
+    if (!Storage.remove(path.c_str())) ok = false;
+  }
 #else
-  ::remove(dbPath.c_str());
-  ::remove((dbPath + "-journal").c_str());
-  ::remove((dbPath + "-wal").c_str());
-  ::remove((dbPath + "-shm").c_str());
+  const char* const suffixes[] = {"", "-journal", "-wal", "-shm"};
+  for (const char* suffix : suffixes) {
+    const std::string path = dbPath + suffix;
+    if (::access(path.c_str(), F_OK) != 0) continue;
+    if (::remove(path.c_str()) != 0) ok = false;
+  }
 #endif
+  return ok;
 }
 
 #ifdef ARDUINO
@@ -136,6 +144,9 @@ bool ReadingStatsStore::begin(const char* dbPath) {
       return false;
     }
     db_ = db;
+    // Extended result codes are what distinguish IOERR_WRITE/FSYNC/SEEK...
+    // (the whole point of the attribution logging below).
+    sqlite3_extended_result_codes(db, 1);
 
     if (runPragmas() && createSchema() && verifyIntegrity()) {
       LOG_INF("STATS", "opened %s%s", dbPath_.c_str(), attempt > 1 ? " (recreated)" : "");
@@ -143,7 +154,12 @@ bool ReadingStatsStore::begin(const char* dbPath) {
     }
 
     logSqliteError("init", db_);
-    close();
+    // Tear down ONLY the handle here: close() also clears dbPath_, which
+    // would make the retry open "" — SQLite turns an empty filename into a
+    // private temp database that "succeeds" while leaving the real (corrupt)
+    // file untouched on the card. Observed exactly that on hardware.
+    sqlite3_close(static_cast<sqlite3*>(db_));
+    db_ = nullptr;
     if (attempt >= kMaxInitAttempts) break;
 
 #ifdef ARDUINO
@@ -160,7 +176,9 @@ bool ReadingStatsStore::begin(const char* dbPath) {
 
     LOG_ERR("STATS", "attempt %d/%d failed; recreating %s", attempt, kMaxInitAttempts, dbPath_.c_str());
     // Sidecars included, so the retry starts from a known-clean state.
-    removeDbFiles(dbPath_);
+    if (!removeDbFiles(dbPath_)) {
+      LOG_ERR("STATS", "could not fully clear %s(.db/-journal/-wal/-shm); retry may fail", dbPath_.c_str());
+    }
   }
   return false;
 }
