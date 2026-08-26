@@ -14,7 +14,9 @@ constexpr const char* BOOK_DIR = "/.crosspoint/epub_1234";
 constexpr const char* GLOBAL_PATH = "/.crosspoint/global_stats.bin";
 constexpr const char* GLOBAL_BAK_PATH = "/.crosspoint/global_stats.bin.bak";
 
-std::string statsPath(const char* dir, int version) { return std::string(dir) + "/stats_v" + std::to_string(version) + ".bin"; }
+std::string statsPath(const char* dir, int version) {
+  return std::string(dir) + "/stats_v" + std::to_string(version) + ".bin";
+}
 
 std::vector<uint8_t> readFileBytes(const std::string& path) {
   HalFile f;
@@ -110,7 +112,7 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   EXPECT_TRUE(Storage.exists(GLOBAL_BAK_PATH));
   const auto bak = readFileBytes(GLOBAL_BAK_PATH);
   ASSERT_EQ(bak.size(), 159u);
-  EXPECT_EQ(readLe32At(bak, 1), 3u);   // first save's totalSessions
+  EXPECT_EQ(readLe32At(bak, 1), 3u);  // first save's totalSessions
   const auto main = readFileBytes(GLOBAL_PATH);
   EXPECT_EQ(readLe32At(main, 1), 9u);  // second save's totalSessions
 
@@ -194,8 +196,8 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   EXPECT_EQ(out.finishedDate.year, 2026);
   EXPECT_EQ(out.finishedDate.month, 8);
   EXPECT_EQ(out.finishedDate.day, 27);
-  EXPECT_EQ(out.timeOfDaySeconds[0], 600u);   // morning bucket
-  EXPECT_EQ(out.timeOfDaySeconds[3], 300u);   // night bucket
+  EXPECT_EQ(out.timeOfDaySeconds[0], 600u);  // morning bucket
+  EXPECT_EQ(out.timeOfDaySeconds[3], 300u);  // night bucket
   EXPECT_EQ(out.estimatedTimeLeftSeconds, 5400u);
 
   EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
