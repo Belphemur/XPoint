@@ -252,10 +252,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
   // Clock display in status bar (X3 only, requires DS3231 RTC)
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
-  // Clock UTC offset in quarter-hour steps, biased by 48 so it fits in uint8_t.
-  // Value 48 = UTC+0, 0 = UTC-12:00, 104 = UTC+14:00.
-  // Quarter-hour granularity supports oddball zones like Nepal (+5:45) and Chatham (+12:45).
-  uint8_t clockUtcOffsetQ = 48;
+  // Auto-detected IANA time zone id, e.g. "America/Toronto". Empty = not detected (show UTC).
+  char clockTimeZoneId[40] = "";
+  // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4.
+  // 0 is a valid UTC offset (zones like Europe/London sit at 0 part of the
+  // year), so detection is tracked by clockTimeZoneId being non-empty, NOT by
+  // this being non-zero. Clamped to [-720, +840] on load and detection.
+  int16_t clockTzOffsetMin = 0;
+  // True when the detected zone is currently in DST (informational; the offset already folds DST).
+  uint8_t clockTzIsDst = 0;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
@@ -412,7 +417,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     bool showBatteryPercent = false;
     uint8_t clockMode = STATUS_BAR_CLOCK_HIDE;  // STATUS_BAR_CLOCK_MODE
     bool clock12h = false;
-    uint8_t clockUtcOffsetQ = 48;                                      // 48 = UTC+0
+    // Effective signed UTC offset in MINUTES for display (detected zone folds DST; 0 = UTC until detected).
+    int clockUtcOffsetMin = 0;
     uint8_t chapterTimeLeftMode = STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT;  // STATUS_BAR_CHAPTER_TIME_LEFT_MODE
     uint8_t progressBarMode = HIDE_PROGRESS;                           // STATUS_BAR_PROGRESS_BAR
     uint8_t progressBarHeightPx = 0;                                   // (thickness+1)*2; 0 when the bar is hidden
@@ -440,6 +446,19 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static const char* getFilePath() { return "/.crosspoint/settings.json"; }
   void toJson(JsonDocument& doc) const;
   bool fromJson(JsonVariantConst doc);
+
+  // Effective signed UTC offset in MINUTES for display. UTC (0) until a zone has
+  // been detected (clockTimeZoneId non-empty), then the detected current offset
+  // (which already folds DST). Clamped to the supported [-720, +840] range so a
+  // corrupted settings file cannot push ReadingStatsUtils' date-roll loops to an
+  // extreme iteration count.
+  int clockEffectiveOffsetMin() const {
+    if (clockTimeZoneId[0] == '\0') return 0;
+    int off = clockTzOffsetMin;
+    if (off < -720) off = -720;
+    if (off > 840) off = 840;
+    return off;
+  }
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
   static uint8_t sleepTimeoutEnumToMinutes(uint8_t legacyValue);
