@@ -288,8 +288,8 @@ bool handleX4ProHomeDoubleClick() {
     // hold fall through to the reader so longPressMenuFunction can run; the Home
     // action still wins elsewhere.
     if (SETTINGS.longPressMenuFunction != CrossPointSettings::LP_MENU_DISABLED &&
-        BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED && !BoardConfig::ACTIVE.touch.synthesizeConfirm &&
-        activityManager.isReaderActivity()) {
+        BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED &&
+        !BoardConfig::ACTIVE.touch.synthesizeConfirm && activityManager.isReaderActivity()) {
       homeTapTracker.disarm();
       return false;  // legacy path: let the reader act on the hold
     }
