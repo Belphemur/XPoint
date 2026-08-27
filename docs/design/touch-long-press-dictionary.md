@@ -504,37 +504,42 @@ Host unit tests (`test/` already has 17 suites + CMakeLists, run by
 
 ## Files touched
 
-This PR **ships only the design document** — no source changes. The rows below
-are the plan for the implementation, split so the reader can see what lands in
-which future change.
+This PR ships the **design document and its implementation** (the design was the
+review gate; the code followed once approved). The implementation landed in two
+feature commits on top of the two design-doc commits.
 
-**Shipped in this PR**
+**Design (this PR)**
 
 | File | Change |
 | --- | --- |
 | `docs/design/touch-long-press-dictionary.md` | this document |
 
-**Planned — implementation (future commits, once this design is approved)**
+**Implementation — `feat(reader): touch long-press looks up the word in the dictionary`**
 
 | File | Change |
 | --- | --- |
 | `src/CrossPointSettings.h` | `TOUCH_LONG_PRESS_ACTION` enum + `touchLongPressAction` field |
-| `src/SettingsList.h` | new Enum row, erased when `!hasTouch()` |
-| `lib/I18n/translations/english.yaml` | `STR_TOUCH_LONG_PRESS` row label only (values reuse existing keys; `I18nKeys.h` is generated + gitignored) |
+| `src/SettingsList.h` | new Enum row `STR_TOUCH_LONG_PRESS`, erased when `!hasTouch()` |
+| `lib/I18n/translations/english.yaml` | `STR_TOUCH_LONG_PRESS` row label (values reuse existing keys; `I18nKeys.h` is generated + gitignored) |
+| `src/activities/reader/TouchLongPressMode.h` | shared `TouchLongPressMode` enum (Dictionary / Footnote) |
 | `src/activities/reader/EpubReaderActivity.{h,cpp}` | long-press trigger + dispatch with explicit `TouchLongPressMode`; `openDictionaryWordSelect(x, y, mode)`; footnote href → `navigateToHref` |
 | `src/activities/reader/DictionaryWordSelectActivity.{h,cpp}` | `initialX/initialY` + `mode` → immediate lookup in `onEnter()`; footnote-marker branch returning the href via `ActivityResult` |
-| `docs/dictionary.md`, `USER_GUIDE.md` | document the gesture and the setting |
-| `test/` | host tests: `wordAt` × 4 orientations; footnote marker normalisation incl. numeric-miss suppression |
 
-**Planned — separate commit (the X4 Pro "Long-press Menu" finding)**
+**Implementation — `fix(reader): let Long-press Menu reach the reader when no Confirm button exists`**
 
 | File | Change |
 | --- | --- |
 | `src/main.cpp` | Home-hold fall-through when the board has no Confirm trigger, so a configured `longPressMenuFunction` is not permanently shadowed (see "Related finding" section) |
+| `src/activities/reader/EpubReaderActivity.cpp` | `LP_MENU_KOSYNC` Home-key case falls through to the Home action when credentials are absent (it must not consume the hold it cannot serve) |
+| `src/activities/ActivityManager.{h,cpp}` | `isCurrentActivityReader()` predicate so the X4 Pro fallback scopes to the foreground reader, not a reader buried in the activity stack |
 
 **`freeink-sdk`**: **unchanged** — no submodule bump; board fields are read via
 `BoardConfig::ACTIVE.*` (the app already does this at `UIThemeTokens.h:29`,
 `main.cpp:500`).
+
+**Not in this PR (intentionally):** `docs/dictionary.md` / `USER_GUIDE.md` user-facing
+prose, and `test/` host suites for the footnote normalisation + `wordAt` × 4
+orientations — candidates for a follow-up once on-device feel is confirmed.
 
 ## Review pass applied
 

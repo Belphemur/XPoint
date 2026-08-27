@@ -636,8 +636,14 @@ void EpubReaderActivity::loop() {
         }
         return;
       case CrossPointSettings::LP_MENU_KOSYNC:
-        launchKOReaderSync();
-        return;
+        // Only consume the hold when sync can actually start. Without
+        // credentials launchKOReaderSync() returns false, and we must fall
+        // through so the configured Home long-press action still runs.
+        if (KOREADER_STORE.hasCredentials()) {
+          launchKOReaderSync();
+          return;
+        }
+        break;
       case CrossPointSettings::LP_MENU_DICTIONARY:
         if (!showDictionaryMessage) {
           openDictionaryWordSelect();

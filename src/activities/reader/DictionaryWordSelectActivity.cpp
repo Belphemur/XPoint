@@ -39,17 +39,29 @@ bool isSelectableToken(const char* text) {
 
 void indexBuildYield(void*) { vTaskDelay(1); }
 
-// Strip leading/trailing whitespace and one pair of brackets/parens.
+// Normalize a touched word to match the EPUB parser's footnote-number contract
+// (ChapterHtmlSlimParser.cpp:1537-1561): strip leading whitespace + '[', and
+// trailing whitespace + ']'; also trim any whitespace left INSIDE the brackets
+// so "[ 12 ]" matches the parser-stored "12". The parser does NOT strip
+// parentheses, so '(1)' stays '(1)' and must NOT collapse into '1' — stripping
+// parens would make '[1]' and '(1)' compare equal and turn '(2024)' into a
+// numeric no-op. (This function intentionally only touches brackets, never
+// parentheses.) entry.number is already normalized this same way by the parser,
+// so the touched word is compared against entry.number verbatim (no
+// re-normalization of the entry side, which would broaden matches).
 // Returns the length of the normalized text in dst.
 size_t normalizeMarker(const char* src, char* dst, size_t dstSize) {
   const char* p = src;
   while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-  if (*p == '[' || *p == '(') p++;
+  if (*p == '[') {
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;  // trim inside [
+  }
 
   const char* end = p + std::strlen(p);
   if (end > p) end--;
   while (end > p && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
-  if (end > p && (*end == ']' || *end == ')')) {
+  if (end > p && *end == ']') {
     end--;
     while (end > p && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
   }
@@ -198,10 +210,10 @@ std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) 
   normalizeMarker(word, normalized, sizeof(normalized));
   if (normalized[0] == '\0') return {};
 
-  char entryBuf[MARKER_BUF_SIZE];
+  // entry.number is already normalized by the parser (whitespace + '['/'['
+  // stripped, parentheses preserved), so compare against it verbatim.
   for (const auto& entry : page->footnotes) {
-    normalizeMarker(entry.number, entryBuf, sizeof(entryBuf));
-    if (std::strcmp(entryBuf, normalized) == 0) {
+    if (std::strcmp(entry.number, normalized) == 0) {
       return std::string(entry.href);
     }
   }
