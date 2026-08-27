@@ -104,6 +104,13 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (language < getLanguageCount()) ? LANGUAGE_CODES[language] : "EN";
+
+  // Auto-detected time zone (not in SettingsList; persisted manually).
+  if (clockTimeZoneId[0] != '\0') {
+    doc["clockTimeZoneId"] = clockTimeZoneId;
+  }
+  doc["clockTzOffsetMin"] = clockTzOffsetMin;
+  doc["clockTzIsDst"] = clockTzIsDst;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -222,6 +229,36 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
   }
 
+  // Auto-detected time zone (not in SettingsList; loaded manually).
+  const char* tzId = doc["clockTimeZoneId"] | "";
+  strncpy(clockTimeZoneId, tzId, sizeof(clockTimeZoneId) - 1);
+  clockTimeZoneId[sizeof(clockTimeZoneId) - 1] = '\0';
+  int loadedOffset = doc["clockTzOffsetMin"] | 0;
+  if (loadedOffset < -720)
+    loadedOffset = -720;
+  else if (loadedOffset > 840)
+    loadedOffset = 840;
+  clockTzOffsetMin = static_cast<int16_t>(loadedOffset);
+  clockTzIsDst = doc["clockTzIsDst"] | 0;
+
+  // Migrate the pre-1.5 manual UTC-offset picker (clockUtcOffsetQ, biased by 48
+  // quarter-hour steps) into the new signed-minute field so existing users keep
+  // their old display offset instead of snapping to UTC. We also clear
+  // clockHasBeenSynced so the next WiFi connect re-detects the real IANA zone
+  // (WifiSelectionActivity skips detection while clockHasBeenSynced is set), and
+  // request a resave to persist the migrated keys.
+  if (doc["clockTimeZoneId"].isNull() && !doc["clockUtcOffsetQ"].isNull()) {
+    const int quarterHours = (doc["clockUtcOffsetQ"] | 48) - 48;  // -48..+56
+    int minutes = quarterHours * 15;                              // -720..+840
+    if (minutes < -720)
+      minutes = -720;
+    else if (minutes > 840)
+      minutes = 840;
+    clockTzOffsetMin = static_cast<int16_t>(minutes);
+    clockHasBeenSynced = 0;
+    needsResave = true;
+  }
+
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
     requestResave();
@@ -243,7 +280,7 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   spec.showBatteryPercent = hideBatteryPercentage == HIDE_NEVER;
   spec.clockMode = statusBarClock;
   spec.clock12h = clockFormat == 1;
-  spec.clockUtcOffsetQ = clockUtcOffsetQ;
+  spec.clockUtcOffsetMin = clockEffectiveOffsetMin();
   spec.progressBarMode = statusBarProgressBar;
   spec.progressBarHeightPx =
       statusBarProgressBar != HIDE_PROGRESS ? static_cast<uint8_t>((statusBarProgressBarThickness + 1) * 2) : 0;
