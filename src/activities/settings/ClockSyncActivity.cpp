@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalTimeZone.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
@@ -73,11 +74,22 @@ void ClockSyncActivity::runSync() {
 
   // Mark as synced so the auto-sync hook stops firing on future WiFi connects.
   SETTINGS.clockHasBeenSynced = 1;
+
+  // Re-detect the time zone from this device's public IP (e.g. after travel).
+  // Store it even on manual sync; falls back to the previous/UTC display on failure.
+  auto tz = freeink::detectTimeZoneFromIp();
+  tzDetected_ = tz.valid;
+  if (tz.valid) {
+    strncpy(SETTINGS.clockTimeZoneId, tz.id, sizeof(SETTINGS.clockTimeZoneId) - 1);
+    SETTINGS.clockTimeZoneId[sizeof(SETTINGS.clockTimeZoneId) - 1] = '\0';
+    SETTINGS.clockTzOffsetMin = static_cast<int16_t>(tz.offsetMin);
+    SETTINGS.clockTzIsDst = tz.isDst ? 1 : 0;
+  }
   SETTINGS.saveToFile();
 
   // Read the freshly synced time back for the user-facing confirmation.
   char buf[9];
-  if (halClock.formatTime(buf, sizeof(buf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+  if (halClock.formatTime(buf, sizeof(buf), SETTINGS.clockEffectiveOffsetMin(), SETTINGS.clockFormat == 1)) {
     snprintf(syncedTime, sizeof(syncedTime), "%s", buf);
   }
   state = SUCCESS;
@@ -124,6 +136,9 @@ void ClockSyncActivity::render(RenderLock&&) {
         char line[64];
         snprintf(line, sizeof(line), "%s %s", tr(STR_CURRENT_TIME), syncedTime);
         renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, line);
+      }
+      if (!tzDetected_) {
+        renderer.drawCenteredText(UI_10_FONT_ID, midY + 30, tr(STR_TIMEZONE_DETECT_FAILED));
       }
       break;
     }

@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalTimeZone.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
@@ -523,6 +524,15 @@ void WifiSelectionActivity::checkConnectionStatus() {
     if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
       if (halClock.syncFromNTP()) {
         SETTINGS.clockHasBeenSynced = 1;
+        // Auto-detect the time zone from this device's public IP (keyless,
+        // HTTPS). Falls back to UTC display if all geolocation services fail.
+        auto tz = freeink::detectTimeZoneFromIp();
+        if (tz.valid) {
+          strncpy(SETTINGS.clockTimeZoneId, tz.id, sizeof(SETTINGS.clockTimeZoneId) - 1);
+          SETTINGS.clockTimeZoneId[sizeof(SETTINGS.clockTimeZoneId) - 1] = '\0';
+          SETTINGS.clockTzOffsetMin = static_cast<int16_t>(tz.offsetMin);
+          SETTINGS.clockTzIsDst = tz.isDst ? 1 : 0;
+        }
         SETTINGS.saveToFile();
       }
     }
