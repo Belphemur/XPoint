@@ -254,7 +254,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
   // Auto-detected IANA time zone id, e.g. "America/Toronto". Empty = not detected (show UTC).
   char clockTimeZoneId[40] = "";
-  // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4. 0 = not detected.
+  // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4.
+  // 0 is a valid UTC offset (zones like Europe/London sit at 0 part of the
+  // year), so detection is tracked by clockTimeZoneId being non-empty, NOT by
+  // this being non-zero. Clamped to [-720, +840] on load and detection.
   int16_t clockTzOffsetMin = 0;
   // True when the detected zone is currently in DST (informational; the offset already folds DST).
   uint8_t clockTzIsDst = 0;
@@ -445,9 +448,16 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   bool fromJson(JsonVariantConst doc);
 
   // Effective signed UTC offset in MINUTES for display. UTC (0) until a zone has
-  // been detected, then the detected current offset (which already folds DST).
+  // been detected (clockTimeZoneId non-empty), then the detected current offset
+  // (which already folds DST). Clamped to the supported [-720, +840] range so a
+  // corrupted settings file cannot push ReadingStatsUtils' date-roll loops to an
+  // extreme iteration count.
   int clockEffectiveOffsetMin() const {
-    return (clockTimeZoneId[0] != '\0' && clockTzOffsetMin != 0) ? clockTzOffsetMin : 0;
+    if (clockTimeZoneId[0] == '\0') return 0;
+    int off = clockTzOffsetMin;
+    if (off < -720) off = -720;
+    if (off > 840) off = 840;
+    return off;
   }
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);

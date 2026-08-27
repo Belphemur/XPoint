@@ -229,13 +229,35 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
   }
 
-  // Auto-detected time zone (not in SettingsList; loaded manually). Old saves
-  // without these keys keep the defaults (empty id, offset 0 -> display UTC).
+  // Auto-detected time zone (not in SettingsList; loaded manually).
   const char* tzId = doc["clockTimeZoneId"] | "";
   strncpy(clockTimeZoneId, tzId, sizeof(clockTimeZoneId) - 1);
   clockTimeZoneId[sizeof(clockTimeZoneId) - 1] = '\0';
-  clockTzOffsetMin = doc["clockTzOffsetMin"] | 0;
+  int loadedOffset = doc["clockTzOffsetMin"] | 0;
+  if (loadedOffset < -720)
+    loadedOffset = -720;
+  else if (loadedOffset > 840)
+    loadedOffset = 840;
+  clockTzOffsetMin = static_cast<int16_t>(loadedOffset);
   clockTzIsDst = doc["clockTzIsDst"] | 0;
+
+  // Migrate the pre-1.5 manual UTC-offset picker (clockUtcOffsetQ, biased by 48
+  // quarter-hour steps) into the new signed-minute field so existing users keep
+  // their old display offset instead of snapping to UTC. We also clear
+  // clockHasBeenSynced so the next WiFi connect re-detects the real IANA zone
+  // (WifiSelectionActivity skips detection while clockHasBeenSynced is set), and
+  // request a resave to persist the migrated keys.
+  if (doc["clockTimeZoneId"].isNull() && !doc["clockUtcOffsetQ"].isNull()) {
+    const int quarterHours = (doc["clockUtcOffsetQ"] | 48) - 48;  // -48..+56
+    int minutes = quarterHours * 15;                              // -720..+840
+    if (minutes < -720)
+      minutes = -720;
+    else if (minutes > 840)
+      minutes = 840;
+    clockTzOffsetMin = static_cast<int16_t>(minutes);
+    clockHasBeenSynced = 0;
+    needsResave = true;
+  }
 
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");

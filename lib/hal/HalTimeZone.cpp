@@ -12,6 +12,16 @@
 namespace {
 constexpr const char* TAG = "HalTimeZone";
 constexpr int kHttpTimeoutMs = 10000;
+// Supported UTC offset range (mirrors HalClock::formatTime). Out-of-range
+// values can only come from a malformed upstream response, so we clamp here
+// rather than trusting every caller to defend against outliers.
+constexpr int kMinOffsetMin = -720;  // UTC-12
+constexpr int kMaxOffsetMin = 840;   // UTC+14
+int clampOffsetMin(int minutes) {
+  if (minutes < kMinOffsetMin) return kMinOffsetMin;
+  if (minutes > kMaxOffsetMin) return kMaxOffsetMin;
+  return minutes;
+}
 
 bool parseIpWhoIs(const std::string& body, freeink::TimeZoneInfo& out) {
   JsonDocument doc;
@@ -117,6 +127,7 @@ TimeZoneInfo detectTimeZoneFromIp() {
     const std::string body = http.getString();
     http.end();
     if (svc.parse(body, out)) {
+      out.offsetMin = clampOffsetMin(out.offsetMin);
       LOG_INF(TAG, "Zone via %s: %s (UTC%+d min%s)", svc.url, out.id, out.offsetMin, out.isDst ? ", DST" : "");
       return out;
     }

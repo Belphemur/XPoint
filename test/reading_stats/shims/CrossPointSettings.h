@@ -14,8 +14,15 @@ class CrossPointSettings {
   uint8_t trackReadingStats = 1;
 
   // Effective signed UTC offset in minutes for display (UTC until detected).
+  // Mirrors production clamping so host tests exercise the same range assumptions.
   int clockEffectiveOffsetMin() const {
-    return (clockTimeZoneId[0] != '\0' && clockTzOffsetMin != 0) ? clockTzOffsetMin : 0;
+    if (clockTimeZoneId[0] == '\0') return 0;
+    int off = clockTzOffsetMin;
+    if (off < -720)
+      off = -720;
+    else if (off > 840)
+      off = 840;
+    return off;
   }
   bool shouldTrackReadingStats() const { return trackReadingStats != 0; }
   static CrossPointSettings& getInstance() {

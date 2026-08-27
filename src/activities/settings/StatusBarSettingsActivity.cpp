@@ -238,9 +238,10 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
       const int off = SETTINGS.clockEffectiveOffsetMin();
       const bool neg = off < 0;
       const int absOff = neg ? -off : off;
+      const char* dstBadge = SETTINGS.clockTzIsDst ? tr(STR_DST) : "";
       char val[64];
-      snprintf(val, sizeof(val), "%s (UTC%c%d:%02d%s)", SETTINGS.clockTimeZoneId, neg ? '-' : '+', absOff / 60,
-               absOff % 60, SETTINGS.clockTzIsDst ? " DST" : "");
+      snprintf(val, sizeof(val), "%s (%s%c%d:%02d%s)", SETTINGS.clockTimeZoneId, tr(STR_UTC), neg ? '-' : '+',
+               absOff / 60, absOff % 60, dstBadge);
       return std::string(val);
     }
     case ITEM_CLOCK_SYNC:
