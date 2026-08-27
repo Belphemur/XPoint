@@ -282,6 +282,17 @@ bool handleX4ProHomeDoubleClick() {
   // action to Off restores the legacy behavior where the reader handles holds.
   const bool hold = gpio.wasHomeKeyLongPressed();
   if (hold) {
+    // When the board has no Confirm button, a configured Long-press Menu
+    // function has no other trigger, so it would be permanently shadowed by the
+    // Home long-press action here (default: Reader Menu). In the reader, let the
+    // hold fall through to the reader so longPressMenuFunction can run; the Home
+    // action still wins elsewhere.
+    if (SETTINGS.longPressMenuFunction != CrossPointSettings::LP_MENU_DISABLED &&
+        BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED && !BoardConfig::ACTIVE.touch.synthesizeConfirm &&
+        activityManager.isReaderActivity()) {
+      homeTapTracker.disarm();
+      return false;  // legacy path: let the reader act on the hold
+    }
     if (SETTINGS.homeButtonLongPressAction != CrossPointSettings::HOME_ACT_OFF) {
       homeTapTracker.disarm();  // a hold is never the second half of a double click
       executeHomeButtonAction(SETTINGS.homeButtonLongPressAction);
