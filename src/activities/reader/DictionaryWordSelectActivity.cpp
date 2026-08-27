@@ -9,6 +9,7 @@
 #include <cctype>
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
@@ -17,6 +18,7 @@
 namespace {
 
 constexpr unsigned long POPUP_DURATION_MS = 1500;
+constexpr size_t MARKER_BUF_SIZE = 64;
 
 // A token is selectable when it has an ASCII alphanumeric or a non-ASCII
 // codepoint outside U+2000-U+206F (dashes, bullets and other General
@@ -37,6 +39,50 @@ bool isSelectableToken(const char* text) {
 
 void indexBuildYield(void*) { vTaskDelay(1); }
 
+// Strip leading/trailing whitespace and one pair of brackets/parens.
+// Returns the length of the normalized text in dst.
+size_t normalizeMarker(const char* src, char* dst, size_t dstSize) {
+  const char* p = src;
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+  if (*p == '[' || *p == '(') p++;
+
+  const char* end = p + std::strlen(p);
+  if (end > p) end--;
+  while (end > p && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
+  if (end > p && (*end == ']' || *end == ')')) {
+    end--;
+    while (end > p && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
+  }
+
+  size_t len = static_cast<size_t>(end - p + 1);
+  if (len >= dstSize) len = dstSize - 1;
+  std::memcpy(dst, p, len);
+  dst[len] = '\0';
+  return len;
+}
+
+// True when the normalized word is non-empty and contains at least one digit.
+bool isFootnoteMarker(const char* word) {
+  char buf[MARKER_BUF_SIZE];
+  normalizeMarker(word, buf, sizeof(buf));
+  if (buf[0] == '\0') return false;
+  for (const char* p = buf; *p != '\0'; p++) {
+    if (*p >= '0' && *p <= '9') return true;
+  }
+  return false;
+}
+
+// True when the normalized word is non-empty and contains only ASCII digits.
+bool isNumericMarker(const char* word) {
+  char buf[MARKER_BUF_SIZE];
+  normalizeMarker(word, buf, sizeof(buf));
+  if (buf[0] == '\0') return false;
+  for (const char* p = buf; *p != '\0'; p++) {
+    if (*p < '0' || *p > '9') return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 void DictionaryWordSelectActivity::onEnter() {
@@ -54,6 +100,31 @@ void DictionaryWordSelectActivity::onEnter() {
     const int initial = closestInRow(rowCount / 2, renderer.getScreenWidth() / 2);
     if (initial >= 0) selected = initial;
   }
+
+  if (initialX >= 0) {
+    const int hit = wordAt(initialX, initialY);
+    if (hit >= 0) {
+      selected = hit;
+      if (mode == TouchLongPressMode::Footnote && isFootnoteMarker(words[hit].text)) {
+        const std::string href = resolveFootnoteHref(words[hit].text);
+        if (!href.empty()) {
+          setResult(ActivityResult(FootnoteResult{href}));
+          finish();
+          return;
+        }
+        // Numeric body note references are guaranteed-miss dictionary lookups;
+        // just return to the reader instead of running one.
+        if (isNumericMarker(words[hit].text)) {
+          finish();
+          return;
+        }
+        // Non-numeric marker miss: fall through to dictionary lookup.
+      }
+      performLookup();
+      return;
+    }
+  }
+
   requestUpdate();
 }
 
@@ -120,6 +191,21 @@ int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
     }
   }
   return -1;
+}
+
+std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) const {
+  char normalized[MARKER_BUF_SIZE];
+  normalizeMarker(word, normalized, sizeof(normalized));
+  if (normalized[0] == '\0') return {};
+
+  char entryBuf[MARKER_BUF_SIZE];
+  for (const auto& entry : page->footnotes) {
+    normalizeMarker(entry.number, entryBuf, sizeof(entryBuf));
+    if (std::strcmp(entryBuf, normalized) == 0) {
+      return std::string(entry.href);
+    }
+  }
+  return {};
 }
 
 // Index of the word in `row` whose horizontal center is closest to centerX;
