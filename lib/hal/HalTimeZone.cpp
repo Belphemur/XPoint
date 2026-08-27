@@ -139,3 +139,55 @@ TimeZoneInfo detectTimeZoneFromIp() {
 }
 
 }  // namespace freeink
+
+#include <AceTime.h>
+
+namespace freeink {
+
+using ace_time::ExtendedZoneManager;
+using ace_time::ExtendedZoneProcessor;
+using ace_time::ExtendedZoneProcessorCache;
+using ace_time::TimeZone;
+using ace_time::ZonedDateTime;
+using ace_time::zonedbx::kZoneAndLinkRegistry;
+using ace_time::zonedbx::kZoneAndLinkRegistrySize;
+
+// One zone processor is enough: we resolve at most one zone at a time, and the
+// manager reuses the processor across calls. The database (kZoneAndLinkRegistry,
+// 597 entries incl. Links like "America/Toronto") is flash-resident const data.
+static ExtendedZoneProcessorCache<1> sZoneCache;
+static ExtendedZoneManager sZoneManager(kZoneAndLinkRegistrySize, kZoneAndLinkRegistry, sZoneCache);
+
+// Cache the last successful resolution so callers that render every frame (menu
+// rows) don't rebuild the ZonedDateTime repeatedly for the same zone+minute.
+static char sCachedId[40] = "";
+static int64_t sCachedEpoch = -1;
+static int sCachedOffset = 0;
+
+bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds, int& offsetMin) {
+  if (!ianaId || ianaId[0] == '\0') {
+    return false;
+  }
+  // Serve from cache when the id and wall-minute are unchanged.
+  if (sCachedId[0] != '\0' && strncmp(sCachedId, ianaId, sizeof(sCachedId)) == 0 &&
+      utcEpochSeconds / 60 == sCachedEpoch / 60) {
+    offsetMin = sCachedOffset;
+    return true;
+  }
+
+  const TimeZone tz = sZoneManager.createForZoneName(ianaId);
+  if (tz.isError()) {
+    return false;
+  }
+  const ZonedDateTime zdt = ZonedDateTime::forEpochSeconds(static_cast<ace_time::acetime_t>(utcEpochSeconds), tz);
+  const int off = zdt.timeOffset().toMinutes();
+
+  strncpy(sCachedId, ianaId, sizeof(sCachedId) - 1);
+  sCachedId[sizeof(sCachedId) - 1] = '\0';
+  sCachedEpoch = utcEpochSeconds;
+  sCachedOffset = off;
+  offsetMin = off;
+  return true;
+}
+
+}  // namespace freeink
