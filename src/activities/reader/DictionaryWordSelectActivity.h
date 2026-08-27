@@ -6,7 +6,9 @@
 #include <memory>
 #include <vector>
 
+#include "TouchLongPressMode.h"
 #include "activities/Activity.h"
+#include "activities/ActivityResult.h"
 #include "util/Dictionary.h"
 
 // Word selection over the current reader page: Left/Right step through words
@@ -16,11 +18,15 @@
 class DictionaryWordSelectActivity final : public Activity {
  public:
   explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                        std::unique_ptr<Page> page, int marginLeft, int marginTop)
+                                        std::unique_ptr<Page> page, int marginLeft, int marginTop, int initialX = -1,
+                                        int initialY = -1, TouchLongPressMode mode = TouchLongPressMode::Dictionary)
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         page(std::move(page)),
         marginLeft(marginLeft),
-        marginTop(marginTop) {}
+        marginTop(marginTop),
+        initialX(initialX),
+        initialY(initialY),
+        mode(mode) {}
 
   void onEnter() override;
   void loop() override;
@@ -43,6 +49,7 @@ class DictionaryWordSelectActivity final : public Activity {
   void extractWords();
   int closestInRow(uint16_t row, int centerX) const;
   int wordAt(int x, int y) const;
+  std::string resolveFootnoteHref(const char* word) const;
   void moveVertical(int direction);
   void performLookup();
   bool drawHighlightWithSnapshot();
@@ -51,6 +58,9 @@ class DictionaryWordSelectActivity final : public Activity {
   std::unique_ptr<Page> page;
   const int marginLeft;
   const int marginTop;
+  const int initialX;
+  const int initialY;
+  const TouchLongPressMode mode;
   int fontId = 0;
   int lineHeight = 0;
 
