@@ -211,6 +211,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     TOUCH_READER_CONTROLS_COUNT
   };
 
+  // Action for a long press on the reading surface (touch boards only).
+  // Persisted uint8_t BY MENU-POSITION INDEX — APPEND ONLY (see appendEnumEmplace).
+  enum TOUCH_LONG_PRESS_ACTION {
+    TOUCH_LP_DICTIONARY = 0,
+    TOUCH_LP_IGNORE = 1,
+    TOUCH_LP_FOOTNOTE = 2,
+    TOUCH_LONG_PRESS_ACTION_COUNT
+  };
+
   // How the reader menu opens on touch boards. Persisted under the legacy
   // "tapForReaderMenu" key: 0/1 keep their old Off/Tap meaning.
   enum SHOW_READER_MENU { READER_MENU_OFF = 0, READER_MENU_TAP = 1, READER_MENU_SWIPE_UP = 2, SHOW_READER_MENU_COUNT };
@@ -335,6 +344,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t tiltPageTurn = TILT_OFF;
   // Touch screen reader zones/gestures on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_SWIPE;
+  // Action for a long press on the reading surface (touch boards only).
+  uint8_t touchLongPressAction = TOUCH_LP_DICTIONARY;
   // Reader menu open gesture (SHOW_READER_MENU: off / center tap / bottom-edge
   // up-swipe). Only surfaced on home-key boards, where Home is the capacitive
   // key and the bottom edge is free; elsewhere it stays at the Tap default.

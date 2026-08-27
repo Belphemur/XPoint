@@ -320,6 +320,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
             {StrId::STR_STATE_OFF, StrId::STR_STATE_TAP, StrId::STR_STATE_SWIPE, StrId::STR_STATE_INVERTED_TAP},
             "touchReaderControls", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_TOUCH_LONG_PRESS, &CrossPointSettings::touchLongPressAction,
+                          {StrId::STR_DICTIONARY, StrId::STR_IGNORE, StrId::STR_FOOTNOTES}, "touchLongPressAction",
+                          StrId::STR_CAT_CONTROLS),
         // Persisted under the legacy "tapForReaderMenu" key: old saves map
         // 0 = Off, 1 = Tap.
         SettingInfo::Enum(StrId::STR_SHOW_READER_MENU, &CrossPointSettings::showReaderMenu,
@@ -492,7 +495,10 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   std::vector<SettingInfo> v = baseList;
   if (!BoardConfig::hasTouch()) {
     v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) { return s.nameId == StrId::STR_TOUCH_READER_CONTROLS; }),
+                           [](const SettingInfo& s) {
+                             return s.nameId == StrId::STR_TOUCH_READER_CONTROLS ||
+                                    s.nameId == StrId::STR_TOUCH_LONG_PRESS;
+                           }),
             v.end());
   }
   // The reader-menu gesture choice only makes sense where the menu stays
