@@ -6,9 +6,11 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <cctype>
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
@@ -17,6 +19,7 @@
 namespace {
 
 constexpr unsigned long POPUP_DURATION_MS = 1500;
+constexpr size_t MARKER_BUF_SIZE = 64;
 
 // A token is selectable when it has an ASCII alphanumeric or a non-ASCII
 // codepoint outside U+2000-U+206F (dashes, bullets and other General
@@ -37,6 +40,62 @@ bool isSelectableToken(const char* text) {
 
 void indexBuildYield(void*) { vTaskDelay(1); }
 
+// Normalize a touched word to match the EPUB parser's footnote-number contract
+// (ChapterHtmlSlimParser.cpp:1537-1561): strip leading whitespace + '[', and
+// trailing whitespace + ']'; also trim any whitespace left INSIDE the brackets
+// so "[ 12 ]" matches the parser-stored "12". The parser does NOT strip
+// parentheses, so '(1)' stays '(1)' and must NOT collapse into '1' — stripping
+// parens would make '[1]' and '(1)' compare equal and turn '(2024)' into a
+// numeric no-op. (This function intentionally only touches brackets, never
+// parentheses.) entry.number is already normalized this same way by the parser,
+// so the touched word is compared against entry.number verbatim (no
+// re-normalization of the entry side, which would broaden matches).
+// Returns the length of the normalized text in dst.
+size_t normalizeMarker(const char* src, char* dst, size_t dstSize) {
+  const char* p = src;
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+  if (*p == '[') {
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;  // trim inside [
+  }
+
+  const char* end = p + std::strlen(p);
+  if (end > p) end--;
+  while (end > p && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
+  if (end > p && *end == ']') {
+    end--;
+    while (end > p && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
+  }
+
+  size_t len = static_cast<size_t>(end - p + 1);
+  if (len >= dstSize) len = dstSize - 1;
+  std::memcpy(dst, p, len);
+  dst[len] = '\0';
+  return len;
+}
+
+// True when the normalized word is non-empty and contains at least one digit.
+bool isFootnoteMarker(const char* word) {
+  char buf[MARKER_BUF_SIZE];
+  normalizeMarker(word, buf, sizeof(buf));
+  if (buf[0] == '\0') return false;
+  for (const char* p = buf; *p != '\0'; p++) {
+    if (*p >= '0' && *p <= '9') return true;
+  }
+  return false;
+}
+
+// True when the normalized word is non-empty and contains only ASCII digits.
+bool isNumericMarker(const char* word) {
+  char buf[MARKER_BUF_SIZE];
+  normalizeMarker(word, buf, sizeof(buf));
+  if (buf[0] == '\0') return false;
+  for (const char* p = buf; *p != '\0'; p++) {
+    if (*p < '0' || *p > '9') return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 void DictionaryWordSelectActivity::onEnter() {
@@ -54,6 +113,31 @@ void DictionaryWordSelectActivity::onEnter() {
     const int initial = closestInRow(rowCount / 2, renderer.getScreenWidth() / 2);
     if (initial >= 0) selected = initial;
   }
+
+  if (initialX >= 0) {
+    const int hit = wordAt(initialX, initialY);
+    if (hit >= 0) {
+      selected = hit;
+      if (mode == TouchLongPressMode::Footnote && isFootnoteMarker(words[hit].text)) {
+        const std::string href = resolveFootnoteHref(words[hit].text);
+        if (!href.empty()) {
+          setResult(ActivityResult(FootnoteResult{href}));
+          finish();
+          return;
+        }
+        // Numeric body note references are guaranteed-miss dictionary lookups;
+        // just return to the reader instead of running one.
+        if (isNumericMarker(words[hit].text)) {
+          finish();
+          return;
+        }
+        // Non-numeric marker miss: fall through to dictionary lookup.
+      }
+      performLookup();
+      return;
+    }
+  }
+
   requestUpdate();
 }
 
@@ -120,6 +204,21 @@ int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
     }
   }
   return -1;
+}
+
+std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) const {
+  char normalized[MARKER_BUF_SIZE];
+  normalizeMarker(word, normalized, sizeof(normalized));
+  if (normalized[0] == '\0') return {};
+
+  // entry.number is already normalized by the parser (whitespace + '['/'['
+  // stripped, parentheses preserved), so compare against it verbatim.
+  const auto it = std::find_if(page->footnotes.begin(), page->footnotes.end(),
+                               [&](const FootnoteEntry& entry) { return std::strcmp(entry.number, normalized) == 0; });
+  if (it != page->footnotes.end()) {
+    return std::string(it->href);
+  }
+  return {};
 }
 
 // Index of the word in `row` whose horizontal center is closest to centerX;
