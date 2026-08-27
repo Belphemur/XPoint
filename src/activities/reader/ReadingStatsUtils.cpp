@@ -253,8 +253,7 @@ bool getCurrentLocalReadingStatsDateTime(ReadingStatsDateTime& outDateTime) {
     return false;
   }
 
-  const int offsetQuarterHours = static_cast<int>(SETTINGS.clockUtcOffsetQ) - 48;
-  const int offsetMinutes = offsetQuarterHours * 15;
+  const int offsetMinutes = SETTINGS.clockEffectiveOffsetMin();
   int totalMinutes = static_cast<int>(outDateTime.hour) * 60 + static_cast<int>(outDateTime.minute) + offsetMinutes;
 
   while (totalMinutes < 0) {

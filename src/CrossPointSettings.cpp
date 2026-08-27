@@ -104,6 +104,13 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // Language -- managed by LanguageSelectActivity, not in SettingsList.
   // Stored as ISO code string ("EN", "DE", ...) for stability across enum reorders.
   doc["language"] = (language < getLanguageCount()) ? LANGUAGE_CODES[language] : "EN";
+
+  // Auto-detected time zone (not in SettingsList; persisted manually).
+  if (clockTimeZoneId[0] != '\0') {
+    doc["clockTimeZoneId"] = clockTimeZoneId;
+  }
+  doc["clockTzOffsetMin"] = clockTzOffsetMin;
+  doc["clockTzIsDst"] = clockTzIsDst;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -222,6 +229,14 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     language = static_cast<uint8_t>(I18n::languageFromCode(doc["language"].as<const char*>()));
   }
 
+  // Auto-detected time zone (not in SettingsList; loaded manually). Old saves
+  // without these keys keep the defaults (empty id, offset 0 -> display UTC).
+  const char* tzId = doc["clockTimeZoneId"] | "";
+  strncpy(clockTimeZoneId, tzId, sizeof(clockTimeZoneId) - 1);
+  clockTimeZoneId[sizeof(clockTimeZoneId) - 1] = '\0';
+  clockTzOffsetMin = doc["clockTzOffsetMin"] | 0;
+  clockTzIsDst = doc["clockTzIsDst"] | 0;
+
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
     requestResave();
@@ -243,7 +258,7 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
   spec.showBatteryPercent = hideBatteryPercentage == HIDE_NEVER;
   spec.clockMode = statusBarClock;
   spec.clock12h = clockFormat == 1;
-  spec.clockUtcOffsetQ = clockUtcOffsetQ;
+  spec.clockUtcOffsetMin = clockEffectiveOffsetMin();
   spec.progressBarMode = statusBarProgressBar;
   spec.progressBarHeightPx =
       statusBarProgressBar != HIDE_PROGRESS ? static_cast<uint8_t>((statusBarProgressBarThickness + 1) * 2) : 0;
