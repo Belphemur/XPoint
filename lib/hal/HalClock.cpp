@@ -102,16 +102,16 @@ bool HalClock::getDateTime(uint16_t& year, uint8_t& month, uint8_t& day, uint8_t
   return false;
 }
 
-bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHoursBiased, bool use12Hour) const {
+bool HalClock::formatTime(char* buf, size_t bufSize, int offsetMinutes, bool use12Hour) const {
   if (bufSize < (use12Hour ? 9u : 6u)) return false;
   uint8_t h, m;
   if (!getTime(h, m)) return false;
 
-  // Apply UTC offset: convert biased value to signed quarter-hours.
-  // Clamp against corrupted persisted values so display time can't drift outside [-12:00, +14:00].
-  if (utcOffsetQuarterHoursBiased > 104) utcOffsetQuarterHoursBiased = 104;
-  int offsetQuarterHours = static_cast<int>(utcOffsetQuarterHoursBiased) - 48;
-  int totalMinutes = static_cast<int>(h) * 60 + static_cast<int>(m) + offsetQuarterHours * 15;
+  // Apply UTC offset in minutes, clamped to [-12:00, +14:00] so a corrupted
+  // persisted/auto-detected value can't push display time out of range.
+  if (offsetMinutes < -720) offsetMinutes = -720;
+  if (offsetMinutes > 840) offsetMinutes = 840;
+  int totalMinutes = static_cast<int>(h) * 60 + static_cast<int>(m) + offsetMinutes;
 
   // Wrap around 24 hours
   totalMinutes = ((totalMinutes % 1440) + 1440) % 1440;
