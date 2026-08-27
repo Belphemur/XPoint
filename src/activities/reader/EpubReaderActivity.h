@@ -14,6 +14,7 @@
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
+#include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
 #ifdef READING_STATS_ENABLED
 #include "BookReadingStats.h"
@@ -166,7 +167,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // Activity override: the reader's contextual menu is what a Home-key
   // long press opens (CrossInk-style configurable long-press action).
   bool openShortcutMenu() const override;
-  void openDictionaryWordSelect();
+  // TouchLongPressMode (see TouchLongPressMode.h) is passed to
+  // openDictionaryWordSelect so the activity never reads the mutable
+  // SETTINGS.touchLongPressAction global.
+  void openDictionaryWordSelect(int touchX = -1, int touchY = -1,
+                                TouchLongPressMode mode = TouchLongPressMode::Dictionary);
   bool launchKOReaderSync();
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);

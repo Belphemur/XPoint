@@ -16,12 +16,14 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <variant>
 
 #include "../../util/BookmarkFile.h"
 #include "BookmarkEntry.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#include "activities/ActivityResult.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -413,8 +415,8 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
   buildPopupPending = false;
 }
 
-void EpubReaderActivity::openDictionaryWordSelect() {
-  if (SETTINGS.dictionaryName[0] == '\0') {
+void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
+  if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
     requestUpdate();
@@ -430,9 +432,15 @@ void EpubReaderActivity::openDictionaryWordSelect() {
   orientedMarginTop += SETTINGS.screenMargin;
   orientedMarginLeft += SETTINGS.screenMargin;
 
-  startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
-                                                                        orientedMarginLeft, orientedMarginTop),
-                         [this](const ActivityResult&) { requestUpdate(); });
+  startActivityForResult(
+      std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page), orientedMarginLeft,
+                                                     orientedMarginTop, touchX, touchY, mode),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
+          navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
+        }
+        requestUpdate();
+      });
 }
 
 void EpubReaderActivity::loop() {
@@ -589,6 +597,19 @@ void EpubReaderActivity::loop() {
   }
   const bool endOfBookMenuOpen = endOfBookMenuActive();
 
+  if (SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF && mappedInput.hasTouch() &&
+      SETTINGS.touchLongPressAction != CrossPointSettings::TOUCH_LP_IGNORE && !showDictionaryMessage &&
+      !automaticPageTurnActive) {
+    int lx = 0, ly = 0;
+    if (mappedInput.wasScreenLongPress(lx, ly)) {
+      const auto mode = (SETTINGS.touchLongPressAction == CrossPointSettings::TOUCH_LP_FOOTNOTE)
+                            ? TouchLongPressMode::Footnote
+                            : TouchLongPressMode::Dictionary;
+      openDictionaryWordSelect(lx, ly, mode);
+      return;
+    }
+  }
+
   const unsigned long confirmHoldMs = confirmLongPressThreshold();
   // wasLongPressed() suppresses the release that follows it, so leave it unpolled while
   // the end-of-book menu owns Confirm -- otherwise the menu never sees that release.
@@ -632,8 +653,14 @@ void EpubReaderActivity::loop() {
         }
         return;
       case CrossPointSettings::LP_MENU_KOSYNC:
-        launchKOReaderSync();
-        return;
+        // Only consume the hold when sync can actually start. Without
+        // credentials launchKOReaderSync() returns false, and we must fall
+        // through so the configured Home long-press action still runs.
+        if (KOREADER_STORE.hasCredentials()) {
+          launchKOReaderSync();
+          return;
+        }
+        break;
       case CrossPointSettings::LP_MENU_DICTIONARY:
         if (!showDictionaryMessage) {
           openDictionaryWordSelect();
