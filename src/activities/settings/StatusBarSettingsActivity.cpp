@@ -7,7 +7,6 @@
 #include <cstring>
 #include <memory>
 
-#include "ClockOffsetActivity.h"
 #include "ClockSyncActivity.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -29,10 +28,10 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_CLOCK,             // X3 only
-  ITEM_CLOCK_FORMAT,      // X3 only
-  ITEM_CLOCK_UTC_OFFSET,  // X3 only, launches ClockOffsetActivity
-  ITEM_CLOCK_SYNC,        // X3 only, launches ClockSyncActivity
+  ITEM_CLOCK,         // X3 only
+  ITEM_CLOCK_FORMAT,  // X3 only
+  ITEM_TIME_ZONE,     // X3 only, shows the auto-detected zone (read-only)
+  ITEM_CLOCK_SYNC,    // X3 only, launches ClockSyncActivity
   ITEM_COUNT
 };
 
@@ -52,25 +51,13 @@ const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_XTC_STATUS_BAR,
     StrId::STR_CLOCK,
     StrId::STR_CLOCK_FORMAT,
-    StrId::STR_CLOCK_UTC_OFFSET,
+    StrId::STR_TIMEZONE,
     StrId::STR_CLOCK_SYNC_NOW,
 };
 
 constexpr int CLOCK_FORMAT_ITEMS = 2;
 const StrId clockFormatNames[CLOCK_FORMAT_ITEMS] = {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H};
 
-std::string formatUtcOffset(uint8_t biasedQ) {
-  // biasedQ is in quarter-hour steps, biased by 48 (so 48 = UTC+0).
-  if (biasedQ > 104) biasedQ = 48;
-  int totalMinutes = (static_cast<int>(biasedQ) - 48) * 15;
-  bool neg = totalMinutes < 0;
-  int absMinutes = neg ? -totalMinutes : totalMinutes;
-  int hours = absMinutes / 60;
-  int mins = absMinutes % 60;
-  char buf[16];
-  snprintf(buf, sizeof(buf), "UTC%c%d:%02d", neg ? '-' : '+', hours, mins);
-  return buf;
-}
 constexpr int PROGRESS_BAR_ITEMS = 3;
 const StrId progressBarNames[PROGRESS_BAR_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
 
@@ -117,10 +104,6 @@ void StatusBarSettingsActivity::onEnter() {
 
   if (SETTINGS.xtcStatusBarMode >= XTC_STATUS_BAR_ITEMS) {
     SETTINGS.xtcStatusBarMode = CrossPointSettings::XTC_STATUS_BAR_MODE::XTC_STATUS_BAR_HIDE;
-  }
-
-  if (SETTINGS.clockUtcOffsetQ > 104) {
-    SETTINGS.clockUtcOffsetQ = 48;  // Default to UTC+0
   }
 
   if (SETTINGS.clockFormat >= CLOCK_FORMAT_ITEMS) {
@@ -209,9 +192,8 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_CLOCK_FORMAT:
       SETTINGS.clockFormat = (SETTINGS.clockFormat + 1) % CLOCK_FORMAT_ITEMS;
       break;
-    case ITEM_CLOCK_UTC_OFFSET:
-      // Launch the dedicated offset picker. It saves on exit, no result handler needed.
-      startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput), nullptr);
+    case ITEM_TIME_ZONE:
+      // Read-only: the zone is auto-detected on sync. "Sync clock now" re-detects it.
       return;
     case ITEM_CLOCK_SYNC:
       startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), nullptr);
@@ -248,8 +230,20 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
       const uint8_t fmt = SETTINGS.clockFormat < CLOCK_FORMAT_ITEMS ? SETTINGS.clockFormat : 0;
       return std::string(I18N.get(clockFormatNames[fmt]));
     }
-    case ITEM_CLOCK_UTC_OFFSET:
-      return formatUtcOffset(SETTINGS.clockUtcOffsetQ);
+    case ITEM_TIME_ZONE: {
+      if (SETTINGS.clockTimeZoneId[0] == '\0') {
+        return std::string(tr(STR_NOT_SET));
+      }
+      // Show e.g. "America/Toronto (UTC-4)" with a DST badge when in effect.
+      const int off = SETTINGS.clockEffectiveOffsetMin();
+      const bool neg = off < 0;
+      const int absOff = neg ? -off : off;
+      const char* dstBadge = SETTINGS.clockTzIsDst ? tr(STR_DST) : "";
+      char val[64];
+      snprintf(val, sizeof(val), "%s (%s%c%d:%02d%s)", SETTINGS.clockTimeZoneId, tr(STR_UTC), neg ? '-' : '+',
+               absOff / 60, absOff % 60, dstBadge);
+      return std::string(val);
+    }
     case ITEM_CLOCK_SYNC:
       return SETTINGS.clockHasBeenSynced ? tr(STR_CLOCK_SYNCED) : tr(STR_NOT_SET);
     default:
