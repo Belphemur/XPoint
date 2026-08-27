@@ -6,6 +6,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <algorithm>
 #include <cctype>
 #include <climits>
 #include <cstdlib>
@@ -212,10 +213,10 @@ std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) 
 
   // entry.number is already normalized by the parser (whitespace + '['/'['
   // stripped, parentheses preserved), so compare against it verbatim.
-  for (const auto& entry : page->footnotes) {
-    if (std::strcmp(entry.number, normalized) == 0) {
-      return std::string(entry.href);
-    }
+  const auto it = std::find_if(page->footnotes.begin(), page->footnotes.end(),
+                               [&](const FootnoteEntry& entry) { return std::strcmp(entry.number, normalized) == 0; });
+  if (it != page->footnotes.end()) {
+    return std::string(it->href);
   }
   return {};
 }
