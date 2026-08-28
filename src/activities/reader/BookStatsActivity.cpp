@@ -5,6 +5,7 @@
 
 #include <cstdio>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "ReadingStatsUtils.h"
 #include "components/UITheme.h"
@@ -45,8 +46,18 @@ void BookStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
   const size_t n = 20;
-  valueCache.reserve(n);
-  rowItems.reserve(n);
+  valueCache.reserve(n + 1);
+  rowItems.reserve(n + 1);
+
+  // Tracking off: this header banner sits at the very top (design §7.1.1) and
+  // clarifies the rows below are frozen at their last-saved values. isHeader
+  // makes it underlined and non-selectable/non-interactive automatically.
+  if (!SETTINGS.shouldTrackReadingStats()) {
+    fui::ListItem banner;
+    banner.isHeader = true;
+    banner.label = tr(STR_STATS_DISABLED);
+    rowItems.push_back(banner);
+  }
 
   const auto addRow = [&](const char* label, std::string value) {
     valueCache.push_back(std::move(value));
@@ -56,6 +67,15 @@ void BookStatsActivity::rebuildRowItems() {
     item.actionValue = static_cast<int16_t>(rowItems.size());
     rowItems.push_back(item);
   };
+
+  // Tracking off: the rows below still show the last-saved numbers; this
+  // header banner clarifies they are frozen (design §7.1.1).
+  if (!SETTINGS.shouldTrackReadingStats()) {
+    fui::ListItem banner;
+    banner.isHeader = true;
+    banner.label = tr(STR_STATS_DISABLED);
+    rowItems.push_back(banner);
+  }
 
   addRow(tr(STR_STATS_SESSIONS_LBL), std::to_string(stats.sessionCount));
   addRow(tr(STR_STATS_TIME_LBL), formatStatsDuration(stats.totalReadingSeconds));
