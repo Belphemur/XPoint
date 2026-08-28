@@ -50,6 +50,18 @@ class HalPowerManager {
   // duration). Compiled out unless LOG_LEVEL >= 2 (dev/x4pro builds).
   void logSleepBattery() const;
 
+  // Dev-only: the last computed sleep-drain result, persisted in RTC memory so
+  // the UI can show it after wake (when the serial port is back up). Invalid
+  // until the device has slept at least once. Compiled out unless
+  // LOG_LEVEL >= 2.
+  struct SleepDrain {
+    bool valid = false;  // false on cold boot / before first sleep
+    uint32_t sleptSeconds = 0;
+    int deltaMv = 0;  // negative = drained
+    double mvPerHour = 0.0;
+  };
+  SleepDrain getLastSleepDrain() const;
+
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
   // full performance. When the Lock instance is destroyed (goes out of scope), power saving will be re-enabled.
