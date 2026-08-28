@@ -5,11 +5,15 @@
 HalFrontlight HalFrontlight::instance;
 
 void HalFrontlight::begin(const uint8_t brightness, const uint8_t warmth, const bool on) {
-  if (!manager.present()) return;
+  if (!manager.present()) {
+    LOG_INF("LIGHT", "begin: frontlight not present, skipping");
+    return;
+  }
 
   // Drop any deep-sleep pad hold left by FrontlightManager::park() on the
   // previous cycle so the LEDC channels re-attach cleanly (a held pad makes the
   // driver's drive a no-op). No-op when the device wasn't parked.
+  LOG_INF("LIGHT", "begin: on=%d brightness=%u warmth=%u (calling releaseOnWake)", on ? 1 : 0, brightness, warmth);
 #ifdef FREEINK_FRONTLIGHT_LS
   manager.releaseOnWake();
 #endif
