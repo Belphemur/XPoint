@@ -19,12 +19,18 @@
 HalPowerManager powerManager;  // Singleton instance
 
 // Dev-only battery-drain tracing across deep sleep. RTC slow memory survives
-// deep sleep, so we stash the mV reading and a truncated sleep-entry timestamp
-// (seconds since a 2026 base) just before sleeping and compare them on wake.
-// We store the truncated RTC seconds (uint32_t) rather than the raw 64-bit RTC
-// epoch to keep the RTC_DATA footprint small; the delta we actually use cancels
-// any epoch anyway, so the 2026 base is only there to keep the stored number
-// small. 0 means "never slept" (cold boot) — skip then.
+// deep sleep, so we stash the mV reading and the raw RTC seconds
+// (esp_rtc_get_time_us()/1e6 — an *elapsed* counter, NOT the Unix epoch) just
+// before sleeping and compare them on wake. Storing the raw 64-bit counter is
+// unnecessary: we only ever subtract the two snapshots, so a uint32_t of seconds
+// is plenty and far smaller in RTC slow memory. A 0 stored timestamp means
+// "never slept" (cold boot) — skip the computation then.
+//
+// Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
+// below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
+// record from an older build would otherwise be misread after an OTA.
+static constexpr uint8_t SLEEP_TRACE_VERSION = 1;
+static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 static RTC_DATA_ATTR uint32_t _sleepEntryS = 0;
 static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
@@ -33,10 +39,6 @@ static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 // after wake (when the serial port is back up). Stays a small struct in RTC slow
 // memory.
 static RTC_DATA_ATTR HalPowerManager::SleepDrain _lastSleepDrain{};
-
-// 2026-01-01T00:00:00Z in microseconds, used only to truncate the RTC epoch so
-// the stored sleep-entry timestamp stays a small uint32_t of seconds.
-static constexpr uint64_t RTC_2026_BASE_US = 1767225600000000ULL;
 
 // GPIO13 controls the X4 battery latch and the X3 SD power rail on the C3
 // Xteink boards. Other boards use it for unrelated signals, including the
@@ -155,14 +157,15 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 #if LOG_LEVEL >= 2
   // Dev-only: snapshot the battery before sleeping so we can compute drain on
   // wake. The X4 Pro CW2017 gauge (I2C 0x63) reports mV via BatteryMonitor.
+  // esp_rtc_get_time_us() is a free-running *elapsed* counter (not Unix time),
+  // so we store plain seconds since boot; the wake-side subtraction is what we
+  // actually use.
   {
     const BatteryMonitor battery;
     const uint16_t mv = battery.readMillivolts();
     if (mv != 0) {
       _sleepEntryMv = mv;
-      // Truncate the RTC epoch to 2026 so the stored value stays a small uint32_t.
-      const uint64_t rtcUs = esp_rtc_get_time_us();
-      _sleepEntryS = static_cast<uint32_t>((rtcUs > RTC_2026_BASE_US) ? (rtcUs - RTC_2026_BASE_US) / 1000000ULL : 0);
+      _sleepEntryS = static_cast<uint32_t>(esp_rtc_get_time_us() / 1000000ULL);
       LOG_DBG("PWR", "sleep entry: %u mV / %u%%", mv, battery.readPercentage());
     }
   }
@@ -172,19 +175,30 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
 
 void HalPowerManager::logSleepBattery() const {
 #if LOG_LEVEL >= 2
+  // RTC slow memory survives firmware updates, so a record written by an older
+  // build (different layout/meaning) must be discarded before we trust it.
+  if (_sleepTraceVersion != SLEEP_TRACE_VERSION) {
+    _sleepEntryMv = SLEEP_BATTERY_INVALID;
+    _sleepEntryS = 0;
+    _sleepTraceVersion = SLEEP_TRACE_VERSION;
+  }
   if (_sleepEntryMv == SLEEP_BATTERY_INVALID) {
-    // Cold boot (or first run): nothing to compare against.
+    // Cold boot (or first run, or a discarded stale record): nothing to compare against.
     return;
   }
   const BatteryMonitor battery;
   const uint16_t mvNow = battery.readMillivolts();
-  if (mvNow == 0) return;
+  if (mvNow == 0) {
+    // Read failed: clear the entry so a later zero-reading sleep doesn't merge
+    // this sleep with the next one and mis-report the drain.
+    _sleepEntryMv = SLEEP_BATTERY_INVALID;
+    return;
+  }
 
-  // RTC slow-clock counter keeps running through deep sleep. We truncated the
-  // epoch to 2026 at both snapshot and wake, so the difference is the actual
-  // seconds asleep and stays a small uint32_t.
-  const uint64_t nowUs = esp_rtc_get_time_us();
-  const uint32_t nowS = static_cast<uint32_t>((nowUs > RTC_2026_BASE_US) ? (nowUs - RTC_2026_BASE_US) / 1000000ULL : 0);
+  // RTC slow-clock counter keeps running through deep sleep. We stored plain
+  // seconds at both snapshot and wake, so the difference is the actual sleep
+  // duration.
+  const uint32_t nowS = static_cast<uint32_t>(esp_rtc_get_time_us() / 1000000ULL);
   const uint32_t sleptS = (nowS > _sleepEntryS) ? (nowS - _sleepEntryS) : 0;
   const uint64_t sleptUs = static_cast<uint64_t>(sleptS) * 1000000ULL;
   const int deltaMv = static_cast<int>(_sleepEntryMv) - static_cast<int>(mvNow);
