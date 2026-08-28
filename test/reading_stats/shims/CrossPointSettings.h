@@ -1,9 +1,18 @@
 #pragma once
 
 #include <cstdint>
+#include <ctime>
 
 // Host test shim for CrossPointSettings.h — supplies only the clock offset
 // accessor, which ReadingStatsUtils uses for the local-time offset.
+//
+// The production build provides freeink::resolveUtcOffsetMinutes (AceTime-backed).
+// On host there is no zone database, so we stub it to "unresolved" and let the
+// accessor fall back to the cached clockTzOffsetMin value.
+
+namespace freeink {
+inline bool resolveUtcOffsetMinutes(const char*, int64_t, int&) { return false; }
+}  // namespace freeink
 
 class CrossPointSettings {
  public:
