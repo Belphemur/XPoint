@@ -442,6 +442,15 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.type == SettingType::ACTION) {
+    // The "Sync clock now" row shows the currently detected time zone so the
+    // user can see what they'll refresh; before the first sync there is none.
+    if (setting.action == SettingAction::SyncClock) {
+      if (SETTINGS.clockTimeZoneId[0] != '\0') return SETTINGS.clockTimeZoneId;
+      return tr(STR_TIME_ZONE_NEED_SYNC);
+    }
+    return "";
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }
