@@ -458,6 +458,19 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CUSTOMISE_STATUS_BAR),
     };
+    // The Long-press Menu function opens on a long-press of the physical Confirm
+    // (menu) button (EpubReaderActivity confirm-hold path). Boards without a Confirm
+    // button — e.g. X4 Pro, which is touch + capacitive Home key only — have no menu
+    // button, so the control is unreachable (its Home-key hold path is shadowed by the
+    // Home long-press action) and would be a dead setting. Hide it there; it stays
+    // visible wherever a Confirm button exists or is synthesized (synthesizeConfirm).
+    if (BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED &&
+        !BoardConfig::ACTIVE.touch.synthesizeConfirm) {
+      v.erase(
+          std::remove_if(v.begin(), v.end(),
+                         [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
+          v.end());
+    }
     // Only show tilt page turn setting when the QMI8658 IMU is present (X3)
     if (halTiltSensor.isAvailable()) {
       // Insert after the short power button setting (end of Controls section)
