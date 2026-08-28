@@ -45,6 +45,11 @@ class HalPowerManager {
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 
+  // Dev-only: log battery drain across deep sleep (sleep-entry mV is stashed in
+  // RTC memory; on wake we compare against the new reading and the sleep
+  // duration). Compiled out unless LOG_LEVEL >= 2 (dev/x4pro builds).
+  void logSleepBattery() const;
+
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
   // full performance. When the Lock instance is destroyed (goes out of scope), power saving will be re-enabled.
