@@ -275,6 +275,74 @@ removed root and branch ("nothing will stay").
   to every other small store on the card; frequency (per session close) is unchanged from PR #1.
   Per-session wear drops ≈3× vs the SQLite baseline (§3.5).
 
+## 7.1. UX gating when tracking is disabled (user-facing, not build-flag)
+
+`READING_STATS_ENABLED` is a *compile-time* gate (§4). On top of it there is a
+*runtime* toggle, `CrossPointSettings::trackReadingStats` (`shouldTrackReadingStats()`,
+`CrossPointSettings.h:354,402`), default ON. When the user turns it OFF the recording
+path becomes a no-op (`EpubReaderActivity.cpp` gates every write on it; "disabling
+tracking writes nothing", §6.4), but the **menu entries and stats screens were still
+fully shown** — confusing: the user taps "Reading Stats" and sees numbers that will
+never update, or can delete stats that aren't being collected. This section makes the
+disabled state explicit in the UI.
+
+### 7.1.1. Behaviour (agreed)
+
+1. **Reader menu** (`EpubReaderMenuActivity`): the `READING_STATS` and `DELETE_STATS`
+   rows are **disabled** (dimmed, non-interactive) when `!SETTINGS.shouldTrackReadingStats()`.
+   Nothing opens / nothing is deleted from the menu.
+2. **Settings menu** (`SettingsActivity` → `SettingAction::ReadingStats`):
+   the "Reading Stats" action row is **disabled** the same way; it does not launch
+   `GlobalStatsActivity`.
+3. **Stats viewer entered anyway** (defensive — e.g. reached before a gate is refreshed,
+   or a future entry point): `BookStatsActivity` and `GlobalStatsActivity` render a
+   **warning banner as the top row** — a header-style `ListItem` (`isHeader = true`,
+   underlined) reading *"Reading stats are disabled"* (new string `STR_STATS_DISABLED`),
+   above all the stat rows. The rows below still render (read-only view of whatever was
+   last saved); only the meaning is clarified.
+
+### 7.1.2. Implementation notes (verified against the UI framework)
+
+- `freeink::ui::ListItem` already carries `enabled` (`list.h:8-24`). In `list()` the flag
+  does two things: it ORs `StateDisabled` onto the row's draw state (`list.h:478-479`,
+  dimmed style from `FreeInkUICore.h` `styles.disabled`) **and** it gates touch routing
+  (`list.h:480` only calls `frame.hit()` when `item.enabled`) — so a disabled row is
+  inert to *tap*. **Button navigation is NOT covered by `enabled`**: `UiListActivity`
+  moves the selection across every row and `activateIndex(selected)` fires on Confirm
+  regardless of `enabled` (`UiListActivity.cpp:46-57, 107-120, 192-206`). Therefore the
+  disable is only complete if the *activation handlers* also skip disabled rows:
+  - `EpubReaderMenuActivity::activateIndex` must treat a disabled `READING_STATS` /
+    `DELETE_STATS` as a no-op (return without `finish()`).
+  - `SettingsActivity`'s `SettingAction::ReadingStats` case must early-return (or the row
+    must not be activatable) when tracking is off.
+- Set `item.enabled = SETTINGS.shouldTrackReadingStats()` in the row builders:
+  `EpubReaderMenuActivity::buildMenuRowItems` (the two `READING_STATS`/`DELETE_STATS`
+  rows) and `SettingsActivity::rebuildRowItems` (the `ReadingStats` action row). Both run
+  at construction / category switch, which is when the toggle state is current. (The
+  toggle lives in Settings; leaving Settings and re-entering refreshes the rows, so no
+  live re-evaluation is needed.)
+- The warning banner in the viewers: in `rebuildRowItems()` (`BookStatsActivity.cpp:44`,
+  `GlobalStatsActivity.cpp:50`), when `!SETTINGS.shouldTrackReadingStats()`, `push_front`
+  one `ListItem` with `isHeader = true`, `label = tr(STR_STATS_DISABLED)`, and no value.
+  The header drawing path (`list.h:361-378`) already underlines it and makes it
+  non-selectable/non-interactive. Existing `addRow` rows are unchanged.
+
+### 7.1.3. Strings
+
+- Add `STR_STATS_DISABLED` to `lib/I18n/translations/english.yaml` (e.g.
+  `"Reading stats are disabled"`), and mirror it into every other language YAML that
+  carries the `STR_READING_STATS` family (the port already localized that block per
+  language — match its wording/tense). Used only by the two viewer activities.
+
+### 7.1.4. Verification
+
+- Host/simulator: with `trackReadingStats = 0`, the reader menu shows both stats rows
+  dimmed and tapping/Confirming them does nothing; the settings "Reading Stats" row is
+  dimmed and does not open `GlobalStatsActivity`; opening either viewer (force-launch)
+  shows the "Reading stats are disabled" header at the top.
+- Toggle back ON, reopen menus: rows are active again.
+- No change to the recording/persistence path (§3–§5); this is display-only.
+
 ## 8. OpenCode optimization pass (planned before implementation)
 
 Run the finalized doc through OpenCode (`opencode-go/kimi-k3`) with repo access, asking
