@@ -7,6 +7,12 @@ HalFrontlight HalFrontlight::instance;
 void HalFrontlight::begin(const uint8_t brightness, const uint8_t warmth, const bool on) {
   if (!manager.present()) return;
 
+  // Drop any deep-sleep pad hold left by FrontlightManager::park() on the
+  // previous cycle so the LEDC channels re-attach cleanly (a held pad makes the
+  // driver's drive a no-op). No-op when the device wasn't parked.
+#ifdef FREEINK_FRONTLIGHT_LS
+  manager.releaseOnWake();
+#endif
   manager.begin();
   lastBrightness = brightness > 100 ? 100 : brightness;
   manager.setColorTemperature(warmth > 100 ? 100 : warmth);
