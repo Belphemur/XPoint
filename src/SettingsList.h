@@ -469,10 +469,6 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat,
                           {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H}, "clockFormat",
                           StrId::STR_CUSTOMISE_STATUS_BAR),
-        // Manual "Sync clock now": forces an NTP sync and re-detects the time zone.
-        // Restored after the timezone-by-IP rework removed the standalone trigger; on
-        // boards without an external RTC it drives the system clock via SNTP.
-        SettingInfo::Action(StrId::STR_CLOCK_SYNC_NOW, SettingAction::SyncClock),
         // Persistence flag for NTP debounce. Resetting from the web UI forces a re-sync
         // on next WiFi connect, which is useful when crossing time zones.
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
