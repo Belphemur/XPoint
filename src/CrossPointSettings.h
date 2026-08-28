@@ -4,6 +4,15 @@
 #include <PersistableStore.h>
 
 #include <cstdint>
+#include <ctime>
+
+// Forward declaration: the live offset resolver lives in lib/hal/HalTimeZone.cpp
+// (which pulls in the AceTime database). Declaring it here keeps CrossPointSettings.h
+// free of that heavy dependency for the many TUs that include it. The production
+// link provides the real symbol; unit-test shims provide a stub.
+namespace freeink {
+bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds, int& offsetMin);
+}
 
 class CrossPointSettings : public PersistableStore<CrossPointSettings> {
  private:
@@ -448,12 +457,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   bool fromJson(JsonVariantConst doc);
 
   // Effective signed UTC offset in MINUTES for display. UTC (0) until a zone has
-  // been detected (clockTimeZoneId non-empty), then the detected current offset
-  // (which already folds DST). Clamped to the supported [-720, +840] range so a
-  // corrupted settings file cannot push ReadingStatsUtils' date-roll loops to an
-  // extreme iteration count.
+  // been detected (clockTimeZoneId non-empty). Once detected, the offset is
+  // resolved live from the IANA id (via the bundled AceTime database, folding DST
+  // automatically at the current UTC time) so the clock stays correct across DST
+  // transitions with no extra network calls. Falls back to the last-detected
+  // cached offset when the id can't be resolved (e.g. offline). Clamped to the
+  // supported [-720, +840] range so a corrupted settings file cannot push
+  // ReadingStatsUtils' date-roll loops to an extreme iteration count.
   int clockEffectiveOffsetMin() const {
     if (clockTimeZoneId[0] == '\0') return 0;
+    int live = 0;
+    if (freeink::resolveUtcOffsetMinutes(clockTimeZoneId, static_cast<int64_t>(time(nullptr)), live)) {
+      if (live < -720) return -720;
+      if (live > 840) return 840;
+      return live;
+    }
     int off = clockTzOffsetMin;
     if (off < -720) off = -720;
     if (off > 840) off = 840;

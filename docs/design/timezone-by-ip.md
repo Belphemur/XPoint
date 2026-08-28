@@ -1,8 +1,10 @@
 # Design: Auto-detect timezone by IP and apply DST-correct local time
 
-**Status:** Implemented — verified (cppcheck + x4pro build + host unit tests all green). Not yet committed (pending review).
+**Status:**
+- **Phase 1 (static captured offset):** implemented and **merged** in PR #11 (`8b1c03c2` on `develop`). Verified green (cppcheck + all 4 build envs + host unit tests + clang-format).
+- **Phase 2 (automatic DST via timezone library):** implemented and **merged-ready** in PR #12 (`feat/tz-dst-automatic` → `develop`). Implemented with `bxparks/AceTime` `ExtendedZoneProcessor` + `zonedbx2025` (2025b TZ Database, 2025–2200). The stored IANA id is the single source of truth; the live DST-aware offset is resolved at display time via `HalTimeZone::resolveUtcOffsetMinutes()`, replacing the static captured offset from Phase 1.
 **Date:** 2026-08-27
-**Branch:** `feat/timezone-by-ip` (created from current `develop` working tree)
+**Branch (Phase 2):** `feat/tz-dst-automatic` (cut from merged `develop`)
 **Decisions (locked, 2026-08-27):** manual-only re-sync · auto-detect on first sync · `setInsecure()` TLS · ipwho.is (primary) + worldtimeapi.org (secondary) · remove the manual UTC-offset picker.
 
 ## 1. Goal and summary
@@ -202,8 +204,9 @@ After `syncFromNTP()` succeeds, also call `detectTimeZoneFromIp()` and store it 
 
 ## 11. Open questions — RESOLVED
 
-- **Q1 DST refresh cadence:** manual "Sync clock now" only (no auto re-detect per WiFi connect, no
-  daily debounce). ✅
+- **Q1 DST refresh cadence (Phase 1):** manual "Sync clock now" only (no auto re-detect per WiFi
+  connect, no daily debounce). ✅ — **superseded by Phase 2** (see §13): DST is now computed live from
+  the stored IANA id, so the displayed offset corrects itself at every DST boundary without any resync.
 - **Q2 Service pair:** ipwho.is primary, worldtimeapi.org secondary. ✅
 - **Q3 New-device default:** auto-detect on first sync. ✅
 - **Q4 TLS trust:** `setInsecure()` (no CA pin). ✅
@@ -218,3 +221,86 @@ After `syncFromNTP()` succeeds, also call `detectTimeZoneFromIp()` and store it 
 - Manual on-device: connect WiFi → RTC UTC unchanged, status bar shows local DST-correct time; run
   "Sync clock now" after a zone change → offset updates; kill WiFi at sync → UTC fallback, no hang.
 - CI: `pio check -e x4pro` (cppcheck) must stay green; `clang-format` clean.
+
+## 13. Phase 2 — automatic DST via a timezone library (implemented in PR #12, supersedes static offset)
+
+### 13.1 Why Phase 1 is insufficient
+
+Phase 1 stores `clockTzOffsetMin` = the offset **at the moment of detection** (e.g. `-240`
+for `America/Toronto` in summer). `HalClock::formatTime()` adds that fixed number to the RTC's
+UTC every time it renders. That is correct only until the next DST transition, after which the
+display is one hour wrong until the user manually re-syncs. The offset capture is a *snapshot*;
+it cannot know when DST flips.
+
+### 13.2 The right model
+
+Store the **IANA id** as the single source of truth (already captured by `detectTimeZoneFromIp()`
+into `clockTimeZoneId`). At display time, resolve that id to a **live** UTC offset using a timezone
+library that knows the IANA rule database — so the offset is recomputed for the *current* UTC
+instant every render. When the wall clock crosses a DST boundary, the computed offset changes by
+±1h automatically. **No extra network call, no resync, no DB we maintain.**
+
+`clockTzOffsetMin` / `clockTzIsDst` become *informational caches* (used for the status-bar badge
+before the library is first queried, and as a UTC fallback if the id is unknown to the DB); the
+authoritative display offset is always `libraryOffset(utcNow, clockTimeZoneId)`.
+
+### 13.3 Library evaluation
+
+| Option | Method | Live DST from IANA id? | Cost on this device (16 MB flash) |
+|---|---|---|---|
+| **AceTime** (`bxparks/AceTime`) | Bundled IANA rule DB (`zonedb`/`zonedbx`/`zonedbx2025`), `forZoneName()` → `ZoneProcessor::getOffsetInfo(epoch)` | ✅ full, no network | `BasicZoneProcessor`+`zonedb` ≈35 kB flash; `ExtendedZoneProcessor`+`zonedbx` ≈44 kB; `…2025` recent-years variant (tz 2025b, 2025–2200) smaller. RAM: ~hundreds of bytes per ZoneProcessor (flash-resident const data). Negligible vs 16 MB. **Chosen: `ExtendedZoneProcessor`+`zonedbx2025`.** |
+| **ezTime** (`ropg/ezTime`) | Wraps newlib `tzset()`/POSIX TZ | ❌ ESP32 newlib ships **no zoneinfo**, so an IANA id cannot resolve to future DST. Only works with a POSIX TZ string (which we'd have to derive). | tiny, but insufficient. |
+| Native `setenv("TZ", posixRule); tzset()` | C library | ❌ requires translating IANA→POSIX rule = a fragile data problem of its own | zero, but blocked on the translation. |
+
+**Recommended: `bxparks/AceTime`, `ExtendedZoneProcessor` + `zonedbx` (or `zonedbx2025` to trim flash).**
+Rationale: it is the only option that satisfies the requirement (live DST from a stored IANA id)
+with no network and no hand-maintained DB; the flash cost (~35–44 kB) is trivial on a 16 MB part;
+and it is the de-facto standard ESP32/Arduino TZ library. `Extended` (not `Basic`) is chosen so
+irregular DST zones (e.g. `America/Sao_Paulo`, historical changes) are correct; if flash/IRAM
+proves tight on the C3 `default` env we fall back to `Basic`+`zonedb` which still covers the vast
+majority of users.
+
+### 13.4 Implemented changes (Phase 2)
+
+- **Dependency:** add `bxparks/AceTime` to `platformio.ini` `lib_deps` (same line style as the
+  existing `bblanchon/ArduinoJson @ 7.4.2`).
+- **`CrossPointSettings`:**
+  - Keep `clockTimeZoneId[40]` (now the source of truth).
+  - Demote `clockTzOffsetMin`/`clockTzIsDst` to caches (still persisted for the badge + offline
+    fallback; no behavior change to the JSON schema).
+  - `clockEffectiveOffsetMin()` becomes: if `clockTimeZoneId` is set, ask the HAL to resolve it
+    via `freeink::resolveUtcOffsetMinutes(utcNow, id)` (declared in `HalTimeZone.h`, implemented in
+    `HalTimeZone.cpp` with an `ExtendedZoneManager` over `zonedbx2025`); else return the cached
+    `clockTzOffsetMin` (UTC 0 before first detect).
+- **`HalTimeZone`:** add `bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds,
+  int& outOffsetMin)` — builds a `ZonedDateTime` for the Unix epoch with `ZonedDateTime::forUnixSeconds64()`
+  (AceTime's internal epoch is 2000-01-01, so raw Unix seconds must not be passed to `forEpochSeconds()`)
+  and returns `timeOffset().toMinutes()`. Result is cached per (id, minute); guarded by a mutex and an
+  epoch-validity check (epoch ≤ 0 → fall back to the cached offset before NTP sync). Callers pass the
+  *resolved* offset into `formatTime()`'s minute-offset signature.
+- **Wiring:** none required beyond `clockEffectiveOffsetMin()` — every existing caller
+  (`StatusBarSettingsActivity`, `ClockSyncActivity`, `ReadingStatsUtils`) already goes through it,
+  so DST becomes automatic everywhere. `syncFromNTP()` keeps `configTzTime("UTC0", …)` (RTC stays UTC).
+- **Sync activities** (`WifiSelectionActivity` first-sync, `ClockSyncActivity` manual): still store
+  `clockTimeZoneId` from detection; the offset/badge cache is refreshed from the library right after
+  detection for immediate display correctness, but the *runtime* offset is always recomputed live.
+
+### 13.5 Verification
+
+- Unit: given a fixed UTC epoch **before** and **after** a known DST boundary for a zone (e.g.
+  `America/Toronto` 2026-03-08 06:59 UTC → −300, 07:00 UTC → −240), assert the resolved offset
+  flips by ±60 min. Same for a southern-hemisphere zone.
+- Unit: unknown id + cached fallback path returns the stored `clockTzOffsetMin`.
+- Host unit tests: extend the existing `clockEffectiveOffsetMin()` test to mock the HAL resolver
+  (the host shim already stubs `CrossPointSettings`); no real AceTime needed in host tests.
+- On-device: set `America/New_York`, confirm the status bar shows EST in winter / EDT in summer with
+  no resync; fast-forward the RTC across a boundary → display corrects.
+- CI: `pio check` (cppcheck) + clang-format + all 4 build envs + host unit tests remain green
+  (expect a small flash-size bump from the AceTime DB — well within 16 MB).
+
+### 13.6 Resolved decision (implemented)
+
+- **AceTime `Extended`+`zonedbx2025` (recommended, full coverage) vs `Basic`+`zonedb` (smaller,
+  covers ~95% of zones)?** → recommending Extended unless the C3 `default` build shows flash pressure.
+- Add as a **new PR on the fork** (`feat/tz-dst-automatic` → `develop`), separate from the merged
+  static-offset PR #11, per the "one PR per feature / design-doc-first" gate.
