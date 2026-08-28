@@ -209,14 +209,14 @@ void restartToHomeAfterStorageHandoff() {
   ESP.restart();
 }
 
-bool toggleFrontlightByShortcut(const char* source) {
+bool toggleFrontlightByShortcut(std::string_view source) {
 #if FREEINK_CAP_FRONTLIGHT
   if (!Frontlight.present()) return false;
   const bool lightOn = !Frontlight.isOn();
   Frontlight.setOn(lightOn);
   SETTINGS.frontlightOn = lightOn ? 1 : 0;
   SETTINGS.saveToFile();
-  LOG_INF("LIGHT", "Frontlight toggled %s by %s", lightOn ? "on" : "off", source);
+  LOG_INF("LIGHT", "Frontlight toggled %s by %.*s", lightOn ? "on" : "off", (int)source.length(), source.data());
   return true;
 #else
   (void)source;
