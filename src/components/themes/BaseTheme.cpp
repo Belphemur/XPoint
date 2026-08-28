@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 #include "I18n.h"
@@ -296,8 +297,21 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   const bool showBatteryPercentage =
       SETTINGS.hideBatteryPercentage != CrossPointSettings::HIDE_BATTERY_PERCENTAGE::HIDE_ALWAYS;
   const uint16_t percentage = powerManager.getBatteryPercentage();
-  char percentText[8];
+  char percentText[24];
   snprintf(percentText, sizeof(percentText), "%u%%", static_cast<unsigned>(percentage));
+#if LOG_LEVEL >= 2
+  // Dev-only: show the last deep-sleep drain next to the battery % so it's
+  // readable after wake (the serial port is gone during sleep). Gated out of
+  // release builds.
+  {
+    const HalPowerManager::SleepDrain drain = powerManager.getLastSleepDrain();
+    if (drain.valid) {
+      char drainText[16];
+      snprintf(drainText, sizeof(drainText), tr(STR_SLEEP_DRAIN), drain.mvPerHour);
+      strncat(percentText, drainText, sizeof(percentText) - strlen(percentText) - 1);
+    }
+  }
+#endif
   // The icon glyph extends 2px past glyphWidth (terminal nub); reserve it or
   // the percent label's rect comes up short and the text truncates.
   constexpr int16_t batteryNubWidth = 2;
