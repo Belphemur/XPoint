@@ -9,8 +9,8 @@
 
 #include <cassert>
 
-#include "HalGPIO.h"
 #include "HalFrontlight.h"
+#include "HalGPIO.h"
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <M5Pm1.h>
