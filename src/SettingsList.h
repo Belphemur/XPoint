@@ -524,6 +524,18 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            }),
             v.end());
   }
+  // The Long-press Menu function opens on a long-press of the physical Confirm
+  // (menu) button (EpubReaderActivity confirm-hold path). Boards without a Confirm
+  // button — e.g. X4 Pro, which is touch + capacitive Home key only — have no menu
+  // button, so the control is unreachable (its Home-key hold path is shadowed by the
+  // Home long-press action) and would be a dead setting. Hide it there; it stays
+  // visible wherever a Confirm button exists or is synthesized (synthesizeConfirm).
+  if (BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED &&
+      !BoardConfig::ACTIVE.touch.synthesizeConfirm) {
+    v.erase(
+        std::remove_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
+        v.end());
+  }
   if (registry && registry->getFamilyCount() > 0) {
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_FAMILY; });
     if (it != v.end()) {
