@@ -2,7 +2,7 @@
 
 **Status:**
 - **Phase 1 (static captured offset):** implemented and **merged** in PR #11 (`8b1c03c2` on `develop`). Verified green (cppcheck + all 4 build envs + host unit tests + clang-format).
-- **Phase 2 (automatic DST via timezone library):** **designed here, not yet implemented.** This is a follow-up that supersedes the static-offset storage from Phase 1 — the merged code stores a *momentary* offset that goes stale at the next DST flip; Phase 2 makes DST correct automatically by computing the live offset from the stored IANA id via an Arduino timezone library.
+- **Phase 2 (automatic DST via timezone library):** implemented and **merged-ready** in PR #12 (`feat/tz-dst-automatic` → `develop`). Implemented with `bxparks/AceTime` `ExtendedZoneProcessor` + `zonedbx2025` (2025b TZ Database, 2025–2200). The stored IANA id is the single source of truth; the live DST-aware offset is resolved at display time via `HalTimeZone::resolveUtcOffsetMinutes()`, replacing the static captured offset from Phase 1.
 **Date:** 2026-08-27
 **Branch (Phase 2):** `feat/tz-dst-automatic` (cut from merged `develop`)
 **Decisions (locked, 2026-08-27):** manual-only re-sync · auto-detect on first sync · `setInsecure()` TLS · ipwho.is (primary) + worldtimeapi.org (secondary) · remove the manual UTC-offset picker.
@@ -222,7 +222,7 @@ After `syncFromNTP()` succeeds, also call `detectTimeZoneFromIp()` and store it 
   "Sync clock now" after a zone change → offset updates; kill WiFi at sync → UTC fallback, no hang.
 - CI: `pio check -e x4pro` (cppcheck) must stay green; `clang-format` clean.
 
-## 13. Phase 2 — automatic DST via a timezone library (follow-up, supersedes static offset)
+## 13. Phase 2 — automatic DST via a timezone library (implemented in PR #12, supersedes static offset)
 
 ### 13.1 Why Phase 1 is insufficient
 
@@ -260,7 +260,7 @@ irregular DST zones (e.g. `America/Sao_Paulo`, historical changes) are correct; 
 proves tight on the C3 `default` env we fall back to `Basic`+`zonedb` which still covers the vast
 majority of users.
 
-### 13.4 Proposed changes (Phase 2)
+### 13.4 Implemented changes (Phase 2)
 
 - **Dependency:** add `bxparks/AceTime` to `platformio.ini` `lib_deps` (same line style as the
   existing `bblanchon/ArduinoJson @ 7.4.2`).
@@ -269,12 +269,15 @@ majority of users.
   - Demote `clockTzOffsetMin`/`clockTzIsDst` to caches (still persisted for the badge + offline
     fallback; no behavior change to the JSON schema).
   - `clockEffectiveOffsetMin()` becomes: if `clockTimeZoneId` is set, ask the HAL to resolve it
-    (`HalClock::offsetMinutesFor(utcNow, id)`); else return the cached `clockTzOffsetMin` (UTC 0
-    before first detect).
-- **`HalClock`:** add a single `ace_time::ExtendedZoneProcessor` (+ manager or direct
-  `forZoneName`) cached by id, exposed as `int offsetMinutesFor(time_t utcEpoch, const char* ianaId)`
-  returning the DST-aware signed offset in minutes (fallback: `clockTzOffsetMin`/0 on unknown id).
-  `formatTime()` keeps its minute-offset signature — callers pass the *resolved* offset.
+    via `freeink::resolveUtcOffsetMinutes(utcNow, id)` (declared in `HalTimeZone.h`, implemented in
+    `HalTimeZone.cpp` with an `ExtendedZoneManager` over `zonedbx2025`); else return the cached
+    `clockTzOffsetMin` (UTC 0 before first detect).
+- **`HalTimeZone`:** add `bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds,
+  int& outOffsetMin)` — builds a `ZonedDateTime` for the Unix epoch with `ZonedDateTime::forUnixSeconds64()`
+  (AceTime's internal epoch is 2000-01-01, so raw Unix seconds must not be passed to `forEpochSeconds()`)
+  and returns `timeOffset().toMinutes()`. Result is cached per (id, minute); guarded by a mutex and an
+  epoch-validity check (epoch ≤ 0 → fall back to the cached offset before NTP sync). Callers pass the
+  *resolved* offset into `formatTime()`'s minute-offset signature.
 - **Wiring:** none required beyond `clockEffectiveOffsetMin()` — every existing caller
   (`StatusBarSettingsActivity`, `ClockSyncActivity`, `ReadingStatsUtils`) already goes through it,
   so DST becomes automatic everywhere. `syncFromNTP()` keeps `configTzTime("UTC0", …)` (RTC stays UTC).
@@ -295,7 +298,7 @@ majority of users.
 - CI: `pio check` (cppcheck) + clang-format + all 4 build envs + host unit tests remain green
   (expect a small flash-size bump from the AceTime DB — well within 16 MB).
 
-### 13.6 Open decision (needs your sign-off before code)
+### 13.6 Resolved decision (implemented)
 
 - **AceTime `Extended`+`zonedbx2025` (recommended, full coverage) vs `Basic`+`zonedb` (smaller,
   covers ~95% of zones)?** → recommending Extended unless the C3 `default` build shows flash pressure.
