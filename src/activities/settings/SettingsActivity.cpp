@@ -87,6 +87,12 @@ void SettingsActivity::rebuildSettingsLists() {
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
+  // Manual "Sync clock now": forces an NTP sync and re-detects the time zone
+  // from the device's public IP (useful after travel or when time is wrong).
+  // Placed under Network so it sits next to Wi-Fi; ClockSyncActivity connects
+  // to Wi-Fi first if needed, then performs the sync. On boards without an
+  // external RTC (x4pro) the NTP sync drives the system clock via SNTP.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_CLOCK_SYNC_NOW, SettingAction::SyncClock));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
