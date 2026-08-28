@@ -307,7 +307,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     const HalPowerManager::SleepDrain drain = powerManager.getLastSleepDrain();
     if (drain.valid) {
       char drainText[16];
-      snprintf(drainText, sizeof(drainText), " ↓%.1fmV/h", drain.mvPerHour);
+      snprintf(drainText, sizeof(drainText), tr(STR_SLEEP_DRAIN), drain.mvPerHour);
       strncat(percentText, drainText, sizeof(percentText) - strlen(percentText) - 1);
     }
   }
