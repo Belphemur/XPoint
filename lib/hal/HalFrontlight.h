@@ -20,8 +20,12 @@ class HalFrontlight {
   // Drive the frontlight pads LOW + hold them through deep sleep so they don't
   // leak current with the master rail held up (PR #3215). Inert on boards without
   // a frontlight. Paired with releaseOnWake(), which begin() calls at boot.
+  // Guarded by FREEINK_FRONTLIGHT_LS to match FrontlightManager::park()
+  // (otherwise boards without it fail to compile/link).
+#ifdef FREEINK_FRONTLIGHT_LS
   void park() { manager.park(); }
   void releaseOnWake() { manager.releaseOnWake(); }
+#endif
 
   uint8_t brightness() const { return lastBrightness; }
   uint8_t warmth() const { return manager.colorTemperature(); }
