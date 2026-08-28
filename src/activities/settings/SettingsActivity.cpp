@@ -11,6 +11,7 @@
 
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
+#include "ClockSyncActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
 #include "GlobalStatsActivity.h"
@@ -380,6 +381,12 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<GlobalStatsActivity>(renderer, mappedInput), resultHandler);
         break;
 #endif
+      case SettingAction::SyncClock:
+        // Manual "Sync clock now": force an NTP sync and re-detect the time zone
+        // from this device's public IP (e.g. after travel). Works on every board,
+        // including x4pro which has no external RTC (sync drives the system clock).
+        startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::None:
         // Do nothing
         break;
