@@ -466,10 +466,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     // visible wherever a Confirm button exists or is synthesized (synthesizeConfirm).
     if (BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED &&
         !BoardConfig::ACTIVE.touch.synthesizeConfirm) {
-      v.erase(
-          std::remove_if(v.begin(), v.end(),
-                         [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
-          v.end());
+      v.erase(std::remove_if(v.begin(), v.end(),
+                             [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
+              v.end());
     }
     // Only show tilt page turn setting when the QMI8658 IMU is present (X3)
     if (halTiltSensor.isAvailable()) {

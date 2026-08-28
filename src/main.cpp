@@ -222,7 +222,6 @@ bool toggleFrontlightByShortcut(const char* source) {
   (void)source;
   return false;
 #endif
-
 }
 
 // Run a configured capacitive Home-key action.
