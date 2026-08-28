@@ -45,6 +45,7 @@ Screenshot/Go Back) were appended later; older saved configs keep their meaning)
 | `SLEEP = 4` | Enter deep sleep. |
 | `SCREENSHOT = 5` | Capture a screenshot via `ScreenshotUtil::takeScreenshot()`. |
 | `GO_BACK = 6` | `activityManager.popActivity()` — climb one activity level; falls back to home at the top of the stack. Tap default. |
+| `KOSYNC = 7` | Push/pull reading progress to the configured KOReader sync server (reader only — `activityManager.launchKOReaderSyncOnCurrent()`, which no-ops outside the reader, mirroring `READER_MENU`). Requires KOReader credentials to be set in **Settings → System → KOReader Sync**; if unset, the sync activity exits back to the reader. |
 
 The settings appear in **Settings → Controls** only on boards where
 `BoardConfig::hasHomeKey()` (same runtime erase-filter pattern as
@@ -72,7 +73,7 @@ existing power-button double-click handler:
 
 ### Files touched
 
-1. `src/CrossPointSettings.h` — `HOME_BUTTON_ACTION` enum (7 values) + fields
+1. `src/CrossPointSettings.h` — `HOME_BUTTON_ACTION` enum (8 values: appended `KOSYNC = 7`) + fields
    `homeButtonTapAction` / `homeButtonDoubleClickAction` / `homeButtonLongPressAction`.
 2. `src/main.cpp` — `handleX4ProHomeDoubleClick()` called from `loop()` before
    `activityManager.loop()`; `executeHomeButtonAction()` runs the selected action;
@@ -94,4 +95,6 @@ existing power-button double-click handler:
   suppresses the companion tap.
 - Persistence: plain new settings.json keys; old saves pick up the defaults.
   Appending `GO_BACK = 6` (rather than renumbering) keeps 0–5 stable for devices
-  that already persisted a tap/double-click/long-press choice.
+  that already persisted a tap/double-click/long-press choice. `KOSYNC = 7` is
+  appended last, so existing saves (which store at most 6) never collide and
+  remain valid under the generic enum-size clamp.

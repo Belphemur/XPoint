@@ -103,6 +103,10 @@ class ActivityManager {
   // False when no activity is up, a transition is pending, or the screen has
   // no menu (see Activity::openShortcutMenu).
   bool openShortcutMenuOnCurrent();
+  // Launch the reader's KOReader sync (progress push/pull) when invoked from a
+  // global shortcut (e.g. capacitive Home-key action). Returns false when the
+  // current screen is not a reader (the shortcut then does nothing).
+  bool launchKOReaderSyncOnCurrent();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);

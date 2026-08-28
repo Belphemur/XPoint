@@ -260,6 +260,11 @@ bool executeHomeButtonAction(uint8_t action) {
       // the home screen (mirroring the X4's left-edge back swipe).
       activityManager.popActivity();
       return true;
+    case CrossPointSettings::HOME_ACT_KOSYNC:
+      // Push/pull reading progress to the configured KOReader sync server. Like
+      // Reader Menu, this is reader-only: outside the reader it no-ops (returns
+      // false), so the Home gesture is simply consumed without effect.
+      return activityManager.launchKOReaderSyncOnCurrent();
     default:
       return false;
   }

@@ -55,6 +55,7 @@ class Activity {
   // (e.g. the capacitive Home-key long press). Returns false when this screen
   // has no menu; the shortcut then does nothing instead of falling through.
   virtual bool openShortcutMenu() { return false; }
+  virtual bool launchKOReaderSync() { return false; }  // Home-key shortcut: no-op outside the reader
   virtual bool handleHomeGesture() { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
 

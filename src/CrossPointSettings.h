@@ -155,6 +155,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     HOME_ACT_SLEEP = 4,
     HOME_ACT_SCREENSHOT = 5,
     HOME_ACT_GO_BACK = 6,  // pop one activity level (falls to Home at the top)
+    HOME_ACT_KOSYNC = 7,   // push/pull reading progress to the configured KOReader sync server (reader only)
     HOME_BUTTON_ACTION_COUNT
   };
 

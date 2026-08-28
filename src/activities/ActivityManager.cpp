@@ -35,6 +35,10 @@ bool ActivityManager::openShortcutMenuOnCurrent() {
   return currentActivity && pendingAction == PendingAction::None && currentActivity->openShortcutMenu();
 }
 
+bool ActivityManager::launchKOReaderSyncOnCurrent() {
+  return currentActivity && pendingAction == PendingAction::None && currentActivity->launchKOReaderSync();
+}
+
 void ActivityManager::begin() {
 #if defined(configNUM_CORES) && configNUM_CORES > 1
   constexpr BaseType_t renderTaskCore = 1;
