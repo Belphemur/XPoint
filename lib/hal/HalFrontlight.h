@@ -17,6 +17,12 @@ class HalFrontlight {
   void setWarmth(uint8_t warmPercent);
   void setOn(bool on);
 
+  // Drive the frontlight pads LOW + hold them through deep sleep so they don't
+  // leak current with the master rail held up (PR #3215). Inert on boards without
+  // a frontlight. Paired with releaseOnWake(), which begin() calls at boot.
+  void park() { manager.park(); }
+  void releaseOnWake() { manager.releaseOnWake(); }
+
   uint8_t brightness() const { return lastBrightness; }
   uint8_t warmth() const { return manager.colorTemperature(); }
   bool isOn() const { return lit; }

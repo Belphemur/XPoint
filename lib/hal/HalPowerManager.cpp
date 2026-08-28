@@ -10,6 +10,7 @@
 #include <cassert>
 
 #include "HalGPIO.h"
+#include "HalFrontlight.h"
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <M5Pm1.h>
@@ -118,6 +119,15 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
   // guarantees that ordering).
   freeink::PowerManager::powerDownRailsForSleep();
+
+  // Park the frontlight pads so they don't leak current through deep sleep.
+  // On the X4 Pro the master rail is held up (PR #3215 keeps power.latch0 / GPIO1
+  // HIGH for fast-wake) and the frontlight LEDs use LEDC_SLEEP_MODE_KEEP_ALIVE,
+  // so without this the frontlight driver keeps drawing quiescent current. park()
+  // drives GPIO8/9 LOW and holds them, and releases the LEDC KEEP_ALIVE clock;
+  // releaseOnWake() (called at boot in HalFrontlight::begin) undoes the hold so
+  // the LEDC channels re-attach cleanly. Inert on boards without a frontlight.
+  Frontlight.park();
 
 #if FREEINK_DEVICE_PAPERMONO
   // Its power button is behind the M5PM1 PMIC rather than an ESP GPIO, so
