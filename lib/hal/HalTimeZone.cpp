@@ -7,6 +7,8 @@
 
 #include <cctype>
 #include <cstring>
+#include <ctime>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -136,6 +138,72 @@ TimeZoneInfo detectTimeZoneFromIp() {
 
   LOG_ERR(TAG, "All time zone services failed");
   return out;
+}
+
+}  // namespace freeink
+
+#include <AceTime.h>
+
+namespace freeink {
+
+using ace_time::ExtendedZoneManager;
+using ace_time::ExtendedZoneProcessor;
+using ace_time::ExtendedZoneProcessorCache;
+using ace_time::TimeZone;
+using ace_time::ZonedDateTime;
+using ace_time::zonedbx2025::kZoneAndLinkRegistry;
+using ace_time::zonedbx2025::kZoneAndLinkRegistrySize;
+
+// One zone processor is enough: we resolve at most one zone at a time, and the
+// manager reuses the processor across calls. The database (kZoneAndLinkRegistry,
+// 597 entries incl. Links like "America/Toronto") is the 2025b TZ Database
+// covering 2025-2200, flash-resident const data.
+static ExtendedZoneProcessorCache<1> sZoneCache;
+static ExtendedZoneManager sZoneManager(kZoneAndLinkRegistrySize, kZoneAndLinkRegistry, sZoneCache);
+
+// Serialize the resolver + cache: it can be entered from both the main task and
+// a render task, and the cache/mutable manager state must not race.
+static std::mutex sResolverMutex;
+
+// Cache the last successful resolution so callers that render every frame (menu
+// rows) don't rebuild the ZonedDateTime repeatedly for the same zone+minute.
+static char sCachedId[40] = "";
+static int64_t sCachedEpoch = -1;
+static int sCachedOffset = 0;
+
+bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds, int& offsetMin) {
+  if (!ianaId || ianaId[0] == '\0') {
+    return false;
+  }
+  // Before NTP sync time(nullptr) yields 0 or (time_t)-1; resolving against an
+  // invalid epoch would produce a bogus offset and bypass the cached fallback.
+  if (utcEpochSeconds <= 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(sResolverMutex);
+  // Serve from cache when the id and wall-minute are unchanged.
+  if (sCachedId[0] != '\0' && strncmp(sCachedId, ianaId, sizeof(sCachedId)) == 0 &&
+      utcEpochSeconds / 60 == sCachedEpoch / 60) {
+    offsetMin = sCachedOffset;
+    return true;
+  }
+
+  const TimeZone tz = sZoneManager.createForZoneName(ianaId);
+  if (tz.isError()) {
+    return false;
+  }
+  // utcEpochSeconds is Unix time (seconds since 1970). AceTime's internal epoch
+  // is 2000-01-01, so use forUnixSeconds64() which converts for us; passing raw
+  // Unix seconds to forEpochSeconds() would be off by 30 years.
+  const ZonedDateTime zdt = ZonedDateTime::forUnixSeconds64(utcEpochSeconds, tz);
+  const int off = zdt.timeOffset().toMinutes();
+
+  strncpy(sCachedId, ianaId, sizeof(sCachedId) - 1);
+  sCachedId[sizeof(sCachedId) - 1] = '\0';
+  sCachedEpoch = utcEpochSeconds;
+  sCachedOffset = off;
+  offsetMin = off;
+  return true;
 }
 
 }  // namespace freeink
