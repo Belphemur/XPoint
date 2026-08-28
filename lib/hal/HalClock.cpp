@@ -130,8 +130,6 @@ bool HalClock::formatTime(char* buf, size_t bufSize, int offsetMinutes, bool use
 }
 
 bool HalClock::syncFromNTP() {
-  if (!_available) return false;
-
   if (WiFi.status() != WL_CONNECTED) {
     LOG_ERR("CLK", "WiFi not connected, cannot sync NTP");
     return false;
@@ -147,6 +145,14 @@ bool HalClock::syncFromNTP() {
       time_t now = time(nullptr);
       struct tm timeinfo;
       gmtime_r(&now, &timeinfo);
+
+      // Boards without an external RTC (e.g. x4pro) still get a correct system
+      // clock from SNTP here; there is no hardware to persist to, so report
+      // success once the system clock is set.
+      if (!_available) {
+        LOG_INF("CLK", "System clock synced via NTP (no external RTC)");
+        return true;
+      }
 
       Rtc::DateTime dt;
       dt.year = static_cast<uint16_t>(timeinfo.tm_year + 1900);
