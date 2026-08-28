@@ -248,7 +248,7 @@ authoritative display offset is always `libraryOffset(utcNow, clockTimeZoneId)`.
 
 | Option | Method | Live DST from IANA id? | Cost on this device (16 MB flash) |
 |---|---|---|---|
-| **AceTime** (`bxparks/AceTime`) | Bundled IANA rule DB (`zonedb`/`zonedbx`), `forZoneName()` → `ZoneProcessor::getOffsetInfo(epoch)` | ✅ full, no network | `BasicZoneProcessor`+`zonedb` ≈35 kB flash; `ExtendedZoneProcessor`+`zonedbx` ≈44 kB; `…2025` recent-years variants smaller. RAM: ~hundreds of bytes per ZoneProcessor (flash-resident const data). Negligible vs 16 MB. |
+| **AceTime** (`bxparks/AceTime`) | Bundled IANA rule DB (`zonedb`/`zonedbx`/`zonedbx2025`), `forZoneName()` → `ZoneProcessor::getOffsetInfo(epoch)` | ✅ full, no network | `BasicZoneProcessor`+`zonedb` ≈35 kB flash; `ExtendedZoneProcessor`+`zonedbx` ≈44 kB; `…2025` recent-years variant (tz 2025b, 2025–2200) smaller. RAM: ~hundreds of bytes per ZoneProcessor (flash-resident const data). Negligible vs 16 MB. **Chosen: `ExtendedZoneProcessor`+`zonedbx2025`.** |
 | **ezTime** (`ropg/ezTime`) | Wraps newlib `tzset()`/POSIX TZ | ❌ ESP32 newlib ships **no zoneinfo**, so an IANA id cannot resolve to future DST. Only works with a POSIX TZ string (which we'd have to derive). | tiny, but insufficient. |
 | Native `setenv("TZ", posixRule); tzset()` | C library | ❌ requires translating IANA→POSIX rule = a fragile data problem of its own | zero, but blocked on the translation. |
 

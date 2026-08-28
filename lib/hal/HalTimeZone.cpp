@@ -149,12 +149,13 @@ using ace_time::ExtendedZoneProcessor;
 using ace_time::ExtendedZoneProcessorCache;
 using ace_time::TimeZone;
 using ace_time::ZonedDateTime;
-using ace_time::zonedbx::kZoneAndLinkRegistry;
-using ace_time::zonedbx::kZoneAndLinkRegistrySize;
+using ace_time::zonedbx2025::kZoneAndLinkRegistry;
+using ace_time::zonedbx2025::kZoneAndLinkRegistrySize;
 
 // One zone processor is enough: we resolve at most one zone at a time, and the
 // manager reuses the processor across calls. The database (kZoneAndLinkRegistry,
-// 597 entries incl. Links like "America/Toronto") is flash-resident const data.
+// 597 entries incl. Links like "America/Toronto") is the 2025b TZ Database
+// covering 2025-2200, flash-resident const data.
 static ExtendedZoneProcessorCache<1> sZoneCache;
 static ExtendedZoneManager sZoneManager(kZoneAndLinkRegistrySize, kZoneAndLinkRegistry, sZoneCache);
 
