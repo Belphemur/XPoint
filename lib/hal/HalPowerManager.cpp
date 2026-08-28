@@ -30,7 +30,7 @@ HalPowerManager powerManager;  // Singleton instance
 // Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
 // below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
 // record from an older build would otherwise be misread after an OTA.
-static constexpr uint8_t SLEEP_TRACE_VERSION = 1;
+static constexpr uint8_t SLEEP_TRACE_VERSION = 2;
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 static RTC_DATA_ATTR uint32_t _sleepEntryS = 0;
@@ -145,13 +145,14 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   freeink::PowerManager::powerDownRailsForSleep();
 
   // Park the frontlight pads so they don't leak current through deep sleep.
-#if FREEINK_FRONTLIGHT_LS
   // On the X4 Pro the master rail is held up (PR #3215 keeps power.latch0 / GPIO1
   // HIGH for fast-wake) and the frontlight LEDs use LEDC_SLEEP_MODE_KEEP_ALIVE,
   // so without this the frontlight driver keeps drawing quiescent current. park()
   // drives GPIO8/9 LOW and holds them, and releases the LEDC KEEP_ALIVE clock;
   // releaseOnWake() (called at boot in HalFrontlight::begin) undoes the hold so
-  // the LEDC channels re-attach cleanly. Inert on boards without a frontlight.
+  // the LEDC channels re-attach cleanly. Guarded by FREEINK_FRONTLIGHT_LS so it is
+  // a no-op on boards without a frontlight (e.g. papermono).
+#if FREEINK_FRONTLIGHT_LS
   Frontlight.park();
 #endif
 
@@ -193,6 +194,9 @@ void HalPowerManager::logSleepBattery() const {
     _sleepEntryMv = SLEEP_BATTERY_INVALID;
     _sleepEntryS = 0;
     _sleepTraceVersion = SLEEP_TRACE_VERSION;
+    // A record from an older build (pre-signed fields, or any layout change) must
+    // not leak into the status bar — clear the persisted result too.
+    _lastSleepDrain = {};
   }
   if (_sleepEntryMv == SLEEP_BATTERY_INVALID) {
     // Cold boot (or first run, or a discarded stale record): nothing to compare against.
@@ -213,14 +217,15 @@ void HalPowerManager::logSleepBattery() const {
   const uint32_t nowS = static_cast<uint32_t>(esp_rtc_get_time_us() / 1000000ULL);
   const uint32_t sleptS = (nowS > _sleepEntryS) ? (nowS - _sleepEntryS) : 0;
   const uint64_t sleptUs = static_cast<uint64_t>(sleptS) * 1000000ULL;
-  const int deltaMv = static_cast<int>(_sleepEntryMv) - static_cast<int>(mvNow);
-  // mV per hour: delta over sleptUs microseconds. Guard against a 0 sleep.
+  // Signed delta: + = gained charge (was on charger), - = lost (discharged).
+  const int deltaMv = static_cast<int>(mvNow) - static_cast<int>(_sleepEntryMv);
+  // Signed mV per hour over sleptUs microseconds. Guard against a 0 sleep.
   double mvPerHour = 0.0;
   if (sleptUs > 0) {
     mvPerHour = static_cast<double>(deltaMv) / (static_cast<double>(sleptUs) / 3.6e9);
   }
-  LOG_DBG("PWR", "woke after %u s: %u mV now (was %u mV), %s%u mV, ~%.2f mV/h", sleptS, mvNow, _sleepEntryMv,
-          deltaMv >= 0 ? "-" : "+", deltaMv >= 0 ? deltaMv : -deltaMv, mvPerHour);
+  LOG_DBG("PWR", "woke after %u s: %u mV now (was %u mV), %+d mV (%+.2f mV/h)", sleptS, mvNow, _sleepEntryMv, deltaMv,
+          mvPerHour);
 
   // Persist so the UI can show it after wake (when the serial port is back up).
   _lastSleepDrain.valid = true;
