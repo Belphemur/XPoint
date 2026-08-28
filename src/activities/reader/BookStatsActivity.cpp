@@ -68,15 +68,6 @@ void BookStatsActivity::rebuildRowItems() {
     rowItems.push_back(item);
   };
 
-  // Tracking off: the rows below still show the last-saved numbers; this
-  // header banner clarifies they are frozen (design §7.1.1).
-  if (!SETTINGS.shouldTrackReadingStats()) {
-    fui::ListItem banner;
-    banner.isHeader = true;
-    banner.label = tr(STR_STATS_DISABLED);
-    rowItems.push_back(banner);
-  }
-
   addRow(tr(STR_STATS_SESSIONS_LBL), std::to_string(stats.sessionCount));
   addRow(tr(STR_STATS_TIME_LBL), formatStatsDuration(stats.totalReadingSeconds));
   addRow(tr(STR_STATS_PAGES_LBL), std::to_string(stats.totalPagesTurned));

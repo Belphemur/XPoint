@@ -40,9 +40,10 @@ GlobalStatsActivity::GlobalStatsActivity(GfxRenderer& renderer, MappedInputManag
 void GlobalStatsActivity::onEnter() {
   UiListActivity::onEnter();
 #ifdef READING_STATS_ENABLED
-  if (SETTINGS.shouldTrackReadingStats()) {
-    globalStats = GlobalReadingStats::load();
-  }
+  // Load even when tracking is disabled so the viewer still shows the
+  // last-saved (frozen) values under the "Reading stats are disabled" banner
+  // (design §7.1.1) instead of a freshly zeroed record.
+  globalStats = GlobalReadingStats::load();
 #endif
   rebuildRowItems();
 }
@@ -72,15 +73,6 @@ void GlobalStatsActivity::rebuildRowItems() {
     item.actionValue = static_cast<int16_t>(rowItems.size());
     rowItems.push_back(item);
   };
-
-  // Tracking off: the rows below still show the last-saved numbers; this
-  // header banner clarifies they are frozen (design §7.1.1).
-  if (!SETTINGS.shouldTrackReadingStats()) {
-    fui::ListItem banner;
-    banner.isHeader = true;
-    banner.label = tr(STR_STATS_DISABLED);
-    rowItems.push_back(banner);
-  }
 
   ReadingStatsDateTime now;
   const ReadingStatsDate* today = getCurrentLocalReadingStatsDateTime(now) ? &now.date : nullptr;
