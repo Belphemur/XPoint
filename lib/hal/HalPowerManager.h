@@ -57,8 +57,8 @@ class HalPowerManager {
   struct SleepDrain {
     bool valid = false;  // false on cold boot / before first sleep
     uint32_t sleptSeconds = 0;
-    int deltaMv = 0;  // negative = drained
-    double mvPerHour = 0.0;
+    int deltaMv = 0;         // + = gained charge (was on charger), - = discharged
+    double mvPerHour = 0.0;  // signed net rate, mV/h
   };
   SleepDrain getLastSleepDrain() const;
 
