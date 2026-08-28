@@ -29,6 +29,11 @@ static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 static RTC_DATA_ATTR uint32_t _sleepEntryS = 0;
 static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 
+// Persisted result of the last sleep-drain computation, so the UI can display it
+// after wake (when the serial port is back up). Stays a small struct in RTC slow
+// memory.
+static RTC_DATA_ATTR HalPowerManager::SleepDrain _lastSleepDrain{};
+
 // 2026-01-01T00:00:00Z in microseconds, used only to truncate the RTC epoch so
 // the stored sleep-entry timestamp stays a small uint32_t of seconds.
 static constexpr uint64_t RTC_2026_BASE_US = 1767225600000000ULL;
@@ -190,8 +195,23 @@ void HalPowerManager::logSleepBattery() const {
   }
   LOG_DBG("PWR", "woke after %u s: %u mV now (was %u mV), %s%u mV, ~%.2f mV/h", sleptS, mvNow, _sleepEntryMv,
           deltaMv >= 0 ? "-" : "+", deltaMv >= 0 ? deltaMv : -deltaMv, mvPerHour);
+
+  // Persist so the UI can show it after wake (when the serial port is back up).
+  _lastSleepDrain.valid = true;
+  _lastSleepDrain.sleptSeconds = sleptS;
+  _lastSleepDrain.deltaMv = deltaMv;
+  _lastSleepDrain.mvPerHour = mvPerHour;
+
   // Mark consumed so a double log in the same boot doesn't misreport.
   _sleepEntryMv = SLEEP_BATTERY_INVALID;
+#endif
+}
+
+HalPowerManager::SleepDrain HalPowerManager::getLastSleepDrain() const {
+#if LOG_LEVEL >= 2
+  return _lastSleepDrain;
+#else
+  return SleepDrain{};  // empty / invalid on non-debug builds
 #endif
 }
 
