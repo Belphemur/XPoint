@@ -176,6 +176,13 @@ void SettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
+#ifdef READING_STATS_ENABLED
+    // Reading Stats row dims when tracking is off (design §7.1); enabled=false
+    // gates touch, and the action case below no-ops button Confirm.
+    if (settings[i].action == SettingAction::ReadingStats) {
+      item.enabled = SETTINGS.shouldTrackReadingStats();
+    }
+#endif
     rowItems_.push_back(item);
   }
 }
@@ -383,7 +390,11 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
 #ifdef READING_STATS_ENABLED
       case SettingAction::ReadingStats:
-        startActivityForResult(std::make_unique<GlobalStatsActivity>(renderer, mappedInput), resultHandler);
+        // The row is disabled when tracking is off; enabled=false gates touch
+        // but not button Confirm, so guard the launch too (design §7.1.2).
+        if (SETTINGS.shouldTrackReadingStats()) {
+          startActivityForResult(std::make_unique<GlobalStatsActivity>(renderer, mappedInput), resultHandler);
+        }
         break;
 #endif
       case SettingAction::SyncClock:

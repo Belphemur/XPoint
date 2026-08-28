@@ -33,6 +33,13 @@ void EpubReaderMenuActivity::buildMenuRowItems() {
     fui::ListItem item;
     item.label = I18N.get(menuItems[i].labelId);
     item.actionValue = static_cast<int16_t>(i);
+#ifdef READING_STATS_ENABLED
+    // Stats rows dim when tracking is off (design §7.1); enabled=false gates
+    // touch routing, and activateIndex() no-ops them for button Confirm.
+    if (menuItems[i].action == MenuAction::READING_STATS || menuItems[i].action == MenuAction::DELETE_STATS) {
+      item.enabled = SETTINGS.shouldTrackReadingStats();
+    }
+#endif
     menuRowItems[i] = item;
   }
 }
@@ -89,6 +96,14 @@ void EpubReaderMenuActivity::activateIndex(const int index) {
   nav.selected = index;
 
   const auto selectedAction = menuItems[index].action;
+#ifdef READING_STATS_ENABLED
+  // ListItem::enabled gates touch only; button Confirm still reaches here, so
+  // a disabled stats row must be a no-op (design §7.1.2).
+  if ((selectedAction == MenuAction::READING_STATS || selectedAction == MenuAction::DELETE_STATS) &&
+      !SETTINGS.shouldTrackReadingStats()) {
+    return;
+  }
+#endif
   if (selectedAction == MenuAction::ROTATE_SCREEN) {
     optionPopup.show(StrId::STR_ORIENTATION, orientationLabels.data(), static_cast<int>(orientationLabels.size()),
                      pendingOrientation, [this](int idx) {

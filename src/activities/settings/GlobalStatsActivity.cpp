@@ -40,9 +40,10 @@ GlobalStatsActivity::GlobalStatsActivity(GfxRenderer& renderer, MappedInputManag
 void GlobalStatsActivity::onEnter() {
   UiListActivity::onEnter();
 #ifdef READING_STATS_ENABLED
-  if (SETTINGS.shouldTrackReadingStats()) {
-    globalStats = GlobalReadingStats::load();
-  }
+  // Load even when tracking is disabled so the viewer still shows the
+  // last-saved (frozen) values under the "Reading stats are disabled" banner
+  // (design §7.1.1) instead of a freshly zeroed record.
+  globalStats = GlobalReadingStats::load();
 #endif
   rebuildRowItems();
 }
@@ -51,8 +52,18 @@ void GlobalStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
   const size_t n = 18;
-  valueCache.reserve(n);
-  rowItems.reserve(n);
+  valueCache.reserve(n + 1);
+  rowItems.reserve(n + 1);
+
+  // Tracking off: this header banner sits at the very top (design §7.1.1) and
+  // clarifies the rows below are frozen at their last-saved values. isHeader
+  // makes it underlined and non-selectable/non-interactive automatically.
+  if (!SETTINGS.shouldTrackReadingStats()) {
+    fui::ListItem banner;
+    banner.isHeader = true;
+    banner.label = tr(STR_STATS_DISABLED);
+    rowItems.push_back(banner);
+  }
 
   const auto addRow = [&](const char* label, std::string value) {
     valueCache.push_back(std::move(value));
