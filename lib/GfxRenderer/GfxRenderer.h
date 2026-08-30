@@ -115,6 +115,10 @@ class GfxRenderer {
   void drawPixelDither(int x, int y) const;
   template <Color color>
   void fillArc(int maxRadius, int cx, int cy, int xDir, int yDir) const;
+  // Dithered glyph stroker shared by drawTextDither/drawTextRotated90CWDither.
+  template <Color color>
+  static void drawCharDither(const GfxRenderer& renderer, const EpdFontFamily& fontFamily, const uint32_t cp,
+                             int cursorX, int cursorY, const EpdFontFamily::Style style);
   // Byte-aligned, orientation-specialized rectangle fill. Rotates the rect's
   // two opposing corners into physical-framebuffer space once, then walks each
   // physical row with head-mask / middle memset / tail-mask byte writes — no
@@ -289,6 +293,13 @@ class GfxRenderer {
   void drawText(int fontId, int x, int y, const char* text, bool black = true,
                 EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                 BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
+  // Dithered text: glyph pixels are stroked with the given gray level via
+  // drawPixelDither instead of a solid ink/paper bit. Used for disabled menu
+  // rows whose foreground is dither(LightGray). Black/White behave exactly like
+  // drawText(black) so callers can pass any Color uniformly.
+  void drawTextDither(int fontId, int x, int y, const char* text, Color color = Color::Black,
+                      EpdFontFamily::Style style = EpdFontFamily::REGULAR,
+                      BidiUtils::BidiBaseDir baseDir = BidiUtils::BidiBaseDir::AUTO) const;
   int getSpaceWidth(int fontId, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   /// Returns the total inter-word advance: fp4::toPixel(spaceAdvance + kern(leftCp,' ') + kern(' ',rightCp)).
   /// Using a single snap avoids the +/-1 px rounding error that arises when space advance and kern are
@@ -311,6 +322,9 @@ class GfxRenderer {
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  // Dithered rotated variant (see drawTextDither).
+  void drawTextRotated90CWDither(int fontId, int x, int y, const char* text, Color color = Color::Black,
+                                 EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions
