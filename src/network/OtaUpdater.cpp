@@ -235,7 +235,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   board_tag::Scanner tagScanner;
   ota_signature::Sha256Stream sha;
   const bool checkSha = haveExpectedSha;
-  uint8_t computedSha[32];
   const auto fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);
@@ -296,6 +295,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // matches before we mark the partition bootable. A mismatch means the bytes
   // on the wire (MITM / CDN corruption) differed from what was signed.
   if (checkSha) {
+    uint8_t computedSha[32];
     sha.finish(computedSha);
     if (memcmp(computedSha, expectedSha, 32) != 0) {
       LOG_ERR("OTA", "Firmware SHA-256 does not match signed manifest");
