@@ -43,7 +43,7 @@ HalPowerManager powerManager;  // Singleton instance
 // Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
 // below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
 // record from an older build would otherwise be misread after an OTA.
-static constexpr uint8_t SLEEP_TRACE_VERSION = 5;
+static constexpr uint8_t SLEEP_TRACE_VERSION = 6;
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 static RTC_DATA_ATTR uint32_t _lastWakeS = 0;  // monotonic-seconds timestamp of the most recent boot/wake
@@ -58,6 +58,20 @@ static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 // after wake (when the serial port is back up). Stays a small struct in RTC slow
 // memory.
 static RTC_DATA_ATTR HalPowerManager::SleepDrain _lastSleepDrain{};
+
+// Battery-gauge health tracking, persisted in RTC slow memory: the last
+// known-good percentage and read state survive deep sleep, so a gauge that
+// starts failing across a sleep cycle reports the pre-sleep good value instead
+// of a frozen or 0% cache. Reset when SLEEP_TRACE_VERSION changes (RTC slow
+// memory is NOT cleared by a firmware update — see logSleepBattery()).
+static RTC_DATA_ATTR uint16_t _batteryHealthLastKnownPct = 0;
+static RTC_DATA_ATTR uint32_t _batteryHealthLastValidMs = 0;  // millis() of last successful gauge read
+static RTC_DATA_ATTR uint8_t _batteryHealthFails = 0;         // consecutive failed gauge reads
+static RTC_DATA_ATTR uint8_t _batteryHealthState = 0;         // HalPowerManager::BatteryHealthState
+// Gauge counts as STALE after this many consecutive failed reads...
+static constexpr uint8_t BATTERY_HEALTH_MAX_FAILS = 3;
+// ...or when no successful read happened for this long (ms).
+static constexpr unsigned long BATTERY_HEALTH_STALE_MS = 60000;
 
 // GPIO13 controls the X4 battery latch and the X3 SD power rail on the C3
 // Xteink boards. Other boards use it for unrelated signals, including the
@@ -213,9 +227,10 @@ void HalPowerManager::setSleepReason(uint8_t reason) {
 }
 
 void HalPowerManager::logSleepBattery() const {
-#if LOG_LEVEL >= 2
   // RTC slow memory survives firmware updates, so a record written by an older
   // build (different layout/meaning) must be discarded before we trust it.
+  // Runs on ALL builds: the battery-health fields below are production logic,
+  // not dev-only tracing.
   if (_sleepTraceVersion != SLEEP_TRACE_VERSION) {
     _sleepEntryMv = SLEEP_BATTERY_INVALID;
     _lastWakeS = 0;
@@ -225,7 +240,12 @@ void HalPowerManager::logSleepBattery() const {
     // A record from an older build (pre-signed fields, or any layout change) must
     // not leak into the status bar — clear the persisted result too.
     _lastSleepDrain = {};
+    _batteryHealthLastKnownPct = 0;
+    _batteryHealthLastValidMs = 0;
+    _batteryHealthFails = 0;
+    _batteryHealthState = 0;
   }
+#if LOG_LEVEL >= 2
   if (_sleepEntryMv == SLEEP_BATTERY_INVALID) {
     // Cold boot (or first run, or a discarded stale record): nothing to compare against.
     return;
@@ -353,17 +373,37 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     const unsigned long now = millis();
     if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
+      // Fresh cache: health was decided on the last real poll, leave it untouched.
       return _batteryCachedPercent;
     }
 
     _batteryLastPollMs = now;
     uint16_t percent = 0;
     if (!battery.readPercentageChecked(percent)) {
+      // Failed gauge read: once the cache can no longer be trusted, fall back
+      // to the last known-good value so a broken gauge never reports a frozen
+      // or 0% reading as a real battery level.
+      _batteryHealthFails++;
+      if (_batteryHealthFails >= BATTERY_HEALTH_MAX_FAILS ||
+          now - _batteryHealthLastValidMs > BATTERY_HEALTH_STALE_MS) {
+        if (_batteryHealthState != static_cast<uint8_t>(BatteryHealthState::STALE)) {
+          _batteryHealthState = static_cast<uint8_t>(BatteryHealthState::STALE);
+          LOG_DBG("PWR", "battery health STALE (fails=%u)", _batteryHealthFails);
+        }
+        return _batteryHealthLastKnownPct;
+      }
       return _batteryCachedPercent;
     }
     _batteryCachedPercent = percent;
+    _batteryHealthLastKnownPct = percent;
+    _batteryHealthLastValidMs = now;
+    _batteryHealthFails = 0;
+    _batteryHealthState = static_cast<uint8_t>(BatteryHealthState::HEALTHY);
     return _batteryCachedPercent;
   }
+
+  // ADC boards have no gauge to fail: every read succeeds.
+  _batteryHealthState = static_cast<uint8_t>(BatteryHealthState::HEALTHY);
 
   // smooth the battery %.
   if (_batteryCachedPercent == 0) {
@@ -372,6 +412,14 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
     _batteryCachedPercent = (_batteryCachedPercent * 9 + battery.readPercentage() * 10) / 10;
   }
   return _batteryCachedPercent / 10;
+}
+
+HalPowerManager::BatteryHealthState HalPowerManager::getBatteryHealthState() const {
+  return static_cast<BatteryHealthState>(_batteryHealthState);
+}
+
+bool HalPowerManager::isBatteryHealthStale() const {
+  return _batteryHealthState == static_cast<uint8_t>(BatteryHealthState::STALE);
 }
 
 HalPowerManager::Lock::Lock() {

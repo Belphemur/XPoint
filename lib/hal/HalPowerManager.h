@@ -45,6 +45,15 @@ class HalPowerManager {
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 
+  // Gauge-read health: a transiently failing Coulomb gauge must never surface
+  // a frozen or 0% cache as a real low-battery signal (auto-sleep, OTA gate).
+  // HEALTHY = last poll succeeded; STALE = repeated failed reads, the reported
+  // percentage is the last known-good value; UNSUPPORTED = board has no gauge
+  // (ADC reads cannot fail).
+  enum class BatteryHealthState : uint8_t { HEALTHY = 0, STALE = 1, UNSUPPORTED = 2 };
+  BatteryHealthState getBatteryHealthState() const;
+  bool isBatteryHealthStale() const;  // true only when state == STALE
+
   // Dev-only: log battery drain across deep sleep (sleep-entry mV is stashed in
   // RTC memory; on wake we compare against the new reading and the sleep
   // duration). Compiled out unless LOG_LEVEL >= 2 (dev/x4pro builds).
