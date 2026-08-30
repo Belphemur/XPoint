@@ -1,13 +1,31 @@
-# CrossPoint Reader
+# CrossPoint X-Reader (`crosspoint-x-reader`)
 
 > ## ⚠️ Personal fork notice
-> This repository (`Belphemur/crosspoint-x-reader`) is a **personal fork** of
+> This repository (`Belphemur/crosspoint-x-reader`, "CrossPoint X-Reader") is a **personal fork** of
 > [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader).
 > It is **not** an official build. It focuses specifically on the **user experience of the
 > Xteink X4 Pro** (X4 Pro) device and carries X4-Pro-oriented tweaks and conveniences that may
 > never be upstreamed. Use it at your own risk; it is provided as-is with no warranty.
 > OTA updates in this fork are delivered from this repository's own GitHub releases and are
 > verified against an Ed25519 signature shipped with the fork — see [OTA signing](docs/OTA_SIGNING.md).
+
+## Fork-specific features
+
+These are additions carried by this fork that are **not** present in CrossPoint upstream:
+
+- **Signed OTA updates** — firmware is delivered from this fork's own GitHub releases and each
+  release ships a `manifest.json` + `manifest.json.sig`. The device verifies the manifest against
+  an Ed25519 public key baked into the firmware before flashing. The firmware itself is **not**
+  locked — only the OTA signature is checked — so you can still flash any build. See
+  [OTA signing](docs/OTA_SIGNING.md).
+- **X4 Pro UX focus** — settings, defaults, and conveniences tuned for the Xteink X4 Pro (and the
+  papermono variant), which the upstream project does not prioritize.
+- **Independent release pipeline** — this fork tags and publishes its own releases via
+  `release.yml` (Compile Release), separate from upstream's cadence.
+
+This fork tracks upstream `develop` and may also include conveniences ported from the
+[CrossInk](https://github.com/uxjulia/CrossInk) reader where they fit the X4 Pro workflow; credit
+goes upstream to those projects.
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
@@ -161,8 +179,8 @@ Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` 
 ### Setup
 
 ```bash
-git clone --recursive https://github.com/crosspoint-reader/crosspoint-reader
-cd crosspoint-reader
+git clone --recursive https://github.com/Belphemur/crosspoint-x-reader
+cd crosspoint-x-reader
 
 # if cloned without --recursive:
 git submodule update --init --recursive
