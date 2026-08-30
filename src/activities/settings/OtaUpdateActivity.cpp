@@ -11,6 +11,23 @@
 #include "fontIds.h"
 #include "network/OtaUpdater.h"
 
+namespace {
+// Shared mapping from an OtaUpdaterError to the user-facing detail string, so
+// both the check-time and install-time failure paths surface the same message.
+const char* describeOtaError(OtaUpdater::OtaUpdaterError res) {
+  switch (res) {
+    case OtaUpdater::WRONG_DEVICE_ERROR:
+      return tr(STR_FIRMWARE_WRONG_DEVICE);
+    case OtaUpdater::SIGNATURE_ERROR:
+      return tr(STR_OTA_SIGNATURE_FAILED);
+    case OtaUpdater::JSON_PARSE_ERROR:
+      return tr(STR_OTA_BAD_RELEASE);
+    default:
+      return nullptr;
+  }
+}
+}  // namespace
+
 void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
     LOG_ERR("OTA", "WiFi connection failed, exiting");
@@ -41,6 +58,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
       RenderLock lock(*this);
+      failedDetail = describeOtaError(res);
       state = FAILED;
     }
     return;
@@ -188,7 +206,7 @@ void OtaUpdateActivity::runUpdateInstall() {
     LOG_DBG("OTA", "Update failed: %d", res);
     {
       RenderLock lock(*this);
-      failedDetail = res == OtaUpdater::WRONG_DEVICE_ERROR ? tr(STR_FIRMWARE_WRONG_DEVICE) : nullptr;
+      failedDetail = describeOtaError(res);
       state = FAILED;
     }
     requestUpdate();

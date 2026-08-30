@@ -24,10 +24,12 @@ class HttpDownloader {
   };
 
   /**
-   * Fetch text content from a URL with optional credentials.
+   * Fetch text content from a URL with optional credentials. If maxBytes > 0,
+   * the fetch aborts once the body would exceed that size (used to cap
+   * untrusted manifest/signature buffers before they are verified).
    */
   static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
-                       const std::string& password = "");
+                       const std::string& password = "", size_t maxBytes = 0);
 
   static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
                        const std::string& password = "");

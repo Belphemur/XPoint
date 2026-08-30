@@ -259,11 +259,15 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const 
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, const std::string& username,
-                              const std::string& password) {
+                              const std::string& password, size_t maxBytes) {
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   outContent.clear();  // start clean; the sink appends, so don't carry prior content
   Sink sink;
-  sink.write = [&outContent](const uint8_t* data, size_t len) {
+  sink.write = [&outContent, maxBytes](const uint8_t* data, size_t len) {
+    if (maxBytes > 0 && outContent.size() + len > maxBytes) {
+      LOG_ERR("HTTP", "response exceeds max %zu bytes; aborting", maxBytes);
+      return false;
+    }
     outContent.append(reinterpret_cast<const char*>(data), len);
     return true;
   };
