@@ -1,0 +1,7 @@
+{
+  "name": "OtaSignature",
+  "description": "Ed25519 manifest verification + streaming SHA-256 for signed OTA updates",
+  "dependencies": {
+    "wolfssl/Arduino-wolfSSL": "5.7.2"
+  }
+}

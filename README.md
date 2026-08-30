@@ -1,5 +1,14 @@
 # CrossPoint Reader
 
+> ## ⚠️ Personal fork notice
+> This repository (`Belphemur/crosspoint-x-reader`) is a **personal fork** of
+> [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader).
+> It is **not** an official build. It focuses specifically on the **user experience of the
+> Xteink X4 Pro** (X4 Pro) device and carries X4-Pro-oriented tweaks and conveniences that may
+> never be upstreamed. Use it at your own risk; it is provided as-is with no warranty.
+> OTA updates in this fork are delivered from this repository's own GitHub releases and are
+> verified against an Ed25519 signature shipped with the fork — see [OTA signing](docs/OTA_SIGNING.md).
+
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
 CrossPoint is open-source e-reader firmware - community-built, fully hackable, free forever. It's maintained by a growing community of developers and readers who believe your device should do what you want - not what a manufacturer decided for you.
