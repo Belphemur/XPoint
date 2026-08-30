@@ -5,6 +5,7 @@
 #include <WiFi.h>
 
 #include "HalPowerManager.h"
+#include <BatteryMonitor.h>
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -195,10 +196,12 @@ void OtaUpdateActivity::render(RenderLock&&) {
 
 void OtaUpdateActivity::runUpdateInstall() {
   // Stock firmware gates OTA behind a battery threshold: a brownout mid-write
-  // can corrupt the running partition and brick the device. Skip the gate when
-  // the board reports no battery telemetry (BatteryMonitor unsupported) so we
-  // don't wrongly block updates on such boards.
-  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
+  // can corrupt the running partition and brick the device. Gate only when the
+  // board actually has battery telemetry — cover ALL backends (I2C gauge, ADC,
+  // M5PM1), not just gauge profiles. Boards with no battery path fall through
+  // and are never wrongly blocked.
+  const BatteryMonitor battery;
+  if (battery.readStatus().supported) {
     const uint16_t batteryPct = powerManager.getBatteryPercentage();
     if (batteryPct < OTA_MIN_BATTERY_PCT) {
       LOG_ERR("OTA", "Battery too low (%u%%) to update; aborting", batteryPct);
