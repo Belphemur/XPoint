@@ -279,7 +279,13 @@ void DictionaryWordSelectActivity::performLookup() {
     startActivityForResult(
         std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                        std::move(definition), dict.definitionsAreHtml()),
-        [this](const ActivityResult&) { requestUpdate(); });
+        [this](const ActivityResult&) {
+          if (initialX >= 0 && initialY >= 0) {
+            finish();
+          } else {
+            requestUpdate();
+          }
+        });
     return;
   }
   // Name the failure: a genuine miss is "Not found"; a word that WAS found but
