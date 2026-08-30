@@ -1,9 +1,11 @@
 #include "OtaUpdateActivity.h"
 
+#include <BatteryMonitor.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
 
+#include "HalPowerManager.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -12,6 +14,12 @@
 #include "network/OtaUpdater.h"
 
 namespace {
+// Stock firmware refuses to flash when the battery can't sustain the write +
+// reboot (a brownout mid-OTA can brick the device). Gate the install the same
+// way. Boards that report no battery telemetry (BatteryMonitor unsupported)
+// skip the check rather than wrongly blocking the update.
+constexpr uint16_t OTA_MIN_BATTERY_PCT = 20;
+
 // Shared mapping from an OtaUpdaterError to the user-facing detail string, so
 // both the check-time and install-time failure paths surface the same message.
 const char* describeOtaError(OtaUpdater::OtaUpdaterError res) {
@@ -187,6 +195,26 @@ void OtaUpdateActivity::render(RenderLock&&) {
 }
 
 void OtaUpdateActivity::runUpdateInstall() {
+  // Stock firmware gates OTA behind a battery threshold: a brownout mid-write
+  // can corrupt the running partition and brick the device. Gate only when the
+  // board actually has battery telemetry — cover ALL backends (I2C gauge, ADC,
+  // M5PM1), not just gauge profiles. Boards with no battery path fall through
+  // and are never wrongly blocked.
+  const BatteryMonitor battery;
+  if (battery.readStatus().supported) {
+    const uint16_t batteryPct = powerManager.getBatteryPercentage();
+    if (batteryPct < OTA_MIN_BATTERY_PCT) {
+      LOG_ERR("OTA", "Battery too low (%u%%) to update; aborting", batteryPct);
+      {
+        RenderLock lock(*this);
+        failedDetail = tr(STR_OTA_LOW_BATTERY);
+        state = FAILED;
+      }
+      requestUpdate();
+      return;
+    }
+  }
+
   LOG_DBG("OTA", "New update available, starting download...");
   {
     RenderLock lock(*this);
