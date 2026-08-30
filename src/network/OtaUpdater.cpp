@@ -234,9 +234,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // the boot target.
   board_tag::Scanner tagScanner;
   ota_signature::Sha256Stream sha;
-  uint8_t computedSha[32];
   const bool checkSha = haveExpectedSha;
-  int shaMismatch = -1;
+  uint8_t computedSha[32];
   const auto fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);

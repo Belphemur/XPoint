@@ -175,8 +175,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/test/_deps
-          key: ${{ runner.os }}-gtest-${{ hashFiles('test/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-gtest-
+          # Include the repo name so a rename/fork (which changes the runner
+          # checkout path baked into CMakeCache.txt) busts the stale cache
+          # instead of restoring a pre-rename one with wrong absolute paths.
+          key: ${{ runner.os }}-gtest-${{ github.event.repository.name }}-${{ hashFiles('test/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-gtest-${{ github.event.repository.name }}-
 
       - name: Configure
         run: cmake -S test -B build/test -G Ninja -DCMAKE_BUILD_TYPE=Release

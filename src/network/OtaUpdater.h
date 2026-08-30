@@ -43,7 +43,7 @@ class OtaUpdater {
 
   // Trusted SHA-256 pinned from the signed manifest, plus a parser instance
   // reused across checkForUpdate()/installUpdate().
-  uint8_t expectedSha[32];
+  uint8_t expectedSha[32] = {0};
   bool haveExpectedSha = false;
   ManifestJsonParser manifestParser;
 
