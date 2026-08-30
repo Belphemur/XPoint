@@ -13,6 +13,7 @@
 
 #include "HalFrontlight.h"
 #include "HalGPIO.h"
+#include "HalStorage.h"
 
 // X4 Pro cell capacity (mAh) used to convert the mV/h sleep-drain rate into a
 // signed current (mA) for the status-bar readout. Board-specific; override per
@@ -42,10 +43,15 @@ HalPowerManager powerManager;  // Singleton instance
 // Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
 // below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
 // record from an older build would otherwise be misread after an OTA.
-static constexpr uint8_t SLEEP_TRACE_VERSION = 4;
+static constexpr uint8_t SLEEP_TRACE_VERSION = 5;
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 static RTC_DATA_ATTR uint32_t _lastWakeS = 0;  // monotonic-seconds timestamp of the most recent boot/wake
+// Dev-only SD trace: which trigger put the device to sleep, and a monotonic
+// cycle counter so the CSV on the SD card reads top-to-bottom in order.
+// reason: 0 = auto-timeout, 1 = power-button (short-click SLEEP / hold), 2 = quick-resume.
+static RTC_DATA_ATTR uint8_t _sleepReason = 0;
+static RTC_DATA_ATTR uint32_t _sleepSeq = 0;
 static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 
 // Persisted result of the last sleep-drain computation, so the UI can display it
@@ -198,6 +204,14 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   freeink::PowerManager::deepSleepUntilPowerButton();
 }
 
+void HalPowerManager::setSleepReason(uint8_t reason) {
+#if LOG_LEVEL >= 2
+  _sleepReason = reason;
+#else
+  (void)reason;
+#endif
+}
+
 void HalPowerManager::logSleepBattery() const {
 #if LOG_LEVEL >= 2
   // RTC slow memory survives firmware updates, so a record written by an older
@@ -205,6 +219,8 @@ void HalPowerManager::logSleepBattery() const {
   if (_sleepTraceVersion != SLEEP_TRACE_VERSION) {
     _sleepEntryMv = SLEEP_BATTERY_INVALID;
     _lastWakeS = 0;
+    _sleepReason = 0;
+    _sleepSeq = 0;
     _sleepTraceVersion = SLEEP_TRACE_VERSION;
     // A record from an older build (pre-signed fields, or any layout change) must
     // not leak into the status bar — clear the persisted result too.
@@ -291,6 +307,34 @@ void HalPowerManager::logSleepBattery() const {
   _lastSleepDrain.milliamps = milliamps;
   _lastSleepDrain.wakeCause = static_cast<uint8_t>(wakeCause);
   _lastSleepDrain.resetReason = static_cast<uint8_t>(resetReason);
+
+  // Dev-only: append one raw CSV row to the SD card so the cycle data survives
+  // the dead-serial deep sleep and can be pulled for offline analysis. The full
+  // row is written here at wake (SD is remounted by now); the sleep-entry side
+  // only staged _sleepEntryMv + _sleepReason + bumped _sleepSeq. One append per
+  // cycle => clean top-to-bottom dataset. Writes to /.crosspoint/sleep_trace.csv.
+  {
+    static constexpr char kSleepTracePath[] = "/.crosspoint/sleep_trace.csv";
+    const bool spurious = (wakeCause != ESP_SLEEP_WAKEUP_EXT1);
+    HalFile f = Storage.open(kSleepTracePath, O_RDWR | O_CREAT | O_APPEND);
+    if (f) {
+      if (f.size() == 0) {
+        // Fresh file: write a header so the columns are self-documenting.
+        f.println(F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
+                    "wake_cause,reset_reason,spurious"));
+      }
+      // reason: 0=timeout 1=button 2=quick-resume; wake_cause/reset_reason are the
+      // raw esp_sleep_wakeup_cause_t / esp_reset_reason_t enum values.
+      char row[160];
+      snprintf(row, sizeof(row),
+               "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n",
+               _sleepSeq, _sleepReason, _sleepEntryMv, mvNow, deltaMv, sleptS,
+               mvPerHour, milliamps, static_cast<int>(wakeCause),
+               static_cast<int>(resetReason), spurious ? 1 : 0);
+      f.print(row);
+      _sleepSeq++;  // next cycle gets the next sequence number
+    }
+  }
 
   // Mark consumed so a double log in the same boot doesn't misreport.
   _sleepEntryMv = SLEEP_BATTERY_INVALID;

@@ -50,6 +50,12 @@ class HalPowerManager {
   // duration). Compiled out unless LOG_LEVEL >= 2 (dev/x4pro builds).
   void logSleepBattery() const;
 
+  // Dev-only: stage which trigger is putting the device to sleep (0 = auto-timeout,
+  // 1 = power-button, 2 = quick-resume) so the SD sleep-trace CSV can record it.
+  // Called from enterDeepSleep() before startDeepSleep(); the actual SD row is
+  // written at wake by logSleepBattery(). Compiled out unless LOG_LEVEL >= 2.
+  static void setSleepReason(uint8_t reason);
+
   // Dev-only: the last computed sleep-drain result, persisted in RTC memory so
   // the UI can show it after wake (when the serial port is back up). Invalid
   // until the device has slept at least once. Compiled out unless
