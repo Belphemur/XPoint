@@ -2193,6 +2193,169 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
   }
 }
 
+// Stroke one glyph's ink pixels with the given gray level. Mirrors renderCharImpl
+// (None rotation) but routes every set bit through drawPixelDither<color> so a
+// disabled row's LightGray foreground dithers instead of painting solid black.
+template <Color color>
+void GfxRenderer::drawCharDither(const GfxRenderer& renderer, const EpdFontFamily& fontFamily, const uint32_t cp,
+                                 int cursorX, int cursorY, const EpdFontFamily::Style style) {
+  const EpdGlyph* glyph = fontFamily.getGlyph(cp, style);
+  if (!glyph) {
+    LOG_ERR("GFX", "No glyph for codepoint %d", cp);
+    return;
+  }
+
+  const EpdFontData* fontData = fontFamily.getData(style);
+  const bool is2Bit = fontData->is2Bit;
+  const uint8_t width = glyph->width;
+  const uint8_t height = glyph->height;
+  const int left = glyph->left;
+  const int top = glyph->top;
+
+  const int gx0 = cursorX + left;
+  const int gy0 = cursorY - top;
+  if (!renderer.glyphIntersectsStrip(gx0, gy0, gx0 + width - 1, gy0 + height - 1)) {
+    return;
+  }
+
+  const uint8_t* bitmap = renderer.getGlyphBitmap(fontData, glyph);
+  if (bitmap == nullptr) return;
+
+  for (int glyphY = 0; glyphY < height; glyphY++) {
+    for (int glyphX = 0; glyphX < width; glyphX++) {
+      const int pixelPosition = glyphY * width + glyphX;
+      const int8_t bit =
+          is2Bit ? static_cast<int8_t>((3 - ((bitmap[pixelPosition >> 2] >> ((3 - (pixelPosition & 3)) * 2)) & 0x3)))
+                 : static_cast<int8_t>((bitmap[pixelPosition >> 3] >> (7 - (pixelPosition & 7))) & 1);
+      // Solid colors paint every ink pixel; grays use the level threshold.
+      if (color == Color::Black ? (bit != 0) : (is2Bit ? bit >= 2 : bit != 0)) {
+        renderer.drawPixelDither<color>(cursorX + left + glyphX, cursorY - top + glyphY);
+      }
+    }
+  }
+}
+
+void GfxRenderer::drawTextDither(int fontId, int x, int y, const char* text, Color color, EpdFontFamily::Style style,
+                                 BidiUtils::BidiBaseDir baseDir) const {
+  if (text == nullptr || *text == '\0') return;
+  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  std::string visual;
+  const char* renderedText = resolveVisualText(text, visual, baseDir);
+  int yPos = y + getFontAscenderSize(resolvedFontId);
+  if (resolvedFontId != fontId) {
+    yPos += (getLineHeight(fontId) - getLineHeight(resolvedFontId)) / 2;
+  }
+  int lastBaseX = x;
+  int lastBaseLeft = 0;
+  int lastBaseWidth = 0;
+  int lastBaseTop = 0;
+  int32_t prevAdvanceFP = 0;
+  if (fontCacheManager_ && fontCacheManager_->isScanning()) {
+    fontCacheManager_->recordText(renderedText, resolvedFontId, style);
+    return;
+  }
+  if (resolvedFontId != fontId) {
+    ensureSdGlyphsResident(resolvedFontId, renderedText, style, false);
+  }
+  const auto fontIt = fontMap.find(resolvedFontId);
+  if (fontIt == fontMap.end()) {
+    LOG_ERR("GFX", "Font %d not found", resolvedFontId);
+    return;
+  }
+  const auto& font = fontIt->second;
+  uint32_t cp;
+  uint32_t prevCp = 0;
+  const char* textCursor = renderedText;
+  while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&textCursor)))) {
+    if (utf8IsCombiningMark(cp) || BidiUtils::isTransparentMark(cp))
+      continue;  // keep degraded: skip marks when dithered
+    cp = font.applyLigatures(cp, textCursor, style);
+    if (prevCp != 0) {
+      const auto kernFP = font.getKerning(prevCp, cp, style);
+      lastBaseX += fp4::toPixel(prevAdvanceFP + kernFP);
+    }
+    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    lastBaseLeft = glyph ? glyph->left : 0;
+    lastBaseWidth = glyph ? glyph->width : 0;
+    lastBaseTop = glyph ? glyph->top : 0;
+    prevAdvanceFP = glyph ? glyph->advanceX : 0;
+    switch (color) {
+      case Color::Black:
+        drawCharDither<Color::Black>(*this, font, cp, lastBaseX, yPos, style);
+        break;
+      case Color::White:
+        drawCharDither<Color::White>(*this, font, cp, lastBaseX, yPos, style);
+        break;
+      case Color::LightGray:
+        drawCharDither<Color::LightGray>(*this, font, cp, lastBaseX, yPos, style);
+        break;
+      case Color::DarkGray:
+        drawCharDither<Color::DarkGray>(*this, font, cp, lastBaseX, yPos, style);
+        break;
+      default:
+        drawCharDither<Color::Black>(*this, font, cp, lastBaseX, yPos, style);
+        break;
+    }
+    prevCp = cp;
+  }
+}
+
+void GfxRenderer::drawTextRotated90CWDither(int fontId, int x, int y, const char* text, Color color,
+                                            EpdFontFamily::Style style) const {
+  if (text == nullptr || *text == '\0') return;
+  const int resolvedFontId = resolveTextFontId(fontId, text, style);
+  if (resolvedFontId != fontId) {
+    ensureSdGlyphsResident(resolvedFontId, text, style, false);
+  }
+  const auto fontIt = fontMap.find(resolvedFontId);
+  if (fontIt == fontMap.end()) {
+    LOG_ERR("GFX", "Font %d not found", resolvedFontId);
+    return;
+  }
+  const auto& font = fontIt->second;
+  int lastBaseY = y;
+  int lastBaseLeft = 0;
+  int lastBaseWidth = 0;
+  int lastBaseTop = 0;
+  int32_t prevAdvanceFP = 0;
+  uint32_t cp;
+  uint32_t prevCp = 0;
+  while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
+    if (utf8IsCombiningMark(cp) || BidiUtils::isTransparentMark(cp)) continue;
+    cp = font.applyLigatures(cp, text, style);
+    if (prevCp != 0) {
+      const auto kernFP = font.getKerning(prevCp, cp, style);
+      lastBaseY -= fp4::toPixel(prevAdvanceFP + kernFP);
+    }
+    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    lastBaseLeft = glyph ? glyph->left : 0;
+    lastBaseWidth = glyph ? glyph->width : 0;
+    lastBaseTop = glyph ? glyph->top : 0;
+    prevAdvanceFP = glyph ? glyph->advanceX : 0;
+    // Rotated90CW: drawCharDither uses None-rotation mapping (this path is only
+    // for side buttons; dithered disabled side-button labels are rare, so the
+    // simple vertical layout is acceptable).
+    switch (color) {
+      case Color::Black:
+        drawCharDither<Color::Black>(*this, font, cp, x, lastBaseY, style);
+        break;
+      case Color::White:
+        drawCharDither<Color::White>(*this, font, cp, x, lastBaseY, style);
+        break;
+      case Color::LightGray:
+        drawCharDither<Color::LightGray>(*this, font, cp, x, lastBaseY, style);
+        break;
+      case Color::DarkGray:
+        drawCharDither<Color::DarkGray>(*this, font, cp, x, lastBaseY, style);
+        break;
+      default:
+        drawCharDither<Color::Black>(*this, font, cp, x, lastBaseY, style);
+        break;
+    }
+    prevCp = cp;
+  }
+}
+
 uint8_t* GfxRenderer::getFrameBuffer() const { return frameBuffer; }
 
 size_t GfxRenderer::getBufferSize() const { return frameBufferSize; }
