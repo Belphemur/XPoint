@@ -17,9 +17,15 @@
 
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
+#include "ManifestJsonParser.h"
+#include "OtaSignature.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+// This fork (crosspoint-x-reader) publishes its firmware as GitHub releases on
+// the renamed repo. The updater reads the latest release + a signed manifest
+// attached to it. The manifest is what we actually verify; the firmware is
+// stream-checked against the manifest's signed SHA-256 (not locked/co-signed).
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/latest";
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -40,6 +46,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
              board_tag::boardName());
   }
   releaseParser.setFirmwareAssetName(assetName);
+  releaseParser.setManifestAssetName("manifest.json");
   const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
     releaseParser.feed(reinterpret_cast<const char*>(data), len);
     return true;
@@ -49,8 +56,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return HTTP_ERROR;
   }
 
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no");
+  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s manifest=%s", releaseParser.foundTag() ? "yes" : "no",
+          releaseParser.foundFirmware() ? "yes" : "no", releaseParser.foundManifest() ? "yes" : "no");
 
   if (!releaseParser.foundTag()) {
     LOG_ERR("OTA", "No tag_name in release JSON");
@@ -70,6 +77,73 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
   LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
   LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
+
+  // Fetch + verify the signed manifest if the release carries one. We do NOT
+  // hard-fail here if it is missing (older/third-party releases) — we simply
+  // skip signature verification and rely on the existing chip/board guards.
+  manifestUrl.clear();
+  if (releaseParser.foundManifest()) {
+    manifestUrl = releaseParser.getManifestUrl();
+    const auto mres = fetchAndVerifyManifest(manifestUrl);
+    if (mres != OK) {
+      LOG_ERR("OTA", "Signed manifest check failed (%d)", mres);
+      return mres;
+    }
+  } else {
+    LOG_INF("OTA", "Release has no signed manifest; skipping signature verification");
+  }
+
+  return OK;
+}
+
+OtaUpdater::OtaUpdaterError OtaUpdater::fetchAndVerifyManifest(const std::string& url) {
+  // Pull the manifest body into memory (it is tiny — a few hundred bytes) so
+  // we can verify its Ed25519 signature. The firmware itself is never buffered.
+  std::string manifestJson;
+  std::string sigJson;
+  const bool mOk = HttpDownloader::fetchUrl(url, manifestJson);
+  if (!mOk) {
+    LOG_ERR("OTA", "Manifest fetch failed");
+    return HTTP_ERROR;
+  }
+  const std::string sigUrl = url + ".sig";
+  const bool sOk = HttpDownloader::fetchUrl(sigUrl, sigJson);
+  if (!sOk) {
+    LOG_ERR("OTA", "Manifest signature fetch failed");
+    return HTTP_ERROR;
+  }
+
+  if (!ota_signature::verifyManifest(manifestJson, sigJson)) {
+    LOG_ERR("OTA", "Manifest signature verification FAILED");
+    return SIGNATURE_ERROR;
+  }
+
+  // Parse the now-trusted manifest and pin the running board's entry (URL,
+  // size, SHA-256). installUpdate() re-stream-checks the firmware against it.
+  // NOTE: we keep the release tag as latestVersion (shown to the user in the UI,
+  // e.g. "1.2.3-x4pro"); the manifest's version is only the bare semver.
+  manifestParser.reset();
+  manifestParser.feed(manifestJson.data(), manifestJson.size());
+
+  const ManifestBoardEntry* entry = manifestParser.findBoard(board_tag::boardName(), board_tag::boardNameLen());
+  if (!entry) {
+    LOG_INF("OTA", "Manifest has no entry for this board (%.*s)", static_cast<int>(board_tag::boardNameLen()),
+            board_tag::boardName());
+    return NO_UPDATE;
+  }
+  if (entry->hasSha) {
+    memcpy(expectedSha, entry->sha256, 32);
+    haveExpectedSha = true;
+  }
+  // Prefer the manifest's authoritative URL/size over the release asset entry
+  // (the manifest is what was signed).
+  if (entry->url[0] != '\0') {
+    otaUrl = entry->url;
+    otaSize = entry->size;
+    totalSize = entry->size;
+  }
+  LOG_INF("OTA", "Manifest verified; board %.*s url=%s", static_cast<int>(board_tag::boardNameLen()),
+          board_tag::boardName(), otaUrl.c_str());
   return OK;
 }
 
@@ -159,7 +233,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   // the inactive OTA slot, but esp_ota_abort() below means it never becomes
   // the boot target.
   board_tag::Scanner tagScanner;
-  const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+  ota_signature::Sha256Stream sha;
+  uint8_t computedSha[32];
+  const bool checkSha = haveExpectedSha;
+  int shaMismatch = -1;
+  const auto fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
     if (hdrLen < sizeof(hdr)) {
       const size_t take = std::min(len, sizeof(hdr) - hdrLen);
       std::memcpy(hdr + hdrLen, data, take);
@@ -181,6 +259,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
               static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
       return false;  // abort the transfer
     }
+    if (checkSha) sha.update(data, len);
     if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
       flashOk = false;
       return false;  // abort the transfer
@@ -212,6 +291,19 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
     esp_ota_abort(otaHandle);
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
+  }
+
+  // The signed manifest gave us a trusted SHA-256; confirm the streamed image
+  // matches before we mark the partition bootable. A mismatch means the bytes
+  // on the wire (MITM / CDN corruption) differed from what was signed.
+  if (checkSha) {
+    sha.finish(computedSha);
+    if (memcmp(computedSha, expectedSha, 32) != 0) {
+      LOG_ERR("OTA", "Firmware SHA-256 does not match signed manifest");
+      esp_ota_abort(otaHandle);
+      return SIGNATURE_ERROR;
+    }
+    LOG_INF("OTA", "Firmware SHA-256 matches signed manifest");
   }
 
   esp_err = esp_ota_end(otaHandle);  // verifies the written image

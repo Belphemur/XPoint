@@ -17,11 +17,16 @@ ReleaseJsonParser::ReleaseJsonParser()
     : parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
                            sOnArrayStart, sOnArrayEnd}) {
   safeCopy(firmwareAssetName, sizeof(firmwareAssetName), "firmware.bin", sizeof("firmware.bin") - 1);
+  safeCopy(manifestAssetName, sizeof(manifestAssetName), "manifest.json", sizeof("manifest.json") - 1);
   reset();
 }
 
 void ReleaseJsonParser::setFirmwareAssetName(const char* name) {
   safeCopy(firmwareAssetName, sizeof(firmwareAssetName), name, strlen(name));
+}
+
+void ReleaseJsonParser::setManifestAssetName(const char* name) {
+  safeCopy(manifestAssetName, sizeof(manifestAssetName), name, strlen(name));
 }
 
 void ReleaseJsonParser::reset() {
@@ -35,6 +40,8 @@ void ReleaseJsonParser::reset() {
   firmwareSize = 0;
   tagFound = false;
   firmwareFound = false;
+  manifestFound = false;
+  manifestUrl[0] = '\0';
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
   currentAssetSize = 0;
@@ -47,12 +54,18 @@ bool ReleaseJsonParser::foundFirmware() const { return firmwareFound; }
 const char* ReleaseJsonParser::getTagName() const { return tagName; }
 const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
+bool ReleaseJsonParser::foundManifest() const { return manifestFound; }
+const char* ReleaseJsonParser::getManifestUrl() const { return manifestUrl; }
 
 void ReleaseJsonParser::commitAsset() {
   if (strcmp(currentAssetName, firmwareAssetName) == 0) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;
+  }
+  if (strcmp(currentAssetName, manifestAssetName) == 0) {
+    memcpy(manifestUrl, currentAssetUrl, sizeof(manifestUrl));
+    manifestFound = true;
   }
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';

@@ -1,9 +1,20 @@
 name: Compile Release
 
-# Builds every board's release firmware on tag push, with the .bin named
-# exactly as OtaUpdater requests it from the GitHub release: plain
-# firmware.bin for the C3 X4/X3 binary, firmware-<board>.bin for every other
-# board. Attach the artifacts' .bin files to the release as-is.
+# Builds every board's release firmware on tag push, with each .bin named exactly as
+# OtaUpdater requests it from the GitHub release (plain firmware.bin for the C3 X4/X3
+# binary, firmware-<board>.bin for every other board), then creates a draft GitHub
+# Release, attaches all build artifacts, and generates + signs a per-board manifest.json
+# (Ed25519) so the device can verify OTA authenticity.
+#
+# Easy OTA trigger:
+#   1. Bump the version in platformio.ini (crosspoint.version) and commit to develop.
+#   2. Push a tag:  git tag -s v1.2.3 -m "Release v1.2.3" && git push origin v1.2.3
+#      (any tag triggers this workflow). The release is created as a DRAFT — publish it
+#      from the GitHub UI (or set make_latest / draft:false below) and devices will see it.
+#
+# Signing: the Ed25519 private key lives in the repo secret OTA_SIGNING_KEY (raw 32-byte
+# seed, base64). The matching public key is baked into the firmware at lib/OtaSignature/
+# ota_pubkey.h. Rotate both together (see docs/OTA_SIGNING.md).
 
 on:
   push:
@@ -11,7 +22,7 @@ on:
       - '*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-release:
@@ -22,12 +33,16 @@ jobs:
         include:
           - pio_env: gh_release
             asset: firmware.bin
+            board: x4
           - pio_env: sticky-gh_release
             asset: firmware-sticky.bin
+            board: sticky
           - pio_env: x4pro-gh_release
             asset: firmware-x4pro.bin
+            board: x4pro
           - pio_env: papermono-gh_release
             asset: firmware-papermono.bin
+            board: papermono
     steps:
       - uses: actions/checkout@v6
         with:
@@ -81,3 +96,92 @@ jobs:
             .pio/build/${{ matrix.pio_env }}/firmware.elf
             .pio/build/${{ matrix.pio_env }}/firmware.map
             .pio/build/${{ matrix.pio_env }}/partitions.bin
+
+  publish-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        id: collect
+        run: |
+          mkdir -p dist
+          # Map each uploaded artifact dir back to its asset .bin name.
+          for d in artifacts/*/; do
+            bin=$(find "$d" -maxdepth 1 -name 'firmware*.bin' | head -n1)
+            [ -n "$bin" ] && cp "$bin" "dist/$(basename "$bin")"
+          done
+          ls -la dist
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate + sign manifest
+        env:
+          OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, glob, sys
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          dist = "dist"
+          # board suffix -> manifest board name (matches FirmwareBoardTag.cpp)
+          suffix_board = {
+              "firmware.bin": "x4",
+              "firmware-sticky.bin": "sticky",
+              "firmware-x4pro.bin": "x4pro",
+              "firmware-papermono.bin": "papermono",
+          }
+          boards = []
+          for path in sorted(glob.glob(os.path.join(dist, "firmware*.bin"))):
+              name = os.path.basename(path)
+              board = suffix_board.get(name)
+              if not board:
+                  print(f"skip {name}: unknown board suffix", file=sys.stderr)
+                  continue
+              with open(path, "rb") as f:
+                  data = f.read()
+              sha = hashlib.sha256(data).hexdigest()
+              # Resolve the published asset URL on the (draft) release.
+              repo = os.environ["GITHUB_REPOSITORY"]
+              tag = os.environ["GITHUB_REF_NAME"]
+              url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+              boards.append({
+                  "board": board,
+                  "asset": name,
+                  "url": url,
+                  "size": len(data),
+                  "sha256": sha,
+              })
+          manifest = {
+              "version": os.environ["GITHUB_REF_NAME"].lstrip("v"),
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "boards": boards,
+          }
+          text = json.dumps(manifest, indent=2, sort_keys=True)
+          with open(os.path.join(dist, "manifest.json"), "w") as f:
+              f.write(text + "\n")
+
+          # Sign the exact manifest bytes with the Ed25519 private key (raw 32-byte seed).
+          raw = base64.b64decode(os.environ["OTA_SIGNING_KEY"])
+          key = Ed25519PrivateKey.from_private_bytes(raw)
+          sig = key.sign(text.encode("utf-8"))
+          with open(os.path.join(dist, "manifest.json.sig"), "wb") as f:
+              f.write(base64.b64encode(sig))
+          print("manifest signed for", len(boards), "boards")
+          PY
+
+      - name: Create GitHub Release (draft)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create a DRAFT release so a human reviews assets before going live.
+          # Flip `--draft` to `--latest` (or add `--latest`) to auto-publish.
+          gh release create "${{ steps.collect.outputs.tag }}" \
+            --draft \
+            --title "CrossPoint X-Reader ${{ steps.collect.outputs.tag }}" \
+            --notes "Personal fork release. See README fork notice. OTA is signed (Ed25519); verify before flashing." \
+            dist/firmware.bin dist/firmware-sticky.bin dist/firmware-x4pro.bin \
+            dist/firmware-papermono.bin dist/manifest.json dist/manifest.json.sig

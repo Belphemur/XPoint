@@ -26,6 +26,13 @@ class ReleaseJsonParser {
   const char* getFirmwareUrl() const;
   size_t getFirmwareSize() const;
 
+  // Signed-manifest support: the release workflow attaches a `manifest.json`
+  // (and `manifest.json.sig`) describing per-board asset URLs/hashes. Capture
+  // that asset's download URL so the updater can fetch and verify it.
+  void setManifestAssetName(const char* name);
+  bool foundManifest() const;
+  const char* getManifestUrl() const;
+
  private:
   enum class Position : uint8_t {
     TOP_LEVEL,
@@ -72,4 +79,7 @@ class ReleaseJsonParser {
   size_t currentAssetSize;
 
   char firmwareAssetName[32];
+  char manifestAssetName[32];
+  char manifestUrl[512];
+  bool manifestFound;
 };
