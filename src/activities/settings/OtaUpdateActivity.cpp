@@ -1,11 +1,11 @@
 #include "OtaUpdateActivity.h"
 
+#include <BatteryMonitor.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
 
 #include "HalPowerManager.h"
-#include <BatteryMonitor.h>
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
