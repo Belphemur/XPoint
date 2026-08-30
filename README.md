@@ -20,10 +20,6 @@ These are additions carried by this fork that are **not** present in CrossPoint 
   [OTA signing](docs/OTA_SIGNING.md).
 - **X4 Pro UX focus** — settings, defaults, and conveniences tuned for the Xteink X4 Pro (and the
   papermono variant), which the upstream project does not prioritize.
-- **Reading stats** — per-book and global reading statistics (time spent, pages/progress, sessions) tracked on-device and viewable from the reader menu, going beyond upstream's progress-only tracking.
-- **Fully configurable Home button** — the Home key actions (tap, double-click, long-press) are remappable in settings (e.g. back-one-level, toggle frontlight, open menu), instead of a fixed mapping.
-- **Dictionary on long-press** — long-pressing a word opens the dictionary lookup directly (word-select), with a configurable long-press action (dictionary or footnote) rather than only via the selection menu.
-
 - **Independent release pipeline** — this fork tags and publishes its own releases via
   `release.yml` (Compile Release), separate from upstream's cadence.
 
