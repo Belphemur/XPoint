@@ -112,9 +112,12 @@ jobs:
         id: collect
         run: |
           mkdir -p dist
-          # Map each uploaded artifact dir back to its asset .bin name.
+          # Map each uploaded artifact dir back to its asset .bin name. The
+          # artifact folder may itself be named like `firmware-papermono.bin`, so
+          # search for the actual *file* recursively and never match a directory
+          # (a directory match made `cp` fail with "omitting directory").
           for d in artifacts/*/; do
-            bin=$(find "$d" -maxdepth 1 -name 'firmware*.bin' | head -n1)
+            bin=$(find "$d" -type f -name 'firmware*.bin' | head -n1)
             [ -n "$bin" ] && cp "$bin" "dist/$(basename "$bin")"
           done
           ls -la dist
