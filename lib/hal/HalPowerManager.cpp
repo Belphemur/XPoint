@@ -1,6 +1,7 @@
 #include "HalPowerManager.h"
 
 #include <BoardConfig.h>
+#include <InputManager.h>
 #include <Logging.h>
 #include <PowerManager.h>
 #include <WiFi.h>
@@ -12,6 +13,17 @@
 
 #include "HalFrontlight.h"
 #include "HalGPIO.h"
+
+// X4 Pro cell capacity (mAh) used to convert the mV/h sleep-drain rate into a
+// signed current (mA) for the status-bar readout. Board-specific; override per
+// build with -DX4PRO_BATTERY_MAH=<n>. Defaults to 1100 (typical X4 Pro Li-Po).
+#ifndef X4PRO_BATTERY_MAH
+#define X4PRO_BATTERY_MAH 1100
+#endif
+static constexpr double kX4ProBatteryMah = static_cast<double>(X4PRO_BATTERY_MAH);
+// Li-Po usable voltage span (full ~4.2V -> empty ~3.0V). Used to map a voltage
+// rate to a current: I[mA] = dV/dt[mV/h] / (span[mV] / capacity[mAh]).
+static constexpr double kLipoSpanMv = 1200.0;
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <M5Pm1.h>
@@ -30,10 +42,10 @@ HalPowerManager powerManager;  // Singleton instance
 // Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
 // below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
 // record from an older build would otherwise be misread after an OTA.
-static constexpr uint8_t SLEEP_TRACE_VERSION = 2;
+static constexpr uint8_t SLEEP_TRACE_VERSION = 4;
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
-static RTC_DATA_ATTR uint32_t _sleepEntryS = 0;
+static RTC_DATA_ATTR uint32_t _lastWakeS = 0;  // monotonic-seconds timestamp of the most recent boot/wake
 static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 
 // Persisted result of the last sleep-drain computation, so the UI can display it
@@ -77,6 +89,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
       return;
     }
+    InputManager::setLowPowerPolling(true);
     isLowPower = true;
 
   } else if ((!enabled || mode != None) && isLowPower) {
@@ -85,6 +98,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
       return;
     }
+    InputManager::setLowPowerPolling(false);
     isLowPower = false;
   }
 
@@ -168,17 +182,15 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // Waits for the power button to be physically released (so holding it doesn't
   // immediately wake the device again), then arms the wake source and sleeps.
 #if LOG_LEVEL >= 2
-  // Dev-only: snapshot the battery before sleeping so we can compute drain on
-  // wake. The X4 Pro CW2017 gauge (I2C 0x63) reports mV via BatteryMonitor.
-  // esp_rtc_get_time_us() is a free-running *elapsed* counter (not Unix time),
-  // so we store plain seconds since boot; the wake-side subtraction is what we
-  // actually use.
+  // Dev-only: snapshot the battery voltage before sleeping. Duration is NOT taken
+  // here — it is derived at wake from the boot/wake timestamp (see logSleepBattery),
+  // because esp_rtc_get_time_us() is re-based across deep sleep and gives bogus
+  // durations. The X4 Pro CW2017 gauge (I2C 0x63) reports mV via BatteryMonitor.
   {
     const BatteryMonitor battery;
     const uint16_t mv = battery.readMillivolts();
     if (mv != 0) {
       _sleepEntryMv = mv;
-      _sleepEntryS = static_cast<uint32_t>(esp_rtc_get_time_us() / 1000000ULL);
       LOG_DBG("PWR", "sleep entry: %u mV / %u%%", mv, battery.readPercentage());
     }
   }
@@ -192,7 +204,7 @@ void HalPowerManager::logSleepBattery() const {
   // build (different layout/meaning) must be discarded before we trust it.
   if (_sleepTraceVersion != SLEEP_TRACE_VERSION) {
     _sleepEntryMv = SLEEP_BATTERY_INVALID;
-    _sleepEntryS = 0;
+    _lastWakeS = 0;
     _sleepTraceVersion = SLEEP_TRACE_VERSION;
     // A record from an older build (pre-signed fields, or any layout change) must
     // not leak into the status bar — clear the persisted result too.
@@ -211,11 +223,49 @@ void HalPowerManager::logSleepBattery() const {
     return;
   }
 
-  // RTC slow-clock counter keeps running through deep sleep. We stored plain
-  // seconds at both snapshot and wake, so the difference is the actual sleep
-  // duration.
-  const uint32_t nowS = static_cast<uint32_t>(esp_rtc_get_time_us() / 1000000ULL);
-  const uint32_t sleptS = (nowS > _sleepEntryS) ? (nowS - _sleepEntryS) : 0;
+  // Robust sleep-duration measurement.
+  //
+  // We used to derive slept time from esp_rtc_get_time_us() (RTC_SLOW_CLK counter)
+  // taken before sleep and after wake. That counter is NOT monotonic across deep
+  // sleep: esp_rtc_get_time_us() scales the raw ticks by a calibration factor kept
+  // in s_rtc_timer_retain_mem, which the IDF docs (esp_clk.c) say can be INVALID
+  // after deep sleep and gets memset to 0 on wake — re-basing the whole timer. The
+  // "before" and "after" readings then live in different calibration eras, so their
+  // difference collapses to a tiny bogus number and the rate explodes to ~-3000 mV/h.
+  //
+  // Fix: remember the monotonic-seconds timestamp of every boot/wake (_lastWakeS,
+  // persisted in RTC slow memory). On a deep-sleep wake (ESP_RST_DEEPSLEEP) the SoC
+  // was asleep for the ENTIRE interval since the previous wake, so the sleep duration
+  // is simply now - _lastWakeS. For a cold boot or SW reset there is no prior sleep,
+  // so we skip (no drain to report). millis() is a plain XTAL/APB tick counter that
+  // starts at 0 each boot and is NOT re-based by deep sleep, so it is safe here.
+  const uint32_t nowS = static_cast<uint32_t>(millis() / 1000ULL);
+  uint32_t sleptS = 0;
+  bool haveSlept = false;
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && _lastWakeS != 0 && nowS > _lastWakeS) {
+    sleptS = nowS - _lastWakeS;
+    haveSlept = true;
+  }
+  // Update the wake timestamp for next time (always — boot, wake, or SW reset).
+  _lastWakeS = nowS;
+
+  // Diagnostics: how did this sleep segment end? A non-power-button wake cause
+  // (or a non-deep-sleep reset) means the device was NOT asleep the whole
+  // interval — it woke spuriously and the reported drain averages awake time in.
+  // Log at INF (visible) so a spurious wake shows in the post-wake serial trace.
+  const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  if (haveSlept) {
+    LOG_INF("PWR", "sleep segment: woke via cause=%d reset=%d after %u s", static_cast<int>(wakeCause),
+            static_cast<int>(resetReason), sleptS);
+  }
+
+  if (!haveSlept) {
+    // Cold boot / SW reset / corrupted timestamp: nothing to compare against.
+    _sleepEntryMv = SLEEP_BATTERY_INVALID;
+    return;
+  }
+
   const uint64_t sleptUs = static_cast<uint64_t>(sleptS) * 1000000ULL;
   // Signed delta: + = gained charge (was on charger), - = lost (discharged).
   const int deltaMv = static_cast<int>(mvNow) - static_cast<int>(_sleepEntryMv);
@@ -227,11 +277,20 @@ void HalPowerManager::logSleepBattery() const {
   LOG_DBG("PWR", "woke after %u s: %u mV now (was %u mV), %+d mV (%+.2f mV/h)", sleptS, mvNow, _sleepEntryMv, deltaMv,
           mvPerHour);
 
+  // Convert the signed mV/h rate to a signed current (mA). A Li-Po's usable span
+  // is ~1.2V; a full cell holds kX4ProBatteryMah mAh, so removing the whole span
+  // in 1h = kX4ProBatteryMah mA. Scaling: I[mA] = dV/dt[mV/h] * capacity[mAh] /
+  // span[mV]. + = gained charge (charging), - = discharging.
+  const double milliamps = mvPerHour * kX4ProBatteryMah / kLipoSpanMv;
+
   // Persist so the UI can show it after wake (when the serial port is back up).
   _lastSleepDrain.valid = true;
   _lastSleepDrain.sleptSeconds = sleptS;
   _lastSleepDrain.deltaMv = deltaMv;
   _lastSleepDrain.mvPerHour = mvPerHour;
+  _lastSleepDrain.milliamps = milliamps;
+  _lastSleepDrain.wakeCause = static_cast<uint8_t>(wakeCause);
+  _lastSleepDrain.resetReason = static_cast<uint8_t>(resetReason);
 
   // Mark consumed so a double log in the same boot doesn't misreport.
   _sleepEntryMv = SLEEP_BATTERY_INVALID;

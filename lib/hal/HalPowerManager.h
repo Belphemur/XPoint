@@ -58,7 +58,15 @@ class HalPowerManager {
     bool valid = false;  // false on cold boot / before first sleep
     uint32_t sleptSeconds = 0;
     int deltaMv = 0;         // + = gained charge (was on charger), - = discharged
-    double mvPerHour = 0.0;  // signed net rate, mV/h
+    double mvPerHour = 0.0;  // signed net rate, mV/h (kept for logging)
+    double milliamps = 0.0;  // signed net current, mA (+ = charging, - = discharging)
+    // Diagnostics: how this sleep segment ended. A wake cause other than the
+    // power button (or a non-deep-sleep reset reason) means the device was NOT
+    // asleep for the whole interval — it woke spuriously and the reported drain
+    // is an average that mixes awake time in. Persisted so the UI/serial can
+    // show it. esp_sleep_wakeup_cause_t / esp_reset_reason_t are stable enums.
+    uint8_t wakeCause = 0;    // esp_sleep_get_wakeup_cause() at wake
+    uint8_t resetReason = 0;  // esp_reset_reason() at wake
   };
   SleepDrain getLastSleepDrain() const;
 
