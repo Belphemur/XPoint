@@ -66,26 +66,44 @@ fails the update with `SIGNATURE_ERROR`.
 
 ## Rotating the signing key
 
-1. Generate a new Ed25519 keypair (raw 32-byte seed):
+The device trusts exactly one baked-in public key (`ota_signature::PUBKEY` in
+`lib/OtaSignature/ota_pubkey.h`). To rotate without bricking OTA for devices
+that haven't updated yet, you must ship the new key in a *transitional* firmware
+before any release is signed with it:
 
-   ```bash
-   python3 - <<'PY'
-   from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-   import base64
-   sk = Ed25519PrivateKey.generate()
-   print(base64.b64encode(sk.private_bytes_raw()).decode())
-   PY
-   ```
+1. **Generate a new Ed25519 keypair** (raw 32-byte seed) and keep the old one
+   available for one more release cycle.
 
-2. Update `lib/OtaSignature/ota_pubkey.h` with the new 32-byte public key.
-3. Set the new private key as the `OTA_SIGNING_KEY` secret:
+2. **Update the firmware to trust BOTH keys.** If `OtaSignature` verifies
+   against a single compiled-in key today, extend `verifyManifest()` to try each
+   key in a small built-in list (`PUBKEY_PRIMARY`, `PUBKEY_PREVIOUS`) and accept
+   if any verifies. Commit that firmware with both public keys baked in.
 
-   ```bash
-   gh secret set OTA_SIGNING_KEY -b'<new-base64-seed>' --repo Belphemur/crosspoint-x-reader
-   ```
+3. **Cut and publish a release signed with the OLD key** (so it is still
+   authentic to every device in the field — including those running firmware that
+   only knows the old key). This propagates the dual-key firmware from step 2
+   to the fleet. Wait for broad adoption before continuing.
 
-4. Commit the public-key change and cut a new release. Devices on the new
-   firmware will accept the new key; devices on old firmware keep the old key
-   (so stagger the rollout — publish a release carrying the new key *after* the
-   fleet has updated to firmware that trusts it, or ship a transitional build
-   that trusts both).
+4. **Switch the signing secret to the NEW key** and cut the next release. The
+   dual-key firmware accepts it. Devices still on the old single-key firmware
+   that missed the step-3 rollout will now reject the new-key release and keep
+   their current firmware (safe, no brick) until they install the transitional
+   firmware from step 3.
+
+5. **Later**, once the old single-key fleet is negligible, drop
+   `PUBKEY_PREVIOUS` from the firmware in a normal release.
+
+```bash
+# Generate a new keypair and print the base64 seed (store the seed as OTA_SIGNING_KEY):
+python3 - <<'PY'
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import base64
+sk = Ed25519PrivateKey.generate()
+print("seed (set as OTA_SIGNING_KEY):", base64.b64encode(sk.private_bytes_raw()).decode())
+PY
+```
+
+- **Private key** — `OTA_SIGNING_KEY` repo secret (raw 32-byte Ed25519 seed, base64).
+  Never committed. Used only by the release workflow.
+- **Public key(s)** — `lib/OtaSignature/ota_pubkey.h`, committed. Anyone can read
+  them; only someone with the matching secret can produce a valid signature.

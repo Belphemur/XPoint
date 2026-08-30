@@ -91,9 +91,6 @@ void ManifestJsonParser::sOnString(void* ctx, const char* value, size_t len) {
     case Key::BOARD:
       if (self->pos == Pos::IN_BOARD) safeCopy(self->cur.board, sizeof(self->cur.board), value, len);
       break;
-    case Key::ASSET:
-      if (self->pos == Pos::IN_BOARD) safeCopy(self->cur.url, sizeof(self->cur.url), value, len);  // reuse url buf
-      break;
     case Key::URL:
       if (self->pos == Pos::IN_BOARD) safeCopy(self->cur.url, sizeof(self->cur.url), value, len);
       break;

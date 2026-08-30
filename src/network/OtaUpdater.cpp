@@ -31,6 +31,11 @@ constexpr char latestReleaseUrl[] = "https://api.github.com/repos/Belphemur/cros
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
 
+  // Reset the manifest-derived trust state so a fresh check can't inherit a
+  // stale SHA-256 pinned by a previous (possibly failed) check.
+  haveExpectedSha = false;
+  memset(expectedSha, 0, sizeof(expectedSha));
+
   // Stream the ~32KB release JSON straight into the parser as it arrives.
   // Buffering the whole body in a std::string would add a growing allocation
   // on top of the TLS session's heap during the fetch; with -fno-exceptions an
@@ -98,18 +103,22 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
 
 OtaUpdater::OtaUpdaterError OtaUpdater::fetchAndVerifyManifest(const std::string& url) {
   // Pull the manifest body into memory (it is tiny — a few hundred bytes) so
-  // we can verify its Ed25519 signature. The firmware itself is never buffered.
+  // we can verify its Ed25519 signature. Cap both buffers: the manifest and its
+  // signature are untrusted until verified, and we never want an oversized
+  // response to exhaust the heap on the constrained device (see #8).
   std::string manifestJson;
   std::string sigJson;
-  const bool mOk = HttpDownloader::fetchUrl(url, manifestJson);
+  constexpr size_t MAX_MANIFEST_BYTES = 4096;
+  constexpr size_t MAX_SIG_BYTES = 256;
+  const bool mOk = HttpDownloader::fetchUrl(url, manifestJson, "", "", MAX_MANIFEST_BYTES);
   if (!mOk) {
-    LOG_ERR("OTA", "Manifest fetch failed");
+    LOG_ERR("OTA", "Manifest fetch failed (or exceeded %u bytes)", (unsigned)MAX_MANIFEST_BYTES);
     return HTTP_ERROR;
   }
   const std::string sigUrl = url + ".sig";
-  const bool sOk = HttpDownloader::fetchUrl(sigUrl, sigJson);
+  const bool sOk = HttpDownloader::fetchUrl(sigUrl, sigJson, "", "", MAX_SIG_BYTES);
   if (!sOk) {
-    LOG_ERR("OTA", "Manifest signature fetch failed");
+    LOG_ERR("OTA", "Manifest signature fetch failed (or exceeded %u bytes)", (unsigned)MAX_SIG_BYTES);
     return HTTP_ERROR;
   }
 
@@ -131,10 +140,15 @@ OtaUpdater::OtaUpdaterError OtaUpdater::fetchAndVerifyManifest(const std::string
             board_tag::boardName());
     return NO_UPDATE;
   }
-  if (entry->hasSha) {
-    memcpy(expectedSha, entry->sha256, 32);
-    haveExpectedSha = true;
+  // A signed release MUST carry a SHA-256 for our board. A missing hash for an
+  // entry that passed signature verification means the manifest is malformed,
+  // so we fail closed rather than flash an unverified image.
+  if (!entry->hasSha) {
+    LOG_ERR("OTA", "Signed manifest entry for this board has no SHA-256; refusing to flash unverified image");
+    return SIGNATURE_ERROR;
   }
+  memcpy(expectedSha, entry->sha256, 32);
+  haveExpectedSha = true;
   // Prefer the manifest's authoritative URL/size over the release asset entry
   // (the manifest is what was signed).
   if (entry->url[0] != '\0') {

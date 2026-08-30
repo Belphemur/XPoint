@@ -22,7 +22,7 @@ on:
       - '*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-release:
@@ -100,6 +100,8 @@ jobs:
   publish-release:
     needs: build-release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # only this job creates the release + attaches assets
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -150,7 +152,6 @@ jobs:
               url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
               boards.append({
                   "board": board,
-                  "asset": name,
                   "url": url,
                   "size": len(data),
                   "sha256": sha,
@@ -161,13 +162,17 @@ jobs:
               "boards": boards,
           }
           text = json.dumps(manifest, indent=2, sort_keys=True)
+          # Sign the EXACT bytes we write to disk. The device verifies the
+          # downloaded file body, so the signature must cover the same bytes
+          # (including the trailing newline) or verification fails.
+          body = text + "\n"
           with open(os.path.join(dist, "manifest.json"), "w") as f:
-              f.write(text + "\n")
+              f.write(body)
 
           # Sign the exact manifest bytes with the Ed25519 private key (raw 32-byte seed).
           raw = base64.b64decode(os.environ["OTA_SIGNING_KEY"])
           key = Ed25519PrivateKey.from_private_bytes(raw)
-          sig = key.sign(text.encode("utf-8"))
+          sig = key.sign(body.encode("utf-8"))
           with open(os.path.join(dist, "manifest.json.sig"), "wb") as f:
               f.write(base64.b64encode(sig))
           print("manifest signed for", len(boards), "boards")
