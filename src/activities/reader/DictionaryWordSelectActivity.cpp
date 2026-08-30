@@ -335,8 +335,12 @@ void DictionaryWordSelectActivity::performLookup() {
 void DictionaryWordSelectActivity::loop() {
   if (popup == Popup::NotFound || popup == Popup::Error) {
     if (millis() - popupTime >= POPUP_DURATION_MS) {
-      popup = Popup::None;
-      requestUpdate();
+      if (initialX >= 0 && initialY >= 0) {
+        finish();
+      } else {
+        popup = Popup::None;
+        requestUpdate();
+      }
     }
     return;
   }
