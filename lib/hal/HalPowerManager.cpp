@@ -320,17 +320,16 @@ void HalPowerManager::logSleepBattery() const {
     if (f) {
       if (f.size() == 0) {
         // Fresh file: write a header so the columns are self-documenting.
-        f.println(F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
-                    "wake_cause,reset_reason,spurious"));
+        f.println(
+            F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
+              "wake_cause,reset_reason,spurious"));
       }
       // reason: 0=timeout 1=button 2=quick-resume; wake_cause/reset_reason are the
       // raw esp_sleep_wakeup_cause_t / esp_reset_reason_t enum values.
       char row[160];
-      snprintf(row, sizeof(row),
-               "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n",
-               _sleepSeq, _sleepReason, _sleepEntryMv, mvNow, deltaMv, sleptS,
-               mvPerHour, milliamps, static_cast<int>(wakeCause),
-               static_cast<int>(resetReason), spurious ? 1 : 0);
+      snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n", _sleepSeq, _sleepReason, _sleepEntryMv,
+               mvNow, deltaMv, sleptS, mvPerHour, milliamps, static_cast<int>(wakeCause), static_cast<int>(resetReason),
+               spurious ? 1 : 0);
       f.print(row);
       _sleepSeq++;  // next cycle gets the next sequence number
     }
