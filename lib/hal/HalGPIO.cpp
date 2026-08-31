@@ -285,6 +285,11 @@ HalGPIO::WakeupReason HalGPIO::getWakeupReason() const {
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_UNKNOWN && usbConnected) {
     return WakeupReason::AfterFlash;
   }
+  // Auto power off: the dwell RTC timer elapsed while asleep (before Other, so
+  // the main.cpp intercept can branch on the HAL API instead of raw IDF calls).
+  if (resetReason == ESP_RST_DEEPSLEEP && wakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
+    return WakeupReason::Timer;
+  }
   if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED && resetReason == ESP_RST_POWERON && usbConnected) {
     return WakeupReason::AfterUSBPower;
   }

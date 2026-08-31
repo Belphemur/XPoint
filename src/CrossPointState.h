@@ -14,6 +14,9 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   static constexpr uint8_t SLEEP_RECENT_COUNT = 16;
 
   std::string openEpubPath;
+  // Cover BMP shown on the auto power off shutdown screen; set when entering
+  // deep sleep with the shutdown timer armed, cleared after rendering.
+  std::string autoPowerOffCoverBmpPath;
   uint16_t recentSleepImages[SLEEP_RECENT_COUNT] = {};
   uint8_t recentSleepPos = 0;
   uint8_t recentSleepFill = 0;

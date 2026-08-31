@@ -42,6 +42,7 @@ void CrossPointState::pushRecentOverlaySleep(uint16_t idx) {
 
 void CrossPointState::toJson(JsonDocument& doc) const {
   doc["openEpubPath"] = openEpubPath;
+  doc["autoPowerOffCoverBmpPath"] = autoPowerOffCoverBmpPath;
   JsonArray recentArr = doc["recentSleepImages"].to<JsonArray>();
   for (int i = 0; i < SLEEP_RECENT_COUNT; i++) recentArr.add(recentSleepImages[i]);
   doc["recentSleepPos"] = recentSleepPos;
@@ -57,6 +58,7 @@ void CrossPointState::toJson(JsonDocument& doc) const {
 
 bool CrossPointState::fromJson(JsonVariantConst doc) {
   openEpubPath = doc["openEpubPath"] | "";
+  autoPowerOffCoverBmpPath = doc["autoPowerOffCoverBmpPath"] | "";
 
   memset(recentSleepImages, 0, sizeof(recentSleepImages));
   JsonArrayConst recentArr = doc["recentSleepImages"];

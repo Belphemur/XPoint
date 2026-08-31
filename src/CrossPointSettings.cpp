@@ -356,6 +356,11 @@ unsigned long CrossPointSettings::getSleepTimeoutMs() const {
   return static_cast<unsigned long>(minutes) * 60UL * 1000UL;
 }
 
+uint32_t CrossPointSettings::getAutoPowerOffMs() const {
+  if (autoPowerOffHours >= AUTO_POWER_OFF_MAX_HOURS) return 0;
+  return static_cast<uint32_t>(autoPowerOffHours) * 3600UL * 1000UL;
+}
+
 int CrossPointSettings::getRefreshFrequency() const {
   switch (refreshFrequency) {
     case REFRESH_1:
