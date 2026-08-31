@@ -578,7 +578,14 @@ void setup() {
   }
 
   const auto wakeupReason = gpio.getWakeupReason();
-  if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !gpio.verifyPowerButtonWakeup()) {
+  // Deep-sleep wake trust: the EXT1/GPIO wake source armed at sleep entry only
+  // fires on a real power-button press, so no held-stability check is needed —
+  // and requiring one would eat short clicks, because the sample runs hundreds
+  // of ms after the physical wake (chip reset + begin() work) and a ~200 ms
+  // click is already released by then. Cold boots (power-off path) keep the
+  // verification: there the held button is the only ghost-wake filter.
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !gpio.wokeFromDeepSleep() &&
+      !gpio.verifyPowerButtonWakeup()) {
     LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
     powerManager.startDeepSleep(gpio);
   }

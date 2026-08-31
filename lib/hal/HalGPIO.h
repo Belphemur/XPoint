@@ -110,6 +110,11 @@ class HalGPIO {
   // Should only be called when wakeup reason is PowerButton.
   bool verifyPowerButtonWakeup();
 
+  // True when the last reset was a deep-sleep EXT1/GPIO wake (the hardware wake
+  // source armed at sleep entry). Used to distinguish a genuine deep-sleep wake
+  // from a cold boot that also reports WakeupReason::PowerButton.
+  bool wokeFromDeepSleep() const;
+
   // Check if USB is connected
   bool isUsbConnected() const;
 
