@@ -11,8 +11,10 @@
 
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureHttpClient.h>
-
-extern "C" void wolfSSL_Arduino_Serial_Print(const char* const msg) { LOG_DBG("WOLFSSL", "%s", msg); }
+// wolfSSL_Arduino_Serial_Print() is now provided by wolfSSL's own
+// wolfssl-arduino.cpp (since 5.8.x), so we must not define it again or the
+// linker sees a duplicate symbol. Its implementation prints to Serial, which on
+// this firmware is the firmware CDC stream (see Logging.h's #define Serial).
 #else
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
