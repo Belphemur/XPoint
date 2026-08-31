@@ -60,6 +60,11 @@ class HalPowerManager {
   // duration). Compiled out unless LOG_LEVEL >= 2 (dev/x4pro builds).
   void logSleepBattery() const;
 
+  // Dev-only: append the last computed sleep-drain row to /.crosspoint/sleep_trace.csv.
+  // MUST be called AFTER Storage.begin() (the SD card is mounted by then); logSleepBattery()
+  // runs from begin() before the card is up, so the actual SD write is deferred here.
+  void flushSleepTrace() const;
+
   // Dev-only: stage which trigger is putting the device to sleep (0 = auto-timeout,
   // 1 = power-button, 2 = quick-resume) so the SD sleep-trace CSV can record it.
   // Called from enterDeepSleep() before startDeepSleep(); the actual SD row is
@@ -71,11 +76,14 @@ class HalPowerManager {
   // until the device has slept at least once. Compiled out unless
   // LOG_LEVEL >= 2.
   struct SleepDrain {
-    bool valid = false;  // false on cold boot / before first sleep
+    bool valid = false;    // false on cold boot / before first sleep
+    uint16_t entryMv = 0;  // battery mV captured just before sleep (for CSV)
+    uint16_t wakeMv = 0;   // battery mV at wake (for CSV)
     uint32_t sleptSeconds = 0;
     int deltaMv = 0;         // + = gained charge (was on charger), - = discharged
     double mvPerHour = 0.0;  // signed net rate, mV/h (kept for logging)
     double milliamps = 0.0;  // signed net current, mA (+ = charging, - = discharging)
+    bool rateValid = false;  // false when the sleep was too short for a trustworthy rate (rate shown as n/a)
     // Diagnostics: how this sleep segment ended. A wake cause other than the
     // power button (or a non-deep-sleep reset reason) means the device was NOT
     // asleep for the whole interval — it woke spuriously and the reported drain

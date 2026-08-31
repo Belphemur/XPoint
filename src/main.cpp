@@ -538,6 +538,11 @@ void setup() {
     return;
   }
 
+  // Dev-only: now that the SD card is mounted, append the sleep-trace CSV row
+  // computed by logSleepBattery() at wake (it ran from powerManager.begin() before
+  // the card was up, so the write was deferred here).
+  powerManager.flushSleepTrace();
+
   HalSystem::checkPanic();
 
   APP_STATE.loadFromFile();
