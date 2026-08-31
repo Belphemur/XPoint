@@ -23,6 +23,8 @@ These are additions carried by this fork that are **not** present in CrossPoint 
 - **Reading stats** — per-book and global reading statistics (time spent, pages/progress, sessions) tracked on-device and viewable from the reader menu, going beyond upstream's progress-only tracking.
 - **Fully configurable Home button** — the Home key actions (tap, double-click, long-press) are remappable in settings (e.g. back-one-level, toggle frontlight, open menu), instead of a fixed mapping.
 - **Dictionary on long-press** — long-pressing a word opens the dictionary lookup directly (word-select), with a configurable long-press action (dictionary or footnote) rather than only via the selection menu.
+- **Auto power off** — a dwell timer that runs while the device is asleep: enter sleep (or let the inactivity timeout fire) and, if the device is still asleep when the timer elapses, it wakes on the RTC timer, paints a shutdown screen (current book cover, or the logo fallback) and drops the peripheral rail instead of draining the battery in deep sleep. Configurable in **System → Auto power off** from 2 to 12 hours in 2-hour steps, with 12 h rendering as "Off"; default 4 h. The next power-button press is a normal cold boot.
+- **Power button: short press sleeps, long press shuts down** — holding the power button for 400 ms powers the device off (shutdown screen, then rail cut), while the short press keeps its own configurable binding and defaults to **Sleep**. Previously the hold path doubled as the sleep gesture (10 ms threshold) and there was no dedicated power-off path.
 
 - **Independent release pipeline** — this fork tags and publishes its own releases via
   `release.yml` (Compile Release), separate from upstream's cadence.
