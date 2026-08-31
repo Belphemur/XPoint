@@ -286,6 +286,11 @@ void SettingsActivity::toggleCurrentSetting() {
     return;
   }
 
+  if (setting.nameId == StrId::STR_AUTO_POWER_OFF) {
+    openAutoPowerOffPicker();
+    return;
+  }
+
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
     const bool currentValue = SETTINGS.*(setting.valuePtr);
@@ -458,6 +463,22 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+void SettingsActivity::openAutoPowerOffPicker() {
+  startActivityForResult(
+      std::make_unique<IntervalSelectionActivity>(
+          renderer, mappedInput, "AutoPowerOffInterval", StrId::STR_AUTO_POWER_OFF, SETTINGS.autoPowerOffHours,
+          CrossPointSettings::AUTO_POWER_OFF_MIN_HOURS, CrossPointSettings::AUTO_POWER_OFF_MAX_HOURS,
+          CrossPointSettings::AUTO_POWER_OFF_STEP_HOURS, CrossPointSettings::AUTO_POWER_OFF_STEP_HOURS,
+          StrId::STR_AUTO_POWER_OFF_HOURS_FORMAT, false, StrId::STR_STATE_OFF),
+      [this](const ActivityResult& result) {
+        if (!result.isCancelled) {
+          SETTINGS.autoPowerOffHours = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+          SETTINGS.saveToFile();
+        }
+        requestUpdate();
+      });
+}
+
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.type == SettingType::ACTION) {
     // The "Sync clock now" row shows the currently detected time zone so the
@@ -495,6 +516,15 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
       }
       char valueBuffer[32];
       snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_SLEEP_TIMER_VALUE_FORMAT),
+               static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
+      return valueBuffer;
+    }
+    if (setting.nameId == StrId::STR_AUTO_POWER_OFF) {
+      if (SETTINGS.autoPowerOffHours >= CrossPointSettings::AUTO_POWER_OFF_MAX_HOURS) {
+        return tr(STR_STATE_OFF);
+      }
+      char valueBuffer[32];
+      snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_AUTO_POWER_OFF_HOURS_FORMAT),
                static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
       return valueBuffer;
     }

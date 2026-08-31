@@ -90,7 +90,9 @@ If the frontlight doesn't come back on after the device wakes from sleep, check 
 ### Power On / Off
 
 To turn the device on or off, **press and hold the Power button for approximately half a second**.
-In the **[Controls Settings](#363-controls)** you can configure the power button to turn the device off with a short press instead of a long one.
+A **short press** of the Power button puts the device to sleep instead; you can change this binding in the **[Controls Settings](#363-controls)**.
+
+The device also powers itself off automatically after being asleep for the duration set by **Auto power off** in the **[System Settings](#364-system)** (4 hours by default). When that happens, the sleep screen displays a prompt before the device turns off completely.
 
 To reboot the device (for example after a firmware update or if it's frozen), press and release the Reset button, and then quickly press and hold the Power button for a few seconds.
 
@@ -303,8 +305,8 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 - **Short Power Button Click**: Controls the effect of a short click of the power button:
   
-  - "Ignore" (default) - Require a long press to turn off the device
-  - "Sleep" - A short press puts the device into sleep mode
+  - "Sleep" (default) - A short press puts the device into sleep mode
+  - "Ignore" - A short press is ignored; use a long press to turn the device off
   - "Page Turn" - A short press in reading mode turns to the next page; a long press turns the device off
   - "Footnotes" - A short press in reading mode opens the footnotes submenu; if only one footnote is present on the page, the referenced page is opened directly. The short press on the power button can be used to select the footnote in the submenu, and to go back to the original page after finish reading the footnote (like the back button).
   - "Refresh" - A short press triggers a manual full-screen refresh, useful for clearing ghosting
@@ -313,6 +315,8 @@ The Settings screen allows you to configure the device's behavior. There are a f
 #### 3.6.4 System
 
 - **Time to Sleep**: Set the duration of inactivity before the device automatically goes to sleep; options are 1, 3, 5, 10 (default), 15 or 30 minutes.
+
+- **Auto power off**: Set how long the device may remain asleep before it shuts down automatically; options are 2, 4 (default), 6, 8, 10 or 12 hours — selecting 12 hours disables the timer (Off). When the timer expires, the sleep screen shows a prompt and the device turns off completely; press the Power button to turn it back on.
 
 - **Wi-Fi Networks**: Connect to Wi-Fi networks for file transfers and firmware updates.
 

@@ -119,36 +119,41 @@ bool isValidPngHeader(HalFile& file) {
          supportedBitDepth && supportedColorType && compression == 0 && filter == 0 && interlace == 0;
 }
 
-BitmapPlacement calculateBitmapPlacement(const int bitmapWidth, const int bitmapHeight, const GfxRenderer& renderer) {
+BitmapPlacement calculateBitmapPlacementInBounds(const int bitmapWidth, const int bitmapHeight,
+                                                 const GfxRenderer& renderer, const int boundsX, const int boundsY,
+                                                 const int boundsW, const int boundsH) {
   BitmapPlacement placement;
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
 
-  if (bitmapWidth > pageWidth || bitmapHeight > pageHeight) {
+  if (bitmapWidth > boundsW || bitmapHeight > boundsH) {
     float ratio = static_cast<float>(bitmapWidth) / static_cast<float>(bitmapHeight);
-    const float screenRatio = static_cast<float>(pageWidth) / static_cast<float>(pageHeight);
+    const float boundsRatio = static_cast<float>(boundsW) / static_cast<float>(boundsH);
 
-    if (ratio > screenRatio) {
+    if (ratio > boundsRatio) {
       if (SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP) {
-        placement.cropX = 1.0f - (screenRatio / ratio);
+        placement.cropX = 1.0f - (boundsRatio / ratio);
         ratio = (1.0f - placement.cropX) * static_cast<float>(bitmapWidth) / static_cast<float>(bitmapHeight);
       }
-      placement.x = 0;
-      placement.y = std::round((static_cast<float>(pageHeight) - static_cast<float>(pageWidth) / ratio) / 2);
+      placement.x = boundsX;
+      placement.y = boundsY + std::round((static_cast<float>(boundsH) - static_cast<float>(boundsW) / ratio) / 2);
     } else {
       if (SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP) {
-        placement.cropY = 1.0f - (ratio / screenRatio);
+        placement.cropY = 1.0f - (ratio / boundsRatio);
         ratio = static_cast<float>(bitmapWidth) / ((1.0f - placement.cropY) * static_cast<float>(bitmapHeight));
       }
-      placement.x = std::round((static_cast<float>(pageWidth) - static_cast<float>(pageHeight) * ratio) / 2);
-      placement.y = 0;
+      placement.x = boundsX + std::round((static_cast<float>(boundsW) - static_cast<float>(boundsH) * ratio) / 2);
+      placement.y = boundsY;
     }
   } else {
-    placement.x = (pageWidth - bitmapWidth) / 2;
-    placement.y = (pageHeight - bitmapHeight) / 2;
+    placement.x = boundsX + (boundsW - bitmapWidth) / 2;
+    placement.y = boundsY + (boundsH - bitmapHeight) / 2;
   }
 
   return placement;
+}
+
+BitmapPlacement calculateBitmapPlacement(const int bitmapWidth, const int bitmapHeight, const GfxRenderer& renderer) {
+  return calculateBitmapPlacementInBounds(bitmapWidth, bitmapHeight, renderer, 0, 0, renderer.getScreenWidth(),
+                                          renderer.getScreenHeight());
 }
 
 bool parseOverlayBmpHeader(HalFile& file, OverlayBmpInfo& info, const bool logErrors) {
@@ -758,58 +763,8 @@ void SleepActivity::renderCoverSleepScreen() const {
       break;
   }
 
-  if (APP_STATE.openEpubPath.empty()) {
-    return (this->*renderNoCoverSleepScreen)();
-  }
-
   std::string coverBmpPath;
-  bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
-
-  // Check if the current book is XTC, TXT, or EPUB
-  if (FsHelpers::hasXtcExtension(APP_STATE.openEpubPath)) {
-    // Handle XTC file
-    Xtc lastXtc(APP_STATE.openEpubPath, "/.crosspoint");
-    if (!lastXtc.load()) {
-      LOG_ERR("SLP", "Failed to load last XTC");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    if (!lastXtc.generateCoverBmp()) {
-      LOG_ERR("SLP", "Failed to generate XTC cover bmp");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    coverBmpPath = lastXtc.getCoverBmpPath();
-  } else if (FsHelpers::hasTxtExtension(APP_STATE.openEpubPath)) {
-    // Handle TXT file - looks for cover image in the same folder
-    Txt lastTxt(APP_STATE.openEpubPath, "/.crosspoint");
-    if (!lastTxt.load()) {
-      LOG_ERR("SLP", "Failed to load last TXT");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    if (!lastTxt.generateCoverBmp()) {
-      LOG_ERR("SLP", "No cover image found for TXT file");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    coverBmpPath = lastTxt.getCoverBmpPath();
-  } else if (FsHelpers::hasEpubExtension(APP_STATE.openEpubPath)) {
-    // Handle EPUB file
-    Epub lastEpub(APP_STATE.openEpubPath, "/.crosspoint");
-    // Skip loading css since we only need metadata here
-    if (!lastEpub.load(true, true)) {
-      LOG_ERR("SLP", "Failed to load last epub");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    if (!lastEpub.generateCoverBmp(cropped)) {
-      LOG_ERR("SLP", "Failed to generate cover bmp");
-      return (this->*renderNoCoverSleepScreen)();
-    }
-
-    coverBmpPath = lastEpub.getCoverBmpPath(cropped);
-  } else {
+  if (APP_STATE.openEpubPath.empty() || !resolveCoverBmpPath(APP_STATE.openEpubPath, coverBmpPath)) {
     return (this->*renderNoCoverSleepScreen)();
   }
 
@@ -824,6 +779,108 @@ void SleepActivity::renderCoverSleepScreen() const {
   }
 
   return (this->*renderNoCoverSleepScreen)();
+}
+
+bool SleepActivity::resolveCoverBmpPath(const std::string& bookPath, std::string& outPath) {
+  const bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+
+  // Check if the current book is XTC, TXT, or EPUB
+  if (FsHelpers::hasXtcExtension(bookPath)) {
+    // Handle XTC file
+    Xtc lastXtc(bookPath, "/.crosspoint");
+    if (!lastXtc.load()) {
+      LOG_ERR("SLP", "Failed to load last XTC");
+      return false;
+    }
+
+    if (!lastXtc.generateCoverBmp()) {
+      LOG_ERR("SLP", "Failed to generate XTC cover bmp");
+      return false;
+    }
+
+    outPath = lastXtc.getCoverBmpPath();
+  } else if (FsHelpers::hasTxtExtension(bookPath)) {
+    // Handle TXT file - looks for cover image in the same folder
+    Txt lastTxt(bookPath, "/.crosspoint");
+    if (!lastTxt.load()) {
+      LOG_ERR("SLP", "Failed to load last TXT");
+      return false;
+    }
+
+    if (!lastTxt.generateCoverBmp()) {
+      LOG_ERR("SLP", "No cover image found for TXT file");
+      return false;
+    }
+
+    outPath = lastTxt.getCoverBmpPath();
+  } else if (FsHelpers::hasEpubExtension(bookPath)) {
+    // Handle EPUB file
+    Epub lastEpub(bookPath, "/.crosspoint");
+    // Skip loading css since we only need metadata here
+    if (!lastEpub.load(true, true)) {
+      LOG_ERR("SLP", "Failed to load last epub");
+      return false;
+    }
+
+    if (!lastEpub.generateCoverBmp(cropped)) {
+      LOG_ERR("SLP", "Failed to generate cover bmp");
+      return false;
+    }
+
+    outPath = lastEpub.getCoverBmpPath(cropped);
+  } else {
+    return false;
+  }
+
+  return !outPath.empty();
+}
+
+void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+
+  renderer.clearScreen();
+
+  bool haveCover = false;
+  int frameX = 0;
+  int frameY = 0;
+  int frameW = 0;
+  int frameH = 0;
+
+  const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
+  HalFile file;
+  if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {
+    Bitmap bitmap(file);
+    const auto parseResult = bitmap.parseHeaders();
+    if (parseResult == BmpReaderError::Ok) {
+      // Frame the cover in a centered border occupying ~2/3 of the panel.
+      constexpr float FRAME_FRACTION = 0.66f;
+      constexpr int FRAME_INSET = 6;
+      frameW = static_cast<int>(static_cast<float>(pageWidth) * FRAME_FRACTION);
+      frameH = static_cast<int>(static_cast<float>(pageHeight) * FRAME_FRACTION);
+      frameX = (pageWidth - frameW) / 2;
+      frameY = (pageHeight - frameH) / 2;
+
+      const auto placement =
+          calculateBitmapPlacementInBounds(bitmap.getWidth(), bitmap.getHeight(), renderer, frameX + FRAME_INSET,
+                                           frameY + FRAME_INSET, frameW - 2 * FRAME_INSET, frameH - 2 * FRAME_INSET);
+      renderer.drawBitmap(bitmap, placement.x, placement.y, pageWidth, pageHeight, placement.cropX, placement.cropY);
+      renderer.drawRect(frameX, frameY, frameW, frameH);
+      haveCover = true;
+    } else {
+      LOG_ERR("SLP", "Invalid shutdown cover BMP %s: %s", coverPath.c_str(), Bitmap::errorToString(parseResult));
+    }
+  }
+
+  if (!haveCover) {
+    renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  }
+
+  const int captionY = haveCover ? frameY + frameH + 24 : pageHeight / 2 + 95;
+  renderer.drawCenteredText(UI_10_FONT_ID, captionY, tr(STR_SHUTDOWN_PRESS_POWER), true);
+
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  APP_STATE.autoPowerOffCoverBmpPath.clear();
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {

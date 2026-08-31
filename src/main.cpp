@@ -21,6 +21,8 @@
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
+#include <esp_sleep.h>
+#include <esp_system.h>
 
 #include <cstring>
 
@@ -33,6 +35,7 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/boot_sleep/SleepActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -228,6 +231,7 @@ bool toggleFrontlightByShortcut(const char* source) {
 // Reader-only actions (Reader Menu) no-op outside the reader; Sleep and
 // Screenshot are global. GO_HOME uses goHome() so the home screen re-renders.
 void enterDeepSleep(bool fromTimeout);
+void enterPowerOff();
 
 bool executeHomeButtonAction(uint8_t action) {
   switch (action) {
@@ -386,6 +390,20 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
+// Stage the shutdown cover for the power off screen while the book is still
+// available; at wake it is only read back and painted. requireTimerEnabled
+// gates staging on the auto power off setting for deep-sleep entry; manual
+// power off passes false so the screen keeps its book cover unconditionally.
+static void stageAutoPowerOffCover(bool requireTimerEnabled) {
+  APP_STATE.autoPowerOffCoverBmpPath.clear();
+  if (requireTimerEnabled && SETTINGS.getAutoPowerOffMs() == 0) return;
+  if (APP_STATE.openEpubPath.empty()) return;
+  std::string coverPath;
+  if (SleepActivity::resolveCoverBmpPath(APP_STATE.openEpubPath, coverPath)) {
+    APP_STATE.autoPowerOffCoverBmpPath = std::move(coverPath);
+  }
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -401,6 +419,8 @@ void enterDeepSleep(bool fromTimeout = false) {
   // Every sleep mode leaves a complete retained frame on the e-ink panel. Keep
   // it visible until the first useful reader or home paint replaces it.
   APP_STATE.showBootScreen = false;
+
+  stageAutoPowerOffCover(true);
 
   APP_STATE.saveToFile();
 
@@ -427,7 +447,40 @@ void enterDeepSleep(bool fromTimeout = false) {
   display.deepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio);
+  uint64_t autoPowerOffUs = 0;
+  if (const uint32_t apOffMs = SETTINGS.getAutoPowerOffMs(); apOffMs > 0) {
+    autoPowerOffUs = static_cast<uint64_t>(apOffMs) * 1000ULL;
+  }
+  powerManager.startDeepSleep(gpio, autoPowerOffUs);
+}
+
+// Manual power off: render the shutdown screen, then cut power. Unlike deep
+// sleep there is no wake timer — the next power-button press is a normal cold
+// boot (same next-boot state as the auto power off shutdown).
+void enterPowerOff() {
+  HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for shutdown preparation
+  stageAutoPowerOffCover(false);
+  {
+    RenderLock lock;
+    SleepActivity::renderShutdownScreen(renderer);  // Clears APP_STATE.autoPowerOffCoverBmpPath after paint
+  }
+  // Persist the post-off state: splashless wake on the next power-button
+  // press, and no stale staged cover path in the settings file.
+  APP_STATE.showBootScreen = false;
+  APP_STATE.saveToFile();
+  // A stale Quick Resume frame must not replace the shutdown screen on the
+  // next boot.
+  Storage.remove(SLEEP_FRAME_FILE);
+
+  // Same teardown as enterDeepSleep(): the modem power domain must not be
+  // held alive across the rail cut.
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+
+  LOG_INF("MAIN", "Powering off");
+  powerManager.enterPowerOffSleep(gpio);  // [[noreturn]]
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -616,6 +669,19 @@ void setup() {
   bool needsWakeRefresh = false;
 
   setupDisplayAndFonts(resume != BootResume::Splash);
+
+  // Auto power off: the dwell timer elapsed while in deep sleep. Render the
+  // shutdown screen and cut power; the next power-button press is a normal
+  // cold boot. Checked before any other wake routing — getWakeupReason() maps
+  // TIMER wakes to Other, so this explicit intercept is the only handler.
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER &&
+      SETTINGS.getAutoPowerOffMs() > 0) {
+    SleepActivity::renderShutdownScreen(renderer);
+    // A stale Quick Resume frame must not replace the shutdown screen on the
+    // next boot.
+    Storage.remove(SLEEP_FRAME_FILE);
+    powerManager.enterPowerOffSleep(gpio);
+  }
 
   switch (resume) {
     case BootResume::Silent:
@@ -831,23 +897,36 @@ void loop() {
 
   if (powerReleasedSinceWake && millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
       gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
-    // If the screenshot combination is potentially being pressed, don't sleep
+    // If the screenshot combination is potentially being pressed, don't power off
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
     }
-    LOG_DBG("MAIN", "Power button held %lums, sleeping", gpio.getPowerButtonHeldTime());
+    LOG_INF("MAIN", "Power button held %lums, powering off", gpio.getPowerButtonHeldTime());
+    enterPowerOff();
+    // This should never be hit as `enterPowerOff` never returns
+    return;
+  }
+
+  // Short power click with the Sleep binding: sleep on release. This is the
+  // only sleep trigger on Paper Mono (its PMIC reports the button as a
+  // one-tick click, so the hold path above cannot fire); on the other boards
+  // it complements the hold path, which is now exclusively the power off
+  // gesture. allowSleepAt also covers the release of the press that woke the
+  // device when wakePowerReleasePending missed it.
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && millis() >= allowSleepAt &&
+      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+    LOG_INF("MAIN", "Sleep triggered by power-button click");
     enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
 
 #if FREEINK_DEVICE_PAPERMONO
   // Paper Mono reports the PMIC power button as a one-tick click, so the held
-  // path above cannot fire. With the default Ignore action, retain the normal
-  // power-button meaning and shut down; explicit alternate bindings still win.
-  if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
-       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
-      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  // path above cannot fire. With the Ignore binding, keep sleeping on the
+  // click: the GPIO boards' Ignore short-click no-op has no Paper Mono
+  // equivalent because a click is the only power-button event it can report.
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE && millis() >= allowSleepAt &&
+      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     enterDeepSleep();
     return;
   }

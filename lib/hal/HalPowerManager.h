@@ -38,9 +38,16 @@ class HalPowerManager {
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
 
-  // Setup wake up GPIO and enter deep sleep
+  // Setup wake up GPIO and enter deep sleep. When autoPowerOffTimerUs is
+  // non-zero an RTC timer is armed so the device wakes after that many
+  // microseconds of dwell (auto power off).
   // Should be called inside main loop() to handle the currentLockMode
-  void startDeepSleep(HalGPIO& gpio) const;
+  void startDeepSleep(HalGPIO& gpio, uint64_t autoPowerOffTimerUs = 0);
+
+  // Final software power-off for auto power off: drives the master rail
+  // latches LOW (held through sleep), disarms any RTC timer and re-enters
+  // deep sleep waking only on the power button. Never returns.
+  [[noreturn]] void enterPowerOffSleep(HalGPIO& gpio);
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;

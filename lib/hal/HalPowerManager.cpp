@@ -132,7 +132,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // Otherwise, no change needed
 }
 
-void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffTimerUs) {
 #ifdef ENABLE_SERIAL_LOG
   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
   // doesn't hold power domains that interfere with USB-powered GPIO wake.
@@ -223,6 +223,48 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
     }
   }
 #endif
+  // Auto power off: arm the dwell timer so the device wakes (and shuts down)
+  // if it is left in deep sleep this long.
+  if (autoPowerOffTimerUs > 0) {
+    esp_sleep_enable_timer_wakeup(autoPowerOffTimerUs);
+  }
+  freeink::PowerManager::deepSleepUntilPowerButton();
+}
+
+// Final software power-off for auto power off: drop the master rail latches
+// LOW so everything but the wake logic loses power, then deep sleep until the
+// power button is pressed (next press = normal cold boot). Assumes the
+// shutdown screen has already been rendered.
+[[noreturn]] void HalPowerManager::enterPowerOffSleep(HalGPIO& gpio) {
+#ifdef ENABLE_SERIAL_LOG
+  logSerial.end();
+#endif
+
+  // Cut the gated peripheral rails and park the frontlight pads while the
+  // master rail is still up (same ordering as startDeepSleep()).
+  freeink::PowerManager::powerDownRailsForSleep();
+#if FREEINK_FRONTLIGHT_LS
+  Frontlight.park();
+#endif
+
+  // Drive the keep-alive latches LOW and hold them through sleep: the rail
+  // drops once the hold is armed. Skips XTEINK_C3_GPIO13 — it IS power.latch0
+  // on the C3 Xteink boards, where driving it low is the battery power-off and
+  // must not be clobbered here.
+  for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
+    if (pin < 0 || static_cast<gpio_num_t>(pin) == XTEINK_C3_GPIO13) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    // Release any surviving pad hold first: a held pad silently ignores the drive.
+    gpio_hold_dis(g);
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    gpio_hold_en(g);
+  }
+
+  // The RTC timer that woke us has served its purpose; make sure it cannot
+  // wake this power-off sleep.
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+
   freeink::PowerManager::deepSleepUntilPowerButton();
 }
 
