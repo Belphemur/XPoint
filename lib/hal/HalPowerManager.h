@@ -72,13 +72,23 @@ class HalPowerManager {
   // runs from begin() before the card is up, so the actual SD write is deferred here.
   void flushSleepTrace() const;
 
-  // Stock-parity shutdown-reason marker (ghidra_poweroff_report.md): the raw
-  // (reason<<8)|1 code returned by freeink::PowerManager::takeShutdownReason()
-  // at boot, when the previous session ended in a clean power off. Persisted in
-  // RTC memory so flushSleepTrace() can append it to the current CSV row;
-  // 0 = no marker (normal boot / normal sleep wake).
-  static void setLastShutdownReason(uint16_t code);
-  static uint16_t getLastShutdownReason();
+  // HAL-routed stock-parity shutdown marker (the freeink::PowerManager calls
+  // stay inside the HAL; main.cpp must not touch SDK classes directly). See
+  // docs/design/shutdown-reason-marker.md.
+  //
+  //   ShutdownKind             which clean power off happened last time;
+  //                            None = no marker (normal boot, crash, brown-out)
+  //   takeLastShutdownKind()   read + clear the RTC marker once per boot
+  //   stageAutoPowerOff()      record that THIS sleep ends in an automatic
+  //                            power off: writes the RTC marker for the next
+  //                            boot AND stages the trace code so the current
+  //                            boot's sleep-trace row carries it (flush
+  //                            happens later in setup, before the sink)
+  //   stageUserPowerOff()      same, for the manual power-button power off
+  enum class ShutdownKind : uint8_t { None = 0, User = 1, AutoOff = 2 };
+  static ShutdownKind takeLastShutdownKind();
+  static void stageAutoPowerOff();
+  static void stageUserPowerOff();
 
   // Dev-only: stage which trigger is putting the device to sleep (0 = auto-timeout,
   // 1 = power-button, 2 = quick-resume) so the SD sleep-trace CSV can record it.

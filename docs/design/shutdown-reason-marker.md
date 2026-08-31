@@ -38,5 +38,13 @@ Add to `freeink::PowerManager`:
 - No board-profile change needed: RTC slow RAM offsets 0/4 are board-agnostic.
 
 ## Version bump
-SLEEP_TRACE_VERSION stays (no RTC struct layout change — the marker is separate
-cells, not the SleepDrain struct).
+SLEEP_TRACE_VERSION 6 → 7: `_lastShutdownReasonCode` joins the versioned RTC
+block (CodeRabbit round-2 finding — an unversioned layout change could let an
+older build's RTC data pass validation after an OTA). logSleepBattery() clears
+stale-layout data on the mismatch.
+
+## Sleep-trace CSV migration
+A pre-marker `sleep_trace.csv` has an 11-column header; rows now carry 12
+columns. flushSleepTrace() rotates a legacy file (no `shutdown_reason` in the
+header) to `/.crosspoint/sleep_trace_v1.csv` before appending, so schemas never
+mix within one file. One generation is kept.

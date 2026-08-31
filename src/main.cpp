@@ -21,7 +21,6 @@
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
-#include <PowerManager.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 
@@ -487,7 +486,7 @@ void enterPowerOff() {
   LOG_INF("MAIN", "Powering off");
   // Stock-parity shutdown marker (ghidra_poweroff_report.md): record WHY we are
   // powering off in RTC slow RAM; the next boot reports + clears it.
-  freeink::PowerManager::setShutdownReason(freeink::PowerManager::ShutdownReason::ShutdownUser);
+  powerManager.stageUserPowerOff();
   powerManager.enterPowerOffSleep(gpio);  // [[noreturn]]
 }
 
@@ -572,14 +571,10 @@ void setup() {
   // session ended in a power off (manual or auto), RTC slow RAM carries the
   // magic + reason byte. Read + clear exactly once per boot and log it. The
   // raw code is also persisted into the sleep-trace CSV via flushSleepTrace().
-  const uint16_t shutdownMarker = freeink::PowerManager::takeShutdownReason();
-  if (shutdownMarker != 0) {
-    const auto reason = static_cast<freeink::PowerManager::ShutdownReason>(shutdownMarker >> 8);
-    const char* reasonStr = reason == freeink::PowerManager::ShutdownReason::ShutdownAutoOff ? "auto-power-off"
-                            : reason == freeink::PowerManager::ShutdownReason::ShutdownUser  ? "user power-off"
-                                                                                             : "unknown";
-    LOG_INF("MAIN", "Previous session ended in a clean power off (%s)", reasonStr);
-    HalPowerManager::setLastShutdownReason(shutdownMarker);
+  const auto lastShutdown = HalPowerManager::takeLastShutdownKind();
+  if (lastShutdown != HalPowerManager::ShutdownKind::None) {
+    LOG_INF("MAIN", "Previous session ended in a clean power off (%s)",
+            lastShutdown == HalPowerManager::ShutdownKind::AutoOff ? "auto-power-off" : "user power-off");
   }
 
   const auto wakeupReason = gpio.getWakeupReason();
@@ -613,11 +608,6 @@ void setup() {
     return;
   }
 
-  // Dev-only: now that the SD card is mounted, append the sleep-trace CSV row
-  // computed by logSleepBattery() at wake (it ran from powerManager.begin() before
-  // the card was up, so the write was deferred here).
-  powerManager.flushSleepTrace();
-
   HalSystem::checkPanic();
 
   APP_STATE.loadFromFile();
@@ -637,6 +627,22 @@ void setup() {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
   SETTINGS.loadFromFile();
+
+  // Auto power off: when the dwell timer woke us, THIS sleep cycle ends in a
+  // power off. Stage the stock-parity marker + trace code BEFORE the
+  // sleep-trace flush so the elapsed-dwell row carries shutdown_reason instead
+  // of 0 (CodeRabbit round-2 finding). The RTC marker for the next boot is
+  // written here too; the downstream timer-wake intercept then only has to
+  // render + sink.
+  if (gpio.getWakeupReason() == HalGPIO::WakeupReason::Timer && SETTINGS.getAutoPowerOffMs() > 0) {
+    powerManager.stageAutoPowerOff();
+  }
+
+  // Dev-only: the SD card is mounted and settings are loaded, so append the
+  // sleep-trace CSV row computed by logSleepBattery() at wake (it ran from
+  // powerManager.begin() before the card was up, so the write was deferred).
+  powerManager.flushSleepTrace();
+
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
@@ -704,8 +710,9 @@ void setup() {
     // Park the panel before the sink cuts its rail (same ordering rule as
     // enterDeepSleep(); CodeRabbit finding).
     display.deepSleep();
-    // Stock-parity shutdown marker: the dwell timer elapsed while asleep.
-    freeink::PowerManager::setShutdownReason(freeink::PowerManager::ShutdownReason::ShutdownAutoOff);
+    // The stock-parity marker was already staged + flushed with the sleep-trace
+    // row earlier in setup() (stageAutoPowerOff before flushSleepTrace), so only
+    // the sink remains.
     powerManager.enterPowerOffSleep(gpio);
   }
 

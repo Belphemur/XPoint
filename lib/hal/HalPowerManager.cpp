@@ -44,7 +44,7 @@ HalPowerManager powerManager;  // Singleton instance
 // Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
 // below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
 // record from an older build would otherwise be misread after an OTA.
-static constexpr uint8_t SLEEP_TRACE_VERSION = 6;
+static constexpr uint8_t SLEEP_TRACE_VERSION = 7;  // 7: added _lastShutdownReasonCode (stock-parity marker code)
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 // Raw RTC_SLOW_CLK tick count (rtc_time_get()) captured just before sleep. The
@@ -301,8 +301,41 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   freeink::PowerManager::deepSleepUntilPowerButton();
 }
 
-void HalPowerManager::setLastShutdownReason(uint16_t code) { _lastShutdownReasonCode = code; }
-uint16_t HalPowerManager::getLastShutdownReason() { return _lastShutdownReasonCode; }
+HalPowerManager::ShutdownKind HalPowerManager::takeLastShutdownKind() {
+  // Always overwrite the staged code, including with 0: the marker cells are
+  // consume-once, so a boot without a marker must not leak the previous
+  // session's code into its own sleep-trace row.
+  const uint16_t code = freeink::PowerManager::takeShutdownReason();
+  _lastShutdownReasonCode = code;
+  if (code == 0) {
+    return ShutdownKind::None;
+  }
+  const auto reason = static_cast<uint8_t>(code >> 8);
+  if (reason == static_cast<uint8_t>(freeink::PowerManager::ShutdownReason::ShutdownAutoOff)) {
+    return ShutdownKind::AutoOff;
+  }
+  if (reason == static_cast<uint8_t>(freeink::PowerManager::ShutdownReason::ShutdownUser)) {
+    return ShutdownKind::User;
+  }
+  return ShutdownKind::None;
+}
+
+static void stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason reason) {
+  // Write the RTC marker for the NEXT boot (magic last = torn-write safe) and
+  // stage the same code for THIS boot's sleep-trace row: flushSleepTrace() runs
+  // while this boot is still alive, so the marker write alone would not reach
+  // it (CodeRabbit round-2 finding).
+  freeink::PowerManager::setShutdownReason(reason);
+  _lastShutdownReasonCode = static_cast<uint16_t>(static_cast<uint16_t>(reason) << 8) | 1;
+}
+
+void HalPowerManager::stageAutoPowerOff() {
+  stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason::ShutdownAutoOff);
+}
+
+void HalPowerManager::stageUserPowerOff() {
+  stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason::ShutdownUser);
+}
 
 void HalPowerManager::setSleepReason(uint8_t reason) {
 #if LOG_LEVEL >= 2
@@ -322,6 +355,7 @@ void HalPowerManager::logSleepBattery() const {
     _lastWakeS = 0;
     _sleepReason = 0;
     _sleepSeq = 0;
+    _lastShutdownReasonCode = 0;
     _sleepTraceVersion = SLEEP_TRACE_VERSION;
     // A record from an older build (pre-signed fields, or any layout change) must
     // not leak into the status bar — clear the persisted result too.
@@ -450,6 +484,34 @@ void HalPowerManager::flushSleepTrace() const {
   // volume and silently discard the row (the prior bug). Guard on the stored
   // result only — Storage.begin() must have run before this is called.
   static constexpr char kSleepTracePath[] = "/.crosspoint/sleep_trace.csv";
+  static constexpr char kSleepTraceLegacy[] = "/.crosspoint/sleep_trace_v1.csv";
+  // Schema migration: a pre-shutdown_reason file has an 11-column header, and
+  // header creation only happens for EMPTY files. Rotate a legacy file aside
+  // so the 12-column schema starts clean instead of appending mismatched rows
+  // (CodeRabbit round-2 finding).
+  HalFile probe = Storage.open(kSleepTracePath, O_RDWR);
+  if (probe) {
+    if (probe.size() > 0) {
+      char head[160] = {0};
+      probe.seekSet(0);
+      const int n = probe.read(head, sizeof(head) - 1);
+      bool legacy = true;
+      if (n > 0) {
+        head[n] = '\0';
+        legacy = strstr(head, "shutdown_reason") == nullptr;
+      }
+      if (legacy) {
+        probe.close();
+        Storage.remove(kSleepTraceLegacy);  // only one generation is kept
+        HalFile rot = Storage.open(kSleepTracePath, O_RDWR);
+        if (rot) {
+          rot.rename(kSleepTraceLegacy);
+          rot.close();
+        }
+      }
+    }
+    probe.close();
+  }
   const bool spurious = (_lastSleepDrain.wakeCause != ESP_SLEEP_WAKEUP_EXT1);
   HalFile f = Storage.open(kSleepTracePath, O_RDWR | O_CREAT | O_APPEND);
   if (f) {
