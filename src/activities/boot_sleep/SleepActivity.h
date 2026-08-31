@@ -12,6 +12,11 @@ class SleepActivity final : public Activity {
       : Activity("Sleep", renderer, mappedInput), fromTimeout(fromTimeout) {}
   void onEnter() override;
 
+  // Resolves (and generates if needed) the cover BMP for a book path.
+  static bool resolveCoverBmpPath(const std::string& bookPath, std::string& outPath);
+  // Renders the final shutdown screen for the auto power off wake, then powers down.
+  static void renderShutdownScreen(GfxRenderer& renderer);
+
  private:
   void renderDefaultSleepScreen() const;
   void renderCustomSleepScreen() const;

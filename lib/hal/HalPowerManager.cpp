@@ -44,7 +44,7 @@ HalPowerManager powerManager;  // Singleton instance
 // Bump SLEEP_TRACE_VERSION whenever the layout/meaning of the RTC_DATA block
 // below changes. RTC slow memory is NOT cleared by a firmware update, so a stale
 // record from an older build would otherwise be misread after an OTA.
-static constexpr uint8_t SLEEP_TRACE_VERSION = 6;
+static constexpr uint8_t SLEEP_TRACE_VERSION = 7;  // 7: added _lastShutdownReasonCode (stock-parity marker code)
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
 // Raw RTC_SLOW_CLK tick count (rtc_time_get()) captured just before sleep. The
@@ -58,6 +58,11 @@ static RTC_DATA_ATTR uint32_t _lastWakeS = 0;  // monotonic-seconds timestamp of
 // reason: 0 = auto-timeout, 1 = power-button (short-click SLEEP / hold), 2 = quick-resume.
 static RTC_DATA_ATTR uint8_t _sleepReason = 0;
 static RTC_DATA_ATTR uint32_t _sleepSeq = 0;
+// Stock-parity shutdown marker code ((reason<<8)|1, 0 = none) read at boot from
+// the freeink::PowerManager RTC marker. Persisted so flushSleepTrace() can add
+// it to this boot's CSV row even though takeShutdownReason() cleared the source
+// cells (the log call happens before the SD card is mounted).
+static RTC_DATA_ATTR uint16_t _lastShutdownReasonCode = 0;
 static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 
 // Persisted result of the last sleep-drain computation, so the UI can display it
@@ -132,7 +137,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // Otherwise, no change needed
 }
 
-void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
+void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffTimerUs) {
 #ifdef ENABLE_SERIAL_LOG
   // Tear down HWCDC so the host sees a clean disconnect and the peripheral
   // doesn't hold power domains that interfere with USB-powered GPIO wake.
@@ -223,7 +228,113 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
     }
   }
 #endif
+  // Auto power off: arm the dwell timer so the device wakes (and shuts down)
+  // if it is left in deep sleep this long.
+  if (autoPowerOffTimerUs > 0) {
+    esp_sleep_enable_timer_wakeup(autoPowerOffTimerUs);
+  }
   freeink::PowerManager::deepSleepUntilPowerButton();
+}
+
+// Final software power-off for auto power off: drop the master rail latches
+// LOW so everything but the wake logic loses power, then deep sleep until the
+// power button is pressed (next press = normal cold boot). Assumes the
+// shutdown screen has already been rendered.
+[[noreturn]] void HalPowerManager::enterPowerOffSleep(HalGPIO& gpio) {
+#ifdef ENABLE_SERIAL_LOG
+  logSerial.end();
+#endif
+
+#if !SOC_PM_SUPPORT_EXT1_WAKEUP
+  if (gpio.isXteinkDevice()) {
+    // C3 Xteink boards: GPIO13 IS power.latch0 and gates the battery MOSFET —
+    // driving it LOW is the battery power-off. Without this, a manual power-off
+    // on the C3 X4/X3 would leave the battery MOSFET enabled (CodeRabbit finding).
+    // Mirrors the block in startDeepSleep().
+    gpio_hold_dis(XTEINK_C3_GPIO13);
+    gpio_set_direction(XTEINK_C3_GPIO13, GPIO_MODE_OUTPUT);
+    gpio_set_level(XTEINK_C3_GPIO13, 0);
+    gpio_hold_en(XTEINK_C3_GPIO13);
+  }
+#endif
+
+  // Cut the gated peripheral rails and park the frontlight pads while the
+  // master rail is still up (same ordering as startDeepSleep()).
+  freeink::PowerManager::powerDownRailsForSleep();
+#if FREEINK_FRONTLIGHT_LS
+  Frontlight.park();
+#endif
+
+  // Drive the keep-alive latches LOW and hold them through sleep. This is the
+  // power-off itself, not a keep-alive: deepSleep() runs
+  // esp_sleep_config_gpio_isolate(), which strips every pad WITHOUT an armed
+  // hold — a merely-driven (unheld) latch loses its output driver and FLOATS,
+  // and a floating rail enable on X4 Pro does not reliably stay LOW (it drops
+  // only when external power leaves; on USB/pogo it can drift back up).
+  // hold_en pins the OFF level through the isolation, so the master rail is
+  // deterministically dead for the whole sleep.
+  // Stock-parity note (ghidra_poweroff_report.md, FINAL CONCLUSION): stock's
+  // power-off is a deep-sleep transaction — wake-config arm (16-byte 0x101
+  // CRC32'd record, mask 0x0101010101010101), "SRCX" marker + reason byte to
+  // RTC slow RAM (0x50000004/0x50000000), ownership quiesce poll, then commit
+  // into the IDF sleep core. Stock holds NO rail (it lets the master rail
+  // collapse), our LOW+hold is the deterministic variant of the same end
+  // state. The portable stock delta for this sink: write the same RTC RAM
+  // marker (magic 0x58435253 + reason byte) before sleeping, and read/clear
+  // it at boot for shutdown-reason reporting. Skips XTEINK_C3_GPIO13 —
+  // it IS power.latch0 on the C3 Xteink boards, where driving it low is the
+  // battery power-off and must not be clobbered here.
+  for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
+    if (pin < 0 || static_cast<gpio_num_t>(pin) == XTEINK_C3_GPIO13) continue;
+    const auto g = static_cast<gpio_num_t>(pin);
+    // Release any surviving pad hold first: a held pad silently ignores the drive.
+    gpio_hold_dis(g);
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    gpio_hold_en(g);
+  }
+
+  // The RTC timer that woke us has served its purpose; make sure it cannot
+  // wake this power-off sleep.
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+
+  freeink::PowerManager::deepSleepUntilPowerButton();
+}
+
+HalPowerManager::ShutdownKind HalPowerManager::takeLastShutdownKind() {
+  // Always overwrite the staged code, including with 0: the marker cells are
+  // consume-once, so a boot without a marker must not leak the previous
+  // session's code into its own sleep-trace row.
+  const uint16_t code = freeink::PowerManager::takeShutdownReason();
+  _lastShutdownReasonCode = code;
+  if (code == 0) {
+    return ShutdownKind::None;
+  }
+  const auto reason = static_cast<uint8_t>(code >> 8);
+  if (reason == static_cast<uint8_t>(freeink::PowerManager::ShutdownReason::ShutdownAutoOff)) {
+    return ShutdownKind::AutoOff;
+  }
+  if (reason == static_cast<uint8_t>(freeink::PowerManager::ShutdownReason::ShutdownUser)) {
+    return ShutdownKind::User;
+  }
+  return ShutdownKind::None;
+}
+
+static void stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason reason) {
+  // Write the RTC marker for the NEXT boot (magic last = torn-write safe) and
+  // stage the same code for THIS boot's sleep-trace row: flushSleepTrace() runs
+  // while this boot is still alive, so the marker write alone would not reach
+  // it (CodeRabbit round-2 finding).
+  freeink::PowerManager::setShutdownReason(reason);
+  _lastShutdownReasonCode = static_cast<uint16_t>(static_cast<uint16_t>(reason) << 8) | 1;
+}
+
+void HalPowerManager::stageAutoPowerOff() {
+  stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason::ShutdownAutoOff);
+}
+
+void HalPowerManager::stageUserPowerOff() {
+  stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason::ShutdownUser);
 }
 
 void HalPowerManager::setSleepReason(uint8_t reason) {
@@ -244,6 +355,7 @@ void HalPowerManager::logSleepBattery() const {
     _lastWakeS = 0;
     _sleepReason = 0;
     _sleepSeq = 0;
+    _lastShutdownReasonCode = 0;
     _sleepTraceVersion = SLEEP_TRACE_VERSION;
     // A record from an older build (pre-signed fields, or any layout change) must
     // not leak into the status bar — clear the persisted result too.
@@ -372,6 +484,34 @@ void HalPowerManager::flushSleepTrace() const {
   // volume and silently discard the row (the prior bug). Guard on the stored
   // result only — Storage.begin() must have run before this is called.
   static constexpr char kSleepTracePath[] = "/.crosspoint/sleep_trace.csv";
+  static constexpr char kSleepTraceLegacy[] = "/.crosspoint/sleep_trace_v1.csv";
+  // Schema migration: a pre-shutdown_reason file has an 11-column header, and
+  // header creation only happens for EMPTY files. Rotate a legacy file aside
+  // so the 12-column schema starts clean instead of appending mismatched rows
+  // (CodeRabbit round-2 finding).
+  HalFile probe = Storage.open(kSleepTracePath, O_RDWR);
+  if (probe) {
+    if (probe.size() > 0) {
+      char head[160] = {0};
+      probe.seekSet(0);
+      const int n = probe.read(head, sizeof(head) - 1);
+      bool legacy = true;
+      if (n > 0) {
+        head[n] = '\0';
+        legacy = strstr(head, "shutdown_reason") == nullptr;
+      }
+      if (legacy) {
+        probe.close();
+        Storage.remove(kSleepTraceLegacy);  // only one generation is kept
+        HalFile rot = Storage.open(kSleepTracePath, O_RDWR);
+        if (rot) {
+          rot.rename(kSleepTraceLegacy);
+          rot.close();
+        }
+      }
+    }
+    probe.close();
+  }
   const bool spurious = (_lastSleepDrain.wakeCause != ESP_SLEEP_WAKEUP_EXT1);
   HalFile f = Storage.open(kSleepTracePath, O_RDWR | O_CREAT | O_APPEND);
   if (f) {
@@ -379,15 +519,17 @@ void HalPowerManager::flushSleepTrace() const {
       // Fresh file: write a header so the columns are self-documenting.
       f.println(
           F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
-            "wake_cause,reset_reason,spurious"));
+            "wake_cause,reset_reason,spurious,shutdown_reason"));
     }
     // reason: 0=timeout 1=button 2=quick-resume; wake_cause/reset_reason are the
     // raw esp_sleep_wakeup_cause_t / esp_reset_reason_t enum values.
-    char row[160];
-    snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n", _sleepSeq, _sleepReason,
+    // shutdown_reason is the stock-parity power-off marker ((reason<<8)|1, 0 =
+    // none) — see docs/design/shutdown-reason-marker.md.
+    char row[180];
+    snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d,%u\n", _sleepSeq, _sleepReason,
              _lastSleepDrain.entryMv, _lastSleepDrain.wakeMv, _lastSleepDrain.deltaMv, _lastSleepDrain.sleptSeconds,
              _lastSleepDrain.mvPerHour, _lastSleepDrain.milliamps, static_cast<int>(_lastSleepDrain.wakeCause),
-             static_cast<int>(_lastSleepDrain.resetReason), spurious ? 1 : 0);
+             static_cast<int>(_lastSleepDrain.resetReason), spurious ? 1 : 0, _lastShutdownReasonCode);
     f.print(row);
     f.flush();    // commit before the next deep sleep tears the card down
     _sleepSeq++;  // next cycle gets the next sequence number

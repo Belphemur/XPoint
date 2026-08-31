@@ -38,9 +38,16 @@ class HalPowerManager {
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
 
-  // Setup wake up GPIO and enter deep sleep
+  // Setup wake up GPIO and enter deep sleep. When autoPowerOffTimerUs is
+  // non-zero an RTC timer is armed so the device wakes after that many
+  // microseconds of dwell (auto power off).
   // Should be called inside main loop() to handle the currentLockMode
-  void startDeepSleep(HalGPIO& gpio) const;
+  void startDeepSleep(HalGPIO& gpio, uint64_t autoPowerOffTimerUs = 0);
+
+  // Final software power-off for auto power off: drives the master rail
+  // latches LOW (held through sleep), disarms any RTC timer and re-enters
+  // deep sleep waking only on the power button. Never returns.
+  [[noreturn]] void enterPowerOffSleep(HalGPIO& gpio);
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
@@ -64,6 +71,24 @@ class HalPowerManager {
   // MUST be called AFTER Storage.begin() (the SD card is mounted by then); logSleepBattery()
   // runs from begin() before the card is up, so the actual SD write is deferred here.
   void flushSleepTrace() const;
+
+  // HAL-routed stock-parity shutdown marker (the freeink::PowerManager calls
+  // stay inside the HAL; main.cpp must not touch SDK classes directly). See
+  // docs/design/shutdown-reason-marker.md.
+  //
+  //   ShutdownKind             which clean power off happened last time;
+  //                            None = no marker (normal boot, crash, brown-out)
+  //   takeLastShutdownKind()   read + clear the RTC marker once per boot
+  //   stageAutoPowerOff()      record that THIS sleep ends in an automatic
+  //                            power off: writes the RTC marker for the next
+  //                            boot AND stages the trace code so the current
+  //                            boot's sleep-trace row carries it (flush
+  //                            happens later in setup, before the sink)
+  //   stageUserPowerOff()      same, for the manual power-button power off
+  enum class ShutdownKind : uint8_t { None = 0, User = 1, AutoOff = 2 };
+  static ShutdownKind takeLastShutdownKind();
+  static void stageAutoPowerOff();
+  static void stageUserPowerOff();
 
   // Dev-only: stage which trigger is putting the device to sleep (0 = auto-timeout,
   // 1 = power-button, 2 = quick-resume) so the SD sleep-trace CSV can record it.

@@ -278,8 +278,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
   uint8_t textAntiAliasing = 1;
-  // Short power button click behaviour
-  uint8_t shortPwrBtn = IGNORE;
+  // Short power button click behaviour. The default Sleep binding makes the
+  // short click sleep; a long press (see POWER_BUTTON_HOLD_MS) always powers
+  // the device off, regardless of this setting.
+  uint8_t shortPwrBtn = SLEEP;
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
@@ -303,6 +305,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t paragraphAlignment = JUSTIFIED;
   // Auto-sleep timeout setting (default 10 minutes). Legacy sleepTimeout enum values are migration-only.
   uint8_t sleepTimeoutMinutes = 10;
+  // Auto power off: hours the device may dwell in deep sleep before shutting
+  // down. Runs as an RTC timer armed on each deep sleep entry; the max value
+  // means "off" (no shutdown timer).
+  static constexpr uint8_t AUTO_POWER_OFF_MIN_HOURS = 2;
+  static constexpr uint8_t AUTO_POWER_OFF_MAX_HOURS = 12;
+  static constexpr uint8_t AUTO_POWER_OFF_STEP_HOURS = 2;
+  static constexpr uint8_t AUTO_POWER_OFF_DEFAULT_HOURS = 4;
+  uint8_t autoPowerOffHours = AUTO_POWER_OFF_DEFAULT_HOURS;
   // E-ink refresh frequency (default 15 pages)
   uint8_t refreshFrequency = REFRESH_15;
   uint8_t hyphenationEnabled = 0;
@@ -396,9 +406,17 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   SdFontIdResolver sdFontIdResolver = nullptr;
   void* sdFontResolverCtx = nullptr;
 
-  uint16_t getPowerButtonDuration() const {
-    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
-  }
+  // Hold time that turns a power-button press into a power off. 400ms matches
+  // the SDK's CONFIRM_POWER_HOLD_MS (freeink-sdk InputManager.h:427), which
+  // gates when the shared Confirm/Power pin emits BTN_POWER on X4 Pro with the
+  // short-press-emits-power flag off (InputManager.cpp:380-383), so the hold
+  // path in main.cpp can only fire once BTN_POWER actually exists. The old
+  // 10ms threshold existed to make the hold path double as the short-click
+  // sleep; sleep now has its own release path in main.cpp, so the hold path is
+  // exclusively the power off gesture. Also bounds the PWR_CONFIRM click
+  // detector (MappedInputManager.cpp:313), which always saw 400 before.
+  static constexpr uint16_t POWER_BUTTON_HOLD_MS = 400;
+  uint16_t getPowerButtonDuration() const { return POWER_BUTTON_HOLD_MS; }
   bool shouldTrackReadingStats() const { return trackReadingStats != 0; }
   int getReaderFontId() const;
 
@@ -483,6 +501,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   float getReaderLineCompression() const;
   unsigned long getSleepTimeoutMs() const;
+  uint32_t getAutoPowerOffMs() const;
   int getRefreshFrequency() const;
 };
 

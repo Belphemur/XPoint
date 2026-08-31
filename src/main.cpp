@@ -21,6 +21,8 @@
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
+#include <esp_sleep.h>
+#include <esp_system.h>
 
 #include <cstring>
 
@@ -33,6 +35,7 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/boot_sleep/SleepActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -228,6 +231,7 @@ bool toggleFrontlightByShortcut(const char* source) {
 // Reader-only actions (Reader Menu) no-op outside the reader; Sleep and
 // Screenshot are global. GO_HOME uses goHome() so the home screen re-renders.
 void enterDeepSleep(bool fromTimeout);
+void enterPowerOff();
 
 bool executeHomeButtonAction(uint8_t action) {
   switch (action) {
@@ -386,6 +390,20 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
+// Stage the shutdown cover for the power off screen while the book is still
+// available; at wake it is only read back and painted. requireTimerEnabled
+// gates staging on the auto power off setting for deep-sleep entry; manual
+// power off passes false so the screen keeps its book cover unconditionally.
+static void stageAutoPowerOffCover(bool requireTimerEnabled) {
+  APP_STATE.autoPowerOffCoverBmpPath.clear();
+  if (requireTimerEnabled && SETTINGS.getAutoPowerOffMs() == 0) return;
+  if (APP_STATE.openEpubPath.empty()) return;
+  std::string coverPath;
+  if (SleepActivity::resolveCoverBmpPath(APP_STATE.openEpubPath, coverPath)) {
+    APP_STATE.autoPowerOffCoverBmpPath = std::move(coverPath);
+  }
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -401,6 +419,8 @@ void enterDeepSleep(bool fromTimeout = false) {
   // Every sleep mode leaves a complete retained frame on the e-ink panel. Keep
   // it visible until the first useful reader or home paint replaces it.
   APP_STATE.showBootScreen = false;
+
+  stageAutoPowerOffCover(true);
 
   APP_STATE.saveToFile();
 
@@ -427,7 +447,47 @@ void enterDeepSleep(bool fromTimeout = false) {
   display.deepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
-  powerManager.startDeepSleep(gpio);
+  uint64_t autoPowerOffUs = 0;
+  if (const uint32_t apOffMs = SETTINGS.getAutoPowerOffMs(); apOffMs > 0) {
+    autoPowerOffUs = static_cast<uint64_t>(apOffMs) * 1000ULL;
+  }
+  powerManager.startDeepSleep(gpio, autoPowerOffUs);
+}
+
+// Manual power off: render the shutdown screen, then cut power. Unlike deep
+// sleep there is no wake timer — the next power-button press is a normal cold
+// boot (same next-boot state as the auto power off shutdown).
+void enterPowerOff() {
+  HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for shutdown preparation
+  stageAutoPowerOffCover(false);
+  {
+    RenderLock lock;
+    SleepActivity::renderShutdownScreen(renderer);  // Clears APP_STATE.autoPowerOffCoverBmpPath after paint
+  }
+  // Persist the post-off state: splashless wake on the next power-button
+  // press, and no stale staged cover path in the settings file.
+  APP_STATE.showBootScreen = false;
+  APP_STATE.saveToFile();
+  // A stale Quick Resume frame must not replace the shutdown screen on the
+  // next boot.
+  Storage.remove(SLEEP_FRAME_FILE);
+
+  // Same teardown as enterDeepSleep(): the modem power domain must not be
+  // held alive across the rail cut.
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+
+  // Park the panel BEFORE the sink cuts its rail: the SSD1677 must receive its
+  // deep-sleep command while the rail that powers it is still up (same ordering
+  // rule as enterDeepSleep(); CodeRabbit finding).
+  display.deepSleep();
+  LOG_INF("MAIN", "Powering off");
+  // Stock-parity shutdown marker (ghidra_poweroff_report.md): record WHY we are
+  // powering off in RTC slow RAM; the next boot reports + clears it.
+  powerManager.stageUserPowerOff();
+  powerManager.enterPowerOffSleep(gpio);  // [[noreturn]]
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -507,6 +567,16 @@ void setup() {
   gpio.begin();
   powerManager.begin();
 
+  // Stock-parity shutdown marker (ghidra_poweroff_report.md): if the previous
+  // session ended in a power off (manual or auto), RTC slow RAM carries the
+  // magic + reason byte. Read + clear exactly once per boot and log it. The
+  // raw code is also persisted into the sleep-trace CSV via flushSleepTrace().
+  const auto lastShutdown = HalPowerManager::takeLastShutdownKind();
+  if (lastShutdown != HalPowerManager::ShutdownKind::None) {
+    LOG_INF("MAIN", "Previous session ended in a clean power off (%s)",
+            lastShutdown == HalPowerManager::ShutdownKind::AutoOff ? "auto-power-off" : "user power-off");
+  }
+
   const auto wakeupReason = gpio.getWakeupReason();
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !gpio.verifyPowerButtonWakeup()) {
     LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
@@ -538,11 +608,6 @@ void setup() {
     return;
   }
 
-  // Dev-only: now that the SD card is mounted, append the sleep-trace CSV row
-  // computed by logSleepBattery() at wake (it ran from powerManager.begin() before
-  // the card was up, so the write was deferred here).
-  powerManager.flushSleepTrace();
-
   HalSystem::checkPanic();
 
   APP_STATE.loadFromFile();
@@ -562,6 +627,22 @@ void setup() {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
   SETTINGS.loadFromFile();
+
+  // Auto power off: when the dwell timer woke us, THIS sleep cycle ends in a
+  // power off. Stage the stock-parity marker + trace code BEFORE the
+  // sleep-trace flush so the elapsed-dwell row carries shutdown_reason instead
+  // of 0 (CodeRabbit round-2 finding). The RTC marker for the next boot is
+  // written here too; the downstream timer-wake intercept then only has to
+  // render + sink.
+  if (gpio.getWakeupReason() == HalGPIO::WakeupReason::Timer && SETTINGS.getAutoPowerOffMs() > 0) {
+    powerManager.stageAutoPowerOff();
+  }
+
+  // Dev-only: the SD card is mounted and settings are loaded, so append the
+  // sleep-trace CSV row computed by logSleepBattery() at wake (it ran from
+  // powerManager.begin() before the card was up, so the write was deferred).
+  powerManager.flushSleepTrace();
+
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
@@ -616,6 +697,24 @@ void setup() {
   bool needsWakeRefresh = false;
 
   setupDisplayAndFonts(resume != BootResume::Splash);
+
+  // Auto power off: the dwell timer elapsed while in deep sleep. Render the
+  // shutdown screen and cut power; the next power-button press is a normal
+  // cold boot. Checked before any other wake routing; classification goes
+  // through the HAL API (WakeupReason::Timer), not raw IDF sleep calls.
+  if (gpio.getWakeupReason() == HalGPIO::WakeupReason::Timer && SETTINGS.getAutoPowerOffMs() > 0) {
+    SleepActivity::renderShutdownScreen(renderer);
+    // A stale Quick Resume frame must not replace the shutdown screen on the
+    // next boot.
+    Storage.remove(SLEEP_FRAME_FILE);
+    // Park the panel before the sink cuts its rail (same ordering rule as
+    // enterDeepSleep(); CodeRabbit finding).
+    display.deepSleep();
+    // The stock-parity marker was already staged + flushed with the sleep-trace
+    // row earlier in setup() (stageAutoPowerOff before flushSleepTrace), so only
+    // the sink remains.
+    powerManager.enterPowerOffSleep(gpio);
+  }
 
   switch (resume) {
     case BootResume::Silent:
@@ -831,23 +930,36 @@ void loop() {
 
   if (powerReleasedSinceWake && millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
       gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
-    // If the screenshot combination is potentially being pressed, don't sleep
+    // If the screenshot combination is potentially being pressed, don't power off
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
     }
-    LOG_DBG("MAIN", "Power button held %lums, sleeping", gpio.getPowerButtonHeldTime());
+    LOG_INF("MAIN", "Power button held %lums, powering off", gpio.getPowerButtonHeldTime());
+    enterPowerOff();
+    // This should never be hit as `enterPowerOff` never returns
+    return;
+  }
+
+  // Short power click with the Sleep binding: sleep on release. This is the
+  // only sleep trigger on Paper Mono (its PMIC reports the button as a
+  // one-tick click, so the hold path above cannot fire); on the other boards
+  // it complements the hold path, which is now exclusively the power off
+  // gesture. allowSleepAt also covers the release of the press that woke the
+  // device when wakePowerReleasePending missed it.
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && millis() >= allowSleepAt &&
+      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+    LOG_INF("MAIN", "Sleep triggered by power-button click");
     enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
 
 #if FREEINK_DEVICE_PAPERMONO
   // Paper Mono reports the PMIC power button as a one-tick click, so the held
-  // path above cannot fire. With the default Ignore action, retain the normal
-  // power-button meaning and shut down; explicit alternate bindings still win.
-  if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
-       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
-      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+  // path above cannot fire. With the Ignore binding, keep sleeping on the
+  // click: the GPIO boards' Ignore short-click no-op has no Paper Mono
+  // equivalent because a click is the only power-button event it can report.
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE && millis() >= allowSleepAt &&
+      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     enterDeepSleep();
     return;
   }
