@@ -58,6 +58,11 @@ static RTC_DATA_ATTR uint32_t _lastWakeS = 0;  // monotonic-seconds timestamp of
 // reason: 0 = auto-timeout, 1 = power-button (short-click SLEEP / hold), 2 = quick-resume.
 static RTC_DATA_ATTR uint8_t _sleepReason = 0;
 static RTC_DATA_ATTR uint32_t _sleepSeq = 0;
+// Stock-parity shutdown marker code ((reason<<8)|1, 0 = none) read at boot from
+// the freeink::PowerManager RTC marker. Persisted so flushSleepTrace() can add
+// it to this boot's CSV row even though takeShutdownReason() cleared the source
+// cells (the log call happens before the SD card is mounted).
+static RTC_DATA_ATTR uint16_t _lastShutdownReasonCode = 0;
 static constexpr uint16_t SLEEP_BATTERY_INVALID = 0;
 
 // Persisted result of the last sleep-drain computation, so the UI can display it
@@ -283,6 +288,9 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   freeink::PowerManager::deepSleepUntilPowerButton();
 }
 
+void HalPowerManager::setLastShutdownReason(uint16_t code) { _lastShutdownReasonCode = code; }
+uint16_t HalPowerManager::getLastShutdownReason() { return _lastShutdownReasonCode; }
+
 void HalPowerManager::setSleepReason(uint8_t reason) {
 #if LOG_LEVEL >= 2
   _sleepReason = reason;
@@ -436,15 +444,17 @@ void HalPowerManager::flushSleepTrace() const {
       // Fresh file: write a header so the columns are self-documenting.
       f.println(
           F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
-            "wake_cause,reset_reason,spurious"));
+            "wake_cause,reset_reason,spurious,shutdown_reason"));
     }
     // reason: 0=timeout 1=button 2=quick-resume; wake_cause/reset_reason are the
     // raw esp_sleep_wakeup_cause_t / esp_reset_reason_t enum values.
-    char row[160];
-    snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n", _sleepSeq, _sleepReason,
+    // shutdown_reason is the stock-parity power-off marker ((reason<<8)|1, 0 =
+    // none) — see docs/design/shutdown-reason-marker.md.
+    char row[180];
+    snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d,%u\n", _sleepSeq, _sleepReason,
              _lastSleepDrain.entryMv, _lastSleepDrain.wakeMv, _lastSleepDrain.deltaMv, _lastSleepDrain.sleptSeconds,
              _lastSleepDrain.mvPerHour, _lastSleepDrain.milliamps, static_cast<int>(_lastSleepDrain.wakeCause),
-             static_cast<int>(_lastSleepDrain.resetReason), spurious ? 1 : 0);
+             static_cast<int>(_lastSleepDrain.resetReason), spurious ? 1 : 0, _lastShutdownReasonCode);
     f.print(row);
     f.flush();    // commit before the next deep sleep tears the card down
     _sleepSeq++;  // next cycle gets the next sequence number

@@ -72,6 +72,14 @@ class HalPowerManager {
   // runs from begin() before the card is up, so the actual SD write is deferred here.
   void flushSleepTrace() const;
 
+  // Stock-parity shutdown-reason marker (ghidra_poweroff_report.md): the raw
+  // (reason<<8)|1 code returned by freeink::PowerManager::takeShutdownReason()
+  // at boot, when the previous session ended in a clean power off. Persisted in
+  // RTC memory so flushSleepTrace() can append it to the current CSV row;
+  // 0 = no marker (normal boot / normal sleep wake).
+  static void setLastShutdownReason(uint16_t code);
+  static uint16_t getLastShutdownReason();
+
   // Dev-only: stage which trigger is putting the device to sleep (0 = auto-timeout,
   // 1 = power-button, 2 = quick-resume) so the SD sleep-trace CSV can record it.
   // Called from enterDeepSleep() before startDeepSleep(); the actual SD row is

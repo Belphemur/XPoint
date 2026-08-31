@@ -21,6 +21,7 @@
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
+#include <PowerManager.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 
@@ -480,6 +481,9 @@ void enterPowerOff() {
   }
 
   LOG_INF("MAIN", "Powering off");
+  // Stock-parity shutdown marker (ghidra_poweroff_report.md): record WHY we are
+  // powering off in RTC slow RAM; the next boot reports + clears it.
+  freeink::PowerManager::setShutdownReason(freeink::PowerManager::ShutdownReason::ShutdownUser);
   powerManager.enterPowerOffSleep(gpio);  // [[noreturn]]
 }
 
@@ -559,6 +563,20 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+
+  // Stock-parity shutdown marker (ghidra_poweroff_report.md): if the previous
+  // session ended in a power off (manual or auto), RTC slow RAM carries the
+  // magic + reason byte. Read + clear exactly once per boot and log it. The
+  // raw code is also persisted into the sleep-trace CSV via flushSleepTrace().
+  const uint16_t shutdownMarker = freeink::PowerManager::takeShutdownReason();
+  if (shutdownMarker != 0) {
+    const auto reason = static_cast<freeink::PowerManager::ShutdownReason>(shutdownMarker >> 8);
+    const char* reasonStr = reason == freeink::PowerManager::ShutdownReason::ShutdownAutoOff ? "auto-power-off"
+                            : reason == freeink::PowerManager::ShutdownReason::ShutdownUser  ? "user power-off"
+                                                                                             : "unknown";
+    LOG_INF("MAIN", "Previous session ended in a clean power off (%s)", reasonStr);
+    HalPowerManager::setLastShutdownReason(shutdownMarker);
+  }
 
   const auto wakeupReason = gpio.getWakeupReason();
   if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !gpio.verifyPowerButtonWakeup()) {
@@ -680,6 +698,8 @@ void setup() {
     // A stale Quick Resume frame must not replace the shutdown screen on the
     // next boot.
     Storage.remove(SLEEP_FRAME_FILE);
+    // Stock-parity shutdown marker: the dwell timer elapsed while asleep.
+    freeink::PowerManager::setShutdownReason(freeink::PowerManager::ShutdownReason::ShutdownAutoOff);
     powerManager.enterPowerOffSleep(gpio);
   }
 
