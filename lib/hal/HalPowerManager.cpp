@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <esp_rtc_time.h>
 #include <esp_sleep.h>
+#include <soc/rtc.h>
 #include <soc/soc_caps.h>
 
 #include <cassert>
@@ -46,6 +47,11 @@ HalPowerManager powerManager;  // Singleton instance
 static constexpr uint8_t SLEEP_TRACE_VERSION = 6;
 static RTC_DATA_ATTR uint8_t _sleepTraceVersion = 0;
 static RTC_DATA_ATTR uint16_t _sleepEntryMv = 0;
+// Raw RTC_SLOW_CLK tick count (rtc_time_get()) captured just before sleep. The
+// counter is monotonic across deep sleep (only its calibration factor is re-based,
+// which we don't use — we convert ticks with the live slow-clock frequency at wake),
+// so the delta to the wake reading is the true sleep duration in ticks.
+static RTC_DATA_ATTR uint64_t _sleepEntryTicks = 0;
 static RTC_DATA_ATTR uint32_t _lastWakeS = 0;  // monotonic-seconds timestamp of the most recent boot/wake
 // Dev-only SD trace: which trigger put the device to sleep, and a monotonic
 // cycle counter so the CSV on the SD card reads top-to-bottom in order.
@@ -67,6 +73,7 @@ static RTC_DATA_ATTR HalPowerManager::SleepDrain _lastSleepDrain{};
 static RTC_DATA_ATTR uint16_t _batteryHealthLastKnownPct = 0;
 static RTC_DATA_ATTR uint32_t _batteryHealthLastValidMs = 0;  // millis() of last successful gauge read
 static RTC_DATA_ATTR uint8_t _batteryHealthFails = 0;         // consecutive failed gauge reads
+static RTC_DATA_ATTR bool _batteryHealthKnownGood = false;    // a real gauge sample has ever succeeded
 static RTC_DATA_ATTR uint8_t _batteryHealthState = 0;         // HalPowerManager::BatteryHealthState
 // Gauge counts as STALE after this many consecutive failed reads...
 static constexpr uint8_t BATTERY_HEALTH_MAX_FAILS = 3;
@@ -202,15 +209,16 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // Waits for the power button to be physically released (so holding it doesn't
   // immediately wake the device again), then arms the wake source and sleeps.
 #if LOG_LEVEL >= 2
-  // Dev-only: snapshot the battery voltage before sleeping. Duration is NOT taken
-  // here — it is derived at wake from the boot/wake timestamp (see logSleepBattery),
-  // because esp_rtc_get_time_us() is re-based across deep sleep and gives bogus
-  // durations. The X4 Pro CW2017 gauge (I2C 0x63) reports mV via BatteryMonitor.
+  // Dev-only: snapshot the battery voltage AND the raw RTC tick count before
+  // sleeping. Duration is derived at wake from rtc_time_get() (monotonic across
+  // deep sleep) — see logSleepBattery. The X4 Pro CW2017 gauge (I2C 0x63) reports
+  // mV via BatteryMonitor.
   {
     const BatteryMonitor battery;
     const uint16_t mv = battery.readMillivolts();
     if (mv != 0) {
       _sleepEntryMv = mv;
+      _sleepEntryTicks = rtc_time_get();
       LOG_DBG("PWR", "sleep entry: %u mV / %u%%", mv, battery.readPercentage());
     }
   }
@@ -243,6 +251,7 @@ void HalPowerManager::logSleepBattery() const {
     _batteryHealthLastKnownPct = 0;
     _batteryHealthLastValidMs = 0;
     _batteryHealthFails = 0;
+    _batteryHealthKnownGood = false;
     _batteryHealthState = 0;
   }
 #if LOG_LEVEL >= 2
@@ -261,29 +270,35 @@ void HalPowerManager::logSleepBattery() const {
 
   // Robust sleep-duration measurement.
   //
-  // We used to derive slept time from esp_rtc_get_time_us() (RTC_SLOW_CLK counter)
-  // taken before sleep and after wake. That counter is NOT monotonic across deep
-  // sleep: esp_rtc_get_time_us() scales the raw ticks by a calibration factor kept
-  // in s_rtc_timer_retain_mem, which the IDF docs (esp_clk.c) say can be INVALID
-  // after deep sleep and gets memset to 0 on wake — re-basing the whole timer. The
-  // "before" and "after" readings then live in different calibration eras, so their
-  // difference collapses to a tiny bogus number and the rate explodes to ~-3000 mV/h.
-  //
-  // Fix: on a deep-sleep wake (ESP_RST_DEEPSLEEP) the SoC reboots and was asleep for
-  // the ENTIRE interval since the previous wake — which is simply this boot's uptime
-  // (millis() starts at ~0 each boot and is NOT re-based by deep sleep). For a cold
-  // boot or SW reset there is no prior sleep, so we skip (no drain to report). Never
-  // compare this uptime against _lastWakeS: that RTC-persisted value belongs to the
-  // previous boot, so the fresh uptime can never exceed it.
-  const uint32_t nowS = static_cast<uint32_t>(millis() / 1000ULL);
+  // The sleep duration is the elapsed RTC_SLOW_CLK time between the pre-sleep
+  // snapshot (rtc_time_get() captured in enterDeepSleep) and now. rtc_time_get()
+  // returns RAW slow-clock ticks, which are monotonic across deep sleep — only the
+  // IDF calibration factor is re-based on wake, and we never use it. We convert the
+  // tick delta to seconds with the live slow-clock frequency. This is correct where
+  // millis() is not: millis() restarts at ~0 on every deep-sleep reboot, so reading
+  // it at wake only measures the short boot-to-begin() interval, not the sleep.
+  uint64_t sleptTicks = 0;
   uint32_t sleptS = 0;
   bool haveSlept = false;
-  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) {
-    sleptS = nowS;
-    haveSlept = true;
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && _sleepEntryTicks != 0) {
+    const uint64_t wakeTicks = rtc_time_get();
+    if (wakeTicks > _sleepEntryTicks) {
+      sleptTicks = wakeTicks - _sleepEntryTicks;
+      const uint32_t slowHz = rtc_clk_slow_freq_get_hz();
+      if (slowHz != 0) {
+        sleptS = static_cast<uint32_t>(sleptTicks / slowHz);
+        haveSlept = true;
+        // (kept for any future cross-boot logic; no longer gates haveSlept)
+        _lastWakeS = static_cast<uint32_t>(millis() / 1000ULL);
+        // Re-base the health timestamp onto this boot's millis() so the stale
+        // timeout math (now - _batteryHealthLastValidMs) can't wrap after a sleep.
+        // The cached known-good percentage is preserved across the rebase.
+        if (_batteryHealthKnownGood) {
+          _batteryHealthLastValidMs = millis();
+        }
+      }
+    }
   }
-  // (kept for any future cross-boot logic; no longer gates haveSlept)
-  _lastWakeS = nowS;
 
   // Diagnostics: how did this sleep segment end? A non-power-button wake cause
   // (or a non-deep-sleep reset) means the device was NOT asleep the whole
@@ -374,6 +389,14 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
   static const BatteryMonitor battery;
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     const unsigned long now = millis();
+    // _batteryHealthLastValidMs is persisted across deep sleep but millis() restarts
+    // at ~0 every boot, so a stale (large) value from before sleep would make
+    // (now - _batteryHealthLastValidMs) wrap and wrongly trip STALE. Re-base it onto
+    // this boot's clock the first time we see it ahead of now — the known-good
+    // percentage is preserved.
+    if (_batteryHealthKnownGood && _batteryHealthLastValidMs != 0 && now < _batteryHealthLastValidMs) {
+      _batteryHealthLastValidMs = now;
+    }
     if (_batteryLastPollMs != 0 && (now - _batteryLastPollMs) < BATTERY_POLL_MS) {
       // Fresh cache: health was decided on the last real poll, leave it untouched.
       return _batteryCachedPercent;
@@ -382,9 +405,14 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
     _batteryLastPollMs = now;
     uint16_t percent = 0;
     if (!battery.readPercentageChecked(percent)) {
-      // Failed gauge read: once the cache can no longer be trusted, fall back
-      // to the last known-good value so a broken gauge never reports a frozen
-      // or 0% reading as a real battery level.
+      // Failed gauge read. Until a valid sample has ever succeeded we have no
+      // known-good value to fall back to, so report 0 only as an explicit "unknown"
+      // (never treat it as a real low battery). Once we have a sample, fall back to
+      // the last known-good value so a broken gauge never shows a frozen/0% level.
+      if (!_batteryHealthKnownGood) {
+        _batteryHealthFails++;
+        return 0;
+      }
       _batteryHealthFails++;
       if (_batteryHealthFails >= BATTERY_HEALTH_MAX_FAILS ||
           now - _batteryHealthLastValidMs > BATTERY_HEALTH_STALE_MS) {
@@ -400,6 +428,7 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
     _batteryHealthLastKnownPct = percent;
     _batteryHealthLastValidMs = now;
     _batteryHealthFails = 0;
+    _batteryHealthKnownGood = true;
     _batteryHealthState = static_cast<uint8_t>(BatteryHealthState::HEALTHY);
     return _batteryCachedPercent;
   }

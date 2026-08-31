@@ -47,9 +47,10 @@ class HalPowerManager {
 
   // Gauge-read health: a transiently failing Coulomb gauge must never surface
   // a frozen or 0% cache as a real low-battery signal (auto-sleep, OTA gate).
-  // HEALTHY = last poll succeeded; STALE = repeated failed reads, the reported
-  // percentage is the last known-good value; UNSUPPORTED = board has no gauge
-  // (ADC reads cannot fail).
+  // HEALTHY = last poll succeeded; STALE = repeated/long-failed reads, the
+  // reported percentage is the last known-good value; UNSUPPORTED is reserved for
+  // a board with no gauge but is currently unused — ADC boards report HEALTHY
+  // (their reads cannot fail), so every supported board lands in HEALTHY or STALE.
   enum class BatteryHealthState : uint8_t { HEALTHY = 0, STALE = 1, UNSUPPORTED = 2 };
   BatteryHealthState getBatteryHealthState() const;
   bool isBatteryHealthStale() const;  // true only when state == STALE
