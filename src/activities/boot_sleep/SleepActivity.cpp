@@ -884,7 +884,18 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
   }
 
   const int captionY = haveCover ? frameY + frameH + 24 : pageHeight / 2 + 95;
-  renderer.drawCenteredText(UI_10_FONT_ID, captionY, tr(STR_SHUTDOWN_PRESS_POWER), true);
+  // Render the caption as two centered lines: the statement, then the
+  // instruction. Split at the first sentence boundary (". "); translations
+  // without one fall back to a single centered line.
+  const char* caption = tr(STR_SHUTDOWN_PRESS_POWER);
+  const char* sentenceBreak = std::strstr(caption, ". ");
+  if (sentenceBreak) {
+    const std::string firstLine(caption, sentenceBreak + 1);  // keep the period
+    renderer.drawCenteredText(UI_10_FONT_ID, captionY, firstLine.c_str(), true);
+    renderer.drawCenteredText(UI_10_FONT_ID, captionY + renderer.getLineHeight(UI_10_FONT_ID), sentenceBreak + 2, true);
+  } else {
+    renderer.drawCenteredText(UI_10_FONT_ID, captionY, caption, true);
+  }
 
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   APP_STATE.autoPowerOffCoverBmpPath.clear();
