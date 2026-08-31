@@ -320,60 +320,80 @@ void HalPowerManager::logSleepBattery() const {
   const uint64_t sleptUs = static_cast<uint64_t>(sleptS) * 1000000ULL;
   // Signed delta: + = gained charge (was on charger), - = lost (discharged).
   const int deltaMv = static_cast<int>(mvNow) - static_cast<int>(_sleepEntryMv);
-  // Signed mV per hour over sleptUs microseconds. Guard against a 0 sleep.
+  // Signed mV per hour, extrapolated from the measured delta over the measured
+  // sleep. This is ONLY meaningful for LONG sleeps: a few-mV gauge wobble over a
+  // short sleep explodes when divided by the tiny duration (e.g. ~36 mV over 10 s
+  // -> ~13,000 mA). The X4 Pro's CW2017 gauge has no current register, so the mV
+  // delta is the only charge signal we have; we refuse to report a rate below a
+  // sane sleep floor and mark it invalid instead of showing a bogus huge value.
+  // deltaMv / sleptSeconds are still recorded for the CSV regardless.
+  constexpr uint32_t kMinRateSleepS = 600;  // 10 min: below this, the mV/h rate is noise
   double mvPerHour = 0.0;
-  if (sleptUs > 0) {
-    mvPerHour = static_cast<double>(deltaMv) / (static_cast<double>(sleptUs) / 3.6e9);
+  bool rateValid = false;
+  if (sleptS >= kMinRateSleepS) {
+    mvPerHour = static_cast<double>(deltaMv) / (static_cast<double>(sleptS) / 3600.0);
+    rateValid = true;
   }
-  LOG_DBG("PWR", "woke after %u s: %u mV now (was %u mV), %+d mV (%+.2f mV/h)", sleptS, mvNow, _sleepEntryMv, deltaMv,
-          mvPerHour);
+  LOG_DBG("PWR", "woke after %u s: %u mV now (was %u mV), %+d mV (%+.2f mV/h, %s)", sleptS, mvNow, _sleepEntryMv,
+          deltaMv, mvPerHour, rateValid ? "valid" : "below floor -> n/a");
 
   // Convert the signed mV/h rate to a signed current (mA). A Li-Po's usable span
   // is ~1.2V; a full cell holds kX4ProBatteryMah mAh, so removing the whole span
   // in 1h = kX4ProBatteryMah mA. Scaling: I[mA] = dV/dt[mV/h] * capacity[mAh] /
-  // span[mV]. + = gained charge (charging), - = discharging.
-  const double milliamps = mvPerHour * kX4ProBatteryMah / kLipoSpanMv;
+  // span[mV]. + = gained charge (charging), - = discharging. 0 / invalid when the
+  // rate is below the floor (short sleep) — callers must check rateValid.
+  const double milliamps = rateValid ? (mvPerHour * kX4ProBatteryMah / kLipoSpanMv) : 0.0;
 
   // Persist so the UI can show it after wake (when the serial port is back up).
   _lastSleepDrain.valid = true;
+  _lastSleepDrain.entryMv = _sleepEntryMv;
+  _lastSleepDrain.wakeMv = mvNow;
   _lastSleepDrain.sleptSeconds = sleptS;
   _lastSleepDrain.deltaMv = deltaMv;
   _lastSleepDrain.mvPerHour = mvPerHour;
   _lastSleepDrain.milliamps = milliamps;
+  _lastSleepDrain.rateValid = rateValid;
   _lastSleepDrain.wakeCause = static_cast<uint8_t>(wakeCause);
   _lastSleepDrain.resetReason = static_cast<uint8_t>(resetReason);
 
-  // Dev-only: append one raw CSV row to the SD card so the cycle data survives
-  // the dead-serial deep sleep and can be pulled for offline analysis. The full
-  // row is written here at wake (SD is remounted by now); the sleep-entry side
-  // only staged _sleepEntryMv + _sleepReason + bumped _sleepSeq. One append per
-  // cycle => clean top-to-bottom dataset. Writes to /.crosspoint/sleep_trace.csv.
-  {
-    static constexpr char kSleepTracePath[] = "/.crosspoint/sleep_trace.csv";
-    const bool spurious = (wakeCause != ESP_SLEEP_WAKEUP_EXT1);
-    HalFile f = Storage.open(kSleepTracePath, O_RDWR | O_CREAT | O_APPEND);
-    if (f) {
-      if (f.size() == 0) {
-        // Fresh file: write a header so the columns are self-documenting.
-        f.println(
-            F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
-              "wake_cause,reset_reason,spurious"));
-      }
-      // reason: 0=timeout 1=button 2=quick-resume; wake_cause/reset_reason are the
-      // raw esp_sleep_wakeup_cause_t / esp_reset_reason_t enum values.
-      char row[160];
-      snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n", _sleepSeq, _sleepReason, _sleepEntryMv,
-               mvNow, deltaMv, sleptS, mvPerHour, milliamps, static_cast<int>(wakeCause), static_cast<int>(resetReason),
-               spurious ? 1 : 0);
-      f.print(row);
-      _sleepSeq++;  // next cycle gets the next sequence number
-    } else {
-      LOG_ERR("PWR", "sleep_trace.csv open failed");
-    }
-  }
+  // Dev-only: store the computed result in RTC memory. The actual SD CSV append
+  // is deferred to flushSleepTrace(), which the main loop calls AFTER Storage.begin()
+  // (the card is not mounted yet here, so writing now would silently fail).
+  _sleepEntryMv = SLEEP_BATTERY_INVALID;  // mark consumed so a double log doesn't misreport
+#endif
+}
 
-  // Mark consumed so a double log in the same boot doesn't misreport.
-  _sleepEntryMv = SLEEP_BATTERY_INVALID;
+void HalPowerManager::flushSleepTrace() const {
+#if LOG_LEVEL >= 2
+  if (!_lastSleepDrain.valid) {
+    return;  // nothing to write (cold boot, failed read, or no real sleep)
+  }
+  // Assert the card is up: without a mount the open() would succeed on a null
+  // volume and silently discard the row (the prior bug). Guard on the stored
+  // result only — Storage.begin() must have run before this is called.
+  static constexpr char kSleepTracePath[] = "/.crosspoint/sleep_trace.csv";
+  const bool spurious = (_lastSleepDrain.wakeCause != ESP_SLEEP_WAKEUP_EXT1);
+  HalFile f = Storage.open(kSleepTracePath, O_RDWR | O_CREAT | O_APPEND);
+  if (f) {
+    if (f.size() == 0) {
+      // Fresh file: write a header so the columns are self-documenting.
+      f.println(
+          F("seq,reason,entry_mv,wake_mv,delta_mv,slept_s,mv_per_h,mA,"
+            "wake_cause,reset_reason,spurious"));
+    }
+    // reason: 0=timeout 1=button 2=quick-resume; wake_cause/reset_reason are the
+    // raw esp_sleep_wakeup_cause_t / esp_reset_reason_t enum values.
+    char row[160];
+    snprintf(row, sizeof(row), "%u,%u,%u,%u,%+d,%u,%.2f,%.2f,%d,%d,%d\n", _sleepSeq, _sleepReason,
+             _lastSleepDrain.entryMv, _lastSleepDrain.wakeMv, _lastSleepDrain.deltaMv, _lastSleepDrain.sleptSeconds,
+             _lastSleepDrain.mvPerHour, _lastSleepDrain.milliamps, static_cast<int>(_lastSleepDrain.wakeCause),
+             static_cast<int>(_lastSleepDrain.resetReason), spurious ? 1 : 0);
+    f.print(row);
+    f.flush();    // commit before the next deep sleep tears the card down
+    _sleepSeq++;  // next cycle gets the next sequence number
+  } else {
+    LOG_ERR("PWR", "sleep_trace.csv open failed (SD not mounted?)");
+  }
 #endif
 }
 
