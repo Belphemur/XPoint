@@ -254,11 +254,16 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   // and a floating rail enable on X4 Pro does not reliably stay LOW (it drops
   // only when external power leaves; on USB/pogo it can drift back up).
   // hold_en pins the OFF level through the isolation, so the master rail is
-  // deterministically dead for the whole sleep. Stock achieves the same end
-  // state with a real hard-off (PowerService/BoardPowerHal cuts the rail; it
-  // never calls esp_deep_sleep_start — zero refs in the v7.4.4 image), but the
-  // X4 Pro exposes no PMIC hard-off to firmware, so "pinned-LOW deep sleep" is
-  // the maximum software power-off available to us. Skips XTEINK_C3_GPIO13 —
+  // deterministically dead for the whole sleep.
+  // Stock-parity note (ghidra_poweroff_report.md, FINAL CONCLUSION): stock's
+  // power-off is a deep-sleep transaction — wake-config arm (16-byte 0x101
+  // CRC32'd record, mask 0x0101010101010101), "SRCX" marker + reason byte to
+  // RTC slow RAM (0x50000004/0x50000000), ownership quiesce poll, then commit
+  // into the IDF sleep core. Stock holds NO rail (it lets the master rail
+  // collapse), our LOW+hold is the deterministic variant of the same end
+  // state. The portable stock delta for this sink: write the same RTC RAM
+  // marker (magic 0x58435253 + reason byte) before sleeping, and read/clear
+  // it at boot for shutdown-reason reporting. Skips XTEINK_C3_GPIO13 —
   // it IS power.latch0 on the C3 Xteink boards, where driving it low is the
   // battery power-off and must not be clobbered here.
   for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
