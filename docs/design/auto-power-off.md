@@ -186,7 +186,7 @@ new keys are needed (no per-hour enum strings):
 |---|---|---|
 | `STR_AUTO_POWER_OFF` | `"Auto power off"` (OEM v7.4.4 casing) | Settings row title |
 | `STR_AUTO_POWER_OFF_HOURS_FORMAT` | `"%u h"` | Slider readout + row value (`settingValueText`) |
-| `STR_SHUTDOWN_PRESS_POWER` | `"The reader is shut down. Press the power button to start."` | Shutdown screen caption |
+| `STR_SHUTDOWN_PRESS_POWER` | `"The reader is shut down. Hold the power button to start."` | Shutdown screen caption |
 
 - **Off** label: reuse the existing `STR_STATE_OFF` (`"Off"`, `english.yaml:271`), the
   same string auto-sleep's `"Never"` neighbor uses and the enum-option pattern already
