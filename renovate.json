@@ -2,6 +2,9 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
+  "automerge": true,
+  "automergeType": "pr",
+  "automergeStrategy": "squash",
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
@@ -14,6 +17,15 @@
     {
       "matchManagers": ["pip_requirements"],
       "addLabels": ["python"]
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "matchManagers": ["github-actions"],
+      "automerge": true
     }
   ],
   "regexManagers": [
