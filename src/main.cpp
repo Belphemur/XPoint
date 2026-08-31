@@ -480,6 +480,10 @@ void enterPowerOff() {
     WiFi.mode(WIFI_OFF);
   }
 
+  // Park the panel BEFORE the sink cuts its rail: the SSD1677 must receive its
+  // deep-sleep command while the rail that powers it is still up (same ordering
+  // rule as enterDeepSleep(); CodeRabbit finding).
+  display.deepSleep();
   LOG_INF("MAIN", "Powering off");
   // Stock-parity shutdown marker (ghidra_poweroff_report.md): record WHY we are
   // powering off in RTC slow RAM; the next boot reports + clears it.
@@ -690,14 +694,16 @@ void setup() {
 
   // Auto power off: the dwell timer elapsed while in deep sleep. Render the
   // shutdown screen and cut power; the next power-button press is a normal
-  // cold boot. Checked before any other wake routing — getWakeupReason() maps
-  // TIMER wakes to Other, so this explicit intercept is the only handler.
-  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER &&
-      SETTINGS.getAutoPowerOffMs() > 0) {
+  // cold boot. Checked before any other wake routing; classification goes
+  // through the HAL API (WakeupReason::Timer), not raw IDF sleep calls.
+  if (gpio.getWakeupReason() == HalGPIO::WakeupReason::Timer && SETTINGS.getAutoPowerOffMs() > 0) {
     SleepActivity::renderShutdownScreen(renderer);
     // A stale Quick Resume frame must not replace the shutdown screen on the
     // next boot.
     Storage.remove(SLEEP_FRAME_FILE);
+    // Park the panel before the sink cuts its rail (same ordering rule as
+    // enterDeepSleep(); CodeRabbit finding).
+    display.deepSleep();
     // Stock-parity shutdown marker: the dwell timer elapsed while asleep.
     freeink::PowerManager::setShutdownReason(freeink::PowerManager::ShutdownReason::ShutdownAutoOff);
     powerManager.enterPowerOffSleep(gpio);

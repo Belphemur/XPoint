@@ -51,7 +51,7 @@
 
 ## 1. State machine
 
-```
+```text
                      manual power off
    idle ── power hold ≥ POWER_BUTTON_HOLD_MS ────────► enterPowerOff()
    (main loop)        main.cpp:898-908                main.cpp:460-484
@@ -674,13 +674,13 @@ Design points:
 
 | File | Change |
 |---|---|
-| `src/CrossPointSettings.h/.cpp` | `AUTO_POWER_OFF` enum, field, `getAutoPowerOffMs()` (§2) |
-| `src/SettingsList.h` | one `SettingInfo::Enum` row after `:365` (§6) |
+| `src/CrossPointSettings.h/.cpp` | `autoPowerOffHours` numeric field + constants, `getAutoPowerOffMs()` (§2) |
+| `src/SettingsList.h` | one `SettingInfo::Value` row after `:365` (§6) |
 | `src/CrossPointState.h/.cpp` | `autoPowerOffCoverBmpPath` round-trip (§7.1) |
 | `src/main.cpp` | timer param at `:430`, cover-path populate before `:405`, wake intercept after `:618`, stale-frame removal (§3, §5, §7) |
 | `lib/hal/HalPowerManager.h/.cpp` | `startDeepSleep(gpio, timerUs=0)` arming (§5); new `enterPowerOffSleep()` (§4) |
 | `src/activities/boot_sleep/SleepActivity.h/.cpp` | `resolveCoverBmpPath()` (shared with `:765-814`), `renderShutdownScreen()` (§7) |
-| `lib/I18n/translations/*.yaml` | 7 new `STR_*` keys (§2.3) |
+| `lib/I18n/translations/*.yaml` | 3 new `STR_*` keys (§2.3); Off reuses `STR_STATE_OFF` |
 
 The one nominally SDK-shaped piece — driving a latch pin LOW + hold — is a 6-line
 pattern already duplicated between `HalPowerManager.cpp:158-177` (HIGH) and

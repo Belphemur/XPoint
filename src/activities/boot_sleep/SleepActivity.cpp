@@ -862,10 +862,16 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
       const int frameX = (pageWidth - frameW) / 2;
       frameY = (pageHeight - frameH) / 2;
 
-      const auto placement =
-          calculateBitmapPlacementInBounds(bitmap.getWidth(), bitmap.getHeight(), renderer, frameX + FRAME_INSET,
-                                           frameY + FRAME_INSET, frameW - 2 * FRAME_INSET, frameH - 2 * FRAME_INSET);
-      renderer.drawBitmap(bitmap, placement.x, placement.y, pageWidth, pageHeight, placement.cropX, placement.cropY);
+      const int innerX = frameX + FRAME_INSET;
+      const int innerY = frameY + FRAME_INSET;
+      const int innerW = frameW - 2 * FRAME_INSET;
+      const int innerH = frameH - 2 * FRAME_INSET;
+      const auto placement = calculateBitmapPlacementInBounds(bitmap.getWidth(), bitmap.getHeight(), renderer, innerX,
+                                                              innerY, innerW, innerH);
+      // Draw against the INSET bounds, not the full panel: drawBitmap fits the
+      // (cropped) bitmap into maxWidth/maxHeight, so passing the panel size lets
+      // a large cover scale past the border. (CodeRabbit finding.)
+      renderer.drawBitmap(bitmap, placement.x, placement.y, innerW, innerH, placement.cropX, placement.cropY);
       renderer.drawRect(frameX, frameY, frameW, frameH);
       haveCover = true;
     } else {

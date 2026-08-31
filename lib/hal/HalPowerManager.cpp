@@ -245,6 +245,19 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   logSerial.end();
 #endif
 
+#if !SOC_PM_SUPPORT_EXT1_WAKEUP
+  if (gpio.isXteinkDevice()) {
+    // C3 Xteink boards: GPIO13 IS power.latch0 and gates the battery MOSFET —
+    // driving it LOW is the battery power-off. Without this, a manual power-off
+    // on the C3 X4/X3 would leave the battery MOSFET enabled (CodeRabbit finding).
+    // Mirrors the block in startDeepSleep().
+    gpio_hold_dis(XTEINK_C3_GPIO13);
+    gpio_set_direction(XTEINK_C3_GPIO13, GPIO_MODE_OUTPUT);
+    gpio_set_level(XTEINK_C3_GPIO13, 0);
+    gpio_hold_en(XTEINK_C3_GPIO13);
+  }
+#endif
+
   // Cut the gated peripheral rails and park the frontlight pads while the
   // master rail is still up (same ordering as startDeepSleep()).
   freeink::PowerManager::powerDownRailsForSleep();
