@@ -842,9 +842,10 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
   renderer.clearScreen();
 
   bool haveCover = false;
-  int frameX = 0;
+  // frameY/frameH live at function scope: the caption position reads them even
+  // when no cover rendered (they stay 0 there). frameX/frameW are only needed
+  // inside the cover branch (cppcheck variableScope/unreadVariable).
   int frameY = 0;
-  int frameW = 0;
   int frameH = 0;
 
   const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
@@ -856,9 +857,9 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
       // Frame the cover in a centered border occupying ~2/3 of the panel.
       constexpr float FRAME_FRACTION = 0.66f;
       constexpr int FRAME_INSET = 6;
-      frameW = static_cast<int>(static_cast<float>(pageWidth) * FRAME_FRACTION);
+      const int frameW = static_cast<int>(static_cast<float>(pageWidth) * FRAME_FRACTION);
       frameH = static_cast<int>(static_cast<float>(pageHeight) * FRAME_FRACTION);
-      frameX = (pageWidth - frameW) / 2;
+      const int frameX = (pageWidth - frameW) / 2;
       frameY = (pageHeight - frameH) / 2;
 
       const auto placement =

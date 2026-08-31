@@ -247,10 +247,20 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   Frontlight.park();
 #endif
 
-  // Drive the keep-alive latches LOW and hold them through sleep: the rail
-  // drops once the hold is armed. Skips XTEINK_C3_GPIO13 — it IS power.latch0
-  // on the C3 Xteink boards, where driving it low is the battery power-off and
-  // must not be clobbered here.
+  // Drive the keep-alive latches LOW and hold them through sleep. This is the
+  // power-off itself, not a keep-alive: deepSleep() runs
+  // esp_sleep_config_gpio_isolate(), which strips every pad WITHOUT an armed
+  // hold — a merely-driven (unheld) latch loses its output driver and FLOATS,
+  // and a floating rail enable on X4 Pro does not reliably stay LOW (it drops
+  // only when external power leaves; on USB/pogo it can drift back up).
+  // hold_en pins the OFF level through the isolation, so the master rail is
+  // deterministically dead for the whole sleep. Stock achieves the same end
+  // state with a real hard-off (PowerService/BoardPowerHal cuts the rail; it
+  // never calls esp_deep_sleep_start — zero refs in the v7.4.4 image), but the
+  // X4 Pro exposes no PMIC hard-off to firmware, so "pinned-LOW deep sleep" is
+  // the maximum software power-off available to us. Skips XTEINK_C3_GPIO13 —
+  // it IS power.latch0 on the C3 Xteink boards, where driving it low is the
+  // battery power-off and must not be clobbered here.
   for (const int8_t pin : {BoardConfig::ACTIVE.power.latch0, BoardConfig::ACTIVE.power.latch1}) {
     if (pin < 0 || static_cast<gpio_num_t>(pin) == XTEINK_C3_GPIO13) continue;
     const auto g = static_cast<gpio_num_t>(pin);
