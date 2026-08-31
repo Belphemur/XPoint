@@ -269,20 +269,20 @@ void HalPowerManager::logSleepBattery() const {
   // "before" and "after" readings then live in different calibration eras, so their
   // difference collapses to a tiny bogus number and the rate explodes to ~-3000 mV/h.
   //
-  // Fix: remember the monotonic-seconds timestamp of every boot/wake (_lastWakeS,
-  // persisted in RTC slow memory). On a deep-sleep wake (ESP_RST_DEEPSLEEP) the SoC
-  // was asleep for the ENTIRE interval since the previous wake, so the sleep duration
-  // is simply now - _lastWakeS. For a cold boot or SW reset there is no prior sleep,
-  // so we skip (no drain to report). millis() is a plain XTAL/APB tick counter that
-  // starts at 0 each boot and is NOT re-based by deep sleep, so it is safe here.
+  // Fix: on a deep-sleep wake (ESP_RST_DEEPSLEEP) the SoC reboots and was asleep for
+  // the ENTIRE interval since the previous wake — which is simply this boot's uptime
+  // (millis() starts at ~0 each boot and is NOT re-based by deep sleep). For a cold
+  // boot or SW reset there is no prior sleep, so we skip (no drain to report). Never
+  // compare this uptime against _lastWakeS: that RTC-persisted value belongs to the
+  // previous boot, so the fresh uptime can never exceed it.
   const uint32_t nowS = static_cast<uint32_t>(millis() / 1000ULL);
   uint32_t sleptS = 0;
   bool haveSlept = false;
-  if (esp_reset_reason() == ESP_RST_DEEPSLEEP && _lastWakeS != 0 && nowS > _lastWakeS) {
-    sleptS = nowS - _lastWakeS;
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) {
+    sleptS = nowS;
     haveSlept = true;
   }
-  // Update the wake timestamp for next time (always — boot, wake, or SW reset).
+  // (kept for any future cross-boot logic; no longer gates haveSlept)
   _lastWakeS = nowS;
 
   // Diagnostics: how did this sleep segment end? A non-power-button wake cause
@@ -297,7 +297,7 @@ void HalPowerManager::logSleepBattery() const {
   }
 
   if (!haveSlept) {
-    // Cold boot / SW reset / corrupted timestamp: nothing to compare against.
+    // Cold boot / SW reset: no sleep happened, nothing to compare against.
     _sleepEntryMv = SLEEP_BATTERY_INVALID;
     return;
   }
@@ -352,6 +352,8 @@ void HalPowerManager::logSleepBattery() const {
                spurious ? 1 : 0);
       f.print(row);
       _sleepSeq++;  // next cycle gets the next sequence number
+    } else {
+      LOG_ERR("PWR", "sleep_trace.csv open failed");
     }
   }
 
