@@ -307,7 +307,13 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     const HalPowerManager::SleepDrain drain = powerManager.getLastSleepDrain();
     if (drain.valid) {
       char drainText[16];
-      snprintf(drainText, sizeof(drainText), tr(STR_SLEEP_DRAIN), drain.milliamps);
+      if (drain.rateValid) {
+        snprintf(drainText, sizeof(drainText), tr(STR_SLEEP_DRAIN), drain.milliamps);
+      } else {
+        // Sleep too short for a trustworthy mV/h rate (the gauge has no current
+        // register): show n/a instead of a bogus huge number.
+        snprintf(drainText, sizeof(drainText), "%s", tr(STR_SLEEP_DRAIN_NA));
+      }
       strncat(percentText, drainText, sizeof(percentText) - strlen(percentText) - 1);
     }
   }
