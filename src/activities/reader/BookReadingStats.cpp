@@ -39,8 +39,11 @@ namespace {
 // no key migration needed; move-to-/read renames the whole dir).
 // On the first save of a loaded v5 record, the writer transparently upgrades
 // it to v6 in place and removes the legacy stats_v5.bin so the next load
-// picks up the new file directly. v4 (69 bytes) and crossink's unversioned
-// stats.bin are no longer recognized — the build expects v5 or newer.
+// picks up the new file directly. v4 (69 B) and crossink's unversioned
+// stats.bin are NOT supported in this build: they predate the per-book
+// cache dir convention and have not been seen on shipped devices. A v4 file
+// left on a user's SD is silently treated as missing — the loader finds no
+// candidate and the book starts a fresh stat record on next save.
 constexpr uint8_t STATS_FILE_VERSION = 6;
 constexpr int STATS_FILE_SIZE = 109;
 constexpr int STATS_FILE_SIZE_V5 = 73;
@@ -53,9 +56,12 @@ std::string statsFileNameForVersion(const uint8_t version) {
   return std::string(buf);
 }
 
-// Current file first, then the previous versioned name. v5 is the only
-// recognized legacy version; v4 and crossink's unversioned stats.bin are
-// not honored (see layout comment).
+// Recognized book-stat records, newest first. Only the current and the
+// immediately previous versioned name are loaded; older versions (v4 and
+// earlier, crossink unversioned stats.bin) were removed in this revision to
+// keep the loader simple — see the layout header for the explicit list of
+// supported versions and the migration comment for what happens to a v4
+// file if it is still on disk after the upgrade.
 std::vector<std::string> openCandidateNames() {
   return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1)};
 }

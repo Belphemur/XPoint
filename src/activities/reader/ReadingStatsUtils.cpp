@@ -388,8 +388,14 @@ void WpmWindow::normalize() {
   if (count > WPM_WINDOW_SIZE) {
     count = WPM_WINDOW_SIZE;
   }
-  if (pos >= WPM_WINDOW_SIZE) {
-    pos = count > 0 ? static_cast<uint8_t>(count % WPM_WINDOW_SIZE) : 0;
+  if (count < WPM_WINDOW_SIZE) {
+    // A persisted partial window must have pos == count, so the next
+    // record() writes into the next empty slot. An in-range pos that
+    // differs from count would leave a newly-counted slot unwritten and
+    // stale samples in the trimmed mean.
+    pos = count;
+  } else if (pos >= WPM_WINDOW_SIZE) {
+    pos = 0;
   }
   avg = trimmedMean();
 }

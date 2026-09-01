@@ -142,26 +142,31 @@ void clearWpmStats() {
 
 ### 2.3 GlobalReadingStats — parallel WPM window
 ```cpp
-// New fields in GlobalReadingStats (persisted to SD, v6):
-uint16_t globalAvgWpm = 0;            // cross-book trimmed-mean WPM
-uint16_t globalWpmSampleCount = 0;    // valid samples (0–15)
-std::array<uint16_t, 15> globalWpmWindow{};  // rolling WPM samples
-uint8_t  globalWpmWindowPos = 0;
-uint8_t  globalWpmWindowCount = 0;
+// New fields in GlobalReadingStats (persisted to SD, v4 = 195-byte record):
+uint16_t wpmAvg = 0;                  // cross-book trimmed-mean WPM
+uint8_t  wpmCount = 0;                // valid samples (0–15)
+std::array<uint16_t, 15> wpmSamples{};  // rolling WPM samples
+uint8_t  wpmPos = 0;                  // next insertion slot
 
-// Called from EpubReaderActivity after book's recordForwardPageRead
+// Called from EpubReaderActivity after the book's recordForwardPageRead
 void recordGlobalPageRead(uint32_t seconds, uint16_t wordsOnPage) {
-    // Same trimmed-mean logic as BookReadingStats::recordForwardPageRead
-    // but writes to globalWpmWindow / globalAvgWpm / globalWpmSampleCount
+    // Same trimmed-mean logic as WpmWindow::record(); writes to
+    // globalWpm / globalAvgWpm / globalWpmSampleCount on the struct.
 }
 
 void clearWpmStats() {
-    globalAvgWpm = 0;
-    globalWpmSampleCount = 0;
-    globalWpmWindowPos = 0;
-    globalWpmWindowCount = 0;
-    globalWpmWindow.fill(0);
+    // Zeros the WPM window; sessions, totals, buckets, streaks survive.
+    wpmAvg = 0;
+    wpmCount = 0;
+    wpmPos = 0;
+    wpmSamples.fill(0);
 }
+```
+The on-disk record is `GLOBAL_STATS_VERSION = 4` (195 bytes). The WPM
+window lives at bytes 159-193 of the record. The struct's field name is
+`wpm` (a `WpmWindow` value), not a flat set of globals — the design doc
+flattens it here for readability, but the implementation keeps it as the
+shared `WpmWindow` helper used by both per-book and per-global tracking.
 ```
 
 ### 2.4 `resolveReadingPaceSecondsPerPage` update
@@ -178,27 +183,45 @@ std::optional<uint16_t> resolveReadingPaceSecondsPerPage(...) {
 
 ## 3. Backward Compatibility
 
-- **v5 → v6 in-place migration**: on the first save of a book whose loaded
-  record came from `stats_v5.bin`, the writer produces `stats_v6.bin` with
-  the v5 fields zeroed where the legacy pace used to live, then deletes the
-  legacy file. Subsequent loads see v6 directly. The migration preserves
-  every field the user can act on (sessions, totals, dates, time-of-day /
-  day-of-week buckets, streak history) — only the legacy seconds-per-page
-  average is dropped, replaced by the new WPM window which starts empty and
-  fills as the user reads.
-- **Global v3 → v4**: implicit on first save. The v3 file (159 bytes) is
-  overwritten with the v4 file (195 bytes); the WPM window starts empty.
-- **v1/v2 global (13/17 bytes), v4 book (69 bytes), crossink unversioned
-  `stats.bin`**: not recognized by the loader — they are treated as
-  unsupported legacy and a fresh start is used if no newer file exists. We
-  drop the v1/v2/v4/unversioned fallback chains to keep the loader
-  straightforward; these records are old enough that any user upgrading
-  from them will simply see their stats reset, which is acceptable on a
-  device that was already pre-release.
-- **GlobalReadingStats**: parallel WPM window at bytes 159-193. v3 loads
-  with an empty window.
-- **Settings**: No new settings needed (trim count, cap, window size are
-  constants).
+**Explicit support matrix (per what this branch will load):**
+
+| Record | Loaded? | Notes |
+|--------|---------|-------|
+| Book v6 (109 B, current) | ✅ | Written by this build |
+| Book v5 (73 B) | ✅ → v6 in-place | Migrated on first save; legacy file deleted |
+| Book v4 (69 B) | ❌ | Silently treated as missing — book starts fresh |
+| Book v3 and earlier | ❌ | Same — book starts fresh |
+| crossink unversioned `stats.bin` | ❌ | Same — book starts fresh |
+| Global v4 (195 B, current) | ✅ | Written by this build |
+| Global v3 (159 B) | ✅ → v4 in-place | Migrated on first save (overwrite in place) |
+| Global v1 (13 B) / v2 (17 B) | ❌ | Treated as missing; global stats start fresh |
+
+**What this means in practice:**
+
+- A user on the previous develop (book v5, global v3) upgrades, reads a
+  book, and the stats are silently upgraded to v6 / v4 on the first save.
+  No data loss; the WPM window starts empty and fills as they read.
+- A user on an even older build (book v4, global v1/v2) upgrades and
+  starts with a fresh per-book stat record (sessions = 0). The global
+  stats likewise start fresh. This is the **documented breakage** of
+  this PR. v1/v2 and v4 are pre-release layouts that have not been
+  shipped, and bringing the v4 → v5 and v1/v2 → v3 migrations into the
+  loader would be dead code. We drop them; the loader is simpler.
+- A v4 / crossink `stats.bin` file left on a user's SD is left untouched
+  on disk (we do not delete it during the upgrade — `remove()` no longer
+  knows about it). It is invisible to the loader, harmless, and can be
+  cleaned up by the user with the "Delete book stats" action.
+- **Reading speed source after the migration:** the WPM window is the sole
+  reading-speed source in v6. The legacy `avgSecondsPerForwardPage` /
+  `paceSampleCount` pair that v5 carried at bytes 12-15 is no longer
+  written, read, or used anywhere. Bytes 12-15 are kept as reserved
+  (zero) in v6 to preserve the v5 field-prefix offsets — no shift = same
+  `decodeV6` byte arithmetic as before. The in-memory
+  `BookReadingStats` struct no longer carries these fields.
+- **Newer format (forward build):** the loader peeks the version byte
+  for any file at least v3-sized and refuses to overwrite if the version
+  is greater than `GLOBAL_STATS_VERSION` / `STATS_FILE_VERSION`. A torn
+  write (truncated garbage file) still falls through to the backup.
 
 ---
 
