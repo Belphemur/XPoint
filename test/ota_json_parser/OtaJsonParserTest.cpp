@@ -155,10 +155,32 @@ const char* kManifestV190 = R"({
   ]
 })";
 
+// OtaReleaseInfo (~1KB) and ManifestBoardEntry (~580B each) blow the
+// 256-byte stack-safety budget, so test instances live in static storage
+// and are zeroed before each use.
+OtaReleaseInfo g_info;
+OtaReleaseInfo g_infoAlt;
+ManifestBoardEntry g_entries[OTA_MANIFEST_MAX_BOARDS];
+
+OtaReleaseInfo& makeReleaseInfo() {
+  g_info = {};
+  return g_info;
+}
+
+OtaReleaseInfo& makeReleaseInfoAlt() {
+  g_infoAlt = {};
+  return g_infoAlt;
+}
+
+ManifestBoardEntry* makeEntries() {
+  memset(g_entries, 0, sizeof(g_entries));
+  return g_entries;
+}
+
 }  // namespace
 
 TEST(OtaReleaseParse, RealisticPrettyPrinted) {
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(kRealisticPretty, strlen(kRealisticPretty), "firmware.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasTag);
@@ -172,7 +194,7 @@ TEST(OtaReleaseParse, RealisticPrettyPrinted) {
 }
 
 TEST(OtaReleaseParse, RealisticMinified) {
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(kRealisticMinified, strlen(kRealisticMinified), "firmware.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasTag);
@@ -185,10 +207,10 @@ TEST(OtaReleaseParse, RealisticMinified) {
 }
 
 TEST(OtaReleaseParse, PrettyAndMinifiedAgree) {
-  OtaReleaseInfo pretty;
+  OtaReleaseInfo& pretty = makeReleaseInfo();
   parseOtaRelease(kRealisticPretty, strlen(kRealisticPretty), "firmware.bin", "manifest.json", pretty);
 
-  OtaReleaseInfo minified;
+  OtaReleaseInfo& minified = makeReleaseInfoAlt();
   parseOtaRelease(kRealisticMinified, strlen(kRealisticMinified), "firmware.bin", "manifest.json", minified);
 
   EXPECT_STREQ(pretty.tagName, minified.tagName);
@@ -207,7 +229,7 @@ TEST(OtaReleaseParse, MissingTagName) {
       }]
     })";
 
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(json, strlen(json), "firmware.bin", "manifest.json", info);
 
   EXPECT_FALSE(info.hasTag);
@@ -224,7 +246,7 @@ TEST(OtaReleaseParse, MissingFirmwareAsset) {
       ]
     })";
 
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(json, strlen(json), "firmware.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasTag);
@@ -234,7 +256,7 @@ TEST(OtaReleaseParse, MissingFirmwareAsset) {
 }
 
 TEST(OtaReleaseParse, MissingManifestAsset) {
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(kRealisticPretty, strlen(kRealisticPretty), "firmware.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasFirmware);
@@ -243,7 +265,7 @@ TEST(OtaReleaseParse, MissingManifestAsset) {
 }
 
 TEST(OtaReleaseParse, ManifestAssetCaptured) {
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(kReleaseWithManifest, strlen(kReleaseWithManifest), "firmware-x4pro.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasTag);
@@ -272,7 +294,7 @@ TEST(OtaReleaseParse, ExtraUnknownKeysIgnored) {
       "mentions_count": 3
     })";
 
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(json, strlen(json), "firmware.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasTag);
@@ -293,7 +315,7 @@ TEST(OtaReleaseParse, AssetsKeyOrderIndependent) {
       }]
     })";
 
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(json, strlen(json), "firmware.bin", "manifest.json", info);
 
   EXPECT_TRUE(info.hasFirmware);
@@ -311,14 +333,14 @@ TEST(OtaReleaseParse, AssetNameExactMatchOnly) {
       ]
     })";
 
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   parseOtaRelease(json, strlen(json), "firmware.bin", "manifest.json", info);
 
   EXPECT_FALSE(info.hasFirmware);
 }
 
 TEST(OtaReleaseParse, MalformedJsonLeavesInfoZeroed) {
-  OtaReleaseInfo info;
+  OtaReleaseInfo& info = makeReleaseInfo();
   info.hasTag = true;
   info.hasFirmware = true;
 
@@ -331,7 +353,7 @@ TEST(OtaReleaseParse, MalformedJsonLeavesInfoZeroed) {
 }
 
 TEST(OtaManifestParse, RealV190Manifest) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
   char version[32] = {0};
 
@@ -358,7 +380,7 @@ TEST(OtaManifestParse, RealV190Manifest) {
 }
 
 TEST(OtaManifestParse, MissingBoardReturnsNull) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = 0;
   char version[32] = {0};
 
@@ -380,7 +402,7 @@ TEST(OtaManifestParse, InvalidHexShaMeansNoSha) {
       ]
     })";
 
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = 0;
   char version[32] = {0};
 
@@ -392,7 +414,7 @@ TEST(OtaManifestParse, InvalidHexShaMeansNoSha) {
 }
 
 TEST(OtaManifestParse, MaxEntriesCapsParsedBoards) {
-  ManifestBoardEntry entries[2];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
   char version[32] = {0};
 
@@ -405,7 +427,7 @@ TEST(OtaManifestParse, MaxEntriesCapsParsedBoards) {
 }
 
 TEST(OtaManifestParse, MalformedJsonFailsClosed) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
   char version[32] = {0};
 
@@ -415,7 +437,7 @@ TEST(OtaManifestParse, MalformedJsonFailsClosed) {
 }
 
 TEST(OtaManifestParse, NullRequiredArgsRejected) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
   char version[32] = {0};
 
@@ -427,7 +449,7 @@ TEST(OtaManifestParse, NullRequiredArgsRejected) {
 }
 
 TEST(OtaManifestParse, NullVersionBufferIsSkipped) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
 
   ASSERT_TRUE(parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count,
@@ -437,7 +459,7 @@ TEST(OtaManifestParse, NullVersionBufferIsSkipped) {
 }
 
 TEST(OtaManifestParse, NullVersionBufferWithZeroSizeIsSkipped) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
 
   ASSERT_TRUE(parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count,
@@ -447,7 +469,7 @@ TEST(OtaManifestParse, NullVersionBufferWithZeroSizeIsSkipped) {
 }
 
 TEST(OtaManifestParse, ZeroSizeVersionBufferIsNotWritten) {
-  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  ManifestBoardEntry* entries = makeEntries();
   int count = -1;
   char version[8];
   char untouched[8];
