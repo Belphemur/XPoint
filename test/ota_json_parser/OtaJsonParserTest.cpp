@@ -362,9 +362,8 @@ TEST(OtaManifestParse, MissingBoardReturnsNull) {
   int count = 0;
   char version[32] = {0};
 
-  ASSERT_TRUE(
-      parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count, version,
-                       sizeof(version)));
+  ASSERT_TRUE(parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count, version,
+                               sizeof(version)));
 
   EXPECT_EQ(findBoardEntry(entries, count, "x9", 2), nullptr);
   EXPECT_EQ(findBoardEntry(entries, count, "x4pro-plus", 9), nullptr);
