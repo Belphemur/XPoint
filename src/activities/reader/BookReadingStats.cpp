@@ -27,11 +27,19 @@ namespace {
 //   [41-68]  dayOfWeekSeconds[7]       uint32_t LE each
 //   [69-72]  estimatedTimeLeftSeconds  uint32_t LE, 0 means unavailable
 //
+// v6 (109 bytes) appends the reading-speed window (v5 fields unchanged):
+//   [73-74]  wpm.avg                   uint16_t LE, trimmed mean WPM (0 = none)
+//   [75-76]  wpm.count                 uint16_t LE, samples in window (0-15)
+//   [77-106] wpm.samples[15]           uint16_t LE each
+//   [107]    wpm.pos                   uint8_t
+//   [108]    reserved (0)              uint8_t
+//
 // The record lives INSIDE the book cache dir, so its lifetime matches the
 // cache dir exactly (created/deleted/moved with the book — no orphan cleanup,
 // no key migration needed; move-to-/read renames the whole dir).
-constexpr uint8_t STATS_FILE_VERSION = 5;
-constexpr int STATS_FILE_SIZE = 73;
+constexpr uint8_t STATS_FILE_VERSION = 6;
+constexpr int STATS_FILE_SIZE = 109;
+constexpr int STATS_FILE_SIZE_V5 = 73;
 constexpr int STATS_FILE_SIZE_V4 = 69;
 constexpr size_t MAX_PACE_SAMPLE_COUNT = 1000;
 constexpr uint8_t FLAG_START_DATE_MANUAL = 1u << 0;
@@ -113,7 +121,7 @@ bool decodeV4(const uint8_t* data, const int n, BookReadingStats& stats) {
 
 // Decodes a v5 record (73 bytes). Returns false on size/version mismatch.
 bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
+  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION - 1) return false;
   readCommonStats(data, stats);
   stats.isCompleted = data[11] != 0;
   stats.avgSecondsPerForwardPage = readLe16(data, 12);
@@ -132,6 +140,28 @@ bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
   stats.estimatedTimeLeftSeconds = readLe32(data, 69);
   return true;
 }
+
+// Reads the v6-only trailing WPM fields and normalizes them: a corrupt count
+// or cursor is clamped (samples[pos] must stay in bounds) and the average is
+// recomputed from the window rather than trusted.
+void readWpmWindow(const uint8_t* data, WpmWindow& wpm) {
+  wpm.avg = readLe16(data, 73);
+  wpm.count = static_cast<uint8_t>(readLe16(data, 75));
+  for (size_t i = 0; i < wpm.samples.size(); ++i) {
+    wpm.samples[i] = readLe16(data, 77 + static_cast<int>(i) * 2);
+  }
+  wpm.pos = data[107];
+  wpm.normalize();
+}
+
+// Decodes a v6 record (109 bytes = v5 plus the WPM window). Returns false on
+// size/version mismatch.
+bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
+  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
+  if (!decodeV5(data, STATS_FILE_SIZE_V5, stats)) return false;
+  readWpmWindow(data, stats.wpm);
+  return true;
+}
 }  // namespace
 
 BookReadingStats BookReadingStats::load(const std::string& cachePath) {
@@ -147,8 +177,8 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     f.close();
 
     BookReadingStats candidate;
-    if (decodeV5(data, n, candidate)) return candidate;
-    if (decodeV4(data, n, candidate)) {
+    if (decodeV6(data, n, candidate)) return candidate;
+    if (decodeV5(data, n, candidate)) {
       LOG_DBG("STATS", "Loaded %s (older version); next save writes v%u", name.c_str(), STATS_FILE_VERSION);
       return candidate;
     }
@@ -190,6 +220,12 @@ void BookReadingStats::save(const std::string& cachePath) const {
     writeLe32(data, 41 + static_cast<int>(i) * 4, dayOfWeekSeconds[i]);
   }
   writeLe32(data, 69, estimatedTimeLeftSeconds);
+  writeLe16(data, 73, wpm.avg);
+  writeLe16(data, 75, wpm.count);
+  for (size_t i = 0; i < wpm.samples.size(); ++i) {
+    writeLe16(data, 77 + static_cast<int>(i) * 2, wpm.samples[i]);
+  }
+  data[107] = wpm.pos;
   if (f.write(data, STATS_FILE_SIZE) != STATS_FILE_SIZE) {
     LOG_ERR("STATS", "Short write for %s", statsFileName.c_str());
   }
@@ -212,10 +248,13 @@ bool BookReadingStats::remove(const std::string& cachePath) {
   return ok;
 }
 
-void BookReadingStats::recordForwardPageRead(uint32_t seconds) {
+void BookReadingStats::recordForwardPageRead(uint32_t seconds, uint16_t wordsOnPage) {
   if (seconds == 0) {
     return;
   }
+  // Legacy seconds-per-page average is kept alongside the WPM window so the
+  // estimate degrades gracefully until the WPM window fills (15 samples).
+  wpm.record(seconds, wordsOnPage);
   if (seconds > UINT16_MAX) {
     seconds = UINT16_MAX;
   }
@@ -232,6 +271,8 @@ void BookReadingStats::recordForwardPageRead(uint32_t seconds) {
     paceSampleCount++;
   }
 }
+
+void BookReadingStats::clearWpmStats() { wpm.clear(); }
 
 void BookReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStart, const uint32_t seconds) {
   recordReadingSpanIntoBuckets(timeOfDaySeconds, dayOfWeekSeconds, localStart, seconds);

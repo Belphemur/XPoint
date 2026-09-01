@@ -78,11 +78,12 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalRoundTrip) {
   g.readingHistoryAnchorDay = 20600;
   g.readingHistoryBits[10] = 0xAB;
   g.longestReadingStreak = 7;
+  g.wpm.record(60, 220);  // 220 words in 60 s -> 220 WPM
   g.save();
 
   const auto bytes = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(bytes.size(), 159u);
-  EXPECT_EQ(bytes[0], 3);  // version byte
+  ASSERT_EQ(bytes.size(), 195u);
+  EXPECT_EQ(bytes[0], 4);  // version byte
 
   GlobalReadingStats out = GlobalReadingStats::load();
   EXPECT_EQ(out.totalSessions, 5u);
@@ -94,6 +95,8 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalRoundTrip) {
   EXPECT_EQ(out.readingHistoryAnchorDay, 20600u);
   EXPECT_EQ(out.readingHistoryBits[10], 0xAB);
   EXPECT_EQ(out.longestReadingStreak, 7u);
+  EXPECT_EQ(out.wpm.count, 1u);
+  EXPECT_EQ(out.wpm.avg, 220u);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
@@ -112,7 +115,7 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   // After second save: old content rotated into .bak.
   EXPECT_TRUE(Storage.exists(GLOBAL_BAK_PATH));
   const auto bak = readFileBytes(GLOBAL_BAK_PATH);
-  ASSERT_EQ(bak.size(), 159u);
+  ASSERT_EQ(bak.size(), 195u);
   EXPECT_EQ(readLe32At(bak, 1), 3u);  // first save's totalSessions
   const auto main = readFileBytes(GLOBAL_PATH);
   EXPECT_EQ(readLe32At(main, 1), 9u);  // second save's totalSessions
@@ -124,7 +127,7 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   g3.totalSessions = 12;
   g3.save();
   const auto main3 = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(main3.size(), 159u);
+  ASSERT_EQ(main3.size(), 195u);
   EXPECT_EQ(readLe32At(main3, 1), 12u);
   const auto bak3 = readFileBytes(GLOBAL_BAK_PATH);
   EXPECT_EQ(readLe32At(bak3, 1), 9u);
@@ -170,8 +173,8 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalResetLocalBypassesNewerFormatGuard) {
 
   EXPECT_TRUE(GlobalReadingStats::resetLocal());
   const auto after = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(after.size(), 159u);
-  EXPECT_EQ(after[0], 3);
+  ASSERT_EQ(after.size(), 195u);
+  EXPECT_EQ(after[0], 4);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
@@ -180,7 +183,7 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   b.totalReadingSeconds = 3661;
   b.totalPagesTurned = 120;
   b.isCompleted = true;
-  b.recordForwardPageRead(30);
+  b.recordForwardPageRead(30, 220);  // 220 words in 30 s -> 440 WPM sample
   b.startDateManual = true;
   b.startDate = ReadingStatsDate{2026, 8, 26};
   b.finishedDateManual = true;
@@ -190,9 +193,9 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   b.estimatedTimeLeftSeconds = 5400;
   b.save(BOOK_DIR);
 
-  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 5));
-  ASSERT_EQ(bytes.size(), 73u);
-  EXPECT_EQ(bytes[0], 5);  // version byte
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
+  ASSERT_EQ(bytes.size(), 109u);
+  EXPECT_EQ(bytes[0], 6);  // version byte
 
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(out.sessionCount, 4u);
@@ -201,6 +204,8 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   EXPECT_TRUE(out.isCompleted);
   EXPECT_GT(out.avgSecondsPerForwardPage, 0u);
   EXPECT_EQ(out.paceSampleCount, 1u);
+  EXPECT_EQ(out.wpm.count, 1u);
+  EXPECT_EQ(out.wpm.avg, 440u);
   EXPECT_TRUE(out.startDateManual);
   EXPECT_EQ(out.startDate.year, 2026);
   EXPECT_EQ(out.startDate.month, 8);
@@ -214,7 +219,7 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   EXPECT_EQ(out.estimatedTimeLeftSeconds, 5400u);
 
   EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
-  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5)));
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6)));
   const BookReadingStats gone = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(gone.sessionCount, 0u);
 }
@@ -222,7 +227,7 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
 TEST_F(ReadingStatsBinaryStoreTest, BookTornWriteStartsFresh) {
   // Simulate a battery cut mid-write: short garbage file.
   HalFile f;
-  ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 5), f));
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 6), f));
   const uint8_t garbage[] = {0x05, 0xAA, 0xBB};
   f.write(garbage, sizeof(garbage));
 
@@ -265,7 +270,7 @@ TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
-  for (const char* name : {"stats_v5.bin", "stats_v4.bin", "stats.bin"}) {
+  for (const char* name : {"stats_v6.bin", "stats_v5.bin", "stats.bin"}) {
     HalFile f;
     ASSERT_TRUE(Storage.openFileForWrite("TEST", std::string(BOOK_DIR) + "/" + name, f));
     const uint8_t byte = 5;
@@ -273,36 +278,65 @@ TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
   }
 
   EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6)));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5)));
-  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 4)));
   EXPECT_FALSE(Storage.exists(std::string(BOOK_DIR) + "/stats.bin"));
 }
 
-// A corrupt stats_v5.bin must not shadow a valid older record: the loader
+// A corrupt stats_v6.bin must not shadow a valid older record: the loader
 // falls through to the next candidate instead of starting fresh.
-TEST_F(ReadingStatsBinaryStoreTest, CorruptV5FallsBackToV4) {
-  // Garbage v5 (right size, wrong version).
-  std::vector<uint8_t> corruptV5(73, 0);
-  corruptV5[0] = 0xEE;
+TEST_F(ReadingStatsBinaryStoreTest, CorruptV6FallsBackToV5) {
+  // Garbage v6 (right size, wrong version).
+  std::vector<uint8_t> corruptV6(109, 0);
+  corruptV6[0] = 0xEE;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 6), f));
+    f.write(corruptV6.data(), corruptV6.size());
+  }
+  // Valid v5 with real data.
+  std::vector<uint8_t> v5(73, 0);
+  v5[0] = 5;
+  v5[1] = 8;   // sessionCount = 8
+  v5[3] = 77;  // totalReadingSeconds = 77
   {
     HalFile f;
     ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 5), f));
-    f.write(corruptV5.data(), corruptV5.size());
-  }
-  // Valid v4 with real data.
-  std::vector<uint8_t> v4(69, 0);
-  v4[0] = 4;
-  v4[1] = 8;   // sessionCount = 8
-  v4[3] = 77;  // totalReadingSeconds = 77
-  {
-    HalFile f;
-    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 4), f));
-    f.write(v4.data(), v4.size());
+    f.write(v5.data(), v5.size());
   }
 
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(out.sessionCount, 8u);
   EXPECT_EQ(out.totalReadingSeconds, 77u);
+  EXPECT_EQ(out.wpm.count, 0u);  // v5 record carries no WPM window
+}
+
+// A v5 record loads with an empty WPM window; saving writes the v6 format back.
+TEST_F(ReadingStatsBinaryStoreTest, BackwardCompatV5) {
+  std::vector<uint8_t> v5(73, 0);
+  v5[0] = 5;
+  v5[1] = 6;  // sessionCount = 6
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 5), f));
+    f.write(v5.data(), v5.size());
+  }
+
+  BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 6u);
+  EXPECT_EQ(out.wpm.count, 0u);
+  EXPECT_EQ(out.wpm.avg, 0u);
+
+  for (int i = 0; i < 15; ++i) {
+    out.recordForwardPageRead(60, 220);  // 220 WPM each
+  }
+  EXPECT_EQ(out.wpm.count, 15u);
+  EXPECT_EQ(out.wpm.avg, 220u);
+  out.save(BOOK_DIR);
+
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
+  ASSERT_EQ(bytes.size(), 109u);
+  EXPECT_EQ(bytes[0], 6);
 }
 
 // Global legacy records (v1 13 B / v2 17 B) are valid inputs and must load —
@@ -341,8 +375,8 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalLegacyRecordsLoad) {
   // And saving after loading a legacy record writes the CURRENT format back.
   out1.save();
   const auto bytes = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(bytes.size(), 159u);
-  EXPECT_EQ(bytes[0], 3);
+  ASSERT_EQ(bytes.size(), 195u);
+  EXPECT_EQ(bytes[0], 4);
 }
 
 // After an explicit reset, saves must resume even if the destructive-save

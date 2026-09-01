@@ -6,11 +6,14 @@
 #include "BookReadingStats.h"
 #include "activities/UiListActivity.h"
 
-// Read-only list of a single book's reading statistics. Launched from the
-// reader menu (READING_STATS). Rows are label/value pairs built once on enter.
+// List of a single book's reading statistics. Launched from the reader menu
+// (READING_STATS). Rows are label/value pairs built once on enter; the final
+// row is a "clear reading speed" action that reports ClearPaceResult back to
+// the reader (which owns the authoritative record and re-saves it).
 class BookStatsActivity final : public UiListActivity {
   std::string bookTitle;
   BookReadingStats stats;
+  int clearPaceRow = -1;
 
   std::vector<freeink::ui::ListItem> rowItems;
   std::vector<std::string> valueCache;

@@ -67,9 +67,13 @@ struct FilePathResult {
   std::string path;
 };
 
+// Sent by BookStatsActivity when the user activates "Clear reading speed":
+// the reader (owner of the authoritative per-book record) applies the clear.
+struct ClearPaceResult {};
+
 using ResultVariant =
     std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, IntervalResult,
-                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult>;
+                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult, ClearPaceResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

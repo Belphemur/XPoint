@@ -177,3 +177,95 @@ TEST(ReadingStatsUtilsTest, FormatChapterTimeLeftTwoHours) {
   formatChapterTimeLeft(7200, buf, sizeof(buf));
   EXPECT_STREQ(buf, "~120 min left");
 }
+
+TEST(ReadingStatsUtilsTest, WpmHardCapDiscard) {
+  WpmWindow w;
+  w.record(60, 901);  // 901 WPM > cap -> discarded
+  w.record(1, 1000);  // 60000 WPM -> discarded
+  EXPECT_EQ(w.count, 0u);
+  EXPECT_EQ(w.avg, 0u);
+}
+
+TEST(ReadingStatsUtilsTest, WpmTrimmedMean) {
+  WpmWindow w;
+  w.record(60, 500);  // outliers, shuffled order to exercise sorting
+  w.record(60, 100);
+  for (int i = 0; i < 11; ++i) {
+    w.record(60, 200);
+  }
+  w.record(60, 100);
+  w.record(60, 500);
+  ASSERT_EQ(w.count, 15u);
+  // Trimmed mean drops the 2 fastest + 2 slowest -> eleven 200s remain.
+  EXPECT_EQ(w.avg, 200u);
+}
+
+TEST(ReadingStatsUtilsTest, WpmFloor) {
+  WpmWindow w;
+  w.record(100, 100);  // 60 WPM -> clamped up to the 80 WPM floor
+  EXPECT_EQ(w.count, 1u);
+  EXPECT_EQ(w.avg, 80u);
+}
+
+TEST(ReadingStatsUtilsTest, WpmZeroInputIgnored) {
+  WpmWindow w;
+  w.record(0, 100);
+  w.record(60, 0);
+  EXPECT_EQ(w.count, 0u);
+  EXPECT_EQ(w.avg, 0u);
+}
+
+TEST(ReadingStatsUtilsTest, ResolvePaceFromWpm) {
+  BookReadingStats book;
+  for (int i = 0; i < 15; ++i) {
+    book.recordForwardPageRead(60, 300);  // full window at 300 WPM
+  }
+  GlobalReadingStats global;
+  const auto pace = resolveReadingPaceSecondsPerPage(book, global);
+  ASSERT_TRUE(pace.has_value());
+  // WPM estimate (220*60/300 = 44 s) wins over the legacy book average (60 s).
+  EXPECT_EQ(*pace, 44u);
+}
+
+TEST(ReadingStatsUtilsTest, ResolvePaceWpmNeedsFullWindow) {
+  BookReadingStats book;
+  for (int i = 0; i < 14; ++i) {
+    book.recordForwardPageRead(60, 300);
+  }
+  ASSERT_EQ(book.wpm.count, 14u);
+  // Legacy pace is still usable while the WPM window is not full.
+  book.paceSampleCount = 10;
+  book.avgSecondsPerForwardPage = 45;
+  GlobalReadingStats global;
+  const auto pace = resolveReadingPaceSecondsPerPage(book, global);
+  ASSERT_TRUE(pace.has_value());
+  EXPECT_EQ(*pace, 45u);
+}
+
+TEST(ReadingStatsUtilsTest, ResolvePaceGlobalWpmFallback) {
+  BookReadingStats book;  // no book data at all
+  GlobalReadingStats global;
+  for (int i = 0; i < 15; ++i) {
+    global.recordGlobalPageRead(60, 220);  // full window at 220 WPM
+  }
+  global.totalPagesTurned = 10;  // below the legacy page-turn threshold
+  const auto pace = resolveReadingPaceSecondsPerPage(book, global);
+  ASSERT_TRUE(pace.has_value());
+  EXPECT_EQ(*pace, 60u);  // 220*60/220
+}
+
+TEST(ReadingStatsUtilsTest, WpmClearStatsResetsWindow) {
+  BookReadingStats book;
+  for (int i = 0; i < 15; ++i) {
+    book.recordForwardPageRead(60, 220);
+  }
+  ASSERT_EQ(book.wpm.count, 15u);
+  book.clearWpmStats();
+  EXPECT_EQ(book.wpm.count, 0u);
+  EXPECT_EQ(book.wpm.avg, 0u);
+  for (const auto sample : book.wpm.samples) {
+    EXPECT_EQ(sample, 0u);
+  }
+  GlobalReadingStats global;
+  EXPECT_FALSE(resolveReadingPaceSecondsPerPage(book, global).has_value());
+}

@@ -45,7 +45,8 @@ void BookStatsActivity::onEnter() {
 void BookStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
-  const size_t n = 20;
+  clearPaceRow = -1;
+  const size_t n = 21;
   valueCache.reserve(n + 1);
   rowItems.reserve(n + 1);
 
@@ -89,9 +90,17 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_FRI), formatStatsDuration(stats.dayOfWeekSeconds[4]));
   addRow(tr(STR_STATS_SAT), formatStatsDuration(stats.dayOfWeekSeconds[5]));
   addRow(tr(STR_STATS_SUN), formatStatsDuration(stats.dayOfWeekSeconds[6]));
+
+  clearPaceRow = static_cast<int>(rowItems.size());
+  addRow(tr(STR_CLEAR_BOOK_PACE), std::string());
 }
 
-void BookStatsActivity::activateIndex(const int index) { (void)index; }
+void BookStatsActivity::activateIndex(const int index) {
+  if (index == clearPaceRow) {
+    setResult(ActivityResult{ClearPaceResult{}});
+    finish();
+  }
+}
 
 bool BookStatsActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

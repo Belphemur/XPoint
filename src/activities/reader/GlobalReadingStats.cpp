@@ -20,8 +20,16 @@ namespace {
 //   [61-64]   readingHistoryAnchorDay uint32_t LE
 //   [65-156]  readingHistoryBits[92]
 //   [157-158] longestReadingStreak uint16_t LE
-constexpr uint8_t GLOBAL_STATS_VERSION = 3;
-constexpr int GLOBAL_STATS_FILE_SIZE = 159;
+//
+// v4 (195 bytes) appends the reading-speed window (v3 fields unchanged):
+//   [159-160] wpm.avg             uint16_t LE, trimmed mean WPM (0 = none)
+//   [161-162] wpm.count           uint16_t LE, samples in window (0-15)
+//   [163-192] wpm.samples[15]     uint16_t LE each
+//   [193]     wpm.pos             uint8_t
+//   [194]     reserved (0)        uint8_t
+constexpr uint8_t GLOBAL_STATS_VERSION = 4;
+constexpr int GLOBAL_STATS_FILE_SIZE = 195;
+constexpr int GLOBAL_STATS_FILE_SIZE_V3 = 159;
 
 // /.crosspoint/global_stats.bin aggregates every book; a torn write would lose
 // all history, so saves go through tmp -> verify -> rotate .bak -> rename.
@@ -43,6 +51,11 @@ uint16_t readLe16(const uint8_t* data, const int offset) {
 uint32_t readLe32(const uint8_t* data, const int offset) {
   return static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8) |
          (static_cast<uint32_t>(data[offset + 2]) << 16) | (static_cast<uint32_t>(data[offset + 3]) << 24);
+}
+
+void writeLe16(uint8_t* data, const int offset, const uint16_t value) {
+  data[offset] = value & 0xFF;
+  data[offset + 1] = (value >> 8) & 0xFF;
 }
 
 void writeLe32(uint8_t* data, const int offset, const uint32_t value) {
@@ -75,6 +88,12 @@ void serializeStats(const GlobalReadingStats& stats, uint8_t* data) {
   memcpy(data + 65, stats.readingHistoryBits.data(), stats.readingHistoryBits.size());
   data[157] = stats.longestReadingStreak & 0xFF;
   data[158] = (stats.longestReadingStreak >> 8) & 0xFF;
+  writeLe16(data, 159, stats.wpm.avg);
+  writeLe16(data, 161, stats.wpm.count);
+  for (size_t i = 0; i < stats.wpm.samples.size(); ++i) {
+    writeLe16(data, 163 + static_cast<int>(i) * 2, stats.wpm.samples[i]);
+  }
+  data[193] = stats.wpm.pos;
 }
 
 StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
@@ -111,13 +130,19 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     outcome.result = StatsLoadResult::Ok;
     return outcome;
   }
-  if (outcome.fileSize < static_cast<size_t>(GLOBAL_STATS_FILE_SIZE)) {
+  // v3 records are shorter than the current layout only by the v4-only WPM
+  // window (exactly 159 bytes), so they are accepted below with the window
+  // defaulting to empty. Anything else shorter than the current record cannot
+  // plausibly be a newer format — it is a torn write. Report Invalid so load()
+  // falls through to the backup instead of latching the destructive-save guard.
+  if (outcome.fileSize < static_cast<size_t>(GLOBAL_STATS_FILE_SIZE) &&
+      outcome.fileSize != static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {
     return outcome;
   }
 
   uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
   const int n = f.read(data, GLOBAL_STATS_FILE_SIZE);
-  if (n != GLOBAL_STATS_FILE_SIZE) return outcome;
+  if (n != GLOBAL_STATS_FILE_SIZE && n != GLOBAL_STATS_FILE_SIZE_V3) return outcome;
   outcome.version = data[0];
 
   // A newer build's format must never be clobbered by this one.
@@ -140,6 +165,16 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     out.readingHistoryAnchorDay = readLe32(data, 61);
     memcpy(out.readingHistoryBits.data(), data + 65, out.readingHistoryBits.size());
     out.longestReadingStreak = readLe16(data, 157);
+  }
+  if (outcome.version >= 4) {
+    // A v3-sized file leaves this tail zeroed, so the window decodes as empty.
+    out.wpm.avg = readLe16(data, 159);
+    out.wpm.count = static_cast<uint8_t>(readLe16(data, 161));
+    for (size_t i = 0; i < out.wpm.samples.size(); ++i) {
+      out.wpm.samples[i] = readLe16(data, 163 + static_cast<int>(i) * 2);
+    }
+    out.wpm.pos = data[193];
+    out.wpm.normalize();
   }
   outcome.result = StatsLoadResult::Ok;
   return outcome;
@@ -288,6 +323,12 @@ void GlobalReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStar
     longestReadingStreak = historyLongest;
   }
 }
+
+void GlobalReadingStats::recordGlobalPageRead(const uint32_t seconds, const uint16_t wordsOnPage) {
+  wpm.record(seconds, wordsOnPage);
+}
+
+void GlobalReadingStats::clearWpmStats() { wpm.clear(); }
 
 uint16_t GlobalReadingStats::currentReadingStreak(const ReadingStatsDate* today) const {
   return computeReadingHistoryCurrentStreak(readingHistoryAnchorDay, readingHistoryBits, today);

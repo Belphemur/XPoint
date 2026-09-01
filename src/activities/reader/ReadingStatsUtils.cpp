@@ -336,10 +336,82 @@ void formatCompactReadingDuration(const uint32_t seconds, char* buf, const size_
   }
 }
 
+void WpmWindow::record(const uint32_t seconds, const uint16_t wordsOnPage) {
+  if (seconds == 0 || wordsOnPage == 0) {
+    return;
+  }
+  const uint32_t wpm = (static_cast<uint32_t>(wordsOnPage) * 60U) / seconds;
+  if (wpm > WPM_HARD_CAP) {
+    return;
+  }
+  samples[pos] = static_cast<uint16_t>(wpm < WPM_FLOOR ? WPM_FLOOR : wpm);
+  pos = static_cast<uint8_t>((pos + 1) % WPM_WINDOW_SIZE);
+  if (count < WPM_WINDOW_SIZE) {
+    count++;
+  }
+  avg = trimmedMean();
+}
+
+uint16_t WpmWindow::trimmedMean() const {
+  if (count == 0) {
+    return 0;
+  }
+  uint32_t sum = 0;
+  // Not enough samples to trim both ends: plain mean.
+  if (count <= WPM_TRIM_COUNT * 2) {
+    for (uint8_t i = 0; i < count; i++) {
+      sum += samples[i];
+    }
+    return static_cast<uint16_t>(sum / count);
+  }
+  uint16_t sorted[WPM_WINDOW_SIZE];
+  for (uint8_t i = 0; i < count; i++) {
+    sorted[i] = samples[i];
+  }
+  for (uint8_t i = 1; i < count; i++) {
+    const uint16_t key = sorted[i];
+    uint8_t j = i;
+    while (j > 0 && sorted[j - 1] > key) {
+      sorted[j] = sorted[j - 1];
+      j--;
+    }
+    sorted[j] = key;
+  }
+  const uint8_t last = count - WPM_TRIM_COUNT;
+  for (uint8_t i = WPM_TRIM_COUNT; i < last; i++) {
+    sum += sorted[i];
+  }
+  return static_cast<uint16_t>(sum / (last - WPM_TRIM_COUNT));
+}
+
+void WpmWindow::normalize() {
+  if (count > WPM_WINDOW_SIZE) {
+    count = WPM_WINDOW_SIZE;
+  }
+  if (pos >= WPM_WINDOW_SIZE) {
+    pos = count > 0 ? static_cast<uint8_t>(count % WPM_WINDOW_SIZE) : 0;
+  }
+  avg = trimmedMean();
+}
+
 std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
                                                          const GlobalReadingStats& globalStats) {
+  // Prefer the book's own WPM estimate once its window is full: 15 trimmed
+  // samples converted through a calibrated words-per-page figure.
+  if (bookStats.wpm.count >= WPM_WINDOW_SIZE && bookStats.wpm.avg > 0) {
+    const uint32_t pace = (static_cast<uint32_t>(CALIBRATED_WORDS_PER_PAGE) * 60U) / bookStats.wpm.avg;
+    if (pace > 0) {
+      return pace;
+    }
+  }
   if (bookStats.paceSampleCount >= MIN_BOOK_PACE_SAMPLES && bookStats.avgSecondsPerForwardPage > 0) {
     return bookStats.avgSecondsPerForwardPage;
+  }
+  if (globalStats.wpm.count >= WPM_WINDOW_SIZE && globalStats.wpm.avg > 0) {
+    const uint32_t pace = (static_cast<uint32_t>(CALIBRATED_WORDS_PER_PAGE) * 60U) / globalStats.wpm.avg;
+    if (pace > 0) {
+      return pace;
+    }
   }
   if (globalStats.totalPagesTurned >= MIN_GLOBAL_PACE_PAGE_TURNS) {
     const uint32_t pace = globalStats.totalReadingSeconds / globalStats.totalPagesTurned;

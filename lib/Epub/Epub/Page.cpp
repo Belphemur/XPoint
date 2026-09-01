@@ -124,6 +124,20 @@ void Page::render(GfxRenderer& renderer, const int fontId, const int xOffset, co
   renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset, [](const PageElement&) { return true; });
 }
 
+uint16_t Page::wordCount() const {
+  uint32_t words = 0;
+  for (const auto& el : elements) {
+    if (el->getTag() != TAG_PageLine) {
+      continue;
+    }
+    const auto& block = static_cast<const PageLine&>(*el).getBlock();
+    if (block) {
+      words += block->wordCount();
+    }
+  }
+  return static_cast<uint16_t>(std::min<uint32_t>(words, UINT16_MAX));
+}
+
 void Page::renderImages(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) const {
   renderFilteredPageElements(elements, renderer, fontId, xOffset, yOffset,
                              [](const PageElement& element) { return element.getTag() == TAG_PageImage; });
