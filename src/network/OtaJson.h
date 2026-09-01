@@ -28,9 +28,10 @@ void parseOtaRelease(const char* data, size_t len, const char* firmwareAssetName
                      OtaReleaseInfo& out);
 
 // Parse a signed manifest.json body into `entries` (at most `maxEntries`).
-// On success returns true, `*outCount` holds the number of boards parsed and
-// `version` (if non-null) the bare semver. Returns false on malformed JSON or
-// null required arguments.
+// On success returns true and `*outCount` holds the number of boards parsed.
+// `version` is optional: if `version` is non-null and `versionSize > 0`, the
+// parsed manifest version is written; otherwise skipped. Returns false on
+// malformed JSON or null required arguments.
 bool parseOtaManifest(const char* data, size_t len, ManifestBoardEntry* entries, int maxEntries, int* outCount,
                       char* version, size_t versionSize);
 

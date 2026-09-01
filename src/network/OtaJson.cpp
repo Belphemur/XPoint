@@ -74,7 +74,9 @@ bool parseOtaManifest(const char* data, size_t len, ManifestBoardEntry* entries,
   JsonDocument doc;
   if (deserializeJson(doc, data, len) != DeserializationError::Ok) return false;
 
-  copyStr(doc["version"] | "", version, versionSize);
+  // `version` is optional: only write when a non-null buffer with capacity
+  // is provided.
+  if (version && versionSize > 0) copyStr(doc["version"] | "", version, versionSize);
 
   int n = 0;
   for (JsonObjectConst board : doc["boards"].as<JsonArrayConst>()) {

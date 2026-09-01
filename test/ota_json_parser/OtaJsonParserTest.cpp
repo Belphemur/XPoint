@@ -426,6 +426,42 @@ TEST(OtaManifestParse, NullRequiredArgsRejected) {
   EXPECT_EQ(count, 0);
 }
 
+TEST(OtaManifestParse, NullVersionBufferIsSkipped) {
+  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count,
+                               /*version=*/nullptr, /*versionSize=*/16));
+
+  EXPECT_EQ(count, 4);
+}
+
+TEST(OtaManifestParse, NullVersionBufferWithZeroSizeIsSkipped) {
+  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  int count = -1;
+
+  ASSERT_TRUE(parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count,
+                               /*version=*/nullptr, /*versionSize=*/0));
+
+  EXPECT_EQ(count, 4);
+}
+
+TEST(OtaManifestParse, ZeroSizeVersionBufferIsNotWritten) {
+  ManifestBoardEntry entries[OTA_MANIFEST_MAX_BOARDS];
+  int count = -1;
+  char version[8];
+  char untouched[8];
+  memset(version, 0xAB, sizeof(version));
+  memset(untouched, 0xAB, sizeof(untouched));
+
+  ASSERT_TRUE(
+      parseOtaManifest(kManifestV190, strlen(kManifestV190), entries, OTA_MANIFEST_MAX_BOARDS, &count, version, 0));
+
+  EXPECT_EQ(count, 4);
+  // Nothing written past the zero-size capacity.
+  EXPECT_EQ(memcmp(version, untouched, sizeof(version)), 0);
+}
+
 TEST(OtaVersionCompare, SameVersionWithBoardSuffixIsNotNewer) {
   EXPECT_FALSE(otaIsVersionNewer("1.9.0-x4pro", "v1.9.0"));
 }
