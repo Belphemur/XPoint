@@ -397,15 +397,13 @@ void WpmWindow::normalize() {
 std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
                                                          const GlobalReadingStats& globalStats) {
   // Prefer the book's own WPM estimate once its window is full: 15 trimmed
-  // samples converted through a calibrated words-per-page figure.
+  // samples converted through a calibrated words-per-page figure. Until the
+  // window fills there is no book-level reading-speed estimate.
   if (bookStats.wpm.count >= WPM_WINDOW_SIZE && bookStats.wpm.avg > 0) {
     const uint32_t pace = (static_cast<uint32_t>(CALIBRATED_WORDS_PER_PAGE) * 60U) / bookStats.wpm.avg;
     if (pace > 0) {
       return pace;
     }
-  }
-  if (bookStats.paceSampleCount >= MIN_BOOK_PACE_SAMPLES && bookStats.avgSecondsPerForwardPage > 0) {
-    return bookStats.avgSecondsPerForwardPage;
   }
   if (globalStats.wpm.count >= WPM_WINDOW_SIZE && globalStats.wpm.avg > 0) {
     const uint32_t pace = (static_cast<uint32_t>(CALIBRATED_WORDS_PER_PAGE) * 60U) / globalStats.wpm.avg;

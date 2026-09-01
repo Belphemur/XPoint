@@ -74,7 +74,10 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_PAGES_LBL), std::to_string(stats.totalPagesTurned));
   const uint32_t avgSession = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
-  addRow(tr(STR_STATS_AVG_PAGE_PACE), formatStatsDuration(stats.avgSecondsPerForwardPage));
+  // Reading speed is sourced from the WPM window only; the legacy
+  // seconds-per-page average was dropped during the v5 -> v6 migration. Show
+  // the WPM value directly so the row stays informative.
+  addRow(tr(STR_STATS_AVG_PAGE_PACE), stats.wpm.count > 0 ? std::to_string(stats.wpm.avg) + " WPM" : std::string("-"));
   addRow(tr(STR_STATS_EST_TIME_LEFT), formatStatsDuration(stats.estimatedTimeLeftSeconds));
   addRow(tr(STR_STATS_COMPLETED), stats.isCompleted ? tr(STR_YES) : tr(STR_NO));
   addRow(tr(STR_STATS_STARTED), formatStatsDate(stats.startDate));

@@ -37,14 +37,15 @@ namespace {
 // The record lives INSIDE the book cache dir, so its lifetime matches the
 // cache dir exactly (created/deleted/moved with the book — no orphan cleanup,
 // no key migration needed; move-to-/read renames the whole dir).
+// On the first save of a loaded v5 record, the writer transparently upgrades
+// it to v6 in place and removes the legacy stats_v5.bin so the next load
+// picks up the new file directly. v4 (69 bytes) and crossink's unversioned
+// stats.bin are no longer recognized — the build expects v5 or newer.
 constexpr uint8_t STATS_FILE_VERSION = 6;
 constexpr int STATS_FILE_SIZE = 109;
 constexpr int STATS_FILE_SIZE_V5 = 73;
-constexpr int STATS_FILE_SIZE_V4 = 69;
-constexpr size_t MAX_PACE_SAMPLE_COUNT = 1000;
 constexpr uint8_t FLAG_START_DATE_MANUAL = 1u << 0;
 constexpr uint8_t FLAG_FINISHED_DATE_MANUAL = 1u << 1;
-constexpr const char* LEGACY_STATS_FILE_NAME = "stats.bin";
 
 std::string statsFileNameForVersion(const uint8_t version) {
   char buf[16];
@@ -52,12 +53,11 @@ std::string statsFileNameForVersion(const uint8_t version) {
   return std::string(buf);
 }
 
-// Current file first, then the previous versioned name (for future bumps),
-// then crossink's original unversioned stats.bin. The caller validates each
-// opened candidate; openCandidateNames() just enumerates the names in order.
+// Current file first, then the previous versioned name. v5 is the only
+// recognized legacy version; v4 and crossink's unversioned stats.bin are
+// not honored (see layout comment).
 std::vector<std::string> openCandidateNames() {
-  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
-          LEGACY_STATS_FILE_NAME};
+  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1)};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
@@ -97,35 +97,13 @@ ReadingStatsDate readDate(const uint8_t* data, const int offset) {
   }
   return date;
 }
-// Decodes a v4 record (69 bytes, same layout as v5 without the trailing
-// estimatedTimeLeftSeconds). Returns false if size/version don't match v4.
-bool decodeV4(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE_V4 || data[0] != STATS_FILE_VERSION - 1) return false;
+// Reads the v5 layout's bookkeeping fields. The legacy
+// {avgSecondsPerForwardPage, paceSampleCount} pair (bytes 12-15) is
+// intentionally NOT populated into BookReadingStats — those fields are
+// reserved in v6 and reading speed now comes from the WPM window alone.
+void readV5Fields(const uint8_t* data, BookReadingStats& stats) {
   readCommonStats(data, stats);
   stats.isCompleted = data[11] != 0;
-  stats.avgSecondsPerForwardPage = readLe16(data, 12);
-  stats.paceSampleCount = readLe16(data, 14);
-  const uint8_t flags = data[16];
-  stats.startDateManual = (flags & FLAG_START_DATE_MANUAL) != 0;
-  stats.finishedDateManual = (flags & FLAG_FINISHED_DATE_MANUAL) != 0;
-  stats.startDate = readDate(data, 17);
-  stats.finishedDate = readDate(data, 21);
-  for (size_t i = 0; i < stats.timeOfDaySeconds.size(); ++i) {
-    stats.timeOfDaySeconds[i] = readLe32(data, 25 + static_cast<int>(i) * 4);
-  }
-  for (size_t i = 0; i < stats.dayOfWeekSeconds.size(); ++i) {
-    stats.dayOfWeekSeconds[i] = readLe32(data, 41 + static_cast<int>(i) * 4);
-  }
-  return true;
-}
-
-// Decodes a v5 record (73 bytes). Returns false on size/version mismatch.
-bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION - 1) return false;
-  readCommonStats(data, stats);
-  stats.isCompleted = data[11] != 0;
-  stats.avgSecondsPerForwardPage = readLe16(data, 12);
-  stats.paceSampleCount = readLe16(data, 14);
   const uint8_t flags = data[16];
   stats.startDateManual = (flags & FLAG_START_DATE_MANUAL) != 0;
   stats.finishedDateManual = (flags & FLAG_FINISHED_DATE_MANUAL) != 0;
@@ -138,6 +116,12 @@ bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
     stats.dayOfWeekSeconds[i] = readLe32(data, 41 + static_cast<int>(i) * 4);
   }
   stats.estimatedTimeLeftSeconds = readLe32(data, 69);
+}
+
+// Decodes a v5 record (73 bytes). Returns false on size/version mismatch.
+bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
+  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION - 1) return false;
+  readV5Fields(data, stats);
   return true;
 }
 
@@ -158,7 +142,9 @@ void readWpmWindow(const uint8_t* data, WpmWindow& wpm) {
 // size/version mismatch.
 bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
   if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
-  if (!decodeV5(data, STATS_FILE_SIZE_V5, stats)) return false;
+  // v5 fields are a prefix of the v6 record (same byte offsets 1-72), so the
+  // v5 layout can be parsed directly without re-checking the version byte.
+  readV5Fields(data, stats);
   readWpmWindow(data, stats.wpm);
   return true;
 }
@@ -204,8 +190,11 @@ void BookReadingStats::save(const std::string& cachePath) const {
   writeLe32(data, 3, totalReadingSeconds);
   writeLe32(data, 7, totalPagesTurned);
   data[11] = isCompleted ? 1 : 0;
-  writeLe16(data, 12, avgSecondsPerForwardPage);
-  writeLe16(data, 14, paceSampleCount);
+  // Bytes 12-15 are reserved (legacy avgSecondsPerForwardPage /
+  // paceSampleCount). Reading speed is now sourced from the WPM window at
+  // bytes 73-108; these slots stay zero to keep the v5 field prefix stable
+  // without resurrecting the dropped logic. memset(0) above already writes
+  // zero here.
   data[16] = (startDateManual ? FLAG_START_DATE_MANUAL : 0u) | (finishedDateManual ? FLAG_FINISHED_DATE_MANUAL : 0u);
   writeLe16(data, 17, startDate.isValid() ? startDate.year : 0);
   data[19] = startDate.isValid() ? startDate.month : 0;
@@ -230,13 +219,28 @@ void BookReadingStats::save(const std::string& cachePath) const {
     LOG_ERR("STATS", "Short write for %s", statsFileName.c_str());
   }
   f.close();
+
+  // One-time v5 → v6 migration: if a legacy stats_v5.bin still sits next to
+  // the new file (the load path that fed us the in-memory v5 record), delete
+  // it now that the upgraded data is safely on disk. The very-old v4 / crossink
+  // unversioned files are not migrated — they are not recognized on load and
+  // are left in place (the user can clear them via "Delete book stats" if
+  // desired).
+  const std::string legacyV5Path = cachePath + "/" + statsFileNameForVersion(STATS_FILE_VERSION - 1);
+  if (Storage.exists(legacyV5Path.c_str())) {
+    Storage.remove(legacyV5Path.c_str());
+    LOG_DBG("STATS", "Migrated %s -> %s", statsFileNameForVersion(STATS_FILE_VERSION - 1), statsFileName.c_str());
+  }
 }
 
 bool BookReadingStats::remove(const std::string& cachePath) {
   bool ok = true;
-  // Remove current + fallback names so a later load cannot resurrect old data.
+  // Remove current + the still-recognized v5 fallback so a later load cannot
+  // resurrect old data. Very old v4 / crossink unversioned files, if any, are
+  // not touched here — they are no longer loaded and will simply be left in
+  // the cache dir until the next manual cleanup.
   const std::string names[] = {statsFileNameForVersion(STATS_FILE_VERSION),
-                               statsFileNameForVersion(STATS_FILE_VERSION - 1), LEGACY_STATS_FILE_NAME};
+                               statsFileNameForVersion(STATS_FILE_VERSION - 1)};
   for (const std::string& name : names) {
     const std::string path = cachePath + "/" + name;
     if (!Storage.exists(path.c_str())) continue;
@@ -252,27 +256,17 @@ void BookReadingStats::recordForwardPageRead(uint32_t seconds, uint16_t wordsOnP
   if (seconds == 0) {
     return;
   }
-  // Legacy seconds-per-page average is kept alongside the WPM window so the
-  // estimate degrades gracefully until the WPM window fills (15 samples).
+  // The trimmed-mean WPM window is the sole source of reading speed; the
+  // legacy seconds-per-page average is no longer computed or stored.
   wpm.record(seconds, wordsOnPage);
-  if (seconds > UINT16_MAX) {
-    seconds = UINT16_MAX;
-  }
-  const uint16_t sample = static_cast<uint16_t>(seconds);
-  if (paceSampleCount == 0 || avgSecondsPerForwardPage == 0) {
-    avgSecondsPerForwardPage = sample;
-    paceSampleCount = 1;
-    return;
-  }
-  const uint32_t weight = paceSampleCount < MAX_PACE_SAMPLE_COUNT ? paceSampleCount : MAX_PACE_SAMPLE_COUNT;
-  const uint32_t nextAverage = (static_cast<uint32_t>(avgSecondsPerForwardPage) * weight + sample) / (weight + 1);
-  avgSecondsPerForwardPage = static_cast<uint16_t>(nextAverage);
-  if (paceSampleCount < MAX_PACE_SAMPLE_COUNT) {
-    paceSampleCount++;
-  }
 }
 
-void BookReadingStats::clearWpmStats() { wpm.clear(); }
+void BookReadingStats::clearWpmStats() {
+  // Zeros the WPM window only. Sessions, totals, dates, and bucket history
+  // are kept — "clear reading speed" should not erase the user's reading
+  // history.
+  wpm.clear();
+}
 
 void BookReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStart, const uint32_t seconds) {
   recordReadingSpanIntoBuckets(timeOfDaySeconds, dayOfWeekSeconds, localStart, seconds);

@@ -16,8 +16,11 @@ struct BookReadingStats {
   uint32_t totalReadingSeconds = 0;
   uint32_t totalPagesTurned = 0;
   bool isCompleted = false;
-  uint16_t avgSecondsPerForwardPage = 0;
-  uint16_t paceSampleCount = 0;
+  // Bytes 12-15 of the on-disk v5 record held a legacy
+  // {avgSecondsPerForwardPage, paceSampleCount} pair. The v6 layout marks
+  // those bytes reserved (0): reading speed is now sourced exclusively from
+  // the WPM window below, and the legacy fields are no longer persisted in
+  // the in-memory struct.
   uint32_t estimatedTimeLeftSeconds = 0;
   bool startDateManual = false;
   bool finishedDateManual = false;

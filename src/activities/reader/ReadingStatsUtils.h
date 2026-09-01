@@ -10,7 +10,6 @@ struct BookReadingStats;
 struct GlobalReadingStats;
 
 constexpr size_t READING_TIME_BUCKET_COUNT = 4;
-constexpr uint16_t MIN_BOOK_PACE_SAMPLES = 10;
 constexpr uint32_t MIN_GLOBAL_PACE_PAGE_TURNS = 50;
 constexpr size_t READING_DAY_OF_WEEK_COUNT = 7;
 constexpr size_t READING_HISTORY_DAYS = 730;

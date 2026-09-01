@@ -202,8 +202,8 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   EXPECT_EQ(out.totalReadingSeconds, 3661u);
   EXPECT_EQ(out.totalPagesTurned, 120u);
   EXPECT_TRUE(out.isCompleted);
-  EXPECT_GT(out.avgSecondsPerForwardPage, 0u);
-  EXPECT_EQ(out.paceSampleCount, 1u);
+  // Legacy seconds-per-page average was dropped during the v5 -> v6 migration:
+  // reading speed now comes from the WPM window only.
   EXPECT_EQ(out.wpm.count, 1u);
   EXPECT_EQ(out.wpm.avg, 440u);
   EXPECT_TRUE(out.startDateManual);
@@ -238,16 +238,18 @@ TEST_F(ReadingStatsBinaryStoreTest, BookTornWriteStartsFresh) {
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
-  // v4 record (69 bytes) in the previous-versioned name: accepted, estimated
-  // time left defaults to 0.
-  std::vector<uint8_t> v4(69, 0);
-  v4[0] = 4;
-  v4[1] = 2;
-  v4[3] = 111;
+  // v5 record (73 bytes) in stats_v5.bin: accepted on load, then upgraded to
+  // v6 in place on the next save. The legacy file is removed as part of the
+  // migration so a later load goes straight to the v6 file. The v4 layout
+  // (69 B) and crossink's unversioned stats.bin are no longer recognized.
+  std::vector<uint8_t> v5(73, 0);
+  v5[0] = 5;
+  v5[1] = 2;    // sessionCount
+  v5[3] = 111;  // totalReadingSeconds (LE)
   {
     HalFile f;
-    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 4), f));
-    f.write(v4.data(), v4.size());
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 5), f));
+    f.write(v5.data(), v5.size());
   }
 
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
@@ -255,22 +257,16 @@ TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
   EXPECT_EQ(out.totalReadingSeconds, 111u);
   EXPECT_EQ(out.estimatedTimeLeftSeconds, 0u);
 
-  // Legacy crossink unversioned name is also honored when nothing else exists.
-  Storage.clear();
-  std::vector<uint8_t> legacy(73, 0);
-  legacy[0] = 5;
-  legacy[1] = 6;
-  {
-    HalFile f;
-    ASSERT_TRUE(Storage.openFileForWrite("TEST", std::string(BOOK_DIR) + "/stats.bin", f));
-    f.write(legacy.data(), legacy.size());
-  }
-  const BookReadingStats viaLegacy = BookReadingStats::load(BOOK_DIR);
-  EXPECT_EQ(viaLegacy.sessionCount, 6u);
+  // Save writes v6, deletes the v5 file.
+  out.save(BOOK_DIR);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5).c_str()));
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
+  ASSERT_EQ(bytes.size(), 109u);
+  EXPECT_EQ(bytes[0], 6);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
-  for (const char* name : {"stats_v6.bin", "stats_v5.bin", "stats.bin"}) {
+  for (const char* name : {"stats_v6.bin", "stats_v5.bin"}) {
     HalFile f;
     ASSERT_TRUE(Storage.openFileForWrite("TEST", std::string(BOOK_DIR) + "/" + name, f));
     const uint8_t byte = 5;
@@ -280,7 +276,6 @@ TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
   EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6)));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5)));
-  EXPECT_FALSE(Storage.exists(std::string(BOOK_DIR) + "/stats.bin"));
 }
 
 // A corrupt stats_v6.bin must not shadow a valid older record: the loader
@@ -339,41 +334,34 @@ TEST_F(ReadingStatsBinaryStoreTest, BackwardCompatV5) {
   EXPECT_EQ(bytes[0], 6);
 }
 
-// Global legacy records (v1 13 B / v2 17 B) are valid inputs and must load —
-// including when they are the only file present.
+// Global v3 record (159 bytes — one version behind the current v4) is
+// recognized on load: bookkeeping loads, the trailing WPM window is empty.
+// v1/v2 layouts are no longer supported — see the binary layout comment in
+// GlobalReadingStats.cpp.
 TEST_F(ReadingStatsBinaryStoreTest, GlobalLegacyRecordsLoad) {
-  // v2: 17 bytes [ver=2, sessions, seconds, pages, completedBooks]
-  std::vector<uint8_t> v2(17, 0);
-  v2[0] = 2;
-  v2[1] = 21;  // totalSessions = 21
-  v2[13] = 4;  // completedBooks = 4
+  // v3: 159 bytes
+  std::vector<uint8_t> v3(159, 0);
+  v3[0] = 3;
+  v3[1] = 21;    // totalSessions = 21 (low byte; high bytes remain 0)
+  v3[5] = 0x58;  // totalReadingSeconds = 0x58 = 88 (low byte; high bytes remain 0)
+  v3[6] = 0x02;  // high byte of totalReadingSeconds -> 0x0258 = 600
+  v3[13] = 4;    // completedBooks = 4 (low byte; high bytes remain 0)
   {
     HalFile f;
     ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
-    f.write(v2.data(), v2.size());
+    f.write(v3.data(), v3.size());
   }
 
-  const GlobalReadingStats out2 = GlobalReadingStats::load();
-  EXPECT_EQ(out2.totalSessions, 21u);
-  EXPECT_EQ(out2.completedBooks, 4u);
-  EXPECT_EQ(out2.timeOfDaySeconds[0], 0u);  // absent in v2
+  const GlobalReadingStats out3 = GlobalReadingStats::load();
+  EXPECT_EQ(out3.totalSessions, 21u);
+  EXPECT_EQ(out3.completedBooks, 4u);
+  EXPECT_EQ(out3.totalReadingSeconds, 600u);
+  EXPECT_EQ(out3.wpm.count, 0u);  // v3 has no WPM window
+  EXPECT_EQ(out3.wpm.avg, 0u);
 
-  // v1: 13 bytes, no completedBooks field.
-  Storage.clear();
-  std::vector<uint8_t> v1(13, 0);
-  v1[0] = 1;
-  v1[1] = 33;  // totalSessions = 33
-  {
-    HalFile f;
-    ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
-    f.write(v1.data(), v1.size());
-  }
-  const GlobalReadingStats out1 = GlobalReadingStats::load();
-  EXPECT_EQ(out1.totalSessions, 33u);
-  EXPECT_EQ(out1.completedBooks, 0u);
-
-  // And saving after loading a legacy record writes the CURRENT format back.
-  out1.save();
+  // Saving after loading a legacy record writes the CURRENT format back,
+  // replacing the v3 file with v4 in place.
+  out3.save();
   const auto bytes = readFileBytes(GLOBAL_PATH);
   ASSERT_EQ(bytes.size(), 195u);
   EXPECT_EQ(bytes[0], 4);

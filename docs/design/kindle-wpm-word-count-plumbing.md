@@ -54,17 +54,42 @@ void onPageComplete(uint16_t paragraphIndex, bool isLastPage, uint16_t wordsOnPa
 
 ## 2. BookReadingStats Changes
 
-### 2.1 Binary format version bump (v5 → v6)
+### 2.1 Binary layout cleanup (v5 → v6)
 ```cpp
-// New fields in BookReadingStats (persisted to SD):
-uint16_t avgWpm;              // trimmed-mean WPM (0 = not enough samples)
-uint16_t wpmSampleCount;      // valid samples in window (0–15)
-std::array<uint16_t, 15> wpmWindow{};  // rolling WPM samples
-uint8_t  wpmWindowPos = 0;
-uint8_t  wpmWindowCount = 0;
+// v5 record (73 bytes) — byte-compatible with crossink's stats_v5.bin:
+//   [0]       version (= 5)
+//   [1-2]     sessionCount              uint16_t LE
+//   [3-6]     totalReadingSeconds       uint32_t LE
+//   [7-10]    totalPagesTurned          uint32_t LE
+//   [11]      isCompleted               uint8_t
+//   [12-15]   RESERVED (was avgSecondsPerForwardPage / paceSampleCount)
+//   [16]      flags bit0=startDateManual bit1=finishedDateManual
+//   [17-18]   startDate.year            uint16_t LE
+//   [19]      startDate.month           uint8_t
+//   [20]      startDate.day             uint8_t
+//   [21-22]   finishedDate.year         uint16_t LE
+//   [23]      finishedDate.month        uint8_t
+//   [24]      finishedDate.day          uint8_t
+//   [25-40]   timeOfDaySeconds[4]       uint32_t LE each
+//   [41-68]   dayOfWeekSeconds[7]       uint32_t LE each
+//   [69-72]   estimatedTimeLeftSeconds  uint32_t LE, 0 means unavailable
+//
+// v6 (109 bytes) appends the reading-speed window (v5 fields unchanged):
+//   [73-74]   wpm.avg                   uint16_t LE, trimmed mean WPM (0 = none)
+//   [75-76]   wpm.count                 uint16_t LE, samples in window (0-15)
+//   [77-106]  wpm.samples[15]           uint16_t LE each
+//   [107]     wpm.pos                   uint8_t
+//   [108]     reserved (0)              uint8_t
 ```
-- Keep existing `avgSecondsPerForwardPage` + `paceSampleCount` for backward compatibility during transition
-- Or repurpose them (v6 breaks old stats anyway — acceptable per design)
+- **Bytes 12-15 are reserved in v6.** The legacy
+  `{avgSecondsPerForwardPage, paceSampleCount}` pair is no longer written,
+  read, or used anywhere. Reading speed is sourced exclusively from the WPM
+  window at bytes 73-108. The bytes are kept as zeroed reservation slots to
+  preserve the v5 field prefix offsets (no shift = same `decodeV6` byte
+  arithmetic as before, simpler migration).
+- The in-memory `BookReadingStats` struct no longer carries these fields.
+- `resolveReadingPaceSecondsPerPage` no longer has a `paceSampleCount` /
+  `avgSecondsPerForwardPage` fallback.
 
 ### 2.2 Kindle-style trimmed-mean algorithm
 ```cpp
@@ -153,9 +178,27 @@ std::optional<uint16_t> resolveReadingPaceSecondsPerPage(...) {
 
 ## 3. Backward Compatibility
 
-- **Binary format v6**: New fields appended. Old v5 files load with `avgWpm=0`, `wpmSampleCount=0` → falls back to legacy seconds-per-page median until 15 new samples collected.
-- **GlobalReadingStats**: Add parallel `globalAvgWpm` / `globalWpmWindow` for cross-book estimate.
-- **Settings**: No new settings needed (trim count, cap, window size are constants).
+- **v5 → v6 in-place migration**: on the first save of a book whose loaded
+  record came from `stats_v5.bin`, the writer produces `stats_v6.bin` with
+  the v5 fields zeroed where the legacy pace used to live, then deletes the
+  legacy file. Subsequent loads see v6 directly. The migration preserves
+  every field the user can act on (sessions, totals, dates, time-of-day /
+  day-of-week buckets, streak history) — only the legacy seconds-per-page
+  average is dropped, replaced by the new WPM window which starts empty and
+  fills as the user reads.
+- **Global v3 → v4**: implicit on first save. The v3 file (159 bytes) is
+  overwritten with the v4 file (195 bytes); the WPM window starts empty.
+- **v1/v2 global (13/17 bytes), v4 book (69 bytes), crossink unversioned
+  `stats.bin`**: not recognized by the loader — they are treated as
+  unsupported legacy and a fresh start is used if no newer file exists. We
+  drop the v1/v2/v4/unversioned fallback chains to keep the loader
+  straightforward; these records are old enough that any user upgrading
+  from them will simply see their stats reset, which is acceptable on a
+  device that was already pre-release.
+- **GlobalReadingStats**: parallel WPM window at bytes 159-193. v3 loads
+  with an empty window.
+- **Settings**: No new settings needed (trim count, cap, window size are
+  constants).
 
 ---
 
@@ -218,11 +261,21 @@ STR_CLEAR_GLOBAL_PACE: "Clear global reading speed"  # global (new)
 1. `Paragraph::wordCount()` + unit test
 2. `Section` pagination accumulates `wordsOnPage` → `onPageComplete` signature change
 3. `EpubReaderActivity` threads `wordsOnPage` to `recordForwardPageRead(seconds, words)`
-4. `BookReadingStats` v6 + Kindle WPM tracker + `clearWpmStats()`
-5. `GlobalReadingStats` parallel WPM window
-6. `ReadingStatsUtils` updated `resolveReadingPaceSecondsPerPage`
-7. Tests + `pio run -e x4pro` build verification
+4. `BookReadingStats` v6 + Kindle WPM tracker + `clearWpmStats()` + drop legacy `avgSecondsPerForwardPage`/`paceSampleCount`
+5. `GlobalReadingStats` parallel WPM window + `clearWpmStats()` (no legacy field to clear)
+6. `ReadingStatsUtils` updated `resolveReadingPaceSecondsPerPage` (legacy fallback removed)
+7. `BookStatsActivity` row reuses WPM value (renamed "Reading Speed")
+8. Drop very-old format fallbacks (v1/v2 global, v4 book, crossink unversioned `stats.bin`)
+9. v5 → v6 in-place migration on save
+10. Tests + `pio run -e x4pro` build verification
+
+**Status as of this revision:** items 1-10 are implemented on this branch
+(see commit). The EPUB pipeline plumbing in `EpubReaderActivity` calls
+`p->wordCount()` (a member on the `ParsedText`/`Page` value) on every page
+load and threads the count into `recordForwardPagePaceSample`, which feeds
+both `BookReadingStats::recordForwardPageRead` and
+`GlobalReadingStats::recordGlobalPageRead`.
 
 ---
 
-**Ready for implementation.**
+**Ready for implementation of items 1-3 (EPUB word-count plumbing).**
