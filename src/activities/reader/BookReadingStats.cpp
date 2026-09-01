@@ -221,8 +221,18 @@ void BookReadingStats::save(const std::string& cachePath) const {
     writeLe16(data, 77 + static_cast<int>(i) * 2, wpm.samples[i]);
   }
   data[107] = wpm.pos;
-  if (f.write(data, STATS_FILE_SIZE) != STATS_FILE_SIZE) {
-    LOG_ERR("STATS", "Short write for %s", statsFileName.c_str());
+  const size_t written = f.write(data, STATS_FILE_SIZE);
+  if (written != STATS_FILE_SIZE) {
+    // Do NOT delete the legacy file — the v6 write didn't land, and the
+    // v5 record is the only copy of the user's history. The next save
+    // will retry; until it succeeds the loader still finds the v5 file
+    // and decodes it. A short write here is a serious condition (SD
+    // error) that the LOG_ERR makes visible; silently destroying the
+    // legacy on top of that would be unrecoverable data loss.
+    LOG_ERR("STATS", "Short write for %s: %u of %u bytes", statsFileName.c_str(), static_cast<unsigned>(written),
+            static_cast<unsigned>(STATS_FILE_SIZE));
+    f.close();
+    return;
   }
   f.close();
 

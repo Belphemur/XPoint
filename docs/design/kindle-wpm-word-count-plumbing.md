@@ -142,31 +142,30 @@ void clearWpmStats() {
 
 ### 2.3 GlobalReadingStats — parallel WPM window
 ```cpp
-// New fields in GlobalReadingStats (persisted to SD, v4 = 195-byte record):
-uint16_t wpmAvg = 0;                  // cross-book trimmed-mean WPM
-uint8_t  wpmCount = 0;                // valid samples (0–15)
-std::array<uint16_t, 15> wpmSamples{};  // rolling WPM samples
-uint8_t  wpmPos = 0;                  // next insertion slot
-
-// Called from EpubReaderActivity after the book's recordForwardPageRead
-void recordGlobalPageRead(uint32_t seconds, uint16_t wordsOnPage) {
-    // Same trimmed-mean logic as WpmWindow::record(); writes to
-    // globalWpm / globalAvgWpm / globalWpmSampleCount on the struct.
-}
-
-void clearWpmStats() {
-    // Zeros the WPM window; sessions, totals, buckets, streaks survive.
-    wpmAvg = 0;
-    wpmCount = 0;
-    wpmPos = 0;
-    wpmSamples.fill(0);
-}
+// v3 layout (159 B) -> v4 (195 B) appends the WPM window at bytes 159-194.
+// v4 byte layout (195 bytes total, version = 4 at [0]):
+//   [0]       version = 4
+//   [1-4]     totalSessions             uint32_t LE
+//   [5-8]     totalReadingSeconds       uint32_t LE
+//   [9-12]    totalPagesTurned          uint32_t LE
+//   [13-16]   completedBooks            uint32_t LE
+//   [17-32]   timeOfDaySeconds[4]       uint32_t LE each
+//   [33-60]   dayOfWeekSeconds[7]       uint32_t LE each
+//   [61-64]   readingHistoryAnchorDay   uint32_t LE
+//   [65-156]  readingHistoryBits[92]
+//   [157-158] longestReadingStreak      uint16_t LE
+//   -- end of v3 layout (159 bytes total) --
+//   [159-160] wpm.avg                   uint16_t LE  (trimmed mean WPM)
+//   [161-162] wpm.count                 uint16_t LE  (valid samples 0-15)
+//   [163-192] wpm.samples[15]           uint16_t LE each
+//   [193]     wpm.pos                   uint8_t       (next insertion slot)
+//   [194]     reserved (0)              uint8_t
+//   -- total 195 bytes --
 ```
-The on-disk record is `GLOBAL_STATS_VERSION = 4` (195 bytes). The WPM
-window lives at bytes 159-193 of the record. The struct's field name is
-`wpm` (a `WpmWindow` value), not a flat set of globals — the design doc
-flattens it here for readability, but the implementation keeps it as the
-shared `WpmWindow` helper used by both per-book and per-global tracking.
+
+The WPM window contributes 36 bytes (159..194 inclusive) which is what
+the v3 -> v4 size bump accounts for. The previous text said "34 bytes"
+which is wrong; 36 is the real number.
 ```
 
 ### 2.4 `resolveReadingPaceSecondsPerPage` update
@@ -293,12 +292,16 @@ STR_CLEAR_GLOBAL_PACE: "Clear global reading speed"  # global (new)
 10. Tests + `pio run -e x4pro` build verification
 
 **Status as of this revision:** items 1-10 are implemented on this branch
-(see commit). The EPUB pipeline plumbing in `EpubReaderActivity` calls
-`p->wordCount()` (a member on the `ParsedText`/`Page` value) on every page
-load and threads the count into `recordForwardPagePaceSample`, which feeds
-both `BookReadingStats::recordForwardPageRead` and
-`GlobalReadingStats::recordGlobalPageRead`.
+(see commits `d9e3b9e4`, `b23671a6`, `228706fc`, and follow-up). The EPUB
+pipeline plumbing in `EpubReaderActivity` calls `p->wordCount()` (a
+member on the `ParsedText`/`Page` value) on every page load and threads
+the count into `recordForwardPagePaceSample`, which feeds both
+`BookReadingStats::recordForwardPageRead` and
+`GlobalReadingStats::recordGlobalPageRead`. The Reading-Speed row in
+`BookStatsActivity` displays the WPM value from the per-book window
+once it has at least one sample.
 
----
-
-**Ready for implementation of items 1-3 (EPUB word-count plumbing).**
+**This design doc is now a historical record of the WPM plumbing and the
+v5 -> v6 (and v3 -> v4 global) migration. The implementation is in this
+branch and the PR's CI is green. There is no remaining "next step" to
+implement from this design.**
