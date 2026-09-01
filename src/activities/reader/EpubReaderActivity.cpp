@@ -276,9 +276,10 @@ void EpubReaderActivity::recordCurrentPageReadingTime() {
   pageShownAtMs = 0;
 }
 
-void EpubReaderActivity::recordForwardPagePaceSample(uint32_t seconds) {
+void EpubReaderActivity::recordForwardPagePaceSample(uint32_t seconds, uint16_t wordsOnPage) {
   if (seconds < MIN_READING_PACE_SAMPLE_SECONDS) return;
-  stats.recordForwardPageRead(seconds);
+  stats.recordForwardPageRead(seconds, wordsOnPage);
+  globalStats.recordGlobalPageRead(seconds, wordsOnPage);
 }
 #endif
 
@@ -1052,7 +1053,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         displayStats.totalReadingSeconds += sessionReadingSeconds;
       }
       startActivityForResult(std::make_unique<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats),
-                             [this](const ActivityResult&) { openReaderMenu(); });
+                             [this](const ActivityResult& result) {
+                               if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
+                                 stats.clearWpmStats();
+                                 stats.save(epub->getCachePath());
+                               }
+                               openReaderMenu();
+                             });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::DELETE_STATS: {
@@ -1200,7 +1207,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
     if (isForwardTurn && haveDwell) {
-      recordForwardPagePaceSample(dwellSeconds);
+      recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
       if (stats.totalPagesTurned < UINT32_MAX) stats.totalPagesTurned++;
       if (globalStats.totalPagesTurned < UINT32_MAX) globalStats.totalPagesTurned++;
     }
@@ -1554,6 +1561,9 @@ void EpubReaderActivity::renderBook() {
 
     currentPageVisibleOffset = p->visibleTextOffset;
     currentPageFootnotes = std::move(p->footnotes);
+#ifdef READING_STATS_ENABLED
+    currentPageWordsOnPage = p->wordCount();
+#endif
 
     // The overlay and non-tiled grayscale renderer share the renderer's single
     // stored-BW slot. Release the old page snapshot before renderContents()

@@ -45,7 +45,8 @@ void BookStatsActivity::onEnter() {
 void BookStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
-  const size_t n = 20;
+  clearPaceRow = -1;
+  const size_t n = 21;
   valueCache.reserve(n + 1);
   rowItems.reserve(n + 1);
 
@@ -73,7 +74,17 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_PAGES_LBL), std::to_string(stats.totalPagesTurned));
   const uint32_t avgSession = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
-  addRow(tr(STR_STATS_AVG_PAGE_PACE), formatStatsDuration(stats.avgSecondsPerForwardPage));
+  // Reading speed is sourced from the WPM window only; the legacy
+  // seconds-per-page average was dropped during the v5 -> v6 migration. Show
+  // the WPM value directly so the row stays informative. Use the localized
+  // "{0} WPM" / "-" strings instead of building the suffix inline.
+  char wpmBuf[24];
+  if (stats.wpm.count > 0) {
+    snprintf(wpmBuf, sizeof(wpmBuf), tr(STR_STATS_WPM_VALUE), static_cast<unsigned>(stats.wpm.avg));
+  } else {
+    snprintf(wpmBuf, sizeof(wpmBuf), "%s", tr(STR_STATS_WPM_UNAVAILABLE));
+  }
+  addRow(tr(STR_STATS_AVG_PAGE_PACE), wpmBuf);
   addRow(tr(STR_STATS_EST_TIME_LEFT), formatStatsDuration(stats.estimatedTimeLeftSeconds));
   addRow(tr(STR_STATS_COMPLETED), stats.isCompleted ? tr(STR_YES) : tr(STR_NO));
   addRow(tr(STR_STATS_STARTED), formatStatsDate(stats.startDate));
@@ -89,9 +100,17 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_FRI), formatStatsDuration(stats.dayOfWeekSeconds[4]));
   addRow(tr(STR_STATS_SAT), formatStatsDuration(stats.dayOfWeekSeconds[5]));
   addRow(tr(STR_STATS_SUN), formatStatsDuration(stats.dayOfWeekSeconds[6]));
+
+  clearPaceRow = static_cast<int>(rowItems.size());
+  addRow(tr(STR_CLEAR_BOOK_PACE), std::string());
 }
 
-void BookStatsActivity::activateIndex(const int index) { (void)index; }
+void BookStatsActivity::activateIndex(const int index) {
+  if (index == clearPaceRow) {
+    setResult(ActivityResult{ClearPaceResult{}});
+    finish();
+  }
+}
 
 bool BookStatsActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

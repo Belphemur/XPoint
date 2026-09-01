@@ -51,7 +51,8 @@ void GlobalStatsActivity::onEnter() {
 void GlobalStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
-  const size_t n = 18;
+  clearPaceRow = -1;
+  const size_t n = 19;
   valueCache.reserve(n + 1);
   rowItems.reserve(n + 1);
 
@@ -97,9 +98,19 @@ void GlobalStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_FRI), formatStatsDuration(globalStats.dayOfWeekSeconds[4]));
   addRow(tr(STR_STATS_SAT), formatStatsDuration(globalStats.dayOfWeekSeconds[5]));
   addRow(tr(STR_STATS_SUN), formatStatsDuration(globalStats.dayOfWeekSeconds[6]));
+
+  clearPaceRow = static_cast<int>(rowItems.size());
+  addRow(tr(STR_CLEAR_GLOBAL_PACE), std::string());
 }
 
-void GlobalStatsActivity::activateIndex(const int index) { (void)index; }
+void GlobalStatsActivity::activateIndex(const int index) {
+  if (index == clearPaceRow) {
+    globalStats.clearWpmStats();
+    globalStats.save();
+    rebuildRowItems();
+    requestUpdate();
+  }
+}
 
 bool GlobalStatsActivity::handleButtons() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {

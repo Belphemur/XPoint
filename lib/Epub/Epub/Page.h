@@ -100,6 +100,10 @@ class Page {
   bool serialize(HalFile& file) const;
   static std::unique_ptr<Page> deserialize(HalFile& file);
 
+  // Total number of words of body text on this page (sum over text lines),
+  // used for reading-pace (WPM) tracking.
+  uint16_t wordCount() const;
+
   // Check if page contains any images (used to force full refresh)
   bool hasImages() const {
     return std::any_of(elements.begin(), elements.end(),

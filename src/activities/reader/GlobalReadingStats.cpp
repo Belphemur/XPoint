@@ -20,8 +20,18 @@ namespace {
 //   [61-64]   readingHistoryAnchorDay uint32_t LE
 //   [65-156]  readingHistoryBits[92]
 //   [157-158] longestReadingStreak uint16_t LE
-constexpr uint8_t GLOBAL_STATS_VERSION = 3;
-constexpr int GLOBAL_STATS_FILE_SIZE = 159;
+//
+// v4 (195 bytes) appends the reading-speed window (v3 fields unchanged):
+//   [159-160] wpm.avg             uint16_t LE, trimmed mean WPM (0 = none)
+//   [161-162] wpm.count           uint16_t LE, samples in window (0-15)
+//   [163-192] wpm.samples[15]     uint16_t LE each
+//   [193]     wpm.pos             uint8_t
+//   [194]     reserved (0)        uint8_t
+// v3 (159 bytes) is the previous version; v4 (195 bytes) appends the
+// reading-speed window. v1/v2 layouts are not supported here.
+constexpr uint8_t GLOBAL_STATS_VERSION = 4;
+constexpr int GLOBAL_STATS_FILE_SIZE = 195;
+constexpr int GLOBAL_STATS_FILE_SIZE_V3 = 159;
 
 // /.crosspoint/global_stats.bin aggregates every book; a torn write would lose
 // all history, so saves go through tmp -> verify -> rotate .bak -> rename.
@@ -43,6 +53,11 @@ uint16_t readLe16(const uint8_t* data, const int offset) {
 uint32_t readLe32(const uint8_t* data, const int offset) {
   return static_cast<uint32_t>(data[offset]) | (static_cast<uint32_t>(data[offset + 1]) << 8) |
          (static_cast<uint32_t>(data[offset + 2]) << 16) | (static_cast<uint32_t>(data[offset + 3]) << 24);
+}
+
+void writeLe16(uint8_t* data, const int offset, const uint16_t value) {
+  data[offset] = value & 0xFF;
+  data[offset + 1] = (value >> 8) & 0xFF;
 }
 
 void writeLe32(uint8_t* data, const int offset, const uint32_t value) {
@@ -75,62 +90,50 @@ void serializeStats(const GlobalReadingStats& stats, uint8_t* data) {
   memcpy(data + 65, stats.readingHistoryBits.data(), stats.readingHistoryBits.size());
   data[157] = stats.longestReadingStreak & 0xFF;
   data[158] = (stats.longestReadingStreak >> 8) & 0xFF;
+  writeLe16(data, 159, stats.wpm.avg);
+  writeLe16(data, 161, stats.wpm.count);
+  for (size_t i = 0; i < stats.wpm.samples.size(); ++i) {
+    writeLe16(data, 163 + static_cast<int>(i) * 2, stats.wpm.samples[i]);
+  }
+  data[193] = stats.wpm.pos;
 }
 
 StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   StatsLoadOutcome outcome;
   outcome.fileSize = f.fileSize();
 
-  // Legacy records are SMALLER than the current layout: v1 = 13 B
-  // [version,totalSessions,totalReadingSeconds,totalPagesTurned], v2 = 17 B
-  // (+ completedBooks). Anything else shorter than the current record cannot
-  // plausibly be a newer format — it is a torn write. Report Invalid so load()
-  // falls through to the backup instead of latching the destructive-save guard.
-  constexpr int GLOBAL_STATS_FILE_SIZE_V1 = 13;
-  constexpr int GLOBAL_STATS_FILE_SIZE_V2 = 17;
-  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V1)) {
-    uint8_t data[GLOBAL_STATS_FILE_SIZE_V1] = {};
-    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V1) != GLOBAL_STATS_FILE_SIZE_V1) return outcome;
+  // Peek at the version byte up front. A version strictly greater than
+  // GLOBAL_STATS_VERSION belongs to a forward build and must never be
+  // clobbered: latch the destructive-save guard. The peek is only honored
+  // when the file is at least the size of the smallest recognized record
+  // (v3 = 159 bytes) — a short torn write (a few garbage bytes) should not
+  // be misread as a future firmware's version byte.
+  if (outcome.fileSize >= static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {
+    uint8_t head = 0;
+    if (f.read(&head, 1) == 1) {
+      if (head > GLOBAL_STATS_VERSION) {
+        outcome.version = head;
+        outcome.result = StatsLoadResult::NewerFormat;
+        return outcome;
+      }
+    }
+    // Rewind so the size-specific decoders can read the file from offset 0.
+    if (!f.seek(0)) {
+      // Some host shims don't support seek; in that case the byte was lost
+      // and we must rely on the size to decode. Fall through.
+    }
+  }
+
+  // v1/v2 (13/17 bytes) are not supported by this build: a fresh start is
+  // safer than decoding an outdated layout. v3 (159) and v4 (195) are
+  // recognized; v3 lacks the trailing WPM window and parses with it empty.
+  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {
+    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
+    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V3) != GLOBAL_STATS_FILE_SIZE_V3) return outcome;
     outcome.version = data[0];
-    if (outcome.version != 1) return outcome;
-    out.totalSessions = readLe32(data, 1);
-    out.totalReadingSeconds = readLe32(data, 5);
-    out.totalPagesTurned = readLe32(data, 9);
-    outcome.result = StatsLoadResult::Ok;
-    return outcome;
-  }
-  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V2)) {
-    uint8_t data[GLOBAL_STATS_FILE_SIZE_V2] = {};
-    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V2) != GLOBAL_STATS_FILE_SIZE_V2) return outcome;
-    outcome.version = data[0];
-    if (outcome.version != 2) return outcome;
-    out.totalSessions = readLe32(data, 1);
-    out.totalReadingSeconds = readLe32(data, 5);
-    out.totalPagesTurned = readLe32(data, 9);
+    if (outcome.version != 3) return outcome;
+    loadCommonFields(data, out);
     out.completedBooks = readLe32(data, 13);
-    outcome.result = StatsLoadResult::Ok;
-    return outcome;
-  }
-  if (outcome.fileSize < static_cast<size_t>(GLOBAL_STATS_FILE_SIZE)) {
-    return outcome;
-  }
-
-  uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
-  const int n = f.read(data, GLOBAL_STATS_FILE_SIZE);
-  if (n != GLOBAL_STATS_FILE_SIZE) return outcome;
-  outcome.version = data[0];
-
-  // A newer build's format must never be clobbered by this one.
-  if (outcome.version > GLOBAL_STATS_VERSION) {
-    outcome.result = StatsLoadResult::NewerFormat;
-    return outcome;
-  }
-
-  loadCommonFields(data, out);
-  if (outcome.version >= 2) {
-    out.completedBooks = readLe32(data, 13);
-  }
-  if (outcome.version >= 3) {
     for (size_t i = 0; i < out.timeOfDaySeconds.size(); ++i) {
       out.timeOfDaySeconds[i] = readLe32(data, 17 + static_cast<int>(i) * 4);
     }
@@ -140,8 +143,40 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     out.readingHistoryAnchorDay = readLe32(data, 61);
     memcpy(out.readingHistoryBits.data(), data + 65, out.readingHistoryBits.size());
     out.longestReadingStreak = readLe16(data, 157);
+    // v3 has no WPM window — wpm stays empty.
+    outcome.result = StatsLoadResult::Ok;
+    return outcome;
   }
-  outcome.result = StatsLoadResult::Ok;
+  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE)) {
+    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
+    if (f.read(data, GLOBAL_STATS_FILE_SIZE) != GLOBAL_STATS_FILE_SIZE) return outcome;
+    outcome.version = data[0];
+    // Same-size record with a different version is either a torn write (older)
+    // or handled by the NewerFormat branch above (forward).
+    if (outcome.version != GLOBAL_STATS_VERSION) return outcome;
+
+    loadCommonFields(data, out);
+    out.completedBooks = readLe32(data, 13);
+    for (size_t i = 0; i < out.timeOfDaySeconds.size(); ++i) {
+      out.timeOfDaySeconds[i] = readLe32(data, 17 + static_cast<int>(i) * 4);
+    }
+    for (size_t i = 0; i < out.dayOfWeekSeconds.size(); ++i) {
+      out.dayOfWeekSeconds[i] = readLe32(data, 33 + static_cast<int>(i) * 4);
+    }
+    out.readingHistoryAnchorDay = readLe32(data, 61);
+    memcpy(out.readingHistoryBits.data(), data + 65, out.readingHistoryBits.size());
+    out.longestReadingStreak = readLe16(data, 157);
+    out.wpm.avg = readLe16(data, 159);
+    out.wpm.count = static_cast<uint8_t>(readLe16(data, 161));
+    for (size_t i = 0; i < out.wpm.samples.size(); ++i) {
+      out.wpm.samples[i] = readLe16(data, 163 + static_cast<int>(i) * 2);
+    }
+    out.wpm.pos = data[193];
+    out.wpm.normalize();
+    outcome.result = StatsLoadResult::Ok;
+    return outcome;
+  }
+  // Unsupported size: v1/v2 legacy or torn. Fall through to the backup.
   return outcome;
 }
 
@@ -288,6 +323,12 @@ void GlobalReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStar
     longestReadingStreak = historyLongest;
   }
 }
+
+void GlobalReadingStats::recordGlobalPageRead(const uint32_t seconds, const uint16_t wordsOnPage) {
+  wpm.record(seconds, wordsOnPage);
+}
+
+void GlobalReadingStats::clearWpmStats() { wpm.clear(); }
 
 uint16_t GlobalReadingStats::currentReadingStreak(const ReadingStatsDate* today) const {
   return computeReadingHistoryCurrentStreak(readingHistoryAnchorDay, readingHistoryBits, today);

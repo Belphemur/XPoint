@@ -106,10 +106,13 @@ class EpubReaderActivity final : public ReaderActivity {
   bool hasSessionStartLocalDateTime = false;
   uint32_t sessionReadingSeconds = 0;
   unsigned long pageShownAtMs = 0UL;
+  // Words on the page currently rendered, cached at render time for the pace
+  // sample taken on the next forward turn.
+  uint16_t currentPageWordsOnPage = 0;
 
   bool currentPageReadingSecondsForStats(uint32_t& seconds) const;
   void recordCurrentPageReadingTime();
-  void recordForwardPagePaceSample(uint32_t seconds);
+  void recordForwardPagePaceSample(uint32_t seconds, uint16_t wordsOnPage);
 #endif
 
   uint16_t buildViewportWidth = 0;

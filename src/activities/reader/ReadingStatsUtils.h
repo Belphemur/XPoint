@@ -10,13 +10,43 @@ struct BookReadingStats;
 struct GlobalReadingStats;
 
 constexpr size_t READING_TIME_BUCKET_COUNT = 4;
-constexpr uint16_t MIN_BOOK_PACE_SAMPLES = 10;
 constexpr uint32_t MIN_GLOBAL_PACE_PAGE_TURNS = 50;
 constexpr size_t READING_DAY_OF_WEEK_COUNT = 7;
 constexpr size_t READING_HISTORY_DAYS = 730;
 constexpr size_t READING_HISTORY_BYTES = (READING_HISTORY_DAYS + 7) / 8;
 
+constexpr size_t WPM_WINDOW_SIZE = 15;
+constexpr size_t WPM_TRIM_COUNT = 2;
+constexpr uint16_t WPM_HARD_CAP = 900;  // discard samples above this: not a plausible reading speed
+constexpr uint16_t WPM_FLOOR = 80;      // clamp slower samples to this
+constexpr uint16_t CALIBRATED_WORDS_PER_PAGE = 220;
+
 enum class ReadingTimeBucket : uint8_t { Morning = 0, Afternoon, Evening, Night };
+
+// Rolling 15-sample reading-speed window (words per minute) with a trimmed
+// mean: the two fastest and two slowest samples are dropped so a single
+// anomalous page (a glance away, an unusually easy page) doesn't skew the
+// estimate. Samples are contiguous in [0, count); the window wraps only once
+// full, so the circular buffer is never read with a gap.
+struct WpmWindow {
+  std::array<uint16_t, WPM_WINDOW_SIZE> samples{};
+  uint16_t avg = 0;   // trimmed mean, 0 until the first sample
+  uint8_t pos = 0;    // next insertion slot
+  uint8_t count = 0;  // valid samples, 0..WPM_WINDOW_SIZE
+
+  void record(uint32_t seconds, uint16_t wordsOnPage);
+  uint16_t trimmedMean() const;
+  // Clamps count/pos loaded from untrusted binary data (samples[pos] must stay
+  // in bounds) and recomputes the average from the window.
+  void normalize();
+  void clear() {
+    samples.fill(0);
+    avg = 0;
+    pos = 0;
+    count = 0;
+  }
+  bool full() const { return count >= WPM_WINDOW_SIZE; }
+};
 
 struct ReadingStatsDate {
   uint16_t year = 0;

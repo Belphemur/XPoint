@@ -44,6 +44,13 @@ class HalFile {
 
   size_t fileSize() const { return blob_ ? blob_->bytes.size() : 0; }
   size_t position() const { return blob_ ? blob_->pos : 0; }
+  bool seekSet(size_t offset) {
+    if (!blob_) return false;
+    if (offset > blob_->bytes.size()) return false;
+    blob_->pos = offset;
+    return true;
+  }
+  bool seek(size_t pos) { return seekSet(pos); }
   bool flush() { return true; }
   bool sync() { return true; }
   bool close() { return true; }
