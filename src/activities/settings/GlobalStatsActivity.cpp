@@ -52,7 +52,8 @@ void GlobalStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
   clearPaceRow = -1;
-  const size_t n = 19;
+  // n = 20: 17 metric rows + reading speed + the clear action (+ 1 buffer).
+  const size_t n = 20;
   valueCache.reserve(n + 1);
   rowItems.reserve(n + 1);
 
@@ -85,6 +86,21 @@ void GlobalStatsActivity::rebuildRowItems() {
   const uint32_t avgSession =
       globalStats.totalSessions > 0 ? globalStats.totalReadingSeconds / globalStats.totalSessions : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
+  // Cross-book reading speed from the global WPM window. Same display rule as
+  // BookStatsActivity: "{0} WPM" when the window has at least one sample,
+  // "-" otherwise. A full window (WPM_WINDOW_SIZE samples) is required for
+  // resolveReadingPaceSecondsPerPage to use this value as the primary
+  // estimate for a fresh book; the partial-window state is still informative
+  // and surfaced here.
+  {
+    char wpmBuf[24];
+    if (globalStats.wpm.count > 0) {
+      snprintf(wpmBuf, sizeof(wpmBuf), tr(STR_STATS_WPM_VALUE), static_cast<unsigned>(globalStats.wpm.avg));
+    } else {
+      snprintf(wpmBuf, sizeof(wpmBuf), "%s", tr(STR_STATS_WPM_UNAVAILABLE));
+    }
+    addRow(tr(STR_STATS_AVG_PAGE_PACE), wpmBuf);
+  }
   addRow(tr(STR_STATS_READING_STREAK_LBL), formatStreak(globalStats.currentReadingStreak(today)));
   addRow(tr(STR_STATS_LONGEST_STREAK_LBL), formatStreak(globalStats.displayLongestReadingStreak()));
   addRow(tr(STR_STATS_MORNING), formatStatsDuration(globalStats.timeOfDaySeconds[0]));
