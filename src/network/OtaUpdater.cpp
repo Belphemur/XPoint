@@ -6,7 +6,7 @@
 // the local header last and break the build.
 #include "HttpDownloader.h"
 #include <Logging.h>
-#include <ReleaseJsonParser.h>
+#include <Memory.h>
 #include <esp_ota_ops.h>
 #include <esp_wifi.h>
 // clang-format on
@@ -17,7 +17,7 @@
 
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
-#include "ManifestJsonParser.h"
+#include "OtaJson.h"
 #include "OtaSignature.h"
 
 namespace {
@@ -36,12 +36,13 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   haveExpectedSha = false;
   memset(expectedSha, 0, sizeof(expectedSha));
 
-  // Stream the ~32KB release JSON straight into the parser as it arrives.
-  // Buffering the whole body in a std::string would add a growing allocation
-  // on top of the TLS session's heap during the fetch; with -fno-exceptions an
-  // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
+  // Buffer the ~32KB release JSON and parse it with ArduinoJson, the same way
+  // the signed-manifest path buffers its body. The fetch is capped so an
+  // oversized/hostile response can't exhaust the heap, which also bounds the
+  // parser's pool. fetchUrl handles the verified-https GET, redirects, and
   // User-Agent (see HttpDownloader).
-  ReleaseJsonParser releaseParser;
+  constexpr size_t MAX_RELEASE_BYTES = 65536;
+  std::string releaseBody;
   // Each board updates from its own release asset: plain firmware.bin for the
   // C3 X4/X3 binary (pre-existing releases), firmware-<board>.bin otherwise.
   const bool isX4 = board_tag::boardNameLen() == 2 && memcmp(board_tag::boardName(), "x4", 2) == 0;
@@ -50,33 +51,31 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     snprintf(assetName, sizeof(assetName), "firmware-%.*s.bin", static_cast<int>(board_tag::boardNameLen()),
              board_tag::boardName());
   }
-  releaseParser.setFirmwareAssetName(assetName);
-  releaseParser.setManifestAssetName("manifest.json");
-  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
-    releaseParser.feed(reinterpret_cast<const char*>(data), len);
-    return true;
-  });
+  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, releaseBody, "", "", MAX_RELEASE_BYTES);
   if (!ok) {
     LOG_ERR("OTA", "Release check fetch failed");
     return HTTP_ERROR;
   }
 
-  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s manifest=%s", releaseParser.foundTag() ? "yes" : "no",
-          releaseParser.foundFirmware() ? "yes" : "no", releaseParser.foundManifest() ? "yes" : "no");
+  OtaReleaseInfo info;
+  parseOtaRelease(releaseBody.data(), releaseBody.size(), assetName, "manifest.json", info);
 
-  if (!releaseParser.foundTag()) {
+  LOG_DBG("OTA", "Parsed release: tag=%s firmware=%s manifest=%s", info.hasTag ? "yes" : "no",
+          info.hasFirmware ? "yes" : "no", info.hasManifest ? "yes" : "no");
+
+  if (!info.hasTag) {
     LOG_ERR("OTA", "No tag_name in release JSON");
     return JSON_PARSE_ERROR;
   }
 
-  if (!releaseParser.foundFirmware()) {
+  if (!info.hasFirmware) {
     LOG_INF("OTA", "No %s asset in latest release", assetName);
     return NO_UPDATE;
   }
 
-  latestVersion = releaseParser.getTagName();
-  otaUrl = releaseParser.getFirmwareUrl();
-  otaSize = releaseParser.getFirmwareSize();
+  latestVersion = info.tagName;
+  otaUrl = info.firmwareUrl;
+  otaSize = info.firmwareSize;
   totalSize = otaSize;
   updateAvailable = true;
 
@@ -87,8 +86,8 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // hard-fail here if it is missing (older/third-party releases) — we simply
   // skip signature verification and rely on the existing chip/board guards.
   manifestUrl.clear();
-  if (releaseParser.foundManifest()) {
-    manifestUrl = releaseParser.getManifestUrl();
+  if (info.hasManifest) {
+    manifestUrl = info.manifestUrl;
     const auto mres = fetchAndVerifyManifest(manifestUrl);
     if (mres != OK) {
       LOG_ERR("OTA", "Signed manifest check failed (%d)", mres);
@@ -131,10 +130,21 @@ OtaUpdater::OtaUpdaterError OtaUpdater::fetchAndVerifyManifest(const std::string
   // size, SHA-256). installUpdate() re-stream-checks the firmware against it.
   // NOTE: we keep the release tag as latestVersion (shown to the user in the UI,
   // e.g. "1.2.3-x4pro"); the manifest's version is only the bare semver.
-  manifestParser.reset();
-  manifestParser.feed(manifestJson.data(), manifestJson.size());
+  auto entries = makeUniqueNoThrow<ManifestBoardEntry[]>(OTA_MANIFEST_MAX_BOARDS);
+  if (!entries) {
+    LOG_ERR("OTA", "OOM: manifest board entries");
+    return OOM_ERROR;
+  }
+  char manifestVersion[32] = {0};
+  int nEntries = 0;
+  if (!parseOtaManifest(manifestJson.data(), manifestJson.size(), entries.get(), OTA_MANIFEST_MAX_BOARDS, &nEntries,
+                        manifestVersion, sizeof(manifestVersion))) {
+    LOG_ERR("OTA", "Manifest JSON parse failed");
+    return JSON_PARSE_ERROR;
+  }
 
-  const ManifestBoardEntry* entry = manifestParser.findBoard(board_tag::boardName(), board_tag::boardNameLen());
+  const ManifestBoardEntry* entry =
+      findBoardEntry(entries.get(), nEntries, board_tag::boardName(), board_tag::boardNameLen());
   if (!entry) {
     LOG_INF("OTA", "Manifest has no entry for this board (%.*s)", static_cast<int>(board_tag::boardNameLen()),
             board_tag::boardName());
@@ -166,42 +176,10 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
-
-  const auto currentVersion = CROSSPOINT_VERSION;
-
-  // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
-
-  /*
-   * Compare major versions.
-   * If they differ, return true if latest major version greater than current major version
-   * otherwise return false.
-   */
-  if (latestMajor != currentMajor) return latestMajor > currentMajor;
-
-  /*
-   * Compare minor versions.
-   * If they differ, return true if latest minor version greater than current minor version
-   * otherwise return false.
-   */
-  if (latestMinor != currentMinor) return latestMinor > currentMinor;
-
-  /*
-   * Check patch versions.
-   */
-  if (latestPatch != currentPatch) return latestPatch > currentPatch;
-
-  // If we reach here, it means all segments are equal.
-  // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
-  // the segments are equal, since RC builds are pre-release versions.
-  if (strstr(currentVersion, "-rc") != nullptr) {
-    return true;
-  }
-
-  return false;
+  // Compares only the leading N.N.N segments: the release tag is
+  // "v"-prefixed and the running version carries a per-board suffix
+  // ("1.8.0-x4pro"), which must not feed sscanf.
+  return otaIsVersionNewer(CROSSPOINT_VERSION, latestVersion.c_str());
 }
 
 const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }

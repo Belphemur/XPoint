@@ -2,8 +2,6 @@
 
 #include <string>
 
-#include "ManifestJsonParser.h"
-
 class OtaUpdater {
  public:
   enum OtaUpdaterError {
@@ -41,11 +39,9 @@ class OtaUpdater {
   size_t processedSize = 0;
   size_t totalSize = 0;
 
-  // Trusted SHA-256 pinned from the signed manifest, plus a parser instance
-  // reused across checkForUpdate()/installUpdate().
+  // Trusted SHA-256 pinned from the signed manifest.
   uint8_t expectedSha[32] = {0};
   bool haveExpectedSha = false;
-  ManifestJsonParser manifestParser;
 
   // Fetch the release's manifest.json + .sig, verify the Ed25519 signature
   // against the baked-in public key, and pin the running board's entry.
