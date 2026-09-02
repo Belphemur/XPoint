@@ -106,8 +106,12 @@ void CrossPointWebServerActivity::onExit() {
   stopDnsServer();
   MDNS.end();
 
-  // Skip reboot if WiFi was never activated (e.g. user backed out of mode selection).
-  if (WiFi.getMode() != WIFI_MODE_NULL) {
+  // Skip reboot unless this activity itself started WiFi. The previous
+  // WiFi.getMode() != WIFI_MODE_NULL check was unreliable because the
+  // Arduino-ESP32 driver keeps WiFi.mode(WIFI_STA) latched after
+  // WiFi.disconnect(), so any earlier STA/AP session in the same boot
+  // would silently re-trigger silentRestart() on every cancel-out.
+  if (wifiStartedByUs) {
     if (isApMode) {
       WiFi.softAPdisconnect(true);
     } else {
@@ -163,6 +167,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
   if (mode == NetworkMode::JOIN_NETWORK) {
     // STA mode - launch WiFi selection
     LOG_DBG("WEBACT", "Turning on WiFi (STA mode)...");
+    wifiStartedByUs = true;
     WiFi.mode(WIFI_STA);
 
     state = WebServerActivityState::WIFI_SELECTION;
@@ -180,6 +185,8 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
     // AP mode - start access point
     state = WebServerActivityState::AP_STARTING;
     requestUpdate();
+    wifiStartedByUs =
+        true;  // set before startAccessPoint() so an early-return on AP-start failure still triggers WiFi teardown
     startAccessPoint();
   }
 }

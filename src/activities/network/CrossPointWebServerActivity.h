@@ -52,6 +52,13 @@ class CrossPointWebServerActivity final : public Activity {
   // Cached signal-strength bracket (0..4) for the WiFi indicator.
   int lastWifiBars = 0;
 
+  // True when this activity's own code has invoked WiFi.mode(...) and therefore
+  // owns the WiFi teardown. Read in onExit() to decide whether silentRestart()
+  // should clear heap fragmentation. Replaces the previous WiFi.getMode()
+  // check, which was unreliable because Arduino-ESP32 keeps WiFi.mode latched
+  // after WiFi.disconnect().
+  bool wifiStartedByUs = false;
+
   void renderServerRunning() const;
   void renderWifiIndicator(int subHeaderTop) const;
 
