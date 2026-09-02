@@ -602,7 +602,12 @@ void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
-  renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  // Transparent blit: bit=1 leaves the framebuffer untouched, bit=0 paints ink.
+  // Logo120 is pre-rotated 90° CCW at build time (see Logo120.h). Opaque drawImage
+  // would re-paint white pixels over the white framebuffer, which is redundant; using
+  // drawImageTransparent keeps the natural polarity of the framebuffer (relevant when
+  // setInverted() / dark sleep clear paths are involved).
+  renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
 
@@ -880,7 +885,9 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
   }
 
   if (!haveCover) {
-    renderer.drawImage(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+    // Transparent blit: same rationale as renderDefaultSleepScreen — keep the natural
+    // polarity of the framebuffer, only paint ink.
+    renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
   }
 
   const int captionY = haveCover ? frameY + frameH + 24 : pageHeight / 2 + 95;
