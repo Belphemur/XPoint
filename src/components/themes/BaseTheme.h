@@ -1,10 +1,13 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
+
+#include "activities/reader/ReadingStatsUtils.h"
 
 class GfxRenderer;
 struct RecentBook;
@@ -241,7 +244,8 @@ class BaseTheme {
                              const char* rightLabel = nullptr) const;
   virtual void drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                    const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer) const;
+                                   bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                   const std::vector<std::string>& recentBookProgressLines) const;
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
@@ -255,6 +259,20 @@ class BaseTheme {
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;
   virtual bool showsFileIcons() const { return false; }
+
+  // Horizontal bar-chart row (label left, proportional bar, duration value
+  // right) used by the reading-stats screens.
+  static void drawBarChartRow(GfxRenderer& renderer, int x, int y, int width, int rowHeight, int labelWidth,
+                              const char* label, const char* valueText, uint32_t value, uint32_t maxValue);
+  // Column of horizontal bars: one row per label, bar length proportional to
+  // the value, compact duration rendered on the right.
+  static void drawBarChart(GfxRenderer& renderer, const Rect& rect, const char* const* labels, const uint32_t* values,
+                           int count);
+  // GitHub-style reading-history heatmap: 7 rows (day-of-week, Monday first) ×
+  // weeksToShow columns of small squares, rightmost column = current week.
+  // bit 0 of the history is the newest day (anchorDay).
+  static void drawHeatmapGrid(GfxRenderer& renderer, const Rect& rect, uint32_t anchorDay,
+                              const std::array<uint8_t, READING_HISTORY_BYTES>& bits, int weeksToShow = 30);
 
   // Shared constants and helpers for battery drawing (used by all themes)
   static constexpr int batteryPercentSpacing = 4;

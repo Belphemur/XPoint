@@ -239,6 +239,8 @@ void EpubReaderActivity::onExit() {
         if (timeLeft) {
           stats.estimatedTimeLeftSeconds = *timeLeft;
         }
+        const int percent = clampPercent(static_cast<int>(bookProgress * 100.0f + 0.5f));
+        stats.lastBookProgressPercent = static_cast<uint8_t>(percent);
       }
     }
     // Two independent sequential-record writes (per-book + global). The global

@@ -466,6 +466,32 @@ void formatChapterTimeLeft(const uint32_t seconds, char* buf, const size_t len) 
   snprintf(buf, len, tr(STR_TIME_LEFT_MIN), static_cast<unsigned long>(minutes));
 }
 
+void formatHomeProgressLine(const BookReadingStats& stats, char* buf, const size_t len) {
+  if (!buf || len == 0) {
+    return;
+  }
+  buf[0] = '\0';
+  if (stats.lastBookProgressPercent == UNKNOWN_BOOK_PROGRESS_PERCENT) {
+    snprintf(buf, len, "-");
+    return;
+  }
+
+  char duration[16];
+  if (stats.estimatedTimeLeftSeconds == 0) {
+    snprintf(duration, sizeof(duration), "%s", tr(STR_TIME_LEFT_UNAVAILABLE));
+  } else {
+    formatCompactReadingDuration(stats.estimatedTimeLeftSeconds, duration, sizeof(duration));
+  }
+  snprintf(buf, len, tr(STR_PROGRESS_LINE_FMT), static_cast<unsigned>(stats.lastBookProgressPercent), duration);
+}
+
+std::string formatStatCell(const uint32_t value, const bool hasValue) {
+  if (!hasValue) {
+    return "-";
+  }
+  return std::to_string(value);
+}
+
 void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT>& timeOfDaySeconds,
                                   std::array<uint32_t, READING_DAY_OF_WEEK_COUNT>& dayOfWeekSeconds,
                                   const ReadingStatsDateTime& localStart, const uint32_t seconds) {

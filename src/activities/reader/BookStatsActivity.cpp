@@ -3,6 +3,7 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstdio>
 
 #include "CrossPointSettings.h"
@@ -29,6 +30,31 @@ std::string formatStatsDate(const ReadingStatsDate& date) {
   return std::string(buf);
 }
 
+std::string formatDayCount(uint16_t days) {
+  char buf[40];
+  snprintf(buf, sizeof(buf), "%u %s", static_cast<unsigned>(days), days == 1 ? tr(STR_STATS_DAY) : tr(STR_STATS_DAYS));
+  return std::string(buf);
+}
+
+// Projects the finish date from the remaining-time estimate and the book's
+// observed daily pace: days left = ceil(timeLeft / dailySeconds), added to
+// the current date.
+std::string formatEstimatedFinishDate(const BookReadingStats& stats, const ReadingStatsDateTime& now) {
+  if (!stats.startDate.isValid() || stats.estimatedTimeLeftSeconds == 0 || stats.totalReadingSeconds == 0) {
+    return std::string("--");
+  }
+  const uint16_t daysElapsed = std::max<uint16_t>(1, readingSpanDaysElapsed(stats.startDate, now.date));
+  const uint32_t dailySeconds = stats.totalReadingSeconds / daysElapsed;
+  if (dailySeconds == 0) {
+    return std::string("--");
+  }
+  constexpr uint32_t MAX_DAYS_LEFT = 3650;  // clamp far-out projections (also bounds the seconds product)
+  const uint32_t daysLeft = std::min(MAX_DAYS_LEFT, (stats.estimatedTimeLeftSeconds + dailySeconds - 1) / dailySeconds);
+  ReadingStatsDateTime finish = now;
+  addSecondsToReadingStatsDateTime(finish, daysLeft * 86400U);
+  return formatStatsDate(finish.date);
+}
+
 }  // namespace
 
 BookStatsActivity::BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
@@ -45,8 +71,11 @@ void BookStatsActivity::onEnter() {
 void BookStatsActivity::rebuildRowItems() {
   valueCache.clear();
   rowItems.clear();
+  startedRowLabel.clear();
   clearPaceRow = -1;
-  const size_t n = 21;
+  // n = 22: 8 card cells + 2 RTC rows + 11 bucket rows + the clear action
+  // (+ 1 buffer).
+  const size_t n = 22;
   valueCache.reserve(n + 1);
   rowItems.reserve(n + 1);
 
@@ -69,11 +98,29 @@ void BookStatsActivity::rebuildRowItems() {
     rowItems.push_back(item);
   };
 
-  addRow(tr(STR_STATS_SESSIONS_LBL), std::to_string(stats.sessionCount));
+  ReadingStatsDateTime now;
+  const bool hasRtc = getCurrentLocalReadingStatsDateTime(now);
+
+  // Card-grid row order per design §7.1: Sessions / Reading Time / Progress /
+  // Avg Session / Time Left / Reading Speed / Pages Turned / Completed, then
+  // the RTC-gated Started and Est. Finish rows, the bucket rows, and the
+  // clear action.
+  addRow(tr(STR_STATS_SESSIONS_LBL), formatStatCell(stats.sessionCount));
   addRow(tr(STR_STATS_TIME_LBL), formatStatsDuration(stats.totalReadingSeconds));
-  addRow(tr(STR_STATS_PAGES_LBL), std::to_string(stats.totalPagesTurned));
+  const bool progressKnown = stats.lastBookProgressPercent != UNKNOWN_BOOK_PROGRESS_PERCENT;
+  addRow(tr(STR_STATS_PROGRESS_LBL), progressKnown ? formatStatCell(stats.lastBookProgressPercent) + "%" : "--");
   const uint32_t avgSession = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
+  // Time Left shows the persisted estimate from the last session commit
+  // (EpubReaderActivity runs the cached -> pace-based chain before saving);
+  // "--" once the book is completed or before the first estimate exists.
+  if (!stats.isCompleted && stats.estimatedTimeLeftSeconds > 0) {
+    char compact[16];
+    formatCompactReadingDuration(stats.estimatedTimeLeftSeconds, compact, sizeof(compact));
+    addRow(tr(STR_TIME_LEFT), std::string(compact));
+  } else {
+    addRow(tr(STR_TIME_LEFT), "--");
+  }
   // Reading speed is sourced from the WPM window only; the legacy
   // seconds-per-page average was dropped during the v5 -> v6 migration. Show
   // the WPM value directly so the row stays informative. Use the localized
@@ -85,10 +132,22 @@ void BookStatsActivity::rebuildRowItems() {
     snprintf(wpmBuf, sizeof(wpmBuf), "%s", tr(STR_STATS_WPM_UNAVAILABLE));
   }
   addRow(tr(STR_STATS_AVG_PAGE_PACE), wpmBuf);
-  addRow(tr(STR_STATS_EST_TIME_LEFT), formatStatsDuration(stats.estimatedTimeLeftSeconds));
+  addRow(tr(STR_STATS_PAGES_LBL), formatStatCell(stats.totalPagesTurned));
   addRow(tr(STR_STATS_COMPLETED), stats.isCompleted ? tr(STR_YES) : tr(STR_NO));
-  addRow(tr(STR_STATS_STARTED), formatStatsDate(stats.startDate));
-  addRow(tr(STR_STATS_FINISHED), formatStatsDate(stats.finishedDate));
+  if (hasRtc) {
+    // Started: the label carries the start date; the value is how long ago
+    // that was. The composed label outlives the list (member string), since
+    // ListItem borrows the char pointer.
+    if (stats.startDate.isValid()) {
+      startedRowLabel = std::string(tr(STR_STATS_STARTED)) + " " + formatStatsDate(stats.startDate);
+      addRow(startedRowLabel.c_str(), formatDayCount(readingSpanDaysElapsed(stats.startDate, now.date)));
+    }
+    if (stats.isCompleted) {
+      addRow(tr(STR_STATS_FINISHED_DATE), formatStatsDate(stats.finishedDate));
+    } else {
+      addRow(tr(STR_STATS_EST_FINISH_DATE), formatEstimatedFinishDate(stats, now));
+    }
+  }
   addRow(tr(STR_STATS_MORNING), formatStatsDuration(stats.timeOfDaySeconds[0]));
   addRow(tr(STR_STATS_AFTERNOON), formatStatsDuration(stats.timeOfDaySeconds[1]));
   addRow(tr(STR_STATS_EVENING), formatStatsDuration(stats.timeOfDaySeconds[2]));

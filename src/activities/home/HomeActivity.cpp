@@ -19,6 +19,8 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "activities/reader/BookReadingStats.h"
+#include "activities/reader/ReadingStatsUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -108,6 +110,25 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
 
   recentsLoaded = true;
   recentsLoading = false;
+}
+
+void HomeActivity::loadRecentBookStats() {
+  recentBookProgressLines.clear();
+  recentBookProgressLines.reserve(recentBooks.size());
+  for (const RecentBook& book : recentBooks) {
+    if (!FsHelpers::hasEpubExtension(book.path)) {
+      // XTC/TXT books carry no reading-stats record.
+      recentBookProgressLines.emplace_back();
+      continue;
+    }
+    // The Epub constructor only derives the cache path from the file path —
+    // no I/O — so the stats record loads without parsing the book.
+    const Epub epub(book.path, "/.crosspoint");
+    const BookReadingStats stats = BookReadingStats::load(epub.getCachePath());
+    char line[48];
+    formatHomeProgressLine(stats, line, sizeof(line));
+    recentBookProgressLines.emplace_back(line);
+  }
 }
 
 void HomeActivity::onEnter() {
@@ -304,7 +325,7 @@ void HomeActivity::render(RenderLock&&) {
 
   GUI.drawRecentBookCover(renderer, Rect{0, metrics.homeTopPadding, pageWidth, metrics.homeCoverTileHeight},
                           recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
-                          std::bind(&HomeActivity::storeCoverBuffer, this));
+                          std::bind(&HomeActivity::storeCoverBuffer, this), recentBookProgressLines);
 
   // Build menu items dynamically
   std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
@@ -344,6 +365,7 @@ void HomeActivity::render(RenderLock&&) {
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
     loadRecentCovers(metrics.homeCoverHeight);
+    loadRecentBookStats();
   }
 }
 

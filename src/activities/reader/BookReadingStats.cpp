@@ -32,7 +32,7 @@ namespace {
 //   [75-76]  wpm.count                 uint16_t LE, samples in window (0-15)
 //   [77-106] wpm.samples[15]           uint16_t LE each
 //   [107]    wpm.pos                   uint8_t
-//   [108]    reserved (0)              uint8_t
+//   [108]    lastBookProgressPercent   uint8_t, 0-100 (0xFF = unknown)
 //
 // The record lives INSIDE the book cache dir, so its lifetime matches the
 // cache dir exactly (created/deleted/moved with the book — no orphan cleanup,
@@ -131,10 +131,12 @@ bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
   return true;
 }
 
-// Reads the v6-only trailing WPM fields and normalizes them: a corrupt count
-// or cursor is clamped (samples[pos] must stay in bounds) and the average is
-// recomputed from the window rather than trusted.
-void readWpmWindow(const uint8_t* data, WpmWindow& wpm) {
+// Reads the v6-only trailing fields and normalizes them: a corrupt count
+// or cursor is clamped (samples[pos] must stay in bounds), the average is
+// recomputed from the window rather than trusted, and a progress byte above
+// 100 (legacy records carry 0 here, and torn writes can carry anything) is
+// folded to the unknown sentinel.
+void readWpmWindow(const uint8_t* data, WpmWindow& wpm, uint8_t& lastBookProgressPercent) {
   wpm.avg = readLe16(data, 73);
   wpm.count = static_cast<uint8_t>(readLe16(data, 75));
   for (size_t i = 0; i < wpm.samples.size(); ++i) {
@@ -142,6 +144,8 @@ void readWpmWindow(const uint8_t* data, WpmWindow& wpm) {
   }
   wpm.pos = data[107];
   wpm.normalize();
+  const uint8_t rawProgress = data[108];
+  lastBookProgressPercent = (rawProgress <= 100) ? rawProgress : UNKNOWN_BOOK_PROGRESS_PERCENT;
 }
 
 // Decodes a v6 record (109 bytes = v5 plus the WPM window). Returns false on
@@ -151,7 +155,7 @@ bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
   // v5 fields are a prefix of the v6 record (same byte offsets 1-72), so the
   // v5 layout can be parsed directly without re-checking the version byte.
   readV5Fields(data, stats);
-  readWpmWindow(data, stats.wpm);
+  readWpmWindow(data, stats.wpm, stats.lastBookProgressPercent);
   return true;
 }
 }  // namespace
@@ -198,7 +202,7 @@ void BookReadingStats::save(const std::string& cachePath) const {
   data[11] = isCompleted ? 1 : 0;
   // Bytes 12-15 are reserved (legacy avgSecondsPerForwardPage /
   // paceSampleCount). Reading speed is now sourced from the WPM window at
-  // bytes 73-108; these slots stay zero to keep the v5 field prefix stable
+  // bytes 73-107; these slots stay zero to keep the v5 field prefix stable
   // without resurrecting the dropped logic. memset(0) above already writes
   // zero here.
   data[16] = (startDateManual ? FLAG_START_DATE_MANUAL : 0u) | (finishedDateManual ? FLAG_FINISHED_DATE_MANUAL : 0u);
@@ -221,6 +225,7 @@ void BookReadingStats::save(const std::string& cachePath) const {
     writeLe16(data, 77 + static_cast<int>(i) * 2, wpm.samples[i]);
   }
   data[107] = wpm.pos;
+  data[108] = lastBookProgressPercent;
   const size_t written = f.write(data, STATS_FILE_SIZE);
   if (written != STATS_FILE_SIZE) {
     // Do NOT delete the legacy file — the v6 write didn't land, and the

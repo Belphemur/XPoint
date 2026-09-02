@@ -6,6 +6,9 @@
 
 #include "ReadingStatsUtils.h"
 
+// Sentinel for an unknown last-read progress percentage (v6 byte 108).
+constexpr uint8_t UNKNOWN_BOOK_PROGRESS_PERCENT = 0xFF;
+
 // Per-book reading statistics, persisted to <cachePath>/stats_v6.bin (109-byte
 // versioned record inside the book's cache dir; see
 // docs/design/reading-stats-binary-files.md). The record's lifetime matches the
@@ -30,6 +33,9 @@ struct BookReadingStats {
   std::array<uint32_t, READING_DAY_OF_WEEK_COUNT> dayOfWeekSeconds{};
   // Rolling reading-speed window in words per minute (v6 fields).
   WpmWindow wpm;
+  // Last known book progress as a percentage (v6 byte 108): 0-100, or
+  // UNKNOWN_BOOK_PROGRESS_PERCENT when no valid snapshot exists yet.
+  uint8_t lastBookProgressPercent = UNKNOWN_BOOK_PROGRESS_PERCENT;
 
   static BookReadingStats load(const std::string& cachePath);
   void save(const std::string& cachePath) const;

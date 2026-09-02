@@ -330,11 +330,11 @@ void GlobalReadingStats::recordGlobalPageRead(const uint32_t seconds, const uint
 
 void GlobalReadingStats::clearWpmStats() { wpm.clear(); }
 
-uint16_t GlobalReadingStats::currentReadingStreak(const ReadingStatsDate* today) const {
+uint16_t GlobalReadingStats::currentReadingStreakDays(const ReadingStatsDate* today) const {
   return computeReadingHistoryCurrentStreak(readingHistoryAnchorDay, readingHistoryBits, today);
 }
 
-uint16_t GlobalReadingStats::displayLongestReadingStreak() const {
+uint16_t GlobalReadingStats::longestReadingStreakDays() const {
   return std::max(longestReadingStreak,
                   computeReadingHistoryLongestStreak(readingHistoryAnchorDay, readingHistoryBits));
 }

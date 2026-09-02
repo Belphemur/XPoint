@@ -18,6 +18,13 @@ class GlobalStatsActivity final : public UiListActivity {
   std::vector<std::string> valueCache;
   void rebuildRowItems();
 
+  // Chart band (time-of-day + day-of-week bar charts and the reading-history
+  // heatmap), reserved below the list when the RTC provides a current date.
+  bool chartsVisible = false;
+  freeink::ui::Rect chartBandRect{};
+  int chartBandHeight() const;
+  void drawCharts();
+
  public:
   explicit GlobalStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
   void onEnter() override;

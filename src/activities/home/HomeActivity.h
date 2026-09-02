@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "./FileBrowserActivity.h"
@@ -28,6 +29,9 @@ class HomeActivity final : public Activity {
   int coverRectW = 0;
   int coverRectH = 0;
   std::vector<RecentBook> recentBooks;
+  // Formatted "N% • time-left" lines, parallel to recentBooks (empty for
+  // books without a stats record). Filled on the same idle tick as covers.
+  std::vector<std::string> recentBookProgressLines;
   const HomeMenuItem initialMenuItem;
   const bool cleanInitialRefresh;
 
@@ -69,6 +73,7 @@ class HomeActivity final : public Activity {
   void freeCoverBuffer();     // Free the stored cover buffer
   void loadRecentBooks(int maxBooks);
   void loadRecentCovers(int coverHeight);
+  void loadRecentBookStats();
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,

@@ -14,6 +14,8 @@ enum class StrId {
   STR_STATS_EST_TIME_LEFT,
   STR_TIME_LEFT_MIN,
   STR_TIME_LEFT_LESS_THAN_MIN,
+  STR_TIME_LEFT_UNAVAILABLE,
+  STR_PROGRESS_LINE_FMT,
   STR_YES,
   STR_NO,
 };
@@ -46,6 +48,10 @@ class I18n {
         return "~%lu min left";
       case StrId::STR_TIME_LEFT_LESS_THAN_MIN:
         return "< 1 min left";
+      case StrId::STR_TIME_LEFT_UNAVAILABLE:
+        return "--";
+      case StrId::STR_PROGRESS_LINE_FMT:
+        return "%u%% \xE2\x80\xA2 %s";
       case StrId::STR_YES:
         return "Yes";
       case StrId::STR_NO:

@@ -97,6 +97,13 @@ std::optional<uint32_t> estimateBookTimeLeftSeconds(const BookReadingStats& book
                                                     const GlobalReadingStats& globalStats,
                                                     uint32_t estimatedRemainingPages);
 void formatChapterTimeLeft(uint32_t seconds, char* buf, size_t len);
+// One-line "N% • time-left" summary for the home Continue Reading card:
+// unknown progress renders "-", a zero time-left estimate renders the
+// unavailable marker instead of a duration.
+void formatHomeProgressLine(const BookReadingStats& stats, char* buf, size_t len);
+// CrossInk-style stat cell: decimal value, or "-" when the value is
+// unavailable (no data / feature disabled).
+std::string formatStatCell(uint32_t value, bool hasValue = true);
 
 void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT>& timeOfDaySeconds,
                                   std::array<uint32_t, READING_DAY_OF_WEEK_COUNT>& dayOfWeekSeconds,

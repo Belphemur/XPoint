@@ -15,6 +15,7 @@
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
+#include "activities/reader/ReadingStatsUtils.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
@@ -427,7 +428,8 @@ void BaseTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
 // TODO: Refactor method to make it cleaner, split into smaller methods
 void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                     const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
+                                    bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                    const std::vector<std::string>& recentBookProgressLines) const {
   const bool hasContinueReading = !recentBooks.empty();
   const bool bookSelected = hasContinueReading && selectorIndex == 0;
 
@@ -569,6 +571,10 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     const std::string& lastBookTitle = recentBooks[0].title;
     const std::string& lastBookAuthor = recentBooks[0].author;
 
+    static const std::string emptyProgressLine;
+    const std::string& progressLine = recentBookProgressLines.empty() ? emptyProgressLine : recentBookProgressLines[0];
+    const bool hasProgressLine = !progressLine.empty() && progressLine != "-";
+
     // Invert text colors based on selection state:
     // - With cover: selected = white text on black box, unselected = black text on white box
     // - Without cover: selected = white text on black card, unselected = black text on white card
@@ -579,6 +585,9 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     int totalTextHeight = renderer.getLineHeight(UI_12_FONT_ID) * static_cast<int>(lines.size());
     if (!lastBookAuthor.empty()) {
       totalTextHeight += renderer.getLineHeight(UI_10_FONT_ID) * 3 / 2;
+    }
+    if (hasProgressLine) {
+      totalTextHeight += renderer.getLineHeight(SMALL_FONT_ID) * 3 / 2;
     }
 
     // Vertically center the title block within the card
@@ -605,6 +614,12 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
           maxTextWidth = authorWidth;
         }
       }
+      if (hasProgressLine) {
+        const int progressWidth = renderer.getTextWidth(SMALL_FONT_ID, progressLine.c_str());
+        if (progressWidth > maxTextWidth) {
+          maxTextWidth = progressWidth;
+        }
+      }
 
       const int boxWidth = maxTextWidth + boxPadding * 2;
       const int boxHeight = totalTextHeight + boxPadding * 2;
@@ -625,6 +640,12 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     if (!truncatedAuthor.empty()) {
       titleYStart += renderer.getLineHeight(UI_10_FONT_ID) / 2;
       renderer.drawCenteredText(UI_10_FONT_ID, titleYStart, truncatedAuthor.c_str(), !bookSelected);
+      titleYStart += renderer.getLineHeight(UI_10_FONT_ID);
+    }
+
+    if (hasProgressLine) {
+      titleYStart += renderer.getLineHeight(SMALL_FONT_ID) / 2;
+      renderer.drawCenteredText(SMALL_FONT_ID, titleYStart, progressLine.c_str(), !bookSelected);
     }
 
     // "Continue Reading" label at the bottom
@@ -930,5 +951,95 @@ void BaseTheme::drawTextField(const GfxRenderer& renderer, Rect rect, const int 
     const int lineW = textWidth + metrics.textFieldHorizontalPadding * 2;
     const int lineStart = rect.x + (rect.width - lineW) / 2;
     renderer.drawLine(lineStart, lineY, lineStart + lineW + metrics.textFieldLineEndOffset, lineY, thickness, true);
+  }
+}
+
+void BaseTheme::drawBarChartRow(GfxRenderer& renderer, const int x, const int y, const int width, const int rowHeight,
+                                const int labelWidth, const char* label, const char* valueText, const uint32_t value,
+                                const uint32_t maxValue) {
+  const int textY = y + std::max(0, (rowHeight - renderer.getLineHeight(SMALL_FONT_ID)) / 2);
+  renderer.drawText(SMALL_FONT_ID, x, textY, label);
+
+  const int barX = x + labelWidth;
+  const int valueX = x + width - renderer.getTextWidth(SMALL_FONT_ID, valueText);
+  const int barWidth = std::max(0, valueX - barX - 8);
+  if (barWidth <= 0) {
+    return;
+  }
+  const int barHeight = std::min(rowHeight - 4, 10);
+  const int barY = y + (rowHeight - barHeight) / 2;
+  renderer.drawRect(barX, barY, barWidth, barHeight, true);
+  if (value > 0 && maxValue > 0) {
+    const int fillWidth =
+        std::min(barWidth, std::max(2, static_cast<int>(static_cast<int64_t>(barWidth) * value / maxValue)));
+    renderer.fillRect(barX, barY, fillWidth, barHeight, true);
+  }
+  renderer.drawText(SMALL_FONT_ID, valueX, textY, valueText);
+}
+
+void BaseTheme::drawBarChart(GfxRenderer& renderer, const Rect& rect, const char* const* labels, const uint32_t* values,
+                             const int count) {
+  if (count <= 0 || rect.height <= 0 || labels == nullptr || values == nullptr) {
+    return;
+  }
+  uint32_t maxValue = 0;
+  for (int i = 0; i < count; ++i) {
+    maxValue = std::max(maxValue, values[i]);
+  }
+  const int rowHeight = rect.height / count;
+  int labelWidth = 0;
+  for (int i = 0; i < count; ++i) {
+    labelWidth = std::max(labelWidth, renderer.getTextWidth(SMALL_FONT_ID, labels[i]));
+  }
+  labelWidth += 8;
+
+  for (int i = 0; i < count; ++i) {
+    char valueText[16];
+    formatCompactReadingDuration(values[i], valueText, sizeof(valueText));
+    drawBarChartRow(renderer, rect.x, rect.y + i * rowHeight, rect.width, rowHeight, labelWidth, labels[i], valueText,
+                    values[i], maxValue);
+  }
+}
+
+void BaseTheme::drawHeatmapGrid(GfxRenderer& renderer, const Rect& rect, const uint32_t anchorDay,
+                                const std::array<uint8_t, READING_HISTORY_BYTES>& bits, const int weeksToShow) {
+  constexpr int cellSize = 4;
+  constexpr int pitch = 5;  // cell + 1px gap
+  constexpr int weekRows = 7;
+
+  if (rect.width <= 0 || rect.height < weekRows * pitch - 1) {
+    return;
+  }
+
+  // Anchor the rightmost column on the current week (fall back to the history
+  // anchor itself when no RTC time is available).
+  ReadingStatsDateTime now;
+  const bool hasToday = getCurrentLocalReadingStatsDateTime(now);
+  const uint32_t referenceDay = hasToday ? readingStatsDayIndex(now.date) : anchorDay;
+  ReadingStatsDate referenceDate;
+  if (!readingStatsDateFromDayIndex(referenceDay, referenceDate)) {
+    return;
+  }
+  const uint32_t rightmostMonday = referenceDay - readingStatsDayOfWeekIndex(referenceDate);
+  const int cols = std::min(weeksToShow, rect.width / pitch);
+
+  for (int w = 0; w < cols; ++w) {
+    const uint32_t weekMonday = rightmostMonday - static_cast<uint32_t>(cols - 1 - w) * 7U;
+    const int x = rect.x + w * pitch;
+    for (int d = 0; d < weekRows; ++d) {
+      const uint32_t dayIndex = weekMonday + static_cast<uint32_t>(d);
+      if (dayIndex > referenceDay) {
+        continue;  // future day within the current week
+      }
+      // Newest day is bit 0; a dayIndex newer than the anchor underflows to a
+      // huge value and is rejected by the range check.
+      const uint32_t bit = anchorDay - dayIndex;
+      if (bit >= READING_HISTORY_DAYS) {
+        continue;
+      }
+      if ((bits[bit / 8] >> (bit % 8)) & 0x01) {
+        renderer.fillRect(x, rect.y + d * pitch, cellSize, cellSize, true);
+      }
+    }
   }
 }
