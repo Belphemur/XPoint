@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -129,8 +130,9 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
                              tileHeight - (imgY - tileY + RoundedRaffMetrics::values.homeCoverHeight), kRowRadius,
                              false, false, true, true, Color::LightGray);
 
-    static const std::string emptyProgressLine;
-    const std::string& progressLine = recentBookProgressLines.empty() ? emptyProgressLine : recentBookProgressLines[0];
+    static constexpr std::string_view kEmptyProgressLine = "";
+    const std::string_view progressLine =
+        recentBookProgressLines.empty() ? kEmptyProgressLine : recentBookProgressLines[0];
     if (!progressLine.empty() && progressLine != "-") {
       // This theme draws no title/author text on the card, so the progress
       // line sits alone in the band below the cover (boxed for legibility
@@ -141,11 +143,11 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
       const int boxHeight = lineHeight + 6;
       const int boxY = bandTop + std::max(0, (bandHeight - boxHeight) / 2);
       constexpr int boxPadding = 6;
-      const int boxWidth = renderer.getTextWidth(SMALL_FONT_ID, progressLine.c_str()) + boxPadding * 2;
+      const int boxWidth = renderer.getTextWidth(SMALL_FONT_ID, progressLine.data()) + boxPadding * 2;
       const int boxX = tileX + (tileWidth - boxWidth) / 2;
       renderer.fillRect(boxX, boxY, boxWidth, boxHeight, false);
       renderer.drawRect(boxX, boxY, boxWidth, boxHeight, true);
-      renderer.drawText(SMALL_FONT_ID, boxX + boxPadding, boxY + 3, progressLine.c_str(), true);
+      renderer.drawText(SMALL_FONT_ID, boxX + boxPadding, boxY + 3, progressLine.data(), true);
     }
   } else {
     renderer.fillRoundedRect(tileX, tileY, tileWidth, tileHeight, kRowRadius, Color::LightGray);

@@ -487,7 +487,7 @@ void formatHomeProgressLine(const BookReadingStats& stats, char* buf, const size
 
 std::string formatStatCell(const uint32_t value, const bool hasValue) {
   if (!hasValue) {
-    return "-";
+    return tr(STR_STATS_VALUE_UNAVAILABLE);
   }
   return std::to_string(value);
 }

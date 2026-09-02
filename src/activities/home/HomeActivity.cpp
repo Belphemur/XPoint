@@ -129,6 +129,9 @@ void HomeActivity::loadRecentBookStats() {
     formatHomeProgressLine(stats, line, sizeof(line));
     recentBookProgressLines.emplace_back(line);
   }
+  // The loader runs after displayBuffer(); request a redraw so cards with
+  // already-cached covers also pick up the progress lines immediately.
+  requestUpdate();
 }
 
 void HomeActivity::onEnter() {

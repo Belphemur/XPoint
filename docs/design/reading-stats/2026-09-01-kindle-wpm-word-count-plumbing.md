@@ -90,6 +90,9 @@ void onPageComplete(uint16_t paragraphIndex, bool isLastPage, uint16_t wordsOnPa
 - The in-memory `BookReadingStats` struct no longer carries these fields.
 - `resolveReadingPaceSecondsPerPage` no longer has a `paceSampleCount` /
   `avgSecondsPerForwardPage` fallback.
+- Byte 108 is no longer reserved: it now carries `lastBookProgressPercent`
+  (uint8, 0-100 with 0xFF = unknown). See the
+  2026-09-02 home-card-progress design doc, §3.
 
 ### 2.2 Kindle-style trimmed-mean algorithm
 ```cpp
@@ -166,7 +169,6 @@ void clearWpmStats() {
 The WPM window contributes 36 bytes (159..194 inclusive) which is what
 the v3 -> v4 size bump accounts for. The previous text said "34 bytes"
 which is wrong; 36 is the real number.
-```
 
 ### 2.4 `resolveReadingPaceSecondsPerPage` update
 ```cpp

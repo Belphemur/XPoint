@@ -24,7 +24,7 @@ std::string formatStatsDuration(uint32_t seconds) {
 }
 
 std::string formatStatsDate(const ReadingStatsDate& date) {
-  if (!date.isValid()) return std::string("--");
+  if (!date.isValid()) return std::string(tr(STR_STATS_VALUE_UNAVAILABLE));
   char buf[32];
   formatReadingStatsShortDate(date, buf, sizeof(buf));
   return std::string(buf);
@@ -32,7 +32,8 @@ std::string formatStatsDate(const ReadingStatsDate& date) {
 
 std::string formatDayCount(uint16_t days) {
   char buf[40];
-  snprintf(buf, sizeof(buf), "%u %s", static_cast<unsigned>(days), days == 1 ? tr(STR_STATS_DAY) : tr(STR_STATS_DAYS));
+  snprintf(buf, sizeof(buf), tr(STR_STATS_DAY_COUNT_FMT), static_cast<unsigned>(days),
+           days == 1 ? tr(STR_STATS_DAY) : tr(STR_STATS_DAYS));
   return std::string(buf);
 }
 
@@ -41,15 +42,17 @@ std::string formatDayCount(uint16_t days) {
 // the current date.
 std::string formatEstimatedFinishDate(const BookReadingStats& stats, const ReadingStatsDateTime& now) {
   if (!stats.startDate.isValid() || stats.estimatedTimeLeftSeconds == 0 || stats.totalReadingSeconds == 0) {
-    return std::string("--");
+    return std::string(tr(STR_STATS_VALUE_UNAVAILABLE));
   }
   const uint16_t daysElapsed = std::max<uint16_t>(1, readingSpanDaysElapsed(stats.startDate, now.date));
   const uint32_t dailySeconds = stats.totalReadingSeconds / daysElapsed;
   if (dailySeconds == 0) {
-    return std::string("--");
+    return std::string(tr(STR_STATS_VALUE_UNAVAILABLE));
   }
-  constexpr uint32_t MAX_DAYS_LEFT = 3650;  // clamp far-out projections (also bounds the seconds product)
-  const uint32_t daysLeft = std::min(MAX_DAYS_LEFT, (stats.estimatedTimeLeftSeconds + dailySeconds - 1) / dailySeconds);
+  constexpr uint32_t maxDaysLeft = 3650;  // clamp far-out projections (also bounds the seconds product)
+  const uint32_t roundedDaysLeft =
+      stats.estimatedTimeLeftSeconds / dailySeconds + (stats.estimatedTimeLeftSeconds % dailySeconds != 0 ? 1U : 0U);
+  const uint32_t daysLeft = std::min(maxDaysLeft, roundedDaysLeft);
   ReadingStatsDateTime finish = now;
   addSecondsToReadingStatsDateTime(finish, daysLeft * 86400U);
   return formatStatsDate(finish.date);
@@ -108,7 +111,14 @@ void BookStatsActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_SESSIONS_LBL), formatStatCell(stats.sessionCount));
   addRow(tr(STR_STATS_TIME_LBL), formatStatsDuration(stats.totalReadingSeconds));
   const bool progressKnown = stats.lastBookProgressPercent != UNKNOWN_BOOK_PROGRESS_PERCENT;
-  addRow(tr(STR_STATS_PROGRESS_LBL), progressKnown ? formatStatCell(stats.lastBookProgressPercent) + "%" : "--");
+  if (progressKnown) {
+    char progressBuf[8];
+    snprintf(progressBuf, sizeof(progressBuf), tr(STR_STATS_PROGRESS_FMT),
+             static_cast<unsigned>(stats.lastBookProgressPercent));
+    addRow(tr(STR_STATS_PROGRESS_LBL), std::string(progressBuf));
+  } else {
+    addRow(tr(STR_STATS_PROGRESS_LBL), tr(STR_STATS_VALUE_UNAVAILABLE));
+  }
   const uint32_t avgSession = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
   addRow(tr(STR_STATS_AVG_SESSION_LBL), formatStatsDuration(avgSession));
   // Time Left shows the persisted estimate from the last session commit
@@ -119,7 +129,7 @@ void BookStatsActivity::rebuildRowItems() {
     formatCompactReadingDuration(stats.estimatedTimeLeftSeconds, compact, sizeof(compact));
     addRow(tr(STR_TIME_LEFT), std::string(compact));
   } else {
-    addRow(tr(STR_TIME_LEFT), "--");
+    addRow(tr(STR_TIME_LEFT), tr(STR_STATS_VALUE_UNAVAILABLE));
   }
   // Reading speed is sourced from the WPM window only; the legacy
   // seconds-per-page average was dropped during the v5 -> v6 migration. Show
@@ -139,7 +149,10 @@ void BookStatsActivity::rebuildRowItems() {
     // that was. The composed label outlives the list (member string), since
     // ListItem borrows the char pointer.
     if (stats.startDate.isValid()) {
-      startedRowLabel = std::string(tr(STR_STATS_STARTED)) + " " + formatStatsDate(stats.startDate);
+      char startedBuf[64];
+      snprintf(startedBuf, sizeof(startedBuf), tr(STR_STATS_STARTED_DATE_FMT), tr(STR_STATS_STARTED),
+               formatStatsDate(stats.startDate).c_str());
+      startedRowLabel = std::string(startedBuf);
       addRow(startedRowLabel.c_str(), formatDayCount(readingSpanDaysElapsed(stats.startDate, now.date)));
     }
     if (stats.isCompleted) {

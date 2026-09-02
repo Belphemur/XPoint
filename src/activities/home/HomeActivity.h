@@ -73,6 +73,8 @@ class HomeActivity final : public Activity {
   void freeCoverBuffer();     // Free the stored cover buffer
   void loadRecentBooks(int maxBooks);
   void loadRecentCovers(int coverHeight);
+  // Loads per-book reading stats and formats each home-card progress line,
+  // then requests a redraw so cached-cover cards show the lines immediately.
   void loadRecentBookStats();
 
  public:

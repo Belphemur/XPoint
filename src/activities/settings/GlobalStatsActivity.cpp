@@ -3,7 +3,6 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 
-#include <algorithm>
 #include <cstdio>
 
 #include "CrossPointSettings.h"
@@ -137,10 +136,10 @@ int GlobalStatsActivity::chartBandHeight() const {
   // Section-title line + the taller of the two bar charts (7 day-of-week
   // rows) + the heatmap (7 day rows at 5px pitch) + the gaps between them.
   const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
-  constexpr int BAR_ROW_H = 16;
-  constexpr int HEATMAP_H = 7 * 5 - 1;  // drawHeatmapGrid: 4px cells + 1px gaps
-  constexpr int GAP = 8;
-  return lineH + READING_DAY_OF_WEEK_COUNT * BAR_ROW_H + GAP + lineH + GAP + HEATMAP_H + GAP;
+  constexpr int barRowH = 16;
+  constexpr int heatmapH = 7 * 5 - 1;  // drawHeatmapGrid: 4px cells + 1px gaps
+  constexpr int gap = 8;
+  return lineH + READING_DAY_OF_WEEK_COUNT * barRowH + gap + lineH + gap + heatmapH + gap;
 }
 
 void GlobalStatsActivity::drawCharts() {
@@ -149,9 +148,9 @@ void GlobalStatsActivity::drawCharts() {
   }
   const Rect band{chartBandRect.x, chartBandRect.y, chartBandRect.width, chartBandRect.height};
   const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
-  constexpr int GAP = 8;
+  constexpr int gap = 8;
   const int heatmapH = 7 * 5 - 1;
-  const int barsH = band.height - lineH - GAP - lineH - GAP - heatmapH - GAP;
+  const int barsH = band.height - lineH - gap - lineH - gap - heatmapH - gap;
   if (barsH <= 0) {
     return;
   }
@@ -164,15 +163,14 @@ void GlobalStatsActivity::drawCharts() {
                                                       tr(STR_STATS_SUN)};
 
   const int titleY = band.y;
-  const int barsY = titleY + lineH + GAP;
-  const int titleHalfW = halfW - GAP;
-  const int todTitleX =
-      band.x + std::max(0, (titleHalfW - renderer.getTextWidth(SMALL_FONT_ID, tr(STR_STATS_TIME_OF_DAY)))) / 2;
-  const int dowTitleX =
-      band.x + halfW +
-      std::max(0, (band.width - halfW - renderer.getTextWidth(SMALL_FONT_ID, tr(STR_STATS_DAY_OF_WEEK)))) / 2;
-  renderer.drawText(SMALL_FONT_ID, todTitleX, titleY, tr(STR_STATS_TIME_OF_DAY), true, EpdFontFamily::BOLD);
-  renderer.drawText(SMALL_FONT_ID, dowTitleX, titleY, tr(STR_STATS_DAY_OF_WEEK), true, EpdFontFamily::BOLD);
+  const int barsY = titleY + lineH + gap;
+  const int titleHalfW = halfW - gap;
+  const Rect todTitleRect{static_cast<int16_t>(band.x), static_cast<int16_t>(titleY), static_cast<int16_t>(titleHalfW),
+                          static_cast<int16_t>(lineH)};
+  const Rect dowTitleRect{static_cast<int16_t>(band.x + halfW), static_cast<int16_t>(titleY),
+                          static_cast<int16_t>(band.width - halfW), static_cast<int16_t>(lineH)};
+  BaseTheme::drawBarChartTitle(renderer, todTitleRect, tr(STR_STATS_TIME_OF_DAY));
+  BaseTheme::drawBarChartTitle(renderer, dowTitleRect, tr(STR_STATS_DAY_OF_WEEK));
 
   // Time-of-day on the left, day-of-week on the right: each chart divides the
   // shared bar-band height by its own row count, so the 4 time-of-day rows
@@ -186,7 +184,7 @@ void GlobalStatsActivity::drawCharts() {
 
   // Full-width reading-history heatmap below the charts; the newest day
   // anchors the rightmost week.
-  const Rect heatRect{static_cast<int16_t>(band.x), static_cast<int16_t>(barsY + barsH + GAP),
+  const Rect heatRect{static_cast<int16_t>(band.x), static_cast<int16_t>(barsY + barsH + gap),
                       static_cast<int16_t>(band.width), static_cast<int16_t>(heatmapH)};
   BaseTheme::drawHeatmapGrid(renderer, heatRect, globalStats.readingHistoryAnchorDay, globalStats.readingHistoryBits);
 }

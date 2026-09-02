@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -277,8 +278,9 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 
     auto author = renderer.truncatedText(UI_10_FONT_ID, book.author.c_str(), textWidth);
 
-    static const std::string emptyProgressLine;
-    const std::string& progressLine = recentBookProgressLines.empty() ? emptyProgressLine : recentBookProgressLines[0];
+    static constexpr std::string_view kEmptyProgressLine = "";
+    const std::string_view progressLine =
+        recentBookProgressLines.empty() ? kEmptyProgressLine : recentBookProgressLines[0];
     const bool hasProgressLine = !progressLine.empty() && progressLine != "-";
 
     const int titleLineHeight = renderer.getLineHeight(UI_12_FONT_ID);
@@ -299,7 +301,7 @@ void LyraTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     }
     if (hasProgressLine) {
       titleY += renderer.getLineHeight(SMALL_FONT_ID) / 2;
-      renderer.drawText(SMALL_FONT_ID, textX, titleY, progressLine.c_str(), true);
+      renderer.drawText(SMALL_FONT_ID, textX, titleY, progressLine.data(), true);
     }
   } else {
     drawEmptyRecents(renderer, rect);

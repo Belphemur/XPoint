@@ -101,8 +101,8 @@ void formatChapterTimeLeft(uint32_t seconds, char* buf, size_t len);
 // unknown progress renders "-", a zero time-left estimate renders the
 // unavailable marker instead of a duration.
 void formatHomeProgressLine(const BookReadingStats& stats, char* buf, size_t len);
-// CrossInk-style stat cell: decimal value, or "-" when the value is
-// unavailable (no data / feature disabled).
+// CrossInk-style stat cell: decimal value, or the localized unavailable
+// marker when the value is missing (no data / feature disabled).
 std::string formatStatCell(uint32_t value, bool hasValue = true);
 
 void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT>& timeOfDaySeconds,

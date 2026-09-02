@@ -1,7 +1,9 @@
 # Home Card Progress + CrossInk Reading-Stats Display Port
 
-**Status:** Draft — awaiting user review.
+**Status:** Implemented in PR #52 (`feat/home-card-progress` → `develop`).
+Merged: pending review on GitHub.
 **Target repo:** `Belphemur/crosspoint-x-reader` (branch `develop`)
+**Commit on this branch:** `4b7efe09` — "feat(reading-stats): home card progress line + crossink stats card-grid port"
 **Source of inspiration:** `uxjulia/crossink` (`development`) — the sister fork next to
 this workspace (`../crossink/`). CrossInk's `BookStatsView` (around her
 v1.4–v1.5 cycle) introduced the card-grid stats layout and the "Est. Finish" /
@@ -84,7 +86,7 @@ RAM-only state initialized from the history at load; see §3.3).
   - One new byte on the per-book record (`lastBookProgressPercent`, see §3.2).
   - Zero new bytes on the global record — streak counters are RAM-only.
 - **No** touch of the WPM algorithm, the pace sampler, the binary store, or
-  the persistence-versioning rules from `reading-stats-binary-files.md`.
+  the persistence-versioning rules from `2026-08-25-binary-files.md`.
 - **No** re-doing the WPM-floored display in `STR_STATS_WPM_VALUE`. The existing
   percent format strings from crossink (`"%d%%"`) replace CrossPoint's
   `STR_PROGRESS_LBL` value formatter.
@@ -205,7 +207,8 @@ by a new `loadRecentBookStats()` step. For each recent book:
    or skip for XTC/TXT (XTC/TXT readers do not currently expose a stats API
    in CrossPoint — see §5.2).
 2. `BookReadingStats::load(cachePath)`.
-3. If `lastBookProgressPercent == UNKNOWN`, leave the line empty.
+3. If `lastBookProgressPercent == UNKNOWN`, use the `"-"` sentinel line;
+   themes treat that sentinel as "no line" (see §8).
 4. Else format `"%u%% • %s"` via the new i18n key `STR_PROGRESS_LINE_FMT`
    (§6), using `formatCompactReadingDuration(estimatedTimeLeftSeconds)`
    for the second half.
@@ -265,12 +268,13 @@ void renderProgressLine(GfxRenderer& renderer, int x, int y, int width,
                         const char* line, bool inverted);
 ```
 
-defined on `BaseTheme`. The helper:
+defined on `BaseTheme`. The formatting happens once upstream in the
+activity (`HomeActivity`): it builds the final line with
+`snprintf(buf, sizeof(buf), tr(STR_PROGRESS_LINE_FMT), percent, compactTime)`
+so each theme just consumes a `const char*`. Unknown progress is represented
+by the `"-"` sentinel from §5; themes compare against it and skip the line
+entirely, so the card simply shows no progress row. The helper:
 
-- Looks up `tr(STR_PROGRESS_LINE_FMT)` — actually we format with
-  `snprintf(buf, sizeof(buf), tr(STR_PROGRESS_LINE_FMT), percent, compactTime)`
-  upstream in the activity (so the themes only need a `const char*`).
-- Falls back to `"-"` if `lastBookProgressPercent == UNKNOWN`.
 - Renders inverted or not based on the surrounding card state (selected vs.
   unselected).
 
@@ -405,7 +409,7 @@ TEST(BookReadingStatsV6, ProgressPercentRoundTrip) {
   BookReadingStats stats;
   stats.lastBookProgressPercent = 42;
   stats.save(BOOK_DIR);
-  const auto loaded = = BookReadingStats::load(BOOK_DIR);
+  const auto loaded = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(loaded.lastBookProgressPercent, 42);
 }
 ```
@@ -418,7 +422,7 @@ TEST(BookReadingStatsV6, ProgressPercentUnknownClampedFromTornByte) {
   data[0] = 6; // version
   data[108] = 200; // out-of-range
   Storage.writeFile(BOOK_DIR "/stats_v6.bin", data, STATS_FILE_SIZE);
-  const auto loaded = = BookReadingStats::load(BOOK_DIR);
+  const auto loaded = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(loaded.lastBookProgressPercent, UNKNOWN_BOOK_PROGRESS_PERCENT);
 }
 ```

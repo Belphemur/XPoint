@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -89,9 +90,9 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
 
       const int maxLineWidth = tileWidth - 2 * hPaddingInSelection;
 
-      static const std::string emptyProgressLine;
-      const std::string& progressLine =
-          static_cast<int>(recentBookProgressLines.size()) > i ? recentBookProgressLines[i] : emptyProgressLine;
+      static constexpr std::string_view kEmptyProgressLine = "";
+      const std::string_view progressLine =
+          static_cast<int>(recentBookProgressLines.size()) > i ? recentBookProgressLines[i] : kEmptyProgressLine;
       const bool hasProgressLine = !progressLine.empty() && progressLine != "-";
 
       auto titleLines = renderer.wrappedText(SMALL_FONT_ID, recentBooks[i].title.c_str(), maxLineWidth, 3);
@@ -122,7 +123,7 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
       }
       if (hasProgressLine) {
         currentY += titleLineHeight / 2;
-        renderer.drawText(SMALL_FONT_ID, tileX + hPaddingInSelection, currentY, progressLine.c_str(), true);
+        renderer.drawText(SMALL_FONT_ID, tileX + hPaddingInSelection, currentY, progressLine.data(), true);
       }
     }
   } else {

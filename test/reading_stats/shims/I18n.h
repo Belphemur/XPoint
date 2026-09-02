@@ -16,6 +16,7 @@ enum class StrId {
   STR_TIME_LEFT_LESS_THAN_MIN,
   STR_TIME_LEFT_UNAVAILABLE,
   STR_PROGRESS_LINE_FMT,
+  STR_STATS_VALUE_UNAVAILABLE,
   STR_YES,
   STR_NO,
 };
@@ -52,6 +53,8 @@ class I18n {
         return "--";
       case StrId::STR_PROGRESS_LINE_FMT:
         return "%u%% \xE2\x80\xA2 %s";
+      case StrId::STR_STATS_VALUE_UNAVAILABLE:
+        return "--";
       case StrId::STR_YES:
         return "Yes";
       case StrId::STR_NO:

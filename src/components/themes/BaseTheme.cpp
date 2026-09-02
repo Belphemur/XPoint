@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
@@ -571,8 +572,12 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
     const std::string& lastBookTitle = recentBooks[0].title;
     const std::string& lastBookAuthor = recentBooks[0].author;
 
-    static const std::string emptyProgressLine;
-    const std::string& progressLine = recentBookProgressLines.empty() ? emptyProgressLine : recentBookProgressLines[0];
+    // Sentinel view over an empty literal: C string APIs get a valid,
+    // null-terminated pointer, and the view stays valid because the referenced
+    // std::string elements live for the whole render.
+    static constexpr std::string_view kEmptyProgressLine = "";
+    const std::string_view progressLine =
+        recentBookProgressLines.empty() ? kEmptyProgressLine : recentBookProgressLines[0];
     const bool hasProgressLine = !progressLine.empty() && progressLine != "-";
 
     // Invert text colors based on selection state:
@@ -615,7 +620,7 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
         }
       }
       if (hasProgressLine) {
-        const int progressWidth = renderer.getTextWidth(SMALL_FONT_ID, progressLine.c_str());
+        const int progressWidth = renderer.getTextWidth(SMALL_FONT_ID, progressLine.data());
         if (progressWidth > maxTextWidth) {
           maxTextWidth = progressWidth;
         }
@@ -645,7 +650,7 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
 
     if (hasProgressLine) {
       titleYStart += renderer.getLineHeight(SMALL_FONT_ID) / 2;
-      renderer.drawCenteredText(SMALL_FONT_ID, titleYStart, progressLine.c_str(), !bookSelected);
+      renderer.drawCenteredText(SMALL_FONT_ID, titleYStart, progressLine.data(), !bookSelected);
     }
 
     // "Continue Reading" label at the bottom
@@ -963,18 +968,23 @@ void BaseTheme::drawBarChartRow(GfxRenderer& renderer, const int x, const int y,
   const int barX = x + labelWidth;
   const int valueX = x + width - renderer.getTextWidth(SMALL_FONT_ID, valueText);
   const int barWidth = std::max(0, valueX - barX - 8);
-  if (barWidth <= 0) {
-    return;
+  if (barWidth > 0) {
+    const int barHeight = std::min(rowHeight - 4, 10);
+    const int barY = y + (rowHeight - barHeight) / 2;
+    renderer.drawRect(barX, barY, barWidth, barHeight, true);
+    if (value > 0 && maxValue > 0) {
+      const int fillWidth =
+          std::min(barWidth, std::max(2, static_cast<int>(static_cast<int64_t>(barWidth) * value / maxValue)));
+      renderer.fillRect(barX, barY, fillWidth, barHeight, true);
+    }
   }
-  const int barHeight = std::min(rowHeight - 4, 10);
-  const int barY = y + (rowHeight - barHeight) / 2;
-  renderer.drawRect(barX, barY, barWidth, barHeight, true);
-  if (value > 0 && maxValue > 0) {
-    const int fillWidth =
-        std::min(barWidth, std::max(2, static_cast<int>(static_cast<int64_t>(barWidth) * value / maxValue)));
-    renderer.fillRect(barX, barY, fillWidth, barHeight, true);
-  }
+  // Always draw the value even when the bar does not fit the row.
   renderer.drawText(SMALL_FONT_ID, valueX, textY, valueText);
+}
+
+void BaseTheme::drawBarChartTitle(GfxRenderer& renderer, const Rect& rect, const char* title) {
+  const int titleX = rect.x + std::max(0, (rect.width - renderer.getTextWidth(SMALL_FONT_ID, title)) / 2);
+  renderer.drawText(SMALL_FONT_ID, titleX, rect.y, title, true, EpdFontFamily::BOLD);
 }
 
 void BaseTheme::drawBarChart(GfxRenderer& renderer, const Rect& rect, const char* const* labels, const uint32_t* values,
