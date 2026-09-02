@@ -382,8 +382,9 @@ comes from a real `FootnoteEntry` on *this* page:
   Footnote — cheaper than a guaranteed-miss dictionary query.
 ## Note: `Long-press Menu` reachability
 
-`longPressMenuFunction` is a Confirm-hold setting only. On boards without a
-Confirm pin the row is hidden in Settings and not dispatched.
+`longPressMenuFunction` is a Confirm-hold setting only. The Settings row is
+hidden and undispatched when the board has neither a Confirm pin nor
+`synthesizeConfirm`.
 ## Alternatives considered
 
 | Option | Verdict |

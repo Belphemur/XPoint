@@ -12,12 +12,9 @@ user's configured Home Button Tap setting (Go back one level).
 
 ## 2. Principle (user-stated)
 
-> No home button, no home-button feature. No confirm button, no
-> confirm-button feature. Gate properly with a compile macro.
-
-> Also can we have the python simple parse the header file instead of having
-> own dictionary? Or even have it loaded directly? We should avoid duplication
-> DRY.
+> No home button, no home-button feature. No confirm button, no confirm-button feature. Gate properly with a compile macro.
+>
+> Also can we have the python simple parse the header file instead of having own dictionary? Or even have it loaded directly? We should avoid duplication DRY.
 
 Two distinct layers:
 
@@ -40,7 +37,7 @@ Consumers use `#if FREEINK_CAP_HOME_KEY` / `#if FREEINK_CAP_MENU_BUTTON`.
 
 ### DRY chain (single source of truth)
 
-```
+```text
 BoardConfig.h ────► board_features_dump.c ──JSON──► gen_board_features.py ──► build/board_features.h
   (SDK truth)        (host C++ dump)                 (thin emitter)           (FREEINK_CAP_*)
 ```

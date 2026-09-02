@@ -62,7 +62,7 @@ physically produces that gesture on this board:
 | `homeButtonTapAction` | `BoardConfig::hasHomeKey()` | Home key release (after 300 ms arbitration) |
 | `homeButtonDoubleClickAction` | `BoardConfig::hasHomeKey()` | Two Home key releases within 300 ms |
 | `homeButtonLongPressAction` | `BoardConfig::hasHomeKey()` | Home key held >= 700 ms |
-| `longPressMenuFunction` | Confirm pin assigned, or `synthesizeConfirm` | Physical Confirm button held |
+| `longPressMenuFunction` | Confirm pin assigned, or `synthesizeConfirm` | Confirm input held (physical Confirm button or touch-tap-synthesized Confirm) |
 | `touchLongPressAction` | `BoardConfig::hasTouch()` | Touch contact held >= 500 ms (screen only, NOT Home key) |
 
 ## 3. Implementation
