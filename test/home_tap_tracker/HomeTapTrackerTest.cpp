@@ -70,3 +70,21 @@ TEST(HomeTapTracker, LateTapAfterStallIsNotDoubleClick) {
   EXPECT_EQ(tracker.update(true, 350, 300), HomeTapTracker::Step::WindowExpired);
   EXPECT_FALSE(tracker.armed);
 }
+
+// Regression (hardware-gated dispatch): a Home hold used to fall through to the
+// reader's longPressMenuFunction consumers on boards without a Confirm pin. The
+// arbiter in main.cpp now owns ALL Home holds: with homeButtonLongPressAction
+// != HOME_ACT_OFF it disarms any pending tap window, dispatches the configured
+// action, and returns true so no frame reaches the reader. The tracker cannot
+// observe the dispatcher, so this test pins the tracker-level contract of that
+// call order: disarming on the hold frame yields no WindowExpired delivery (no
+// deferred tap/gesture leaks to the reader) and the tracker stays disarmed.
+TEST(HomeTapTracker, HoldOnConfiguredBoardDoesNotFallThroughToReader) {
+  HomeTapTracker tracker;
+  tracker.arm(1000);
+  // Post-fix main.cpp hold frame: homeTapTracker.disarm() runs before
+  // executeHomeButtonAction(SETTINGS.homeButtonLongPressAction).
+  tracker.disarm();
+  EXPECT_EQ(tracker.update(true, 1200, 300), HomeTapTracker::Step::None);
+  EXPECT_FALSE(tracker.armed);
+}
