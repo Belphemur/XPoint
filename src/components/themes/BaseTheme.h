@@ -270,7 +270,7 @@ class BaseTheme {
   static void drawBarChart(GfxRenderer& renderer, const Rect& rect, const char* const* labels, const uint32_t* values,
                            int count);
   // Centered bold small-font section title for a stats chart area.
-  static void drawBarChartTitle(GfxRenderer& renderer, const Rect& rect, const char* title);
+  static void drawBarChartTitle(const GfxRenderer& renderer, const Rect& rect, const char* title);
   // GitHub-style reading-history heatmap: 7 rows (day-of-week, Monday first) ×
   // weeksToShow columns of small squares, rightmost column = current week.
   // bit 0 of the history is the newest day (anchorDay).

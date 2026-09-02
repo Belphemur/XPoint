@@ -982,7 +982,7 @@ void BaseTheme::drawBarChartRow(GfxRenderer& renderer, const int x, const int y,
   renderer.drawText(SMALL_FONT_ID, valueX, textY, valueText);
 }
 
-void BaseTheme::drawBarChartTitle(GfxRenderer& renderer, const Rect& rect, const char* title) {
+void BaseTheme::drawBarChartTitle(const GfxRenderer& renderer, const Rect& rect, const char* title) {
   const int titleX = rect.x + std::max(0, (rect.width - renderer.getTextWidth(SMALL_FONT_ID, title)) / 2);
   renderer.drawText(SMALL_FONT_ID, titleX, rect.y, title, true, EpdFontFamily::BOLD);
 }
