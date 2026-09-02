@@ -534,6 +534,15 @@ void WifiSelectionActivity::checkConnectionStatus() {
           SETTINGS.clockTzIsDst = tz.isDst ? 1 : 0;
         }
         SETTINGS.saveToFile();
+        // Debug aid for the boot-time clock/timezone investigation: surface the
+        // outcome of the very first auto-detect so we can correlate it with
+        // what the next render actually picks up.
+        LOG_INF("CLK",
+                "autoDetect: ok=%d tzId='%s' tzOffsetMin=%d isDst=%d sysEpoch=%lld",
+                tz.valid ? 1 : 0, tz.valid ? tz.id : SETTINGS.clockTimeZoneId,
+                static_cast<int>(SETTINGS.clockTzOffsetMin),
+                static_cast<int>(SETTINGS.clockTzIsDst),
+                static_cast<long long>(time(nullptr)));
       }
     }
 

@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 #include <Epub/ReaderRenderSpec.h>
+#include <Logging.h>
 #include <PersistableStore.h>
 
 #include <cstdint>
@@ -496,16 +497,45 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // supported [-720, +840] range so a corrupted settings file cannot push
   // ReadingStatsUtils' date-roll loops to an extreme iteration count.
   int clockEffectiveOffsetMin() const {
-    if (clockTimeZoneId[0] == '\0') return 0;
+    if (clockTimeZoneId[0] == '\0') {
+      // Debug aid for the boot-time clock/timezone investigation: log the very
+      // first few "no zone yet" calls so we can see whether the first render
+      // after boot is the one taking this path. Counter stays in DRAM, ~12 bytes.
+      static uint32_t sNoZoneCount = 0;
+      if (sNoZoneCount < 3) {
+        ++sNoZoneCount;
+        LOG_INF("CLK", "effective: noZone sysEpoch=%lld", static_cast<long long>(time(nullptr)));
+      }
+      return 0;
+    }
     int live = 0;
-    if (freeink::resolveUtcOffsetMinutes(clockTimeZoneId, static_cast<int64_t>(time(nullptr)), live)) {
+    const int64_t nowEpoch = static_cast<int64_t>(time(nullptr));
+    const bool resolved = freeink::resolveUtcOffsetMinutes(clockTimeZoneId, nowEpoch, live);
+    if (resolved) {
       if (live < -720) return -720;
       if (live > 840) return 840;
+      // Debug aid: log the first few successful live resolutions after boot so we
+      // can tell whether the very first render took the resolver or the cached
+      // fallback path.
+      static uint32_t sResolvedCount = 0;
+      if (sResolvedCount < 3) {
+        ++sResolvedCount;
+        LOG_INF("CLK", "effective: live tzId='%s' sysEpoch=%lld live=%d", clockTimeZoneId,
+                static_cast<long long>(nowEpoch), live);
+      }
       return live;
     }
     int off = clockTzOffsetMin;
     if (off < -720) off = -720;
     if (off > 840) off = 840;
+    // Debug aid: log the cached fallback path so we can see when and why the
+    // resolver refused (invalid epoch / unknown id / pre-NTP).
+    static uint32_t sFallbackCount = 0;
+    if (sFallbackCount < 3) {
+      ++sFallbackCount;
+      LOG_INF("CLK", "effective: fallback tzId='%s' sysEpoch=%lld cached=%d", clockTimeZoneId,
+              static_cast<long long>(nowEpoch), off);
+    }
     return off;
   }
 

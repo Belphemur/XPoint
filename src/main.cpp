@@ -606,6 +606,23 @@ void setup() {
   LOG_INF("MAIN", "Device: %s", BoardConfig::ACTIVE.name);
 #endif
 
+  // Debug aid for the boot-time clock/timezone investigation: surface RTC
+  // availability, the raw system epoch, and the IANA id / cached offset that
+  // will drive the very first render. After the bug is root-caused these can
+  // be downgraded to LOG_DBG or removed.
+  {
+    const time_t bootEpoch = time(nullptr);
+    char rtcBuf[16] = "--:--";
+    uint8_t rh = 0, rm = 0;
+    if (halClock.getTime(rh, rm)) {
+      snprintf(rtcBuf, sizeof(rtcBuf), "%02u:%02u", rh, rm);
+    }
+    LOG_INF("CLK",
+            "boot: rtcAvailable=%d rtcLocal=%s sysEpoch=%lld tzId='%s' tzOffsetMin=%d hasBeenSynced=%u",
+            halClock.isAvailable() ? 1 : 0, rtcBuf, static_cast<long long>(bootEpoch), SETTINGS.clockTimeZoneId,
+            static_cast<int>(SETTINGS.clockTzOffsetMin), static_cast<unsigned>(SETTINGS.clockHasBeenSynced));
+  }
+
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
   if (!Storage.begin()) {
