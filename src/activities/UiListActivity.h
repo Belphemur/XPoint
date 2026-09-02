@@ -57,7 +57,19 @@ class UiListActivity : public Activity, protected UiAppHost {
   // Back/Confirm handling; override wholesale for press/release or hold
   // variants. Return true when a button consumed the pass.
   virtual bool handleButtons();
-  virtual void onBackButton() { finish(); }
+  // Mark the result as cancelled before popping so the startActivityForResult
+  // handler takes its safe "if (result.isCancelled)" branch. Without this, a
+  // subclass whose parent registered a typed-result handler (e.g.
+  // CrossPointWebServerActivity expecting NetworkModeResult) would hit
+  // std::get<T>(result.data) against a default-constructed std::monostate
+  // variant and throw std::bad_variant_access → abort() (observed on File
+  // Transfer back-navigation, X4 Pro 1.9.1).
+  virtual void onBackButton() {
+    ActivityResult result;
+    result.isCancelled = true;
+    setResult(std::move(result));
+    finish();
+  }
   // Header band, drawn before the app renders. Default paints GUI.drawHeader
   // with headerTitle(); override either for custom chrome.
   virtual const char* headerTitle() const { return nullptr; }
