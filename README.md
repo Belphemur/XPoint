@@ -1,5 +1,7 @@
 # CrossPoint X-Reader (`crosspoint-x-reader`)
 
+![CrossPoint X-Reader logo](./docs/images/repo_logo.png)
+
 > ## ⚠️ Personal fork notice
 > This repository (`Belphemur/crosspoint-x-reader`, "CrossPoint X-Reader") is a **personal fork** of
 > [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader).

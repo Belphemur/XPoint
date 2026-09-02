@@ -1319,6 +1319,34 @@ void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, co
   display.drawImage(bitmap, rotatedX, rotatedY, width, height);
 }
 
+void GfxRenderer::drawImageTransparent(const uint8_t bitmap[], const int x, const int y, const int width,
+                                       const int height) const {
+  // Transparent blit: bit=1 (white) leaves the framebuffer untouched, bit=0
+  // (black) paints ink. Underlying convention: see FreeInkDisplay::blitImage
+  // at FreeInkDisplay.cpp (transparent=true path) — it ANDs the destination
+  // byte with the source byte, which is exactly the "paint only black" behavior.
+  // Note: like drawImage, the bits themselves are NOT rotated here — the bitmap
+  // must be pre-rotated at build time (see Logo120.h header for the rationale).
+  int rotatedX = 0;
+  int rotatedY = 0;
+  rotateCoordinates(orientation, x, y, &rotatedX, &rotatedY, panelWidth, panelHeight);
+  switch (orientation) {
+    case Portrait:
+      rotatedY = rotatedY - height;
+      break;
+    case PortraitInverted:
+      rotatedX = rotatedX - width;
+      break;
+    case LandscapeClockwise:
+      rotatedY = rotatedY - height;
+      rotatedX = rotatedX - width;
+      break;
+    case LandscapeCounterClockwise:
+      break;
+  }
+  display.drawImageTransparent(bitmap, rotatedX, rotatedY, width, height);
+}
+
 void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, const int size) const {
   // Plot the icon pixel-by-pixel through drawPixel (which applies the orientation
   // transform) instead of the byte-aligned framebuffer blit. The blit snaps the
