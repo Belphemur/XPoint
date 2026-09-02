@@ -51,6 +51,20 @@ The settings appear in **Settings → Controls** only on boards where
 boards without the key. On lightless boards choosing `FRONTLIGHT` is inert
 (the toggle guards on `present()`), mirroring CrossInk.
 
+### Hardware → setting ownership
+
+Every long-press / hold setting is visible in Settings only when the hardware
+that produces its gesture exists, and is dispatched only by the input path that
+physically produces that gesture on this board:
+
+| Setting | Visible when | Dispatched when |
+| --- | --- | --- |
+| `homeButtonTapAction` | `BoardConfig::hasHomeKey()` | Home key release (after 300 ms arbitration) |
+| `homeButtonDoubleClickAction` | `BoardConfig::hasHomeKey()` | Two Home key releases within 300 ms |
+| `homeButtonLongPressAction` | `BoardConfig::hasHomeKey()` | Home key held >= 700 ms |
+| `longPressMenuFunction` | Confirm pin assigned, or `synthesizeConfirm` | Physical Confirm button held |
+| `touchLongPressAction` | `BoardConfig::hasTouch()` | Touch contact held >= 500 ms (screen only, NOT Home key) |
+
 ## 3. Implementation
 
 ### Tap arbitration (main loop, CrossInk pattern)
@@ -94,3 +108,9 @@ existing power-button double-click handler:
 - Persistence: plain new settings.json keys; old saves pick up the defaults.
   Appending `GO_BACK = 6` (rather than renumbering) keeps 0–5 stable for devices
   that already persisted a tap/double-click/long-press choice.
+- The reader's `longPressMenuFunction` switches (the Confirm-hold and
+  Home-key-hold consumers in `EpubReaderActivity::loop()`) were removed: the
+  setting is hidden in Settings on boards without a Confirm trigger, and the
+  former no-Confirm-pin fall-through that let a Home hold reach the reader is
+  gone. A Home hold is dispatched solely by `homeButtonLongPressAction` in
+  `main.cpp`; when it is `OFF`, nothing dispatches on the hold.

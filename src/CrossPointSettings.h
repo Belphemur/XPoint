@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <ctime>
 
+#include "BoardFeatures.h"
+
 // Forward declaration: the live offset resolver lives in lib/hal/HalTimeZone.cpp
 // (which pulls in the AceTime database). Declaring it here keeps CrossPointSettings.h
 // free of that heavy dependency for the many TUs that include it. The production
@@ -380,9 +382,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // OFF on double click / long press just makes that gesture do nothing.
   // Tap defaults to GO_BACK so a single press climbs one menu level, like
   // the X4's back swipe (the old GO_HOME exit-to-main-menu stays selectable).
+  // Gated at compile time: boards without a capacitive Home key drop the
+  // fields entirely. HOME_BUTTON_ACTION stays ungated so stored JSON values
+  // keep compiling on every board.
+#if FREEINK_CAP_HOME_KEY
   uint8_t homeButtonTapAction = HOME_ACT_GO_BACK;
   uint8_t homeButtonDoubleClickAction = HOME_ACT_FRONTLIGHT;
   uint8_t homeButtonLongPressAction = HOME_ACT_READER_MENU;
+#endif
   // Frontlight quick-panel state. Category-less SettingsList entries persist
   // these without adding them to the regular Settings screen.
   uint8_t frontlightBrightness = 60;

@@ -26,6 +26,7 @@
 
 #include <cstring>
 
+#include "BoardFeatures.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
@@ -59,8 +60,10 @@ constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
 constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 }  // namespace
 
+#if FREEINK_CAP_HOME_KEY
 static HomeTapTracker homeTapTracker;
 constexpr unsigned long X4PRO_HOME_DOUBLE_CLICK_MS = 300;
+#endif
 
 // A wake hold must never become an in-app power-button action.  Boot may continue
 // while the button is held; swallow the one release that ends that wake gesture.
@@ -233,6 +236,7 @@ bool toggleFrontlightByShortcut(const char* source) {
 void enterDeepSleep(bool fromTimeout);
 void enterPowerOff();
 
+#if FREEINK_CAP_HOME_KEY
 bool executeHomeButtonAction(uint8_t action) {
   switch (action) {
     case CrossPointSettings::HOME_ACT_OFF:
@@ -263,6 +267,7 @@ bool executeHomeButtonAction(uint8_t action) {
       return false;
   }
 }
+#endif  // FREEINK_CAP_HOME_KEY
 
 bool handleX4ProFrontlightDoubleClick() {
   if (!BoardConfig::isX4Pro() || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
@@ -289,33 +294,22 @@ bool handleX4ProFrontlightDoubleClick() {
 // this frame carried a Home event that shortcut handling consumed; frames
 // without Home events still reach activities so unrelated input (page turns,
 // touch) is never delayed by the arbitration window.
+#if FREEINK_CAP_HOME_KEY
 bool handleX4ProHomeDoubleClick() {
   if (!BoardConfig::hasHomeKey()) return false;
 
-  // Long-press ownership: when a long-press action is configured, the main
-  // loop owns ALL Home-key holds (the reader's own longPressMenuFunction path
-  // is bypassed because the one-shot edge is consumed here). Setting the
-  // action to Off restores the legacy behavior where the reader handles holds.
+  // Long-press ownership: the main loop owns ALL Home-key holds and dispatches
+  // the configured homeButtonLongPressAction. Off leaves the hold unconsumed;
+  // nothing else dispatches on it.
   const bool hold = gpio.wasHomeKeyLongPressed();
   if (hold) {
-    // When the board has no Confirm button, a configured Long-press Menu
-    // function has no other trigger, so it would be permanently shadowed by the
-    // Home long-press action here (default: Reader Menu). In the reader, let the
-    // hold fall through to the reader so longPressMenuFunction can run; the Home
-    // action still wins elsewhere.
-    if (SETTINGS.longPressMenuFunction != CrossPointSettings::LP_MENU_DISABLED &&
-        BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED &&
-        !BoardConfig::ACTIVE.touch.synthesizeConfirm && activityManager.isCurrentActivityReader()) {
-      homeTapTracker.disarm();
-      return false;  // legacy path: let the reader act on the hold
-    }
     if (SETTINGS.homeButtonLongPressAction != CrossPointSettings::HOME_ACT_OFF) {
       homeTapTracker.disarm();  // a hold is never the second half of a double click
       executeHomeButtonAction(SETTINGS.homeButtonLongPressAction);
       return true;
     }
-    homeTapTracker.disarm();  // legacy path: let the reader act on the hold
-    return false;
+    homeTapTracker.disarm();
+    return false;  // Off: no consumer exists for the hold
   }
 
   const bool tapArmed = SETTINGS.homeButtonTapAction != CrossPointSettings::HOME_ACT_OFF ||
@@ -366,6 +360,9 @@ bool handleX4ProHomeDoubleClick() {
   // Still inside the window with no second tap yet.
   return false;
 }
+#else
+bool handleX4ProHomeDoubleClick() { return false; }
+#endif  // FREEINK_CAP_HOME_KEY
 
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
 

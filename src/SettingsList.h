@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "BoardFeatures.h"
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "ReaderFontSizes.h"
@@ -334,8 +335,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
                            StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
                           "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
+#if FREEINK_CAP_MENU_BUTTON
+        // Long-press Menu opens on a Confirm-button hold (EpubReaderActivity
+        // confirm-hold path). The runtime check below stays as defense-in-depth.
         SettingInfo::Enum(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuFunction,
                           buildLongPressMenuValues(), "longPressMenuFunction", StrId::STR_CAT_CONTROLS),
+#endif
 #if FREEINK_CAP_TOUCH
         SettingInfo::Enum(StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
                           {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH,
@@ -347,12 +352,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES},
             "shortPwrBtn", StrId::STR_CAT_CONTROLS),
 #endif
+#if FREEINK_CAP_HOME_KEY
         SettingInfo::Enum(StrId::STR_HOME_BUTTON_TAP, &CrossPointSettings::homeButtonTapAction, buildHomeButtonValues(),
                           "homeButtonTapAction", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_HOME_BUTTON_DOUBLE_CLICK, &CrossPointSettings::homeButtonDoubleClickAction,
                           buildHomeButtonValues(), "homeButtonDoubleClickAction", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_HOME_LONG_PRESS, &CrossPointSettings::homeButtonLongPressAction,
                           buildHomeButtonValues(), "homeButtonLongPressAction", StrId::STR_CAT_CONTROLS),
+#endif
         SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &CrossPointSettings::pwrBtnFootnoteBack,
                             "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,

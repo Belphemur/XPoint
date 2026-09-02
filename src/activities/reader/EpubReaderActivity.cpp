@@ -19,6 +19,7 @@
 #include <variant>
 
 #include "../../util/BookmarkFile.h"
+#include "BoardFeatures.h"
 #include "BookmarkEntry.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
@@ -596,7 +597,6 @@ void EpubReaderActivity::loop() {
   if (handleEndOfBookMenu()) {
     return;
   }
-  const bool endOfBookMenuOpen = endOfBookMenuActive();
 
   if (SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF && mappedInput.hasTouch() &&
       SETTINGS.touchLongPressAction != CrossPointSettings::TOUCH_LP_IGNORE && !showDictionaryMessage &&
@@ -611,12 +611,15 @@ void EpubReaderActivity::loop() {
     }
   }
 
+#if FREEINK_CAP_MENU_BUTTON
+  // Long-press Confirm runs the user-selected long-press function. Boards
+  // without any Confirm button (physical or synthesized) drop this entirely.
+  const bool endOfBookMenuOpen = endOfBookMenuActive();
   const unsigned long confirmHoldMs = confirmLongPressThreshold();
   // wasLongPressed() suppresses the release that follows it, so leave it unpolled while
   // the end-of-book menu owns Confirm -- otherwise the menu never sees that release.
   const bool confirmLongPressed = !endOfBookMenuOpen && confirmHoldMs != 0 &&
                                   mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, confirmHoldMs);
-  const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
   if (confirmLongPressed) {
     switch (SETTINGS.longPressMenuFunction) {
       case CrossPointSettings::LP_MENU_BOOKMARK:
@@ -639,46 +642,9 @@ void EpubReaderActivity::loop() {
         break;
     }
   }
+#endif
 
-  // Home-key boards have no front Confirm button, so a Home-key hold runs the
-  // same user-selected long-press action. The SDK emits this event once per
-  // hold and suppresses the short Home tap for the same contact.
-  if (mappedInput.wasHomeKeyHold() && !endOfBookMenuOpen) {
-    switch (SETTINGS.longPressMenuFunction) {
-      case CrossPointSettings::LP_MENU_BOOKMARK:
-        if (!showBookmarkMessage) {
-          addBookmark();
-          showBookmarkMessage = true;
-          bookmarkMessageTime = millis();
-          requestUpdate();
-        }
-        return;
-      case CrossPointSettings::LP_MENU_KOSYNC:
-        // Only consume the hold when sync can actually start. Without
-        // credentials launchKOReaderSync() returns false, and we must fall
-        // through so the configured Home long-press action still runs.
-        if (KOREADER_STORE.hasCredentials()) {
-          launchKOReaderSync();
-          return;
-        }
-        break;
-      case CrossPointSettings::LP_MENU_DICTIONARY:
-        if (!showDictionaryMessage) {
-          openDictionaryWordSelect();
-        }
-        return;
-      case CrossPointSettings::LP_MENU_READER_MENU:
-        if (usesToolbarMenu() && section) {
-          openOverlay(Overlay::Toolbar);
-        } else {
-          openReaderMenu();
-        }
-        return;
-      case CrossPointSettings::LP_MENU_DISABLED:
-      default:
-        break;
-    }
-  }
+  const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
 
   if (confirmReleased || ReaderUtils::isTouchMenuGesture(renderer, mappedInput)) {
     // Toolbar style: the page is on screen and in the framebuffer, so paint the

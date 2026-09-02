@@ -380,70 +380,10 @@ comes from a real `FootnoteEntry` on *this* page:
   `1` or `12` will almost always show "not found". Prefer suppressing the
   dictionary fallback when the touched token is purely numeric and the action is
   Footnote — cheaper than a guaranteed-miss dictionary query.
-## Related finding: `Long-press Menu` is unreachable by default on the X4 Pro
+## Note: `Long-press Menu` reachability
 
-Shipped as a **separate commit** in this PR, and deliberately scoped as a
-**defaults/arbitration** fix — *not* a visibility gate. An earlier draft of this
-doc proposed hiding the row when the board has no Confirm trigger and no Home
-key; that predicate was **wrong**, because the X4 Pro sets `hasHomeKey = true`
-(`BoardConfig.h:1470`), so it would never have fired on the very board in
-question — while it *would* have hidden the row on PaperMono
-(`BoardConfig.h:967`, no confirm pin, no home key) and M5PaperS3, which are not
-affected by this problem. The corrected analysis:
-
-`STR_LONG_PRESS_MENU` has two triggers (see the table above). On the X4 Pro:
-
-- **Confirm hold** — impossible: no `confirm` GPIO (`BoardConfig.h:1432`) and
-  `synthesizeConfirm = false` (`:1462`), so `Button::Confirm` is never pressed.
-- **Home-key hold** — consumed upstream *by default*.
-  `handleX4ProHomeDoubleClick()` (`main.cpp:276-341`) is gated on
-  `BoardConfig::hasHomeKey()` (`:277`) — despite its name it governs **every**
-  home-key board, including LilyGo T5S3 — and its hold branch (`:283-292`)
-  consumes the hold whenever `homeButtonLongPressAction != HOME_ACT_OFF`. The
-  default is `HOME_ACT_READER_MENU` (`CrossPointSettings.h:350`), so the reader's
-  own dispatch (`EpubReaderActivity.cpp:607-636`) is never reached.
-
-So the setting is **dead by default but revivable**: setting *Home Long-press →
-Off* makes `handleX4ProHomeDoubleClick` return `false` (`main.cpp:290-291`) and
-the hold falls through to the reader. That is a genuine UX trap — the user must
-turn one setting **off** to make another one work, with nothing in the UI saying
-so — but it is not a dead-code visibility bug, and hiding the row would be wrong.
-
-**Fix (scoped, no new predicate):** when the board has no Confirm trigger, a
-configured `longPressMenuFunction` should win the Home-hold instead of being
-silently shadowed. In `handleX4ProHomeDoubleClick()`, let the hold fall through
-to the reader when there is no confirm trigger **and** the reader has a
-long-press function configured:
-
-```cpp
-// no Confirm button on this board: a configured Long-press Menu function would
-// otherwise be permanently shadowed by the Home-hold action.
-const bool readerWantsHold =
-    SETTINGS.longPressMenuFunction != CrossPointSettings::LP_MENU_DISABLED &&
-    BoardConfig::ACTIVE.input.confirm == PIN_UNASSIGNED &&
-    !BoardConfig::ACTIVE.touch.synthesizeConfirm &&
-    activityManager.isInReader();   // reader-only: Home elsewhere must stay Home
-```
-
-Both field paths are valid (`InputPins.confirm`, `TouchConfig.synthesizeConfirm`,
-struct at `BoardConfig.h:470-491`) and the app already reads
-`BoardConfig::ACTIVE.*` directly (`UIThemeTokens.h:29`, `main.cpp:500`), so this
-needs **no submodule bump**. Note the `synthesizeConfirm` term is currently
-vacuous — **no** shipped board profile sets it `true` (X4 Pro `:1462`, PaperMono
-`:976`, M5PaperS3 `:1291`, LilyGo T5S3 `:718`, Murphy M3 `:1012` all `false`) —
-it is future-proofing only, not load-bearing.
-
-**Settings-UX coupling to document in the user guide** (three long-press
-settings now exist, with board-dependent reachability):
-
-| Board class | Confirm-hold → Long-press Menu | Home-hold | Touch long-press (new) |
-| --- | --- | --- | --- |
-| Buttons only (X4, X3) | ✅ | — | — (row hidden) |
-| Touch + Home key, no Confirm pin (X4 Pro, LilyGo T5S3) | ❌ no pin | ✅ Home action, else falls through to Long-press Menu | ✅ **the natural path** |
-| Touch, no Home key (PaperMono, M5PaperS3) | ❌ no pin | — | ✅ **the only path** |
-
-This is exactly why the touch long-press feature matters: on every touch board
-without a Confirm pin it is the only ergonomic dictionary trigger.
+`longPressMenuFunction` is a Confirm-hold setting only. On boards without a
+Confirm pin the row is hidden in Settings and not dispatched.
 ## Alternatives considered
 
 | Option | Verdict |
