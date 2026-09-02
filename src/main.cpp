@@ -442,6 +442,7 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   halTiltSensor.deepSleep();
   display.deepSleep();
+  Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
   uint64_t autoPowerOffUs = 0;
@@ -575,17 +576,19 @@ void setup() {
   }
 
   const auto wakeupReason = gpio.getWakeupReason();
-  // Deep-sleep wake trust: the EXT1/GPIO wake source armed at sleep entry only
-  // fires on a real power-button press, so no held-stability check is needed —
-  // and requiring one would eat short clicks, because the sample runs hundreds
-  // of ms after the physical wake (chip reset + begin() work) and a ~200 ms
-  // click is already released by then. Cold boots (power-off path) keep the
-  // verification: there the held button is the only ghost-wake filter.
-  if (wakeupReason == HalGPIO::WakeupReason::PowerButton && !gpio.wokeFromDeepSleep() &&
-      !gpio.verifyPowerButtonWakeup()) {
-    LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
-    powerManager.startDeepSleep(gpio);
-  }
+  // Sample the wake hold now — a click wake is released within milliseconds of
+  // boot — but defer the sleep-or-boot decision until SETTINGS is loaded below:
+  // click-to-wake is a setting, and an X4 battery power-off cuts all power, so
+  // only SD state survives to the next boot.
+  //
+  // Deep-sleep wakes skip verification: the EXT1/GPIO wake source armed at sleep
+  // entry only fires on a real power-button press, but the press is already
+  // released by the time verifyPowerButtonWakeup() samples (chip reset +
+  // begin() work delay) — so a held-stability check would eat every short click
+  // wake. Only the post-power-off (cold-boot) path actually has a held button to
+  // verify, and that's the ghost-wake debounce the SETTINGS check covers.
+  const bool wakeHoldVerified =
+      wakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.wokeFromDeepSleep() || gpio.verifyPowerButtonWakeup();
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
@@ -662,6 +665,13 @@ void setup() {
 
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
+      // With Short Power Button Press = Sleep, a single click wakes on any
+      // device; otherwise the button must still be held (ghost-wake debounce).
+      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
+        LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
+        Storage.prepareForDeepSleep();
+        powerManager.startDeepSleep(gpio);
+      }
       wakePowerReleasePending = true;
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
@@ -676,6 +686,7 @@ void setup() {
       // the device in a USB-replug boot loop (or sleep right after a flash).
       break;
 #else
+      Storage.prepareForDeepSleep();
       powerManager.startDeepSleep(gpio);
       break;
 #endif
