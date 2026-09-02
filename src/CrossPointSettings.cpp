@@ -244,9 +244,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // what came off the JSON so we can tell whether the file held an IANA id, an
   // empty id, a stale cached offset, or a legacy `clockUtcOffsetQ` that still
   // needs migrating.
-  LOG_INF("CLK", "loaded: tzId='%s' tzOffsetMin=%d isDst=%d hasBeenSynced=%u utcOffsetQPresent=%d",
-          clockTimeZoneId, static_cast<int>(clockTzOffsetMin), static_cast<int>(clockTzIsDst),
-          static_cast<unsigned>(clockHasBeenSynced), doc["clockUtcOffsetQ"].isNull() ? 0 : 1);
+  LOG_INF("CLK", "loaded: tzId='%s' tzOffsetMin=%d isDst=%d hasBeenSynced=%u utcOffsetQPresent=%d", clockTimeZoneId,
+          static_cast<int>(clockTzOffsetMin), static_cast<int>(clockTzIsDst), static_cast<unsigned>(clockHasBeenSynced),
+          doc["clockUtcOffsetQ"].isNull() ? 0 : 1);
 
   // Migrate the pre-1.5 manual UTC-offset picker (clockUtcOffsetQ, biased by 48
   // quarter-hour steps) into the new signed-minute field so existing users keep

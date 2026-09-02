@@ -617,8 +617,7 @@ void setup() {
     if (halClock.getTime(rh, rm)) {
       snprintf(rtcBuf, sizeof(rtcBuf), "%02u:%02u", rh, rm);
     }
-    LOG_INF("CLK",
-            "boot: rtcAvailable=%d rtcLocal=%s sysEpoch=%lld tzId='%s' tzOffsetMin=%d hasBeenSynced=%u",
+    LOG_INF("CLK", "boot: rtcAvailable=%d rtcLocal=%s sysEpoch=%lld tzId='%s' tzOffsetMin=%d hasBeenSynced=%u",
             halClock.isAvailable() ? 1 : 0, rtcBuf, static_cast<long long>(bootEpoch), SETTINGS.clockTimeZoneId,
             static_cast<int>(SETTINGS.clockTzOffsetMin), static_cast<unsigned>(SETTINGS.clockHasBeenSynced));
   }
