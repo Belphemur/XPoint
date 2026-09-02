@@ -334,6 +334,37 @@ TEST_F(ReadingStatsBinaryStoreTest, BackwardCompatV5) {
   EXPECT_EQ(bytes[0], 6);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, BookReadingStatsV6_ProgressPercentRoundTrip) {
+  BookReadingStats b;
+  b.totalReadingSeconds = 600;
+  b.lastBookProgressPercent = 42;
+  b.save(BOOK_DIR);
+
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
+  ASSERT_EQ(bytes.size(), 109u);
+  EXPECT_EQ(bytes[0], 6);      // version byte unchanged
+  EXPECT_EQ(bytes[108], 42u);  // progress byte lands at its v6 offset
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.lastBookProgressPercent, 42u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookReadingStatsV6_ProgressPercentUnknownClampedFromTornByte) {
+  // A torn write or out-of-range byte (here 200 > 100) must load as the
+  // unknown sentinel, never as a bogus percentage.
+  std::vector<uint8_t> record(109, 0);
+  record[0] = 6;
+  record[108] = 200;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 6), f));
+    f.write(record.data(), record.size());
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.lastBookProgressPercent, static_cast<uint8_t>(UNKNOWN_BOOK_PROGRESS_PERCENT));
+}
+
 // Global v3 record (159 bytes — one version behind the current v4) is
 // recognized on load: bookkeeping loads, the trailing WPM window is empty.
 // v1/v2 layouts are no longer supported — see the binary layout comment in

@@ -280,3 +280,31 @@ TEST(ReadingStatsUtilsTest, WpmClearStatsResetsWindow) {
   GlobalReadingStats global;
   EXPECT_FALSE(resolveReadingPaceSecondsPerPage(book, global).has_value());
 }
+
+TEST(ReadingStatsUtilsTest, ProgressLineFormatProduces14PercentPlus1h15m) {
+  BookReadingStats book;
+  book.lastBookProgressPercent = 14;
+  book.estimatedTimeLeftSeconds = 75u * 60u;  // 1h 15m
+
+  char buf[48];
+  formatHomeProgressLine(book, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "14% \xE2\x80\xA2 1h 15m");
+}
+
+TEST(ReadingStatsUtilsTest, ProgressLineFormatUnknownReturnsDash) {
+  BookReadingStats book;  // default: UNKNOWN_BOOK_PROGRESS_PERCENT
+
+  char buf[48];
+  formatHomeProgressLine(book, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "-");
+}
+
+TEST(ReadingStatsUtilsTest, ProgressLineFormatZeroTimeLeftReturnsDash) {
+  BookReadingStats book;
+  book.lastBookProgressPercent = 14;
+  book.estimatedTimeLeftSeconds = 0;
+
+  char buf[48];
+  formatHomeProgressLine(book, buf, sizeof(buf));
+  EXPECT_STREQ(buf, "14% \xE2\x80\xA2 --");
+}

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -57,7 +58,8 @@ void RoundedRaffTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const 
 
 void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                           bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
+                                           bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                           const std::vector<std::string>& recentBookProgressLines) const {
   const int tileWidth = rect.width - 2 * RoundedRaffMetrics::values.contentSidePadding;
   const int tileHeight = rect.height;
   const int tileY = rect.y;
@@ -127,6 +129,26 @@ void RoundedRaffTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
     renderer.fillRoundedRect(tileX, imgY + RoundedRaffMetrics::values.homeCoverHeight, tileWidth,
                              tileHeight - (imgY - tileY + RoundedRaffMetrics::values.homeCoverHeight), kRowRadius,
                              false, false, true, true, Color::LightGray);
+
+    static constexpr std::string_view kEmptyProgressLine = "";
+    const std::string_view progressLine =
+        recentBookProgressLines.empty() ? kEmptyProgressLine : recentBookProgressLines[0];
+    if (!progressLine.empty() && progressLine != "-") {
+      // This theme draws no title/author text on the card, so the progress
+      // line sits alone in the band below the cover (boxed for legibility
+      // over the dithered background).
+      const int lineHeight = renderer.getLineHeight(SMALL_FONT_ID);
+      const int bandTop = imgY + RoundedRaffMetrics::values.homeCoverHeight;
+      const int bandHeight = tileY + tileHeight - bandTop;
+      const int boxHeight = lineHeight + 6;
+      const int boxY = bandTop + std::max(0, (bandHeight - boxHeight) / 2);
+      constexpr int boxPadding = 6;
+      const int boxWidth = renderer.getTextWidth(SMALL_FONT_ID, progressLine.data()) + boxPadding * 2;
+      const int boxX = tileX + (tileWidth - boxWidth) / 2;
+      renderer.fillRect(boxX, boxY, boxWidth, boxHeight, false);
+      renderer.drawRect(boxX, boxY, boxWidth, boxHeight, true);
+      renderer.drawText(SMALL_FONT_ID, boxX + boxPadding, boxY + 3, progressLine.data(), true);
+    }
   } else {
     renderer.fillRoundedRect(tileX, tileY, tileWidth, tileHeight, kRowRadius, Color::LightGray);
     renderer.drawCenteredText(kTitleFontId, rect.y + rect.height / 2 - renderer.getLineHeight(kTitleFontId) / 2,

@@ -36,6 +36,9 @@ struct GlobalReadingStats {
   void recordGlobalPageRead(uint32_t seconds, uint16_t wordsOnPage);
   // Zeros the WPM window only; sessions, totals, buckets and streaks survive.
   void clearWpmStats();
-  uint16_t currentReadingStreak(const ReadingStatsDate* today) const;
-  uint16_t displayLongestReadingStreak() const;
+  // Consecutive days with recorded reading ending at today (or the given
+  // anchor date in tests).
+  uint16_t currentReadingStreakDays(const ReadingStatsDate* today = nullptr) const;
+  // Longest run of consecutive reading days ever recorded.
+  uint16_t longestReadingStreakDays() const;
 };

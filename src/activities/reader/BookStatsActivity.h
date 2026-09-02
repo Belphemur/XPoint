@@ -17,6 +17,9 @@ class BookStatsActivity final : public UiListActivity {
 
   std::vector<freeink::ui::ListItem> rowItems;
   std::vector<std::string> valueCache;
+  // Backing storage for the composite "Started <date>" row label; ListItem
+  // labels are borrowed const char*, so composed labels need somewhere to live.
+  std::string startedRowLabel;
   void rebuildRowItems();
 
  public:

@@ -62,6 +62,11 @@ value, same filename, same layout — so files are byte-for-byte interchangeable
 in both directions (a v6 byte would fail crossink's exact `(size, version)` check and
 contradict that very claim). Layout (73 bytes):
 
+> **Subsequent updates:** the shipped record has since moved to **version 6**
+> (109 bytes). Byte 108, reserved (0) at the time of this document, now carries
+> `lastBookProgressPercent` (uint8, 0-100, 0xFF = unknown) — see the
+> 2026-09-02 home-card-progress design doc, §3.
+
 ```
 [0]      version (= 5)
 [1-2]    sessionCount              uint16 LE

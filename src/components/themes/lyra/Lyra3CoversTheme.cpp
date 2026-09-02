@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "RecentBooksStore.h"
@@ -20,7 +21,8 @@ constexpr int cornerRadius = 6;
 
 void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std::vector<RecentBook>& recentBooks,
                                            const int selectorIndex, bool& coverRendered, bool& coverBufferStored,
-                                           bool& bufferRestored, std::function<bool()> storeCoverBuffer) const {
+                                           bool& bufferRestored, std::function<bool()> storeCoverBuffer,
+                                           const std::vector<std::string>& recentBookProgressLines) const {
   const int tileWidth = (rect.width - 2 * Lyra3CoversMetrics::values.contentSidePadding) / 3;
   const int tileY = rect.y;
   const bool hasContinueReading = !recentBooks.empty();
@@ -88,10 +90,16 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
 
       const int maxLineWidth = tileWidth - 2 * hPaddingInSelection;
 
+      static constexpr std::string_view kEmptyProgressLine = "";
+      const std::string_view progressLine =
+          static_cast<int>(recentBookProgressLines.size()) > i ? recentBookProgressLines[i] : kEmptyProgressLine;
+      const bool hasProgressLine = !progressLine.empty() && progressLine != "-";
+
       auto titleLines = renderer.wrappedText(SMALL_FONT_ID, recentBooks[i].title.c_str(), maxLineWidth, 3);
 
       const int titleLineHeight = renderer.getLineHeight(SMALL_FONT_ID);
-      const int dynamicBlockHeight = static_cast<int>(titleLines.size()) * titleLineHeight;
+      const int dynamicBlockHeight =
+          static_cast<int>(titleLines.size()) * titleLineHeight + (hasProgressLine ? titleLineHeight * 3 / 2 : 0);
       // Add a little padding below the text inside the selection box just like the top padding (5 + hPaddingSelection)
       const int dynamicTitleBoxHeight = dynamicBlockHeight + hPaddingInSelection + 5;
 
@@ -112,6 +120,10 @@ void Lyra3CoversTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, con
       for (const auto& line : titleLines) {
         renderer.drawText(SMALL_FONT_ID, tileX + hPaddingInSelection, currentY, line.c_str(), true);
         currentY += titleLineHeight;
+      }
+      if (hasProgressLine) {
+        currentY += titleLineHeight / 2;
+        renderer.drawText(SMALL_FONT_ID, tileX + hPaddingInSelection, currentY, progressLine.data(), true);
       }
     }
   } else {
