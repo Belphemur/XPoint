@@ -97,14 +97,17 @@ Literal pools `0x4200318c`/`0x42003190`/`0x420031c4`/`0x420031cc`/`0x420031d4` f
 with `callx8` indirect dispatches to a small set of helper functions (`0x42033298`, `0x42033280`,
 `0x42033340`, `0x42034ab8`, `0x420342f8` repeat most).
 
-**Stock does NOT call `esp_deep_sleep_start`** (verified: the IDF fn entry `0x4037b39c` has **zero**
-`l32r` references in IROM+IRAM, and the string appears only once in the whole binary). So stock ends
-its power-down transaction via a **PMIC / power-latch hard-off** (GPIO-driven), not the IDF deep-sleep
-path. That is the mechanistic reason stock has **no frontlight leak**: the master rail is hard-cut,
-the frontlight driver is fully depowered, and there is nothing to "hold." The fork instead holds
-GPIO1 (PR #3215) for fast-wake, which exposes the leak that `park()`/`releaseOnWake()` then fixes.
-(Re-confirmed 2026-08-30 via independent grep of the disassembly — supersedes the earlier
-"stock deep-sleeps via esp_deep_sleep_start" wording.)
+**Stock does NOT call `esp_deep_sleep_start` directly** (verified: the IDF fn entry `0x4037b39c`
+has **zero** `l32r` references in IROM+IRAM, and the string appears only once in the whole binary).
+**SUPERSEDED 2026-08-31 by `ghidra_poweroff_report.md` "Bottom line":** stock's power-off is a
+**deep-sleep transaction**, NOT a hard-off. Stock reaches the IDF sleep core via its own
+composer/dispatch (ownership quiesce poll → 16-byte 0x101-tagged CRC32'd wake-config arm → "SRCX"
+magic 0x58435253 + reason byte to RTC slow RAM `0x50000004`/`0x50000000` → commit). The
+`esp_deep_sleep_start` symbol is never called by name, but the sleep core *is* reached — just via a
+custom transaction layer. No PMIC exists (bench-verified); no battery-FET GPIO. Stock's "no drain in
+sleep" comes from correct pad isolation (not from a hard rail cut). The fork's `park()`/
+`releaseOnWake()` is the *clock-agnostic* equivalent of stock's wake-config arming, plus pad
+isolation via `gpio_hold_en` instead of stock's pad-isolation-on-sleep-entry path.
 
 **Stock does NOT use** VBAT under-voltage self-wake or ADC/TSEN sleep monitor on S3 (see §0). So
 stock's "no drain in sleep" comes from **correct pad isolation + not holding a power rail**, not from
@@ -121,13 +124,27 @@ Stock has a distinct light-sleep mode:
   `btdm_low_power_mode_init` (BT low-power) → a real runtime light-sleep with storage
   unmount/remount lifecycle and WiFi/BT modem-sleep.
 - RC_FAST keep-alive strings (`ESP_SLEEP_DIG_USE_RC_FAST_MODE`, `ESP_SLEEP_LP_USE_RC_FAST_MODE`,
-  `ESP_SLEEP_RTC_USE_RC_FAST_MODE`) are present — consistent with keeping the LEDC PWM (frontlight)
-  and RF alive across light sleep.
+  `ESP_SLEEP_RTC_USE_RC_FAST_MODE`) are present — consistent with keeping the digital domain
+  (registers + peripherals) alive across light sleep. **NOT for the frontlight** — verified
+  2026-09-02 via Ghidra decompile of `FUN_422e6750` + `FUN_422e66f0`: stock frontlight runs
+  on `LEDC_AUTO_CLK` (no `KEEP_ALIVE` literal anywhere in `x4pro_stock_V7.4.4_en.bin`) and
+  stock does NOT use RC_FAST for the LEDC timer. RC_FAST keep-alive in stock is for digital-domain
+  retention (register state, RF modems) — see `crosspoint-stock-firmware` skill §"Frontlight".
 
 **Implication for the fork:** the fork only **deep-sleeps** (no light sleep). Therefore RC_FAST
-keep-alive is **unnecessary for the fork** — consistent with PR #66 (the fork's 10 kHz revert is
-caused by `FREEINK_FRONTLIGHT_LS` pinning RC_FAST, which the fork doesn't need). Stock's RC_FAST use
-is for its light-sleep path, which the fork doesn't have.
+keep-alive is **unnecessary for the fork**. PR #66's revert to 10 kHz happened because
+`FREEINK_FRONTLIGHT_LS` tried to clock the LEDC from RC_FAST, which (per the IDF
+`ledc_calculate_divisor` math) cannot reach the OEM 25 kHz / 10-bit — `div = 175 < 256`
+gets rejected by `LEDC_IS_DIV_INVALID`. The fork's current 25 kHz / 10-bit config
+(`BoardConfig.h:1580`) restored the OEM frequency by dropping RC_FAST and using
+`LEDC_AUTO_CLK` → APB. Stock's RC_FAST keep-alive is for digital-domain retention
+in its light-sleep path, which the fork doesn't have.
+
+**Note:** stock does NOT actually keep the frontlight alive across light sleep
+(`FUN_422e6750` uses `LEDC_AUTO_CLK` with no `KEEP_ALIVE`; see §3 above and
+`crosspoint-stock-firmware` §"Frontlight"). With the frontlight on, stock just
+stays in active mode — its light-sleep residency is bounded by the LEDC's
+non-survival.
 
 ---
 
@@ -160,12 +177,12 @@ table words `0x3c4b373b`, `0x3c4aed88`, `0x3c4a6fc3`).
 |---|---|---|---|
 | Deep sleep (pad isolate) | ✅ structured transaction | ✅ `HalPowerManager::deepSleepUntilPowerButton` + `park()` | minimal |
 | Inactivity auto-sleep | ✅ (`Auto Sleep`) | ✅ `main.cpp:813-819` `getSleepTimeoutMs()` | none |
-| Frontlight leak fix | n/a (collapses rail) | ✅ `FrontlightManager::park()`/`releaseOnWake()` | fork has it; correct & clock-agnostic |
+| Frontlight leak fix | n/a (pad-isolation on sleep entry) | ✅ `FrontlightManager::park()`/`releaseOnWake()` | fork has it; correct & clock-agnostic |
 | Low-battery **update gating** | ✅ `Battery is low…` | ⚠️ UI only (battery %) | **gap** |
 | Battery-health state machine | ✅ `battery_healthy/age_ms/valid/stale` | ❌ none | gap |
 | VBAT under-voltage self-wake | ❌ (no-op on S3) | ❌ | none (don't add) |
 | ADC/TSEN sleep monitor | ❌ (unused) | ❌ | none (don't add) |
-| Light-sleep + RC_FAST keep-alive | ✅ | ❌ (deep-sleep only) | by design; keep fork deep-sleep-only |
+| Light-sleep + RC_FAST keep-alive | ✅ (digital-domain retention only) | ❌ (deep-sleep only) | by design; keep fork deep-sleep-only; RC_FAST not needed for frontlight |
 | Brownout handling | ✅ | hardware only | minor gap |
 
 ---
