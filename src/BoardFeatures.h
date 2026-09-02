@@ -15,6 +15,6 @@
 #if __has_include("../build/board_features.h")
 #include "../build/board_features.h"
 #else
-#define FREEINK_CAP_HOME_KEY    0
+#define FREEINK_CAP_HOME_KEY 0
 #define FREEINK_CAP_MENU_BUTTON 0
 #endif
