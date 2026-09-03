@@ -46,7 +46,9 @@ void BookStatsActivity::render(RenderLock&&) {
                                         /*hasEstimatedTimeLeft=*/false, stats.estimatedTimeLeftSeconds,
                                         /*showButtonHints=*/true);
 
-  const char* title = bookTitle.empty() ? tr(STR_READING_STATS) : bookTitle.c_str();
+  const std::string truncated =
+      renderer.truncatedText(UI_12_FONT_ID, bookTitle, renderer.getScreenWidth() - 20, EpdFontFamily::BOLD);
+  const char* title = bookTitle.empty() ? tr(STR_READING_STATS) : truncated.c_str();
   renderer.drawCenteredText(UI_12_FONT_ID, 15, title, true, EpdFontFamily::BOLD);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CLEAR_BOOK_PACE), "", "");

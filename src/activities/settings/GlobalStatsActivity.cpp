@@ -37,8 +37,14 @@ void GlobalStatsActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+#ifdef READING_STATS_ENABLED
+    // When the flag is off, onEnter() leaves `globalStats` default-constructed
+    // (no on-disk load). Calling clearWpmStats + save here would overwrite any
+    // previously-persisted global_stats.bin with a zeroed record. Gate the
+    // action so the flag-off build is purely read-only.
     globalStats.clearWpmStats();
     globalStats.save();
+#endif
     requestUpdate();
   }
 }

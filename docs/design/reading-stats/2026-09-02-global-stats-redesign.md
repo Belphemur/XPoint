@@ -125,9 +125,12 @@ the card width):
   clear-pace UX.
 - **UNCHANGED** `src/components/themes/BaseTheme.h/.cpp` — the
   card-grid rendering is now in `BookStatsView`, not the theme layer.
-  Existing `drawBarChart` / `drawHeatmapGrid` helpers stay (the
-  crossink-style `drawHorizontalBars` in `BookStatsView.cpp` doesn't
-  reuse them — crossink doesn't either).
+  The previous chart helpers (`BaseTheme::drawBarChart`,
+  `BaseTheme::drawBarChartRow`, `BaseTheme::drawBarChartTitle`,
+  `BaseTheme::drawHeatmapGrid`) are removed in this PR because no
+  caller remains after the rewrite (crossink's `drawHorizontalBars`
+  in `BookStatsView.cpp` doesn't reuse them — crossink doesn't
+  either).
 
 ### 6.2 Layout system (port of crossink's `getStatsLayout`)
 
@@ -226,9 +229,13 @@ return is harmless dead code until a future caller reuses it.
 cmake -S test -B build/test -DCMAKE_BUILD_TYPE=Release
 cmake --build build/test -j$(nproc) --target ReadingStatsStoreTest
 ./build/test/reading_stats/ReadingStatsStoreTest   # expect 42/42
-```
 
-Skip `pio run` (no firmware-build-path changes; same as last PR).
+# Required: firmware build covers the new BookStatsView + the
+# BookStatsActivity / GlobalStatsActivity changes. PRs that touch
+# src/ are gated by the `Build default` / `Build x4pro` / etc. jobs in
+# .github/workflows/ci.yml — those are the source of truth. Do not
+# mark the PR ready while any board build is failing.
+```
 
 ## Out of scope (deferred)
 
