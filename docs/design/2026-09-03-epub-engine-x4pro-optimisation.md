@@ -228,7 +228,7 @@ For each phase, verify with:
 | Metric | Method | Baseline (today) | Target (Phase 2) |
 |---|---|---|---|
 | `heap_free_kb` at book open | `LOG_INF("MEM", "Free: %d", ESP.getFreeHeap())` | ~55KB (est.) | ≥80KB |
-| `psram_free_kb` at book open | `LOG_INF("MEM", "PSRAM free: %d", ESP.getFreePsram())` | 0 (unused) | ≥6MB |
+| `psram_free_kb` at book open | `LOG_INF("MEM", "PSRAM free: %d", ESP.getFreePsram())` | measured free at boot (≈ 8 MB on X4 Pro) | ≥ 6 MB free after Phase 2 caches |
 | `pio run -e x4pro` build size | PlatformIO build output | baseline | ≤ baseline + 5KB (Phase 2) |
 | Page-turn latency (manually timed) | `millis()` delta between page requests | baseline | 20-30% reduction on image-heavy pages |
 | Chapter re-open time | `millis()` delta | baseline | 200-500ms saved (§3) |

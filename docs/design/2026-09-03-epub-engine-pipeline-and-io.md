@@ -211,15 +211,16 @@ Inside `readFileToStream` (`ZipFile.cpp:449-572`), the inflate loop reads `chunk
 
 | Operation | File:line | Count per book-open | Bytes per count | Total bytes | SD reads |
 |---|---|---|---|---|---|
-| ZipFile open + central-dir scan | `Epub.cpp:219,828-836,853-854; ZipFile.cpp:278` | ~15–30 (one per `readItemContentsToStream`/`getItemSize`/`readItemContentsToBytes`) | ~2KB (EOCD + CD) | 30–60KB | 30–60 |
-| content.opf inflate | `Epub.cpp:73` | 1 | ~5–30KB (uncompressed) | 5–30KB | 1 (but 5–30 stream reads) |
-| TOC inflate | `Epub.cpp:172,208` | 1–2 | ~2–20KB | 2–40KB | 1–2 |
-| CSS inflate + temp round-trip | `Epub.cpp:353` | 1–N (one per CSS file) | ~1–50KB each | 1–50KB | 1–N |
-| Cover image inflate | `Epub.cpp:665,754` | 1–2 | ~50–300KB | 50–600KB | 1–2 |
-| Section HTML inflate (per section built) | `Section.cpp:322` | 1 per new section | ~50–200KB | 50–200KB | 1 |
-| `book.bin` read | `BookMetadataCache.cpp:461` | 1 | 2–16KB | 2–16KB | 1 |
-| `book.bin` write (`buildBookBin`) | `BookMetadataCache.cpp:169,190` | 1 | ~4–32KB | 4–32KB | 1 write |
-| Section `.bin` write (`commitBuildFile`) | `Section.cpp:543,640` | 1 per section built | 5–50KB | 5–50KB | 1 write |
+| `ZipFile` open + central-dir scan | `Epub.cpp:219,828-836,853-854; ZipFile.cpp:278` | ~15–30 (one per `readItemContentsToStream`/`getItemSize`/`readItemContentsToBytes`) | ~2KB (EOCD + CD scan) | 30–60KB scan traffic | 15–30 file-opens; ~60–180 SD-block reads (sector-aligned) |
+| `content.opf` inflate | `Epub.cpp:73` | 1 | ~5–30KB compressed → ~5–30KB decompressed | depends on `compressedSize` not decompressed size | 1 `HalFile::open`; SD reads = `ceil(compressedSize / 4096)` per `InflateStream` drain |
+| TOC inflate | `Epub.cpp:172,208` | 1–2 | ~2–20KB compressed | 2–40KB | 1–2 `HalFile::open`; SD reads = `ceil(compressedSize / 4096)` per drain |
+| CSS inflate + temp round-trip | `Epub.cpp:353` | 1–N (one per CSS file) | ~1–50KB compressed each | 1–50KB | 1–N `HalFile::open`; SD reads = `ceil(compressedSize / 4096)` per drain |
+| Cover image inflate | `Epub.cpp:665,754` | 1–2 | ~50–300KB compressed | 50–600KB | 1–2 `HalFile::open`; SD reads ≈ `ceil(compressedSize / 4096)` |
+| Section HTML inflate (per section built) | `Section.cpp:322` | 1 per new section | ~50–200KB compressed (typical novel chapter) | 50–200KB | 1 `HalFile::open`; SD reads = `ceil(compressedSize / 4096)` per `InflateStream` drain |
+| `html/<spineIndex>.html` write (unzipped HTML cache) | `Section.cpp:474` | 1 per section built | 50–200KB (decompressed HTML) | 50–200KB | 1 SD write of decompressed bytes |
+| `sections/<spineIndex>.bin` write (serialized Section cache) | `Section.cpp:543,640` | 1 per section built | 5–50KB (header + LUT + page records) | 5–50KB | 1 SD write |
+| `book.bin` read | `BookMetadataCache.cpp:461` | 1 (book-open only) | 2–16KB | 2–16KB | 1 |
+| `book.bin` write (`buildBookBin`) | `BookMetadataCache.cpp:169,190` | 1 (book-open, cache-build) | ~4–32KB | 4–32KB | 1 write |
 
 **Top-3 I/O costs per book-open (cold cache):**
 1. **Cover image inflate** (50–600KB, 1–2 SD reads) — the single largest transfer.
@@ -228,18 +229,23 @@ Inside `readFileToStream` (`ZipFile.cpp:449-572`), the inflate loop reads `chunk
 
 ### B.8 SD I/O table — page turn (cache hot)
 
-| Operation | File:line | Count per page-turn | Bytes per count | Total bytes | SD reads |
+The current reader has intra-chapter page turns that **do not read SD** for the section cache: `EpubReaderActivity::pageTurn()` (`EpubReaderActivity.cpp:1171-1224`) for a forward turn simply increments `section->currentPage++` and updates `lastPageTurnTime`; no `loadSectionFile()` and no SD read. The `.bin` is re-read only when the user crosses a **chapter boundary** (`currentSpineIndex++` followed by `section.reset()` at line 1199; `renderBook()` then calls `loadSectionFile(renderSpec)` at line 1318 on the new section). Auto page-turn (`pageTurn(true)` at line 594) and manual page-turn both share this path.
+
+| Operation | File:line | Count per intra-chapter page turn | Count per chapter boundary | Bytes per count | SD I/O |
 |---|---|---|---|---|---|
-| Section `.bin` read (`loadPageAt`) | `Section.cpp:745-778` | 1 | 1–8KB (one page) | 1–8KB | 1 |
-| Page render to framebuffer | `GfxRenderer.cpp` | 1 | — (DRAM) | — | 0 |
-| (Optional) next-page prewarm | `EpubReaderActivity.cpp:483-493` | 0–1 | 1–8KB | 1–8KB | 0–1 |
+| Section `.bin` read (`loadSectionFile`) | `Section.cpp:142` | **0** (uses in-RAM `pages` from prior load) | 1 | 5–50KB (header + LUT) | 0 / 1 SD read |
+| `html/<spineIndex>.html` re-read | `Section.cpp:474` | 0 | 0–1 (depends on cache state) | 50–200KB | 0 / 0–1 SD read |
+| Page render to framebuffer | `GfxRenderer.cpp` | 1 | 1 | — (DRAM) | 0 |
+| (Optional) next-page prewarm | `EpubReaderActivity.cpp:472-493` | 0–1 | 0–1 | 1–8KB | 0–1 SD read (rare) |
+| `book.bin` read | `BookMetadataCache.cpp:461` | **0** | 0 | — | 0 |
+| `book.bin` write | `BookMetadataCache.cpp:169,190` | 0 | 0 | — | 0 |
 
-**Top-3 I/O costs per page-turn (hot cache):**
-1. **Section `.bin` read** (1–8KB, 1 SD read) — the dominant cost.
-2. **Next-page prewarm** (optional, 1–8KB) — already overlaps with render via the idle prewarm at `EpubReaderActivity.cpp:472-493`.
-3. **None significant** — page turns are I/O-light when the cache is hot.
+**Top-3 I/O costs per chapter boundary (cold section cache):**
+1. **`sections/<spineIndex>.bin` read** (5–50KB, 1 SD read) — the dominant cost on crossing into a new chapter.
+2. **`html/<spineIndex>.html` re-inflate** (50–200KB compressed → uncompressed, 1 SD read + inflate cost) — when the unzipped HTML cache is absent.
+3. **(Optional) Next-page prewarm** (1–8KB) — already overlaps with render via the idle prewarm at `EpubReaderActivity.cpp:472-493`.
 
-**Verdict:** The I/O bottleneck is **book-open, not page-turn**. Page turns are fast when the `.bin` cache is present. The optimisation target is therefore (a) book-open I/O (ZIP re-reads, cover, section HTML inflate) and (b) write-path I/O (`.bin` writes on chapter close).
+**Verdict:** The I/O bottleneck is **book-open and chapter-boundary, not intra-chapter page-turn.** Page turns are I/O-free in steady state; the optimisation targets are (a) book-open I/O (ZIP re-reads, cover, metadata), (b) chapter-boundary I/O (`.bin` re-read + HTML inflate), and (c) write-path I/O (`.bin` and `.html` writes on chapter close).
 
 ---
 
@@ -306,7 +312,7 @@ For each bulky structure, DRAM → PSRAM migration plan with gate and risk. `Hal
 
 Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` object is built in DRAM and serialised to the `.bin` file. The `BuildContext::lut` (`vector<PageLutEntry>`, `Section.h:39`) and the `ChapterHtmlSlimParser` working set are in DRAM. After `finalizeBuild()`, only the `.bin` file on SD remains; the DRAM is freed.
 
-**Migration:** On X4 Pro, keep the active section's `Page` objects and LUT in PSRAM during the build. The `BuildContext` can be allocated with `makeUniqueNoThrow<BuildContext>()` which, on PSRAM boards, routes `new` to PSRAM (ESP32-S3 heap allocation order: PSRAM first when `BOARD_HAS_PSRAM`). The `lut` vector and `Page` elements stay in PSRAM.
+**Migration:** On X4 Pro, keep the active section's `Page` objects and LUT in PSRAM during the build. The `BuildContext` can be allocated with `heap_caps_malloc(sizeof(BuildContext), MALLOC_CAP_SPIRAM)` (or a `makeUniqueNoThrowPsram<BuildContext>()` helper, see D.8 note) — `makeUniqueNoThrow` alone is **not** sufficient (it does not request SPIRAM caps). The `lut` vector and `Page` elements stay in PSRAM.
 
 - **DRAM saved:** ~16KB (active LUT + parser working set per chapter).
 - **PSRAM used:** ~1MB (cached HTML for the active section; typical novel chapter is 50–200KB HTML, well within PSRAM for multiple sections).
@@ -318,7 +324,7 @@ Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` ob
 
 `HomeActivity::storeCoverBuffer()` (`HomeActivity.cpp:159-179`) does `coverBuffer = static_cast<uint8_t*>(malloc(needed))` — allocates a cover tile buffer (~16KB in Portrait) on DRAM heap. `freeCoverBuffer()` frees it on exit.
 
-**Migration:** On X4 Pro, redirect to PSRAM. Use `makeUniqueNoThrow<uint8_t[]>(needed)` which routes to PSRAM on PSRAM boards. The cover tile is only needed during `render()` — it can be a PSRAM-allocated unique_ptr stored in `HomeActivity`.
+**Migration:** On X4 Pro, redirect to PSRAM. Use `heap_caps_malloc(needed, MALLOC_CAP_SPIRAM)` (or `makeUniqueNoThrowPsram<uint8_t[]>(needed)` per D.8) — `makeUniqueNoThrow` alone does NOT guarantee PSRAM placement. The cover tile is only needed during `render()` — it can be a PSRAM-allocated unique_ptr stored in `HomeActivity`.
 
 - **DRAM saved:** ~16KB (cover tile buffer).
 - **PSRAM used:** ~16KB.
@@ -330,7 +336,7 @@ Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` ob
 
 `PixelCache::buffer` is allocated with `malloc(bufSize)` at `PixelCache.h:91` where `bufSize = (bandRows + 1) * bytesPerRow`, capped at `MAX_BAND_BYTES = 24KB` (`PixelCache.h:59,90-91`). The band buffer is a streaming cache writer; it holds one MCU row band at a time.
 
-**Migration:** Already PSRAM-friendly via `makeUniqueNoThrow<uint8_t[]>`. The `malloc` at `PixelCache.h:91` should be replaced with `makeUniqueNoThrow<uint8_t[]>(bufSize)` — on PSRAM boards, this routes to PSRAM automatically. The `JpegToFramebufferConverter.cpp:96-97` and `PngToFramebufferConverter.cpp:86-87,352` decoder allocations also heap-allocate (`new (std::nothrow) JPEGDEC()` / `new (std::nothrow) PNG()`), which on PSRAM boards will land in PSRAM.
+**Migration:** The `PixelCache::buffer` should be allocated with `heap_caps_malloc(bufSize, MALLOC_CAP_SPIRAM)` (or the `makeUniqueNoThrowPsram<>` helper from D.8). The `JpegToFramebufferConverter.cpp:96-97` and `PngToFramebufferConverter.cpp:86-87,352` decoder allocations should also use `heap_caps_malloc(sizeof(JPEGDEC), MALLOC_CAP_SPIRAM)` / `heap_caps_malloc(sizeof(PNG), MALLOC_CAP_SPIRAM)` — `new (std::nothrow)` does not request SPIRAM caps and may land in DRAM (CodeRabbit review 2026-09-03).
 
 - **DRAM saved:** ≤24KB (band buffer) + ≤20KB (JPEGDEC) + ≤44KB (PNG) = ≤88KB.
 - **PSRAM used:** ≤88KB.
@@ -342,15 +348,41 @@ Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` ob
 
 `JpegToFramebufferConverter.cpp:96-97` (`constexpr size_t JPEG_DECODER_APPROX_SIZE = 20 * 1024`) and `PngToFramebufferConverter.cpp:86-87,352` (`constexpr size_t PNG_DECODER_APPROX_SIZE = 44 * 1024`). Both use `new (std::nothrow) JPEGDEC()` / `new (std::nothrow) PNG()` inside `decodeToFramebuffer()` / `getDimensionsStatic()`.
 
-**Migration:** The `JPEGDEC` / `PNG` objects are heap-allocated and freed at the end of the decode function. On PSRAM boards, `new (std::nothrow)` routes to PSRAM. No code change needed for the allocation path — but add `LOG_INF` to confirm the placement. If confirmation shows DRAM allocation, wrap in `#ifdef BOARD_HAS_PSRAM` and use a PSRAM-pinned allocator.
+**Migration (corrected per CodeRabbit 2026-09-03):** `new (std::nothrow)` does NOT request `MALLOC_CAP_SPIRAM`; ESP-IDF may place such allocations in DRAM or PSRAM depending on configuration and size. To guarantee PSRAM placement on X4 Pro / Paper Mono, replace with:
 
-- **DRAM saved:** ≤64KB (JPEG 20KB + PNG 44KB).
+```c++
+auto* dec = static_cast<JPEGDEC*>(
+    heap_caps_malloc(sizeof(JPEGDEC), MALLOC_CAP_SPIRAM));
+// ... or a makeUniqueNoThrowPsram<>() helper (see D.8 note)
+```
+
+Use `LOG_INF("MEM", "JPEGDEC at %p, caps=%x", dec, heap_caps_get_allocated_caps(dec))` to verify which heap served the allocation on hardware before relying on the placement.
+
+- **DRAM saved:** ≤64KB (JPEG 20KB + PNG 44KB) on X4 Pro / Paper Mono.
 - **PSRAM used:** ≤64KB.
 - **Gate:** `#ifdef BOARD_HAS_PSRAM`.
 - **Risk:** Low. Decoder lifetime is short (single decode); PSRAM placement is safe.
-- **Verification:** `LOG_INF` PSRAM before/after decode.
+- **Verification:** `LOG_INF` PSRAM before/after decode; assert `caps & MALLOC_CAP_SPIRAM` on the decoder pointer.
 
-### D.5 ZIP central directory cache (carried from v1 §1)
+### D.5 Section task ownership and lifecycle (Phase 3 prerequisite)
+
+Before introducing the dual-core parse task (Phase 3), the **ownership of `Section` and its dependent state during async build** must be defined. A file mutex on `Section::commitBuildFile()` does **not** protect the `Section` object itself or its `GfxRenderer&` reference (CodeRabbit review 2026-09-03). The following must be settled before any Phase 3 code lands:
+
+1. **Isolated parse job / result types.** Define a `ParseJob { spineIndex, renderSpec }` (POD, copyable) and a `ParseResult { spineIndex, std::vector<Page> pages, BuildContext::lut, uint64_t byteCost }` owned by the parse task and *moved* to the render task on completion (not shared). The `Section` object is **never shared** between cores — it is owned by the render task, and the parse task produces a `ParseResult` that the render task uses to materialise a fresh `Section`.
+
+2. **Cancellation.** When the user navigates away mid-parse, the parse task must be cancellable. Define a `std::atomic<bool> cancelRequested` (or an `EventGroupHandle_t`) that the parse task polls between sub-build steps in `buildSomeMore()`.
+
+3. **Destruction ordering.** `EpubReaderActivity::~EpubReaderActivity()` (or its equivalent) must wait for any in-flight parse task to complete or be cancelled before destroying the `GfxRenderer&` and `Epub&` that the parse task may still reference indirectly via the `ParseJob` payload. Use `xTaskNotifyWait` / `vTaskDelete` ordering, not a bare `delete`.
+
+4. **`GfxRenderer&` isolation.** The parse task must NOT touch `GfxRenderer` directly. Layout into `Page` records produces render-ready data; the actual `GfxRenderer::drawPage()` call happens on the render task.
+
+5. **Error handling.** If the parse task crashes (`abort()`) or is cancelled mid-build, the render task must detect the missing `ParseResult` and either re-issue the parse on its own core (degraded mode) or show an error state to the user.
+
+6. **Unit tests** for cancellation races (parse in-flight + navigation away + activity exit).
+
+**Risk:** This is a design prerequisite, not an implementation. The Phase 3 dual-core task cannot be safely implemented without these decisions.
+
+### D.6 ZIP central directory cache (carried from v1 §1)
 
 Cache the parsed central directory in PSRAM at book open. `ZipFile(filepath)` is constructed per call (`Epub.cpp:219,828-836,853-854`); each construction opens the EPUB file and scans the central directory (`ZipFile.cpp:223-275,115-193`).
 
@@ -362,69 +394,111 @@ Cache the parsed central directory in PSRAM at book open. `ZipFile(filepath)` is
 - **Risk:** Low. Central directory format is well-defined; a parsed cache is a read-only lookup table.
 - **Verification:** `LOG_INF` PSRAM at book open; compare `ZipFile` open count before/after.
 
-### D.6 Section pre-fetch buffer (NEW — for dual-core parse task)
+### D.7 Section pre-fetch buffer (NEW — for dual-core parse task)
 
 If Option A (dedicated parse task on core 0) is adopted, the parsed result must live somewhere while the render task on core 1 consumes it. A PSRAM ring of 2–3 pre-built sections provides this buffer.
 
-**Migration:** A `std::deque<SectionCache>` in PSRAM, where each `SectionCache` holds the `.bin` page data + LUT for one section. The parse task builds section N+1 into PSRAM; the render task reads section N from PSRAM. When the render task finishes section N, it signals the parse task to build N+1 (or N+2 if the user is fast).
+**Important: this ring is NOT the on-disk `sections/<spineIndex>.bin` cache.** Two distinct artifacts:
+
+| Artifact | On-disk path | In-memory shape | Owner |
+|---|---|---|---|
+| Unzipped HTML cache | `html/<spineIndex>.html` (`Section.cpp:474`) | raw HTML bytes | `Section` (one file per spine item) |
+| Serialized Section cache | `sections/<spineIndex>.bin` (`Section.cpp:80`) | versioned header + LUT + page records (`HEADER_SIZE`, `SECTION_FILE_VERSION = 45`) | `Section` (one file per spine item) |
+| PSRAM pre-fetch ring (NEW, Phase 3) | (no on-disk counterpart) | `std::deque<SectionCache>` holding LUT + active page data | parse task ↔ render task |
+
+The PSRAM ring uses a **separate, typed reader/writer API** (e.g., `SectionCache::serializeToPsram(uint8_t* dst)` / `SectionCache::deserializeFromPsram(const uint8_t* src)`) — it does NOT write `.bin` files. The on-disk `.bin` continues to be the durable cache (written by `Section::commitBuildFile()`, read by `Section::loadSectionFile()`); the PSRAM ring is an L1 read cache for the *next* section while the render task is on the *current* one. Ring-buffer eviction policy (FIFO by section number), invalidation rules (any change to `ReaderRenderSpec` invalidates the ring), and the resume path (ring miss → fall back to `.bin` from SD) must all be defined before implementation (CodeRabbit review 2026-09-03).
+
+**Migration:** A `std::deque<SectionCache>` in PSRAM, where each `SectionCache` holds the LUT + active page data for one section. The parse task builds section N+1 into PSRAM; the render task reads section N from PSRAM. When the render task finishes section N, it signals the parse task to build N+1 (or N+2 if the user is fast).
 
 - **DRAM saved:** — (buffer lives in PSRAM; the `BuildContext` on core 0 is smaller because the result is written directly to PSRAM).
 - **PSRAM used:** ≤500KB (2–3 sections × ~50–200KB each, but only the LUT + active page data, not the full HTML).
 - **Gate:** `#ifdef BOARD_HAS_PSRAM && BOARD_X4PRO` (only when dual-core parse is enabled).
-- **Risk:** Medium. Requires the dual-core parse task (Option A) to be implemented first. Ring-buffer semantics (which section to evict) need careful design.
+- **Risk:** Medium. Requires the dual-core parse task (Option A) to be implemented first. Ring-buffer semantics (which section to evict) need careful design; resume path on ring-miss must be defined.
 - **Verification:** `LOG_INF` PSRAM at section pre-fetch; measure page-turn latency with/without pre-fetch.
 
-### D.7 PSRAM summary table
+### D.8 PSRAM summary table
 
 | Structure | DRAM saved (KB) | PSRAM used (KB) | Gate | Risk |
 |---|---|---|---|---|
-| Parsed section cache (active build) | ~16 | ~1000 | `BOARD_HAS_PSRAM` | Low |
+| Parsed section cache (active build, in-RAM `pages`) | ~16 | ~1000 | `BOARD_HAS_PSRAM` | Low |
 | Cover thumbnail buffer | ~16 | ~16 | `BOARD_HAS_PSRAM` | Low |
-| PixelCache band buffer | ≤24 | ≤24 | `BOARD_HAS_PSRAM` (auto via `new`) | Low-Medium |
-| JPEGDEC decoder | ≤20 | ≤20 | `BOARD_HAS_PSRAM` (auto via `new`) | Low |
-| PNG decoder | ≤44 | ≤44 | `BOARD_HAS_PSRAM` (auto via `new`) | Low |
+| PixelCache band buffer | ≤24 | ≤24 | `BOARD_HAS_PSRAM` (via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | Low-Medium |
+| JPEGDEC decoder | ≤20 | ≤20 | `BOARD_HAS_PSRAM` (via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | Low |
+| PNG decoder | ≤44 | ≤44 | `BOARD_HAS_PSRAM` (via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | Low |
 | ZIP central-dir cache | — | ≤64 | `BOARD_HAS_PSRAM` | Low |
-| Section pre-fetch ring | — | ≤500 | `BOARD_HAS_PSRAM && BOARD_X4PRO` | Medium |
+| Section pre-fetch ring (typed, NOT `.bin`-shaped) | — | ≤500 | `BOARD_HAS_PSRAM && BOARD_X4PRO` | Medium |
+| Second framebuffer (Phase 4 `x4pro_perf` only) | 0 (moved to PSRAM) | +48 | `BOARD_HAS_PSRAM && BOARD_X4PRO && EINK_DISPLAY_SINGLE_BUFFER_MODE == 0` | High |
+
+**`makeUniqueNoThrow` → PSRAM note (CodeRabbit review 2026-09-03):** `makeUniqueNoThrow<T>()` wraps `new (std::nothrow)` without requesting `MALLOC_CAP_SPIRAM`. ESP-IDF may place such allocations in internal DRAM or PSRAM depending on configuration and size — it does **not** equate to "this lives in PSRAM". For PSRAM placement, use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM)` directly, or wrap as:
+
+```c++
+template <typename T>
+std::unique_ptr<T> makeUniqueNoThrowPsram(size_t bytes) {
+  void* p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+  return std::unique_ptr<T>(static_cast<T*>(p));
+}
+```
+
+The D.8 table's "via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`" notes above are the corrected claim — `makeUniqueNoThrow` alone is insufficient.
 
 ---
 
 ## 6. SD I/O Reductions — Concrete Changes (Section E)
 
-### Change E.1 — Larger stream buffers for `readItemContentsToStream`
+### Change E.1 — Larger stream buffers for `readItemContentsToStream` (PSRAM-gated)
 
 **Today:** 512-byte buffer for `container.xml` (`Epub.cpp:34`), 1024-byte for `content.opf` (`Epub.cpp:73`), TOC (`Epub.cpp:172,208`), CSS (`Epub.cpp:353`), cover image (`Epub.cpp:665,754`). Only section HTML uses 8192 (`Section.cpp:322`).
 
 **Proposal:** Bump all `readItemContentsToStream` calls to 4096 or 8192 bytes. The `ZipFile::readFileToStream` (`ZipFile.cpp:449-572`) accepts `chunkSize` as a parameter; pass 4096 or 8192. For the 1024-byte calls, this reduces the number of `inflate.readAtMost` iterations by 4–8×.
 
-**Quantification:** For a 50KB chapter HTML inflate at 1024-byte chunks = ~50 SD read syscalls. At 4096-byte chunks = ~13 SD read syscalls. At 8192-byte chunks = ~7 SD read syscalls. **~7–8× syscall reduction.**
+**Gating (CRITICAL — CodeRabbit review 2026-09-03):** The larger buffers must **NOT** apply to C3 / Sticky / X4C. The current 512 / 1024 B sizes were chosen because the JPEG and CSS heap thresholds (`MIN_FREE_HEAP_FOR_JPEG = 36KB` at `JpegToFramebufferConverter.cpp:97`, `MIN_FREE_HEAP_FOR_CSS = 48KB` at `CssParser.cpp:44-50`) leave only tens of KB of headroom on C3, and an 8 KB transient buffer per inflate call would push those environments over the edge. Gate the larger buffer with `#ifdef BOARD_HAS_PSRAM` — X4 Pro and Paper Mono get 8192 B (PSRAM absorbs the transient), C3 / Sticky / X4C keep 512 / 1024 B (DRAM-frugal).
 
-**Call sites to change:** `Epub.cpp:34,73,172,208,353,665,754` — add a `const size_t streamChunkSize = 8192` constant and pass it to every `readItemContentsToStream` call.
+```c
+const size_t streamChunkSize =
+#ifdef BOARD_HAS_PSRAM
+    8192;
+#else
+    1024;  // unchanged on C3 / Sticky / X4C — preserves heap headroom for JPEG + CSS decoders
+#endif
+```
 
-**Risk:** Low. The chunk size is a parameter, not a protocol change. Larger buffers use more DRAM transiently (~8KB per call), but these are short-lived and freed on return.
+**Quantification:** For a 50KB chapter HTML inflate at 1024-byte chunks ≈ ~50 `inflate.readAtMost` iterations; the outer `readAtMost` drains `InflateStream` output without an SD read while the in-memory buffer still has bytes, so the actual `HalFile::read` count is `ceil(compressedSize / 4096)` (sector-aligned), not 50. At 4096-byte chunks the per-iteration drain covers more decompressed bytes per SD read; at 8192-byte chunks it covers more still. The SD-read reduction is therefore bounded by the **inflate-drain rate**, not the chunk-size multiplier alone — measure both `HalFile::read` count and `millis()` at book-open before/after to validate.
 
-**Verification:** `LOG_INF` at each `readItemContentsToStream` entry; measure book-open time.
+**Call sites to change (PSRAM boards only):** `Epub.cpp:34,73,172,208,353,665,754` — add the conditional `streamChunkSize` constant above and pass it to every `readItemContentsToStream` call.
+
+**Risk:** Low on X4 Pro / Paper Mono (PSRAM absorbs the 8 KB transient). HIGH on C3 / Sticky if the gate is omitted — would push JPEG/CSS decode over their heap thresholds.
 
 ### Change E.2 — ZIP central-directory cache (carried from v1 §1)
 
-**Today:** `ZipFile(filepath)` constructed per call (`Epub.cpp:219,828-836,853-854`). Each construction opens the EPUB file and scans the central directory.
+**Today:** `ZipFile(filepath)` constructed per call (`Epub.cpp:219,828-836,853-854`). Each construction opens the EPUB file and scans the central directory. The number of *file opens* and the number of *central-directory scans* are two different metrics — both are real costs but they are independent (CodeRabbit review 2026-09-03).
 
-**Proposal:** Cache the central directory in PSRAM at `Epub::load()` time. `loadAllFileStatSlims()` (`ZipFile.cpp:64-113`) already builds a `fileStatSlimCache` — but it is built per-`ZipFile` instance and discarded. Make it a PSRAM-resident singleton that persists for the book session.
+| Metric | Today's count per book-open | After Change E.2 |
+|---|---|---|
+| `ZipFile::open()` (file-open syscalls) | 15–30 | **unchanged** — Change E.2 caches the parsed central directory, NOT the open file handle |
+| `loadAllFileStatSlims()` (central-directory scans) | 15–30 (one per `ZipFile`) | 1 (PSRAM-cached, reused across instances) |
+| SD-block reads (sector-aligned EOCD + CD scan traffic) | ~60–180 | ~4 (one scan × ~4 sectors of 512 B) |
 
-**Risk:** Low. `loadAllFileStatSlims()` is already the right primitive; it just needs to be cached across `ZipFile` instances.
+**Proposal:** Cache the parsed central-directory in PSRAM at `Epub::load()` time as a singleton keyed on `epubFilePath`. `loadAllFileStatSlims()` (`ZipFile.cpp:64-113`) already builds a `fileStatSlimCache` — but it is built per-`ZipFile` instance and discarded. Make it a PSRAM-resident singleton that persists for the book session.
 
-**Verification:** Count `ZipFile::open()` calls before/after; should drop from ~15–30 to ~1–2 per book open.
+**Separately**, Change E.2 should NOT claim a reduction in `ZipFile::open()` calls — those are governed by how the EPUB file handle is managed, not by the central-directory cache. Reuse-an-open-handle is a separate change. The doc's earlier "15–30 file opens → 1–2 file opens" claim was a metric conflation; the corrected claim is "15–30 central-directory scans → 1 scan, with file-opens unchanged".
 
-### Change E.3 — Sequential read-ahead for chapter inflate
+**Risk:** Low. `loadAllFileStatSlims()` is already the right primitive; it just needs to be cached across `ZipFile` instances. PSRAM lifecycle: cache is allocated at `Epub::load()`, freed at `Epub::~Epub()`.
+
+**Verification:** Count `loadAllFileStatSlims()` calls before/after; should drop from ~15–30 to 1 per book-open. Also count `FsFile::open()` calls (separately) — should be unchanged.
+
+### Change E.3 — Sequential read-ahead for chapter inflate (Phase 3, dual-core gated)
 
 **Today:** When `Section::startBuild()` unzips HTML (`Section.cpp:322`), it streams the HTML to `html/<spineIndex>.html` on SD. There is no prefetch of the next chapter.
 
-**Proposal:** When the user opens chapter N, the engine knows the next spine item (`epub->getSpineItem(spineIndex + 1).href`). In the idle prewarm window (`EpubReaderActivity.cpp:472-493`), start inflating the next chapter's HTML into the PSRAM pre-fetch buffer (Section D.6) while the current chapter renders.
+**Phase 1 / Phase 2:** No change — the existing idle prewarm window (`EpubReaderActivity.cpp:472-493`) does not do SD prefetch.
 
-**Where to plug in:** `EpubReaderActivity::loop()` at `EpubReaderActivity.cpp:472-493` — the idle prewarm already checks `idlePrewarmSpine != currentSpineIndex`. Extend it to kick off `readItemContentsToStream` for the next chapter into the PSRAM buffer.
+**Phase 3 (when the dual-core parse task from Change C.1 is in place):** When the user opens chapter N, the engine knows the next spine item (`epub->getSpineItem(spineIndex + 1).href`). On the **core-0 parse task** (NOT the core-0 main loop — CodeRabbit review 2026-09-03), start inflating the next chapter's HTML into the PSRAM pre-fetch buffer (Section D.7) while the current chapter renders. The main loop must remain responsive; the synchronous inflate path (`readItemContentsToStream` + `InflateStream`) cannot be called from `EpubReaderActivity::loop()` because it would block the loop while the user is on the current chapter.
 
-**Risk:** Medium. Requires the PSRAM pre-fetch buffer (Section D.6) and careful lifetime management (the pre-fetch must be cancelled if the user navigates away).
+**Where to plug in:** A dedicated **I/O task** (or the parse task from C.1 once it exists) with its own queue of "next chapter to prefetch" requests. The I/O task owns the `FsFile` handle and the inflate context for the prefetch; cancellation is needed when the user navigates away before the prefetch completes.
 
-**Verification:** `LOG_INF` at pre-fetch start/complete; measure page-turn latency with/without pre-fetch.
+**Risk:** Medium-High. Requires the PSRAM pre-fetch buffer (Section D.7), the dual-core parse task (Section C.1), and careful lifetime management (the pre-fetch must be cancelled if the user navigates away, or if the book is closed). Synchronous prefetch from the core-0 loop would freeze the UI; this is gated behind the dedicated I/O task.
+
+**Verification:** `LOG_INF` at pre-fetch start/complete/cancel; measure page-turn latency with/without pre-fetch on X4 Pro hardware.
 
 ### Change E.4 — Cover-once-or-on-import
 
@@ -432,17 +506,22 @@ If Option A (dedicated parse task on core 0) is adopted, the parsed result must 
 
 **Verdict:** Cover generation is already cached-on-import. No change needed. The only SD cost is the `Storage.exists()` check on each home-screen open — negligible.
 
-### Change E.5 — Section `.bin` write debouncing
+### Change E.5 — Section `.bin` write debouncing (requires durable-checkpoint redesign)
 
-**Today:** `~Section()` calls `suspendBuild()` (`Section.cpp:85`) → `commitBuildFile(SECTION_FILE_PARTIAL_VERSION, ...)` (`Section.cpp:671`) if pages were built. This writes the `.bin` on *every chapter close* (when the user navigates away or the reader exits).
+**Today:** `~Section()` calls `suspendBuild()` (`Section.cpp:85`) → `commitBuildFile(SECTION_FILE_PARTIAL_VERSION, ...)` (`Section.cpp:671`) if pages were built. This writes the `.bin` on *every chapter close* (when the user navigates away or the reader exits). The partial write always happens; a debounce in the active loop cannot defer that write after `section.reset()` because the `Section` object (and its `BuildContext`) is destroyed before the loop's idle timer fires (CodeRabbit review 2026-09-03).
 
-**Proposal:** Debounce the partial write. If the user is actively reading (not navigating away), delay the `.bin` write until: (a) the user navigates to a different chapter, (b) the reader exits, or (c) a configurable timeout (e.g., 5 seconds) elapses since the last page turn. The partial file is still written on `suspendBuild()` in the destructor (which is always called), but the *content* can be the same as the last full build if no new pages were laid out since the last commit.
+**Recovery depends on whether the previous full build is still valid:** on a first build, skipping the destructor commit can lose the *only* partial progress for that section — there is no prior full build to fall back to. A naive debounce that just skips `suspendBuild()` would lose data on the first open of a section.
 
-**Where to cite:** `Section::suspendBuild()` (`Section.cpp:658-695`), `Section::~Section()` (`Section.cpp:85`), `Section::commitBuildFile()` (`Section.cpp:543-625`).
+**Redesign (proposed):**
+1. **Durable checkpoint write** (new): during the active build loop (`Section::buildSomeMore()`), commit a partial at N-second intervals (e.g., every 5 s) **while the `Section` is still alive**. The checkpoint is the same `SECTION_FILE_PARTIAL_VERSION` write but is invoked from a live context, not a destructor.
+2. **Suppress destructor commit when a valid full/partial already exists:** `~Section()` checks whether the most recent checkpoint on disk is `>=` the in-memory build's state; if so, skip the destructor write.
+4. **First-build safety:** the first build always writes a partial at end-of-chapter (preserves the "first open" recovery path).
 
-**Risk:** Medium. If the device crashes before the debounced write, the last partial is lost — but the previous full build is still intact, so recovery is graceful (the old partial is shown until the new one is built).
+**Where to cite:** `Section::suspendBuild()` (`Section.cpp:658-695`), `Section::~Section()` (`Section.cpp:85`), `Section::commitBuildFile()` (`Section.cpp:543-625`), `Section::buildSomeMore()` (called from `renderBook()` at `EpubReaderActivity.cpp:1265`).
 
-**Verification:** Count `.bin` writes per session with/without debouncing; confirm no data loss on simulated crash.
+**Risk:** Medium-High. The checkpoint-from-active-loop change requires threading a timer into `buildSomeMore()` and a "skip-if-checkpoint-fresh" branch into the destructor. The first-build safety branch must be unit-tested.
+
+**Verification:** Count `.bin` writes per session with/without debouncing; confirm no data loss on simulated crash (force `~Section()` immediately after build starts; verify the file on SD is a valid partial).
 
 ### Change E.6 — No-write metadata fast path
 
@@ -478,7 +557,19 @@ The `storeBwBuffer()` / `restoreBwBuffer()` path (`GfxRenderer.cpp:2449-2504`) c
 
 **Honest trace:** I have traced `GfxRenderer.cpp:120-131` (single-buffer begin), `2449-2504` (storeBwBuffer/restoreBwBuffer), and the `displayBuffer()` call at `GfxRenderer.cpp:1710-1714`. The double-buffer flip logic itself (the `#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE` branch in `GfxRenderer`) was not fully traced in this review — **flagged as an open question**. The v1 doc's §5 open question #2 stands.
 
-**Proposal for X4 Pro:** Add a new env `[env:x4pro_perf]` (`platformio.ini:266-288`) that sets `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=0` and `-DBOARD_X4PRO=1`, then gate the second-framebuffer allocation and double-buffer flip behind `#ifdef BOARD_X4PRO && !defined(EINK_DISPLAY_SINGLE_BUFFER_MODE)`. The second framebuffer would live in PSRAM (48KB), freeing DRAM.
+**Proposal for X4 Pro:** Add a new env `[env:x4pro_perf]` (`platformio.ini:266-288`) that *removes* the inherited `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=1` from `base:29` and adds `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=0` + `-DBOARD_X4PRO=1`, then gate the second-framebuffer allocation and double-buffer flip behind a numeric `#if`:
+
+```c
+#if EINK_DISPLAY_SINGLE_BUFFER_MODE == 0 && defined(BOARD_X4PRO)
+  // double-buffer path: allocate second framebuffer in PSRAM
+  uint8_t* secondFb = (uint8_t*)heap_caps_malloc(HalDisplay::BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+  ...
+#endif
+```
+
+(The `#ifdef BOARD_X4PRO && !defined(EINK_DISPLAY_SINGLE_BUFFER_MODE)` form cited in the v1 doc is **invalid preprocessor** — `#ifdef` accepts one identifier, and `#if defined(X) && !defined(Y)` evaluates to false when `Y` is defined as `0` instead of `undefined`. CodeRabbit review 2026-09-03. The numeric `#if EINK_DISPLAY_SINGLE_BUFFER_MODE == 0 && defined(BOARD_X4PRO)` is the correct form.)
+
+The second framebuffer lives in **PSRAM** (48 KB), so DRAM is unchanged — the +48 KB DRAM figure in the v1 doc was wrong on this path. Both the v1 doc's §3 row "Framebuffer (secondary, page-turn)" and v1 §5 must be reconciled: allocation is **PSRAM only**, gate is **`BOARD_HAS_PSRAM && BOARD_X4PRO && EINK_DISPLAY_SINGLE_BUFFER_MODE == 0`**.
 
 **Risk:** High. The double-buffer flip logic and `storeBwBuffer()`/`restoreBwBuffer()` path need a full audit before committing. The `GfxRenderer.cpp:340-370` allocation path and the flip logic must be traced.
 
@@ -505,35 +596,38 @@ The X4 Pro uses `board_build.arduino.memory_type = dio_opi` (`platformio.ini:270
 
 Each phase is shippable independently and gated behind `#ifdef BOARD_HAS_PSRAM` (or `BOARD_X4PRO` where noted).
 
+**Phase numbering supersedes `docs/design/2026-09-03-epub-engine-x4pro-optimisation.md` §10.** The v1 doc defines "Phase 3 = engine swap" — that proposal is **archived** (rejected in §4 of v1; the slim parser is kept). The canonical phase order for implementation is the one in this document (Phase 1 = SD I/O wins, Phase 2 = PSRAM caches, Phase 3 = dual-core parse, Phase 4 = hardware-aware render). When the v1 doc's Phase 3 / Phase 4 numbers are mentioned elsewhere (e.g., the PR body), they refer to **this** v3 phase order, not the v1 doc's numbering.
+
 ### Phase 1 — Safer wins (SD I/O reduction, no memory placement change)
-1. **Change E.1:** Bump `readItemContentsToStream` chunk sizes to 8192 at `Epub.cpp:34,73,172,208,353,665,754`. Add `streamChunkSize = 8192` constant.
-2. **Change E.5:** Debounce section `.bin` writes (`Section::suspendBuild()` at `Section.cpp:658-695`) — delay partial writes when the user is actively reading.
+1. **Change E.1:** Bump `readItemContentsToStream` chunk sizes to 8192 at `Epub.cpp:34,73,172,208,353,665,754`. **Gated `#ifdef BOARD_HAS_PSRAM`** so C3 / Sticky / X4C keep 512 / 1024 B.
+2. **Change E.5:** Section `.bin` write debouncing — durable-checkpoint redesign (Section E.5 rewrite).
 3. **Change E.6:** Confirm no-write metadata fast path (`book.bin` read-only during normal reading; trace all write paths in `BookMetadataCache.cpp:167`).
 4. **Change E.2:** ZIP central-directory cache in PSRAM (`ZipFile::loadAllFileStatSlims()` at `ZipFile.cpp:64-113`) — persist the cache across `ZipFile` instances.
 
-**Verification:** `pio run` for all envs; measure book-open time on X4 Pro; count `ZipFile::open()` calls before/after.
+**Verification:** `pio run` for all envs; measure book-open time on X4 Pro; count `loadAllFileStatSlims()` calls before/after.
 
 ### Phase 2 — PSRAM caches for bulky structures
-1. **Change D.1:** Keep active section's `Page` objects and LUT in PSRAM during build (`BuildContext` allocation via `makeUniqueNoThrow`).
-2. **Change D.2:** Cover thumbnail buffer via `makeUniqueNoThrow` (`HomeActivity.cpp:166`).
-3. **Change D.3:** PixelCache band buffer via `makeUniqueNoThrow` (`PixelCache.h:91`).
-4. **Change D.4:** JPEGDEC/PNG decoder placement confirmation (`JpegToFramebufferConverter.cpp:368,399; PngToFramebufferConverter.cpp:352`).
-5. **Change D.5:** ZIP central-dir cache (if not done in Phase 1).
-6. Add `heap_free_kb` / `psram_free_kb` `LOG_INF` at book open and page turn.
+1. **Change D.1:** Keep active section's `Page` objects and LUT in PSRAM during build (`BuildContext` allocation via `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`).
+2. **Change D.2:** Cover thumbnail buffer via `heap_caps_malloc(needed, MALLOC_CAP_SPIRAM)` (`HomeActivity.cpp:166`).
+3. **Change D.3:** PixelCache band buffer via `heap_caps_malloc(bufSize, MALLOC_CAP_SPIRAM)` (`PixelCache.h:91`).
+4. **Change D.4:** JPEGDEC/PNG decoder state via `heap_caps_malloc(sizeof(JPEGDEC/PNG), MALLOC_CAP_SPIRAM)` (`JpegToFramebufferConverter.cpp:368,399; PngToFramebufferConverter.cpp:352`).
+5. **Change D.6:** ZIP central-dir cache (if not done in Phase 1).
+6. Add `heap_free_kb` / `psram_used_kb` `LOG_INF` at book open and page turn.
 
 **Verification:** `pio run -e x4pro` build size; device heap/PSRAM monitoring; page-turn latency for image-heavy chapters.
 
-### Phase 3 — Dual-core parse task
+### Phase 3 — Dual-core parse task (gated on Phase 1 profile data + D.5 lifecycle design)
 1. **Change C.1:** Create a dedicated parse task pinned to core 0 (`xTaskCreatePinnedToCore(..., 0)`).
-2. Add a `ParseQueue` (FreeRTOS `QueueHandle_t`) of `SpineIndex` values.
-3. Modify `EpubReaderActivity::renderBook()` to send the `spineIndex` to the queue and wait for parse completion.
-4. Implement PSRAM-resident section ring buffer (Section D.6) for pre-fetch.
-5. Modify `Section::createSectionFile()` to write the `.bin` to PSRAM-resident storage.
+2. Implement the **Section task ownership rules from D.5** (isolated `ParseJob` / `ParseResult`, cancellation, destruction ordering, `GfxRenderer&` isolation, error handling, unit tests for cancellation races).
+3. Add a `ParseQueue` (FreeRTOS `QueueHandle_t`) of `ParseJob` values.
+4. Modify `EpubReaderActivity::renderBook()` to send the `ParseJob` to the queue and wait for `ParseResult` completion.
+5. Implement PSRAM-resident typed section pre-fetch ring (Section D.7) — *not* a `.bin` write — for the next section.
+6. **Change E.3:** Sequential read-ahead from the new I/O task (NOT the core-0 loop).
 
-**Verification:** `core_id()` `LOG_INF` at each pipeline stage; measure book-open time with/without dual-core; confirm render task stays responsive during build.
+**Verification:** `core_id()` `LOG_INF` at each pipeline stage; measure book-open time with/without dual-core; confirm render task stays responsive during build; cancellation-race unit tests pass.
 
 ### Phase 4 — Hardware-aware render path
-1. **Change F.1:** Add `[env:x4pro_perf]` to `platformio.ini` (`-DEINK_DISPLAY_SINGLE_BUFFER_MODE=0`); audit and implement double-buffer flip logic in `GfxRenderer` (lines ~120-131, ~340-370, ~2449-2504).
+1. **Change F.1:** Add `[env:x4pro_perf]` to `platformio.ini` (override `-DEINK_DISPLAY_SINGLE_BUFFER_MODE=0`); audit and implement double-buffer flip logic in `GfxRenderer` (lines ~120-131, ~340-370, ~2449-2504). Gate with `#if EINK_DISPLAY_SINGLE_BUFFER_MODE == 0 && defined(BOARD_X4PRO)`. Second framebuffer in PSRAM only.
 2. **Change F.2:** Confirm OPI burst-read optimisation (already in place via `USE_BLOCK_DEVICE_INTERFACE=1`); document.
 3. **Change F.3:** Evaluate `esp_jpeg_dec` integration as a Phase 4+ option if profiling shows JPEG decode is the bottleneck.
 
@@ -548,13 +642,17 @@ For each phase, verify with:
 | Metric | Method | Baseline (today) | Target (Phase 2) |
 |---|---|---|---|
 | `heap_free_kb` at book open | `LOG_INF("MEM", "Free: %d", ESP.getFreeHeap())` | ~55KB (est.) | ≥80KB |
-| `psram_free_kb` at book open | `LOG_INF("MEM", "PSRAM free: %d", ESP.getFreePsram())` | 0 (unused) | ≥6MB |
+| `psram_free_kb` at book open | `LOG_INF("MEM", "PSRAM free: %d", ESP.getFreePsram())` | measured free at boot (≈ 8 MB on X4 Pro) | ≥ 6 MB free after Phase 2 caches |
+| `psram_used_kb` at book open | `LOG_INF("MEM", "PSRAM used: %d", initialFree - ESP.getFreePsram())` | 0 (cold boot) | ≤ 2 MB |
 | `core_id()` at each stage | `LOG_INF("CORE", "Stage %s on core %d", stage, xPortGetCoreID())` | core 1 for parse+render | core 0 for parse, core 1 for render |
-| `ZipFile::open()` count per book-open | `LOG_INF("ZIP", "ZipFile opens: %d", count)` | 15–30 | 1–2 |
+| `loadAllFileStatSlims()` count per book-open | `LOG_INF("ZIP", "central-dir scans: %d", count)` | 15–30 | 1 |
+| `FsFile::open()` count per book-open | `LOG_INF("ZIP", "file opens: %d", count)` | 15–30 | unchanged in Phase 2; Phase 3+ may reduce via handle reuse |
 | `pio run -e x4pro` build size | PlatformIO build output | baseline | ≤ baseline + 5KB |
 | Page-turn latency (manually timed) | `millis()` delta between page requests | baseline | 20–30% reduction on image-heavy pages |
 | Chapter re-open time | `millis()` delta | baseline | 200–500ms saved (D.1, E.1) |
 | CI pass | `pio run` for all envs | pass | pass |
+
+**Note (CodeRabbit review 2026-09-03):** `ESP.getFreePsram()` returns the **currently-free** PSRAM, not "unused". A fresh X4 Pro boot reports ≈ 8 MB free; "0 (unused)" in the original table was the wrong baseline. Use `psram_used_kb = bootFree - currentFree` to track allocation pressure, and `psram_free_kb = currentFree` to track remaining capacity. The same correction applies to `docs/design/2026-09-03-epub-engine-x4pro-optimisation.md` §11.
 
 **Add to `src/main.cpp` (or the relevant activity):**
 ```cpp
