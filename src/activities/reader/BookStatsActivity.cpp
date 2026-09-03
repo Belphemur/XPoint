@@ -24,8 +24,8 @@ void BookStatsActivity::onEnter() {
   // call. bookTitle and screenWidth are both fixed from this point on, so
   // a single onEnter() computation is sufficient.
   if (!bookTitle.empty()) {
-    truncatedTitle = renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), renderer.getScreenWidth() - 20,
-                                            EpdFontFamily::BOLD);
+    truncatedTitle =
+        renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), renderer.getScreenWidth() - 20, EpdFontFamily::BOLD);
     const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, truncatedTitle.c_str(), EpdFontFamily::BOLD);
     titleX = (renderer.getScreenWidth() - titleWidth) / 2;
   } else {
