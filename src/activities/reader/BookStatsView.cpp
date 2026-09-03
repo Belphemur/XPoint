@@ -201,13 +201,6 @@ bool estimateFinishDateFromDailyPace(const BookReadingStats& stats, const Readin
   return outDate.isValid();
 }
 
-float pagesPerMinute(const uint32_t totalPagesTurned, const uint32_t totalReadingSeconds) {
-  if (totalReadingSeconds <= 60) {
-    return 0.0f;
-  }
-  return static_cast<float>(totalPagesTurned) * 60.0f / static_cast<float>(totalReadingSeconds);
-}
-
 void drawCenteredLabel(const GfxRenderer& renderer, const int fontId, const int x, const int w, const int y,
                        const char* text, const bool bold = false) {
   const int textWidth = renderer.getTextWidth(fontId, text, bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
@@ -322,9 +315,15 @@ void drawPerBookStatsCard(GfxRenderer& renderer, const int x, const int y, const
   }
   drawStatCell(renderer, x + thirdW, thirdW, y + layout.topCardTitleH + rowH, rowH, buf, tr(STR_TIME_LEFT));
 
-  snprintf(buf, sizeof(buf), "%.1f", pagesPerMinute(stats.totalPagesTurned, stats.totalReadingSeconds));
+  // Reading speed (WPM) — same display rule as the per-book activity:
+  // "<n> WPM" when the WPM window has at least one sample, "-" otherwise.
+  if (stats.wpm.count > 0) {
+    snprintf(buf, sizeof(buf), tr(STR_STATS_WPM_VALUE), static_cast<unsigned>(stats.wpm.avg));
+  } else {
+    snprintf(buf, sizeof(buf), "%s", tr(STR_STATS_WPM_UNAVAILABLE));
+  }
   drawStatCell(renderer, x + thirdW * 2, thirdW, y + layout.topCardTitleH + rowH, rowH, buf,
-               tr(STR_STATS_PAGES_PER_MIN));
+               tr(STR_STATS_AVG_PAGE_PACE));
 
   if (!showRtcStats) {
     return;
@@ -387,8 +386,15 @@ void drawGlobalStatsCard(GfxRenderer& renderer, const int x, const int y, const 
   BookReadingStats::formatDuration(stats.totalReadingSeconds, buf, sizeof(buf));
   drawStatCell(renderer, x + thirdW, thirdW, y + layout.topCardTitleH, rowH, buf, tr(STR_STATS_TIME_LBL));
 
-  snprintf(buf, sizeof(buf), "%.1f", pagesPerMinute(stats.totalPagesTurned, stats.totalReadingSeconds));
-  drawStatCell(renderer, x + thirdW * 2, thirdW, y + layout.topCardTitleH, rowH, buf, tr(STR_STATS_PAGES_PER_MIN));
+  // Cross-book reading speed (WPM) from the global WPM window. Same
+  // display rule as the per-book activity: "<n> WPM" when at least one
+  // sample is present, "-" otherwise.
+  if (stats.wpm.count > 0) {
+    snprintf(buf, sizeof(buf), tr(STR_STATS_WPM_VALUE), static_cast<unsigned>(stats.wpm.avg));
+  } else {
+    snprintf(buf, sizeof(buf), "%s", tr(STR_STATS_WPM_UNAVAILABLE));
+  }
+  drawStatCell(renderer, x + thirdW * 2, thirdW, y + layout.topCardTitleH, rowH, buf, tr(STR_STATS_AVG_PAGE_PACE));
 
   const uint32_t avgSecs = stats.totalSessions > 0 ? stats.totalReadingSeconds / stats.totalSessions : 0;
   BookReadingStats::formatDuration(avgSecs, buf, sizeof(buf));
