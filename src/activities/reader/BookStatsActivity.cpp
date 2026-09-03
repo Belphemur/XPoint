@@ -17,6 +17,20 @@ void BookStatsActivity::onEnter() {
   // The card grid is laid out for portrait; it does not fit landscape heights.
   previousOrientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+
+  // Truncate the book title once for the activity's lifetime. render() can
+  // run repeatedly (one call per display refresh) and truncating a long
+  // title on every frame would allocate a std::string + heap copy on each
+  // call. bookTitle and screenWidth are both fixed from this point on, so
+  // a single onEnter() computation is sufficient.
+  if (!bookTitle.empty()) {
+    truncatedTitle = renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), renderer.getScreenWidth() - 20,
+                                            EpdFontFamily::BOLD);
+    const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, truncatedTitle.c_str(), EpdFontFamily::BOLD);
+    titleX = (renderer.getScreenWidth() - titleWidth) / 2;
+  } else {
+    titleX = -1;  // sentinel: render() falls back to tr(STR_READING_STATS) which is centered by the renderer
+  }
 }
 
 void BookStatsActivity::onExit() {
@@ -46,13 +60,11 @@ void BookStatsActivity::render(RenderLock&&) {
                                         /*hasEstimatedTimeLeft=*/false, stats.estimatedTimeLeftSeconds,
                                         /*showButtonHints=*/true);
 
-  const std::string truncated =
-      renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), renderer.getScreenWidth() - 20, EpdFontFamily::BOLD);
-  const char* title = bookTitle.empty() ? tr(STR_READING_STATS) : truncated.c_str();
-  const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
-  const int titleX = (renderer.getScreenWidth() - titleWidth) / 2;
-  if (titleX >= 0) {
+  const char* title = bookTitle.empty() ? tr(STR_READING_STATS) : truncatedTitle.c_str();
+  if (titleX >= 0 && !bookTitle.empty()) {
     renderer.drawText(UI_12_FONT_ID, titleX, 15, title, true, EpdFontFamily::BOLD);
+  } else if (bookTitle.empty()) {
+    renderer.drawCenteredText(UI_12_FONT_ID, 15, title, true, EpdFontFamily::BOLD);
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CLEAR_BOOK_PACE), "", "");

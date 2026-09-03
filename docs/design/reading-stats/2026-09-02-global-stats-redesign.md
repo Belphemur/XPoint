@@ -151,10 +151,17 @@ page-specific). They're rendered with the renderer's
 
 - `BaseTheme::drawBarChartTitle` — no longer used (crossink doesn't
   have this helper; titles are drawn by `drawSectionCard`).
-- `BaseTheme::drawBarChart` / `drawBarChartRow` — kept but unused by the
-  new BookStatsView path. Will be removed in a follow-up cleanup PR if
-  nothing else uses them.
-- `BaseTheme::drawHeatmapGrid` — same, kept for now.
+- `BaseTheme::drawBarChart` / `drawBarChartRow` — REMOVED. The
+  `BookStatsView::drawHorizontalBars` function (in
+  `src/activities/reader/BookStatsView.cpp`) replaces the old
+  drawBarChart* triple; the crossink port draws bars directly with
+  `renderer.fillRect` instead of going through a theme helper. The
+  last caller of these helpers in develop was the previous
+  GlobalStatsActivity (since deleted in this PR), so no other
+  references remain after the port.
+- `BaseTheme::drawHeatmapGrid` — REMOVED for the same reason; the
+  heatmap rendering is inlined in `BookStatsView::drawHeatmap` and
+  uses the renderer's `drawRect` / `fillRect` primitives directly.
 - `GlobalStatsActivity::rebuildRowItems` / `valueCache` / `rowItems` /
   `clearPaceRow` / `buildScreen` / `formatStreak` / `formatStatsDate` —
   all removed. The clear-pace action moves to the existing

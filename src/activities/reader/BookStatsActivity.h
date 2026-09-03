@@ -10,6 +10,8 @@
 // authoritative record and re-saves it; Back cancels.
 class BookStatsActivity final : public Activity {
   std::string bookTitle;
+  std::string truncatedTitle;  // cached in onEnter() after the orientation flip
+  int titleX = 0;              // cached text origin (screenWidth - titleWidth) / 2
   BookReadingStats stats;
   GfxRenderer::Orientation previousOrientation = GfxRenderer::Orientation::Portrait;
 
