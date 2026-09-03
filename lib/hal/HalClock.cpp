@@ -110,6 +110,19 @@ void HalClock::seedSystemClockFromRtc() {
     // coin cell shows up here first. Dump the raw block so the failure mode is
     // identifiable from the log alone.
     logRawRegisters("badDate");
+    LOG_INF("CLK", "seedSystemClockFromRtc: RTC date invalid (year=%u month=%u day=%u)", static_cast<unsigned>(year),
+            static_cast<unsigned>(month), static_cast<unsigned>(day));
+    return;
+  }
+
+  // getDateTime() validates the date only — it accepts any hour or minute value.
+  // mktime() normalises those instead of rejecting them (e.g. hour 99 advances
+  // the date silently before settimeofday() publishes the epoch), so check
+  // explicitly here. Anything outside these bounds means the RTC is reporting
+  // garbage even though the date looked valid.
+  if (hour > 23 || minute > 59) {
+    LOG_INF("CLK", "seedSystemClockFromRtc: RTC time invalid (hour=%u minute=%u)", static_cast<unsigned>(hour),
+            static_cast<unsigned>(minute));
     return;
   }
 
@@ -127,7 +140,10 @@ void HalClock::seedSystemClockFromRtc() {
   setenv("TZ", "UTC0", 1);
   tzset();
   const time_t epoch = mktime(&timeinfo);
-  if (epoch == static_cast<time_t>(-1)) return;
+  if (epoch == static_cast<time_t>(-1)) {
+    LOG_INF("CLK", "seedSystemClockFromRtc: mktime rejected the date/time");
+    return;
+  }
 
   const timeval tv{epoch, 0};
   settimeofday(&tv, nullptr);

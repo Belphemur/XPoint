@@ -30,8 +30,10 @@ class HalClock {
   // ENABLE_SERIAL_LOG): reads the RTC time and status registers straight off
   // the bus and logs them as raw BCD, bypassing Rtc::DateTime. The HAL only
   // ever sees the decoded values, which hides whether a rejected date came from
-  // a POR-zeroed chip, a set century bit, or plain garbage. Called only on the
-  // path where the calendar-date gate rejects the RTC contents.
+  // a POR-zeroed chip, a set century bit, or plain garbage. Called from the
+  // RTC-seeding path on calendar-date rejection (the one case where the
+  // decoded DateTime is untrustworthy), and from syncFromNTP() before/after
+  // _sdkRtc.set() so a truncated or rejected burst shows up immediately.
   void logRawRegisters(const char* tag);
 
  public:
