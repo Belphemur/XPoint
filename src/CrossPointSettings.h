@@ -275,6 +275,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t clockTzIsDst = 0;
   // Clock display format: 0 = 24-hour, 1 = 12-hour
   uint8_t clockFormat = 0;
+  // Show the current date + time in the top-left of the screen header (every
+  // GUI.drawHeader caller: Home, File Browser, Settings, network screens).
+  // Defaults to on; the reader has its own status-bar clock instead.
+  uint8_t headerClock = 1;
   // Set once an NTP sync succeeds. Used to skip re-syncing on every WiFi connect.
   // Resetting to 0 (e.g. via the web UI) forces a re-sync on next WiFi connect.
   uint8_t clockHasBeenSynced = 0;
