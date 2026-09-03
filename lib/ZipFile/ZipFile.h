@@ -117,8 +117,8 @@ class ZipFile {
       }
 
       file.seekCur(12);
-      uint32_t crc32, compressedSize;
-      file.read(&crc32, 4);
+      uint32_t crc32_val, compressedSize;
+      file.read(&crc32_val, 4);
       file.read(&compressedSize, 4);
       file.seekCur(4);
       uint16_t nameLen, m, k;
@@ -130,7 +130,7 @@ class ZipFile {
       if (nameLen < sizeof(itemName)) {
         file.read(itemName, nameLen);
         itemName[nameLen] = '\0';
-        callback(std::string_view{itemName, nameLen}, crc32, compressedSize);
+        callback(std::string_view{itemName, nameLen}, crc32_val, compressedSize);
       } else {
         file.seekCur(nameLen);
       }
