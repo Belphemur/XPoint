@@ -52,7 +52,6 @@ class BookMetadataCache {
   uint16_t tocCount;
   bool loaded;
   bool buildMode;
-  bool metadataCacheValid_ = false;
 
   HalFile bookFile;
   // Temp file handles during build
@@ -126,6 +125,4 @@ class BookMetadataCache {
   int getSpineCount() const { return spineCount; }
   int getTocCount() const { return tocCount; }
   bool isLoaded() const { return loaded; }
-  bool isMetadataCacheValid() const { return metadataCacheValid_; }
-  void clearMetadataCacheValid() { metadataCacheValid_ = false; }
 };

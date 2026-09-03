@@ -2480,9 +2480,6 @@ void EpubReaderActivity::paintOverlayPopup() {
 
 void EpubReaderActivity::applyReaderTextSettings() {
   SETTINGS.saveToFile();
-  // Invalidate the metadata cache so the next load rebuilds book.bin with
-  // the updated render settings (font, line spacing, margins).
-  if (epub) epub->clearMetadataCacheValid();
   // (Re)load or unload the selected SD-card font for the current family/size.
   // The reader otherwise only loads SD fonts on book open, so without this an
   // in-reader font change wouldn't take effect until re-opening the book.

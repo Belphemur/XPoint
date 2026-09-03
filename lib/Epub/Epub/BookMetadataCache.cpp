@@ -458,12 +458,6 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
 /* ============= READING / LOADING FUNCTIONS ================ */
 
 bool BookMetadataCache::load() {
-  if (metadataCacheValid_ && Storage.exists((cachePath + bookBinFile).c_str())) {
-    LOG_INF("BMC", "load: fast path hit");
-    loaded = true;
-    return true;
-  }
-
   if (!Storage.openFileForRead("BMC", cachePath + bookBinFile, bookFile)) {
     return false;
   }
@@ -500,7 +494,6 @@ bool BookMetadataCache::load() {
   }
 
   loaded = true;
-  metadataCacheValid_ = true;
   LOG_INF("BMC", "load: rebuilt");
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
   return true;

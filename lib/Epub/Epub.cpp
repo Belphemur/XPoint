@@ -8,6 +8,7 @@
 #include <PngToBmpConverter.h>
 #include <Utf8.h>
 #include <ZipFile.h>
+#include <esp_heap_caps.h>
 
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
@@ -225,21 +226,39 @@ bool Epub::parseTocNavFile() const {
 
 void Epub::discoverCssFilesFromZip() {
   const std::string& opfDir = contentBasePath;
+  // Prefer the PSRAM ZIP cache (no SD access, no ZipFile construction). If the
+  // cache is unavailable (e.g. non-PSRAM board, or load failed) fall back to
+  // opening a fresh ZipFile and using its per-instance enumerateFilePaths.
+#ifdef BOARD_HAS_PSRAM
+  if (zipCache_) {
+    for (const auto& entry : zipCache_->cacheRef()) {
+      const std::string_view filePath = entry.first;
+      if (!opfDir.empty() && filePath.find(opfDir) != 0) {
+        continue;
+      }
+      if (!FsHelpers::hasCssExtension(filePath)) {
+        continue;
+      }
+      if (std::find(cssFiles.begin(), cssFiles.end(), filePath) != cssFiles.end()) {
+        continue;
+      }
+      LOG_DBG("EBP", "Discovered CSS file via PSRAM cache: %.*s", (int)filePath.size(), filePath.data());
+      cssFiles.push_back(std::string{filePath});
+    }
+    return;
+  }
+#endif
   ZipFile zf(filepath);
-
   if (!zf.enumerateFilePaths([&](std::string_view filePath) {
         if (!opfDir.empty() && filePath.find(opfDir) != 0) {
           return;
         }
-
         if (!FsHelpers::hasCssExtension(filePath)) {
           return;
         }
-
         if (std::find(cssFiles.begin(), cssFiles.end(), filePath) != cssFiles.end()) {
           return;
         }
-
         LOG_DBG("EBP", "Discovered CSS file via ZIP enumeration: %.*s", (int)filePath.size(), filePath.data());
         cssFiles.push_back(std::string{filePath});
       })) {
@@ -431,15 +450,27 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   cssParser.reset(new CssParser(cachePath));
 #ifdef BOARD_HAS_PSRAM
   // Parse the ZIP central directory once and cache entry info in PSRAM.
-  zipCache_ = makeUniqueNoThrow<ZipFileCache>();
-  if (zipCache_) {
-    zipCache_->load(filepath.c_str());
+  // Allocate the ZipFileCache itself in PSRAM via heap_caps_malloc to ensure
+  // the unique_ptr control block and the cache map both land in PSRAM rather
+  // than the default (DRAM-first) heap. The internal std::string keys still
+  // use the default allocator; this puts the per-ZipFileCache overhead (~16 B
+  // for an empty cache, growing to ~5-20 KB for a typical EPUB) in PSRAM.
+  void* p = heap_caps_malloc(sizeof(ZipFileCache), MALLOC_CAP_SPIRAM);
+  if (p) {
+    new (p) ZipFileCache();  // placement-new
+    zipCache_.reset(static_cast<ZipFileCache*>(p));
+    if (zipCache_) {
+      zipCache_->load(filepath.c_str());
+    }
+  } else {
+    LOG_ERR("EBP", "Failed to allocate ZipFileCache in PSRAM (%u bytes); continuing without cache",
+            static_cast<unsigned>(sizeof(ZipFileCache)));
   }
 #endif
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
-    if (!skipLoadingCss && !bookMetadataCache->isMetadataCacheValid()) {
+    if (!skipLoadingCss) {
       const CssParser::CacheStatus cacheStatus = cssParser->inspectCache();
       CssParser::CacheLoadResult cacheLoadResult = CssParser::CacheLoadResult::Invalid;
       if (cacheStatus == CssParser::CacheStatus::Complete) {
@@ -462,7 +493,6 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
           LOG_ERR("EBP", "Could not parse content.opf from cached bookMetadata for CSS files");
         } else {
           discoverCssFilesFromZip();
-          bookMetadataCache->clearMetadataCacheValid();
           cssParseResult = parseCssFiles(cacheStatus);
         }
         if (cssParseResult != CssParser::ParseResult::Error) {
@@ -870,13 +900,20 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 #ifdef BOARD_HAS_PSRAM
-  // Preflight: use the PSRAM ZIP cache to obtain the entry size without
-  // a central-directory scan. The actual streaming is delegated to ZipFile,
-  // which re-scans only if its own per-instance cache is empty.
+  // Fast path: use the PSRAM ZIP cache to skip the central-directory scan.
+  // We open the ZIP once, then call the FileStatSlim overload of readFileToStream
+  // which avoids the second CD scan that loadFileStatSlim would otherwise do.
   if (zipCache_) {
     const ZipFile::FileStatSlim* stat = zipCache_->get(path.c_str());
     if (stat) {
-      (void)stat;  // stat confirmed entry exists; fall through to ZipFile.
+      ZipFile zf(filepath);
+      if (zf.open()) {
+        if (zf.readFileToStream(*stat, out, chunkSize, allowEarlyStop)) {
+          return true;
+        }
+        // If the cached stat did not produce a valid read (e.g. localHeaderOffset
+        // shifted), fall through to the non-cached path below.
+      }
     }
   }
 #endif
@@ -1066,7 +1103,9 @@ void Epub::ZipFileCache::load(const char* epubPath) {
   ZipFile zf(epubPath);
   if (!zf.open()) return;
   if (!zf.loadAllFileStatSlims()) return;
-  cache_ = zf.getFileStatSlimCache();
+  // Move the cache out of zf to avoid the ~2x transient copy the const& getter
+  // would force. The map is small (~5-20 KB) but copy is avoidable.
+  cache_ = zf.takeFileStatSlimCache();
   loaded_ = true;
   LOG_DBG("ZIP", "ZIP cache loaded: %zu entries", static_cast<size_t>(cache_.size()));
 }

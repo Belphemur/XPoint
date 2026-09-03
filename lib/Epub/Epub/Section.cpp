@@ -465,16 +465,22 @@ bool Section::buildSomeMore(const int maxPages) {
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
       return finalizeBuild();
     }
-    // ParseStatus::More: yield once we've laid out the requested number of pages.
-    if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
-      build_->bytesConsumed = build_->parser->parseBytesConsumed();
-      // Periodic partial checkpoint: commit every 5 s while building.
+    // Periodic partial checkpoint: commit every 5 s while building, regardless of
+    // mode (maxPages > 0 incremental or maxPages == 0 one-shot). Runs once per
+    // parse-step yield. The one-shot path (maxPages == 0) used to skip this
+    // entirely; the timer is now checked before the incremental yield so the
+    // dtor's suspendBuild() always has a recent checkpoint to fall back to.
+    {
       const uint32_t now = millis();
       if (now - lastPartialCheckpointMs_ >= 5000) {
         lastPartialCheckpointMs_ = now;
         const uint32_t consumed = static_cast<uint32_t>(build_->parser->parseBytesConsumed());
         commitBuildFile(SECTION_FILE_PARTIAL_VERSION, consumed, build_->totalBytes);
       }
+    }
+    // ParseStatus::More: yield once we've laid out the requested number of pages.
+    if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
+      build_->bytesConsumed = build_->parser->parseBytesConsumed();
       return true;
     }
   }

@@ -76,9 +76,6 @@ class Epub {
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
   CssParser* getCssParser() const { return cssParser.get(); }
   int resolveHrefToSpineIndex(const std::string& href) const;
-  void clearMetadataCacheValid() {
-    if (bookMetadataCache) bookMetadataCache->clearMetadataCacheValid();
-  }
 
 #ifdef BOARD_HAS_PSRAM
   // ZipFileCache: parse the ZIP central directory once and cache FileStatSlim
@@ -91,6 +88,10 @@ class Epub {
    public:
     void load(const char* epubPath);
     const ZipFile::FileStatSlim* get(const char* itemPath) const;
+    // Iterate the cache (PSRAM-backed on BOARD_HAS_PSRAM boards). Used by
+    // discoverCssFilesFromZip to avoid opening a fresh ZipFile just to enumerate
+    // paths. Returns a span-like pair (begin, end) of (path, FileStatSlim) entries.
+    const std::unordered_map<std::string, ZipFile::FileStatSlim>& cacheRef() const { return cache_; }
   };
   std::unique_ptr<ZipFileCache> zipCache_;
 #endif

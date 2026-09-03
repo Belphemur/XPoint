@@ -461,6 +461,19 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
   FileStatSlim fileStat = {};
   if (!loadFileStatSlim(filename, &fileStat)) return false;
 
+  return readFileToStream(fileStat, out, chunkSize, allowEarlyStop);
+}
+
+bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const size_t chunkSize,
+                               const bool allowEarlyStop) {
+  // If the cache already holds a matching entry we are using the in-memory stat;
+  // otherwise the caller must have opened the ZIP themselves. Either way, do not
+  // re-scan the central directory: use getDataOffset() directly with the provided stat.
+  if (!file) {
+    LOG_ERR("ZIP", "readFileToStream(FileStatSlim) called without an open ZIP");
+    return false;
+  }
+
   const long fileOffset = getDataOffset(fileStat);
   if (fileOffset < 0) return false;
 

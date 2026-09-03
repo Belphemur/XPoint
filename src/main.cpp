@@ -56,10 +56,11 @@ FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts
 static unsigned long allowSleepAt = 0;
 static unsigned long lastX4ProPowerClickAt = 0;
 
-// Profiling counters for Phase 1 memory instrumentation.
+// Profiling counters for Phase 1 memory instrumentation. g_psram_free_at_boot
+// is the boot-time PSRAM baseline (defined here, extern'd in Logging.h). The
+// central-directory and file-open counters live in ZipFile.cpp; do not duplicate
+// them as static (internal-linkage) here or they will report 0 forever.
 size_t g_psram_free_at_boot = 0;
-static std::atomic<uint32_t> g_load_all_stat_slims_count{0};
-static std::atomic<uint32_t> g_fsfile_open_count{0};
 
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
