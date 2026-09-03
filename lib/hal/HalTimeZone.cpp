@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -171,13 +172,27 @@ static char sCachedId[40] = "";
 static int64_t sCachedEpoch = -1;
 static int sCachedOffset = 0;
 
+// 2026-01-01T00:00:00Z. Anything earlier means the system clock was never
+// seeded (HalClock::seedSystemClockFromRtc) and never synced (SNTP), so the
+// caller must fall back to its cached offset.
+// Deliberately 32-bit and unsigned: Unix time stays below 2^32 until 2106, so
+// the gate needs no 64-bit constant, and comparing it against the int64_t
+// parameter is a widening conversion (no signed/unsigned mix). Only the AceTime
+// call below genuinely needs 64 bits.
+static constexpr uint32_t MIN_PLAUSIBLE_EPOCH_SECONDS = 1767225600;
+
 bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds, int& offsetMin) {
   if (!ianaId || ianaId[0] == '\0') {
     return false;
   }
-  // Before NTP sync time(nullptr) yields 0 or (time_t)-1; resolving against an
-  // invalid epoch would produce a bogus offset and bypass the cached fallback.
-  if (utcEpochSeconds <= 0) {
+  // An unseeded system clock yields 0, (time_t)-1, or a seconds-since-boot
+  // counter of a few thousand — all of which land in January 1970. AceTime
+  // resolves those perfectly happily and returns the *winter* offset, silently
+  // overriding the cached one and putting the display an hour off. Require an
+  // epoch inside the firmware's supported window instead. Bump this when that
+  // window moves; it is deliberately not derived from the build date so a
+  // mis-set host clock can't shift it.
+  if (utcEpochSeconds < MIN_PLAUSIBLE_EPOCH_SECONDS) {
     return false;
   }
   std::lock_guard<std::mutex> lock(sResolverMutex);

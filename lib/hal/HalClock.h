@@ -20,6 +20,20 @@ class HalClock {
 
   static constexpr unsigned long CLOCK_POLL_MS = 10000;  // 10 seconds
 
+  // Publishes the RTC's UTC wall clock into the ESP32's software clock, so
+  // time() is a real epoch from power-on instead of a seconds-since-boot
+  // counter. Defined and called only under FREEINK_CAP_RTC; on boards without
+  // an RTC the declaration alone costs nothing and is never referenced.
+  void seedSystemClockFromRtc();
+
+  // Dev-only diagnostic (compiles to a no-op below LOG_LEVEL 2 or without
+  // ENABLE_SERIAL_LOG): reads the RTC time and status registers straight off
+  // the bus and logs them as raw BCD, bypassing Rtc::DateTime. The HAL only
+  // ever sees the decoded values, which hides whether a rejected date came from
+  // a POR-zeroed chip, a set century bit, or plain garbage. Called only on the
+  // path where the calendar-date gate rejects the RTC contents.
+  void logRawRegisters(const char* tag);
+
  public:
   // Call after BoardConfig has selected the active device.
   void begin();

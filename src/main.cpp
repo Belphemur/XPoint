@@ -606,10 +606,10 @@ void setup() {
   LOG_INF("MAIN", "Device: %s", BoardConfig::ACTIVE.name);
 #endif
 
-  // Debug aid for the boot-time clock/timezone investigation: surface RTC
-  // availability, the raw system epoch, and the IANA id / cached offset that
-  // will drive the very first render. After the bug is root-caused these can
-  // be downgraded to LOG_DBG or removed.
+  // Surface RTC availability, the system epoch the zone resolver will use, and
+  // the IANA id / cached offset driving the first render. The epoch here comes
+  // straight from HalClock::begin()'s RTC seed, so it is wall-clock time on
+  // boards with an RTC and a seconds-since-boot counter on boards without.
   {
     const time_t bootEpoch = time(nullptr);
     char rtcBuf[16] = "--:--";
