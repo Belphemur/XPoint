@@ -49,7 +49,11 @@ void BookStatsActivity::render(RenderLock&&) {
   const std::string truncated =
       renderer.truncatedText(UI_12_FONT_ID, bookTitle, renderer.getScreenWidth() - 20, EpdFontFamily::BOLD);
   const char* title = bookTitle.empty() ? tr(STR_READING_STATS) : truncated.c_str();
-  renderer.drawCenteredText(UI_12_FONT_ID, 15, title, true, EpdFontFamily::BOLD);
+  const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
+  const int titleX = (renderer.getScreenWidth() - titleWidth) / 2;
+  if (titleX >= 0) {
+    renderer.drawText(UI_12_FONT_ID, titleX, 15, title, true, EpdFontFamily::BOLD);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_CLEAR_BOOK_PACE), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
