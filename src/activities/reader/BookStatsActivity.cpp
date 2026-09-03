@@ -47,7 +47,7 @@ void BookStatsActivity::render(RenderLock&&) {
                                         /*showButtonHints=*/true);
 
   const std::string truncated =
-      renderer.truncatedText(UI_12_FONT_ID, bookTitle, renderer.getScreenWidth() - 20, EpdFontFamily::BOLD);
+      renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), renderer.getScreenWidth() - 20, EpdFontFamily::BOLD);
   const char* title = bookTitle.empty() ? tr(STR_READING_STATS) : truncated.c_str();
   const int titleWidth = renderer.getTextWidth(UI_12_FONT_ID, title, EpdFontFamily::BOLD);
   const int titleX = (renderer.getScreenWidth() - titleWidth) / 2;
