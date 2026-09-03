@@ -1,6 +1,7 @@
 # Global Stats Screen — CrossInk Card-Grid Layout (Readable Heatmap + Bar Charts)
 
-**Status:** Draft — awaiting user review.
+**Status:** Implemented in PR #54 (`fix/global-stats-crossink-redesign` → `develop`).
+Merged: pending review on GitHub.
 **Target repo:** `Belphemur/crosspoint-x-reader` (branch `develop`)
 **Worktree:** `crosspoint-global-stats-redesign` (off `origin/develop@48178b4a`,
 which already includes the merged PR #52)
@@ -30,13 +31,13 @@ The user clarified:
 - **`BookStatsActivity` (per-book screen)**: replace its current rendering
   with crossink's `renderPerBookStatsPage(...)`. Shows the per-book top
   card (Sessions / Reading Time / Progress / Avg Session / Time Left /
-  Pages-Min), then the Started (N days) + Est. Finish row, then the
+  Reading Speed (WPM)), then the Started (N days) + Est. Finish row, then the
   two bar chart cards (Time of Day, Day of Week). No global stats
   shown on this screen — same as crossink.
 
 - **`GlobalStatsActivity` (settings-menu global screen)**: replace its
   current rendering with crossink's `renderGlobalStatsPage(...)`. Shows
-  the global card (Sessions / Reading Time / Pages/Min / Avg Session /
+  the global card (Sessions / Reading Time / Reading Speed (WPM) / Avg Session /
   Reading Streak / Books Read) only.
 
 - **No scrollable widget, no per-book-screen-shows-global** — that's
@@ -79,7 +80,7 @@ The user clarified:
 │ Sessions         │ Reading Time      │ Progress         │
 │ 42               │ 18h 25m           │ 14%              │
 ├──────────────────┼──────────────────┼──────────────────┤
-│ Avg Session      │ Time Left         │ Pages/Min        │
+│ Avg Session      │ Time Left         │ Reading Speed (WPM) │
 │ 26m              │ ~1h 15m           │ 0.4              │
 └──────────────────┴──────────────────┴──────────────────┘
 ```
@@ -92,7 +93,7 @@ the card width):
 **Global card** (3×2 grid; 2 rows):
 ```
 ┌──────────────────┬──────────────────┬──────────────────┐
-│ Sessions         │ Reading Time      │ Pages/Min        │
+│ Sessions         │ Reading Time      │ Reading Speed (WPM) │
 │ 312              │ 102h 15m          │ 0.6              │
 ├──────────────────┼──────────────────┼──────────────────┤
 │ Avg Session      │ Reading Streak    │ Books Read       │
@@ -164,13 +165,42 @@ page-specific). They're rendered with the renderer's
 
 ### 6.4 What gets added
 
-- `STR_STATS_PAGES_PER_MIN: "Pages/Min"` (new i18n key — crossink
-  uses this; we didn't have it).
+- `STR_STATS_PAGES_PER_MIN: "Pages/Min"` (crossink uses this in its
+  per-book top card, but we deliberately DON'T — see "Why WPM
+  replaces Pages/Min" below). The key is still added to the
+  `I18nKeys.h` for completeness, but is not referenced by
+  `BookStatsView`.
 - `STR_STATS_NO_RTC_BANNER: "RTC clock not available"` (new i18n key —
   for the no-RTC combined-stats page, used when both per-book and
   global are shown together without an RTC).
 - The existing `STR_STATS_*` keys we already added in PR #52 are
   reused; no further additions needed.
+
+### 6.5 Why WPM replaces Pages/Min in both card grids
+
+The original crossink-derived design had the rightmost cell of both
+cards as `Pages/Min` (the average pages-per-minute rate, computed
+from `pagesPerMinute(totalPagesTurned, totalReadingSeconds)`). After
+ship-review the user asked for a change: **`Pages/Min` is hard to
+interpret at a glance** (it conflates book-length and reading speed),
+and the primary reading-speed metric users care about is **WPM** (the
+trimmed-mean words-per-minute from the existing 15-sample window).
+
+The PR #54 final commit (`994a022a`) replaces the `Pages/Min` cell
+with a **Reading Speed (WPM)** cell in **both** the per-book and the
+global card. Same display rule in both: `"<n> WPM"` via
+`STR_STATS_WPM_VALUE` when `wpm.count > 0`, `"-"` via
+`STR_STATS_WPM_UNAVAILABLE` otherwise — same display rule the
+`BookStatsActivity` and `GlobalStatsActivity` already used in the
+row-list rendering. The `pagesPerMinute()` helper is removed
+(no callers after the rewrite).
+
+Rationale for keeping `STR_STATS_PAGES_PER_MIN` in the i18n catalog
+even though it is unreferenced: future stats screens (a per-book
+"Speed History" graph, or the crossink no-RTC combined page) may
+want it, and removing it would force a `gen_i18n.py` re-run + shim
+edit for no current benefit. The shim's `case StrId::STR_STATS_PAGES_PER_MIN`
+return is harmless dead code until a future caller reuses it.
 
 ## Constraints
 
