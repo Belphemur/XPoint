@@ -7,6 +7,7 @@
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <time.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include "components/UiAppHelpers.h"
 #include "components/icons/bookmark.h"
 #include "fontIds.h"
+#include "util/ClockFormat.h"
 
 // Internal constants
 namespace {
@@ -330,6 +332,19 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
         ui.target.measureText(fui::GfxRendererTarget::FONT_SMALL, percentText, tokens.smallText).width);
   }
 
+  // Header clock: date + HH:MM in the band's top strip, on the side opposite
+  // the battery. Only drawn when an RTC is present — without one the system
+  // clock is never seeded, so any value shown would be meaningless.
+  char clockText[ClockFormat::kDateAndTimeSize] = "";
+  fui::Size clockSize{};
+  int16_t clockReserve = 0;
+  if (SETTINGS.headerClock != 0 && halClock.isAvailable() &&
+      ClockFormat::formatDateAndTime(clockText, sizeof(clockText), time(nullptr), SETTINGS.clockEffectiveOffsetMin(),
+                                     SETTINGS.clockFormat == 1)) {
+    clockSize = ui.target.measureText(fui::GfxRendererTarget::FONT_SMALL, clockText, tokens.smallText);
+    clockReserve = static_cast<int16_t>(clockSize.width + tokens.spaceMd);
+  }
+
   fui::HeaderProps props;
   props.title = title;
   props.rightLabel = subtitle;  // firmware headers right-align the secondary text
@@ -362,9 +377,13 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
     props.titleOffsetY = static_cast<int16_t>(titleTop - (static_cast<int>(band.height) - titleLineHeight) / 2);
   } else {
     const int16_t reserve = static_cast<int16_t>(batteryReserve + tokens.spaceMd);
-    if (batteryLeft) {
-      props.leftReserve = reserve;
-    } else {
+    // The clock shares the left edge, so it widens the title's left clearance;
+    // when the battery is also on the left the two stack.
+    int16_t leftReserve = static_cast<int16_t>((batteryLeft ? reserve : 0) + clockReserve);
+    if (leftReserve > 0) {
+      props.leftReserve = leftReserve;
+    }
+    if (!batteryLeft) {
       props.rightReserve = reserve;
     }
   }
@@ -394,6 +413,16 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
                                        : static_cast<int16_t>(band.right() - batteryEdgeInset - batteryReserve);
   const int16_t batteryH = static_cast<int16_t>(metrics.batteryBarHeight);
   fui::batteryIndicator(ui.frame, fui::Rect{batteryX, band.y, batteryReserve, batteryH}, battery);
+
+  if (clockReserve > 0) {
+    // Vertically centred in the same top strip the battery occupies, and kept
+    // clear of it when a theme puts the battery on the left.
+    const int16_t clockH = ui.target.lineHeight(fui::GfxRendererTarget::FONT_SMALL);
+    const int16_t clockX = batteryLeft ? static_cast<int16_t>(batteryX + batteryReserve + tokens.spaceMd)
+                                       : static_cast<int16_t>(band.x + tokens.headerSidePadding);
+    const int16_t clockY = static_cast<int16_t>(band.y + (batteryH - clockH) / 2);
+    ui.target.text(fui::Rect{clockX, clockY, clockSize.width, clockH}, clockText, tokens.smallText);
+  }
 
   if (manualRightLabel) {
     const fui::Size labelSize = ui.target.measureText(fui::GfxRendererTarget::FONT_SMALL, subtitle, tokens.smallText);

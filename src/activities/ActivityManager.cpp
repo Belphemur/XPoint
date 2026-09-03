@@ -3,11 +3,13 @@
 #include <BoardConfig.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
+#include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalPowerManager.h>
 #include <Memory.h>
 
 #include <algorithm>
+#include <ctime>
 
 #include "CrossPointSettings.h"
 #include "OpdsServerStore.h"
@@ -123,6 +125,19 @@ void ActivityManager::loop() {
 
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed
     currentActivity->loop();
+
+    // Keep the header clock (BaseTheme::drawHeader) current: one redraw per
+    // wall-clock minute. Reader screens are skipped — they render their own
+    // status bar rather than the header, so a minute cadence there would only
+    // add an e-ink refresh on top of every page turn.
+    if (SETTINGS.headerClock != 0 && halClock.isAvailable() && !currentActivity->isReaderActivity()) {
+      static time_t lastHeaderClockMinute = 0;
+      const time_t nowMinute = time(nullptr) / 60;
+      if (nowMinute != lastHeaderClockMinute) {
+        lastHeaderClockMinute = nowMinute;
+        requestUpdate();
+      }
+    }
   }
 
   while (pendingAction != PendingAction::None) {

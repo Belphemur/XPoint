@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <mutex>
@@ -151,6 +152,7 @@ using ace_time::ExtendedZoneProcessor;
 using ace_time::ExtendedZoneProcessorCache;
 using ace_time::TimeZone;
 using ace_time::ZonedDateTime;
+using ace_time::ZonedExtra;
 using ace_time::zonedbx2025::kZoneAndLinkRegistry;
 using ace_time::zonedbx2025::kZoneAndLinkRegistrySize;
 
@@ -171,31 +173,51 @@ static char sCachedId[40] = "";
 static int64_t sCachedEpoch = -1;
 static int sCachedOffset = 0;
 
+// 2026-01-01T00:00:00Z. Anything earlier means the system clock was never
+// seeded (HalClock::seedSystemClockFromRtc) and never synced (SNTP), so the
+// caller must fall back to its cached offset.
+// Deliberately 32-bit and unsigned: Unix time stays below 2^32 until 2106, so
+// the gate needs no 64-bit constant, and comparing it against the int64_t
+// parameter is a widening conversion (no signed/unsigned mix). Only the AceTime
+// call below genuinely needs 64 bits.
+static constexpr uint32_t MIN_PLAUSIBLE_EPOCH_SECONDS = 1767225600;
+
+namespace {
+
+// Reject an empty id and any epoch outside the firmware's supported window (see
+// MIN_PLAUSIBLE_EPOCH_SECONDS). Shared so the resolver's cache can never serve
+// an offset computed from a nonsensical epoch.
+bool isValidZoneRequest(const char* ianaId, int64_t utcEpochSeconds) {
+  return ianaId != nullptr && ianaId[0] != '\0' && utcEpochSeconds >= MIN_PLAUSIBLE_EPOCH_SECONDS;
+}
+
+// Front half of both resolvers. Callers must hold sResolverMutex: the zone
+// manager keeps mutable processor state behind it, so the returned
+// ZonedDateTime is only valid while the lock is held.
+bool resolveZonedDateTime(const char* ianaId, int64_t utcEpochSeconds, ZonedDateTime& out) {
+  if (!isValidZoneRequest(ianaId, utcEpochSeconds)) return false;
+  const TimeZone tz = sZoneManager.createForZoneName(ianaId);
+  if (tz.isError()) return false;
+  // utcEpochSeconds is Unix time (seconds since 1970). AceTime's internal epoch
+  // is 2000-01-01, so use forUnixSeconds64() which converts for us; passing raw
+  // Unix seconds to forEpochSeconds() would be off by 30 years.
+  out = ZonedDateTime::forUnixSeconds64(utcEpochSeconds, tz);
+  return true;
+}
+
+}  // namespace
+
 bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds, int& offsetMin) {
-  if (!ianaId || ianaId[0] == '\0') {
-    return false;
-  }
-  // Before NTP sync time(nullptr) yields 0 or (time_t)-1; resolving against an
-  // invalid epoch would produce a bogus offset and bypass the cached fallback.
-  if (utcEpochSeconds <= 0) {
-    return false;
-  }
   std::lock_guard<std::mutex> lock(sResolverMutex);
   // Serve from cache when the id and wall-minute are unchanged.
-  if (sCachedId[0] != '\0' && strncmp(sCachedId, ianaId, sizeof(sCachedId)) == 0 &&
-      utcEpochSeconds / 60 == sCachedEpoch / 60) {
+  if (isValidZoneRequest(ianaId, utcEpochSeconds) && sCachedId[0] != '\0' &&
+      strncmp(sCachedId, ianaId, sizeof(sCachedId)) == 0 && utcEpochSeconds / 60 == sCachedEpoch / 60) {
     offsetMin = sCachedOffset;
     return true;
   }
 
-  const TimeZone tz = sZoneManager.createForZoneName(ianaId);
-  if (tz.isError()) {
-    return false;
-  }
-  // utcEpochSeconds is Unix time (seconds since 1970). AceTime's internal epoch
-  // is 2000-01-01, so use forUnixSeconds64() which converts for us; passing raw
-  // Unix seconds to forEpochSeconds() would be off by 30 years.
-  const ZonedDateTime zdt = ZonedDateTime::forUnixSeconds64(utcEpochSeconds, tz);
+  ZonedDateTime zdt;
+  if (!resolveZonedDateTime(ianaId, utcEpochSeconds, zdt)) return false;
   const int off = zdt.timeOffset().toMinutes();
 
   strncpy(sCachedId, ianaId, sizeof(sCachedId) - 1);
@@ -203,6 +225,22 @@ bool resolveUtcOffsetMinutes(const char* ianaId, int64_t utcEpochSeconds, int& o
   sCachedEpoch = utcEpochSeconds;
   sCachedOffset = off;
   offsetMin = off;
+  return true;
+}
+
+bool resolveZoneAbbreviation(const char* ianaId, int64_t utcEpochSeconds, char* out, size_t outSize) {
+  if (out == nullptr || outSize == 0) return false;
+  std::lock_guard<std::mutex> lock(sResolverMutex);
+  ZonedDateTime zdt;
+  if (!resolveZonedDateTime(ianaId, utcEpochSeconds, zdt)) return false;
+  // ZonedExtra takes AceTime-epoch seconds (2000-based), so convert through the
+  // ZonedDateTime we already resolved rather than passing Unix seconds in.
+  const ZonedExtra extra = ZonedExtra::forEpochSeconds(zdt.toEpochSeconds(), zdt.timeZone());
+  if (extra.isError()) return false;
+  const char* abbrev = extra.abbrev();
+  if (abbrev[0] == '\0') return false;
+  strncpy(out, abbrev, outSize - 1);
+  out[outSize - 1] = '\0';
   return true;
 }
 
