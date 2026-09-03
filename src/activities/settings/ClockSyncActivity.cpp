@@ -15,6 +15,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ClockFormat.h"
 
 void ClockSyncActivity::onEnter() {
   Activity::onEnter();
@@ -87,11 +88,10 @@ void ClockSyncActivity::runSync() {
   }
   SETTINGS.saveToFile();
 
-  // Read the freshly synced time back for the user-facing confirmation.
-  char buf[9];
-  if (halClock.formatTime(buf, sizeof(buf), SETTINGS.clockEffectiveOffsetMin(), SETTINGS.clockFormat == 1)) {
-    snprintf(syncedTime, sizeof(syncedTime), "%s", buf);
-  }
+  // Full timestamp for the confirmation: the system clock was just set by SNTP,
+  // so it carries seconds the RTC-backed status-bar clock does not.
+  ClockFormat::formatTimestamp(syncedTime, sizeof(syncedTime), time(nullptr), SETTINGS.clockEffectiveOffsetMin(),
+                               SETTINGS.clockTimeZoneId, SETTINGS.clockFormat == 1);
   state = SUCCESS;
   requestUpdate();
 }
@@ -130,10 +130,10 @@ void ClockSyncActivity::render(RenderLock&&) {
     case SUCCESS: {
       renderer.drawCenteredText(UI_12_FONT_ID, midY - 20, tr(STR_CLOCK_SYNC_OK), true, EpdFontFamily::BOLD);
       if (syncedTime[0] != '\0') {
-        // Sized for the label in any language: STR_CURRENT_TIME is 26 bytes in
-        // Russian (UTF-8 Cyrillic is 2 bytes per letter) versus 13 in English,
-        // plus a separator and up to "08:56 PM".
-        char line[64];
+        // Worst case is 60 bytes: STR_CURRENT_TIME is 28 bytes in Kazakh (the
+        // longest translation; UTF-8 Cyrillic/Arabic run 2 bytes per letter),
+        // plus a separator and a full "2026-09-03 12:47:42 PM -04:00" (30).
+        char line[80];
         snprintf(line, sizeof(line), "%s %s", tr(STR_CURRENT_TIME), syncedTime);
         renderer.drawCenteredText(UI_10_FONT_ID, midY + 10, line);
       }
