@@ -256,7 +256,7 @@ void drawHorizontalBars(GfxRenderer& renderer, const int x, const int y, const i
   const int rowStride = rowContentH + rowGap;
   int maxLabelW = 0;
   for (size_t i = 0; i < N; ++i) {
-    maxLabelW = std::max(maxLabelW, renderer.getTextWidth(layout.chartLabelFontId, tr(labels[i])));
+    maxLabelW = std::max(maxLabelW, renderer.getTextWidth(layout.chartLabelFontId, I18n::getInstance().get(labels[i])));
   }
   const int labelColumnW = std::max(layout.chartLabelW, labelLeftPadding + maxLabelW + labelRightPadding);
   const int barX = x + labelColumnW + barLeftGap;
@@ -265,7 +265,7 @@ void drawHorizontalBars(GfxRenderer& renderer, const int x, const int y, const i
     const int rowTop = contentTop + static_cast<int>(i) * rowStride;
     const int labelY = rowTop + (rowContentH - labelLineH) / 2;
     const int barY = rowTop + (rowContentH - layout.barH) / 2;
-    renderer.drawText(layout.chartLabelFontId, x + labelLeftPadding, labelY, tr(labels[i]));
+    renderer.drawText(layout.chartLabelFontId, x + labelLeftPadding, labelY, I18n::getInstance().get(labels[i]));
     if (maxValue > 0 && values[i] > 0) {
       const int fillW = std::max(2, static_cast<int>((static_cast<uint64_t>(barW) * values[i]) / maxValue));
       renderer.fillRect(barX, barY, fillW, layout.barH, true);
