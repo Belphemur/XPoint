@@ -260,23 +260,6 @@ class BaseTheme {
                              int contentStartX = 0, int contentWidth = 0) const;
   virtual bool showsFileIcons() const { return false; }
 
-  // Horizontal bar-chart row (label left, proportional bar, duration value
-  // right) used by the reading-stats screens. The value text is always drawn;
-  // only the bar is skipped when the row is too narrow.
-  static void drawBarChartRow(GfxRenderer& renderer, int x, int y, int width, int rowHeight, int labelWidth,
-                              const char* label, const char* valueText, uint32_t value, uint32_t maxValue);
-  // Column of horizontal bars: one row per label, bar length proportional to
-  // the value, compact duration rendered on the right.
-  static void drawBarChart(GfxRenderer& renderer, const Rect& rect, const char* const* labels, const uint32_t* values,
-                           int count);
-  // Centered bold small-font section title for a stats chart area.
-  static void drawBarChartTitle(const GfxRenderer& renderer, const Rect& rect, const char* title);
-  // GitHub-style reading-history heatmap: 7 rows (day-of-week, Monday first) ×
-  // weeksToShow columns of small squares, rightmost column = current week.
-  // bit 0 of the history is the newest day (anchorDay).
-  static void drawHeatmapGrid(GfxRenderer& renderer, const Rect& rect, uint32_t anchorDay,
-                              const std::array<uint8_t, READING_HISTORY_BYTES>& bits, int weeksToShow = 30);
-
   // Shared constants and helpers for battery drawing (used by all themes)
   static constexpr int batteryPercentSpacing = 4;
   static void drawBatteryOutline(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight);

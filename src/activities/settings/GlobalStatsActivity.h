@@ -1,38 +1,19 @@
 #pragma once
 
-#include <string>
-#include <vector>
-
-#include "activities/UiListActivity.h"
+#include "activities/Activity.h"
 #include "activities/reader/GlobalReadingStats.h"
 
-// List of aggregate (all-books) reading statistics. Launched from the settings
-// "Reading Stats" action. Rows are label/value pairs built once on enter; the
-// final row is a "clear global reading speed" action that clears the WPM
-// window on the record this activity loaded and saves it.
-class GlobalStatsActivity final : public UiListActivity {
+// Card-grid view of the aggregate (all-books) reading statistics
+// (BookStatsView). Confirm clears the cross-book reading-speed (WPM) window
+// on the loaded record and saves it; Back cancels.
+class GlobalStatsActivity final : public Activity {
   GlobalReadingStats globalStats;
-  int clearPaceRow = -1;
-
-  std::vector<freeink::ui::ListItem> rowItems;
-  std::vector<std::string> valueCache;
-  void rebuildRowItems();
-
-  // Chart band (time-of-day + day-of-week bar charts and the reading-history
-  // heatmap), reserved below the list when the RTC provides a current date.
-  bool chartsVisible = false;
-  freeink::ui::Rect chartBandRect{};
-  int chartBandHeight() const;
-  void drawCharts();
+  GfxRenderer::Orientation previousOrientation = GfxRenderer::Orientation::Portrait;
 
  public:
   explicit GlobalStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
   void onEnter() override;
+  void onExit() override;
+  void loop() override;
   void render(RenderLock&&) override;
-
- private:
-  int listCount() const override { return static_cast<int>(rowItems.size()); }
-  void buildScreen(UiScreen& screen) override;
-  void activateIndex(int index) override;
-  bool handleButtons() override;
 };
