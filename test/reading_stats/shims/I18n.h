@@ -17,6 +17,8 @@ enum class StrId {
   STR_TIME_LEFT_UNAVAILABLE,
   STR_PROGRESS_LINE_FMT,
   STR_STATS_VALUE_UNAVAILABLE,
+  STR_STATS_PAGES_PER_MIN,
+  STR_STATS_NO_RTC_BANNER,
   STR_YES,
   STR_NO,
 };
@@ -55,6 +57,10 @@ class I18n {
         return "%u%% \xE2\x80\xA2 %s";
       case StrId::STR_STATS_VALUE_UNAVAILABLE:
         return "--";
+      case StrId::STR_STATS_PAGES_PER_MIN:
+        return "Pages/Min";
+      case StrId::STR_STATS_NO_RTC_BANNER:
+        return "RTC clock not available";
       case StrId::STR_YES:
         return "Yes";
       case StrId::STR_NO:
