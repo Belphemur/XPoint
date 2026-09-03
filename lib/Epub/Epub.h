@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Print.h>
+#include <ZipFile.h>
 
 #include <memory>
 #include <string>
@@ -9,8 +10,6 @@
 
 #include "Epub/BookMetadataCache.h"
 #include "Epub/css/CssParser.h"
-
-class ZipFile;
 
 class Epub {
   // the ncx file (EPUB 2)
@@ -77,4 +76,22 @@ class Epub {
   float calculateProgress(int currentSpineIndex, float currentSpineRead) const;
   CssParser* getCssParser() const { return cssParser.get(); }
   int resolveHrefToSpineIndex(const std::string& href) const;
+  void clearMetadataCacheValid() {
+    if (bookMetadataCache) bookMetadataCache->clearMetadataCacheValid();
+  }
+
+#ifdef BOARD_HAS_PSRAM
+  // ZipFileCache: parse the ZIP central directory once and cache FileStatSlim
+  // entries in PSRAM, avoiding repeated central-directory scans on every
+  // getItemSize() / readItemContentsToStream() call.
+  class ZipFileCache {
+    std::unordered_map<std::string, ZipFile::FileStatSlim> cache_;
+    bool loaded_ = false;
+
+   public:
+    void load(const char* epubPath);
+    const ZipFile::FileStatSlim* get(const char* itemPath) const;
+  };
+  std::unique_ptr<ZipFileCache> zipCache_;
+#endif
 };

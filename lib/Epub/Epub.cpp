@@ -14,6 +14,15 @@
 #include "Epub/parsers/TocNavParser.h"
 #include "Epub/parsers/TocNcxParser.h"
 
+// Stream chunk size for readItemContentsToStream. On PSRAM boards (excluding X4C,
+// whose JPEG/CSS heap thresholds leave no headroom) use 8192 B to reduce inflate
+// iterations and SD read count; on all other boards keep 1024 B to preserve heap.
+#if defined(BOARD_HAS_PSRAM) && !defined(FREEINK_DEVICE_X4C)
+constexpr size_t kStreamChunkSize = 8192;
+#else
+constexpr size_t kStreamChunkSize = 1024;
+#endif
+
 bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   const auto containerPath = "META-INF/container.xml";
   size_t containerSize;
@@ -31,7 +40,7 @@ bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   }
 
   // Stream read (reusing your existing stream logic)
-  if (!readItemContentsToStream(containerPath, containerParser, 512)) {
+  if (!readItemContentsToStream(containerPath, containerParser, kStreamChunkSize)) {
     LOG_ERR("EBP", "Could not read META-INF/container.xml");
     return false;
   }
@@ -70,7 +79,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
     return false;
   }
 
-  if (!readItemContentsToStream(contentOpfFilePath, opfParser, 1024)) {
+  if (!readItemContentsToStream(contentOpfFilePath, opfParser, kStreamChunkSize)) {
     LOG_ERR("EBP", "Could not read content.opf");
     return false;
   }
@@ -169,7 +178,7 @@ bool Epub::parseTocNcxFile() const {
 
   // Stream the decompressed NCX straight into the parser instead of round-tripping
   // through a temp file on the SD card (decompress -> write -> reopen -> reread -> delete).
-  if (!readItemContentsToStream(tocNcxItem, ncxParser, 1024)) {
+  if (!readItemContentsToStream(tocNcxItem, ncxParser, kStreamChunkSize)) {
     LOG_ERR("EBP", "Could not read toc ncx file");
     return false;
   }
@@ -205,7 +214,7 @@ bool Epub::parseTocNavFile() const {
 
   // Stream the decompressed nav document straight into the parser instead of round-tripping
   // through a temp file on the SD card (decompress -> write -> reopen -> reread -> delete).
-  if (!readItemContentsToStream(tocNavItem, navParser, 1024)) {
+  if (!readItemContentsToStream(tocNavItem, navParser, kStreamChunkSize)) {
     LOG_ERR("EBP", "Could not read toc nav file");
     return false;
   }
@@ -350,7 +359,7 @@ CssParser::ParseResult Epub::parseCssFiles(const CssParser::CacheStatus existing
       parseResult = CssParser::ParseResult::Error;
       continue;
     }
-    if (!readItemContentsToStream(cssPath, tempCssFile, 1024)) {
+    if (!readItemContentsToStream(cssPath, tempCssFile, kStreamChunkSize)) {
       LOG_ERR("EBP", "Could not read CSS file: %s", cssPath.c_str());
       // Explicitly close() file before calling Storage.remove()
       tempCssFile.close();
@@ -420,10 +429,17 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
   // Always create CssParser - needed for inline style parsing even without CSS files
   cssParser.reset(new CssParser(cachePath));
+#ifdef BOARD_HAS_PSRAM
+  // Parse the ZIP central directory once and cache entry info in PSRAM.
+  zipCache_ = makeUniqueNoThrow<ZipFileCache>();
+  if (zipCache_) {
+    zipCache_->load(filepath.c_str());
+  }
+#endif
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
-    if (!skipLoadingCss) {
+    if (!skipLoadingCss && !bookMetadataCache->isMetadataCacheValid()) {
       const CssParser::CacheStatus cacheStatus = cssParser->inspectCache();
       CssParser::CacheLoadResult cacheLoadResult = CssParser::CacheLoadResult::Invalid;
       if (cacheStatus == CssParser::CacheStatus::Complete) {
@@ -446,21 +462,24 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
           LOG_ERR("EBP", "Could not parse content.opf from cached bookMetadata for CSS files");
         } else {
           discoverCssFilesFromZip();
-          bookMetadataCache.reset();
+          bookMetadataCache->clearMetadataCacheValid();
           cssParseResult = parseCssFiles(cacheStatus);
         }
-        bookMetadataCache.reset();
-        bookMetadataCache.reset(new BookMetadataCache(cachePath));
-        if (!bookMetadataCache->load()) {
-          LOG_ERR("EBP", "Failed to reload cache after CSS rebuild");
-          return false;
-        }
-        const bool cssCacheChanged =
-            cssParseResult == CssParser::ParseResult::Complete ||
-            (cssParseResult == CssParser::ParseResult::Partial && cacheStatus != CssParser::CacheStatus::Partial);
-        if (cssCacheChanged) {
-          // The CSS cache changed, so section caches must use the same rule set.
-          Storage.removeDir((cachePath + "/sections").c_str());
+        if (cssParseResult != CssParser::ParseResult::Error) {
+          // Reload book.bin with the rebuilt CSS rules.
+          bookMetadataCache.reset();
+          bookMetadataCache.reset(new BookMetadataCache(cachePath));
+          if (!bookMetadataCache->load()) {
+            LOG_ERR("EBP", "Failed to reload cache after CSS rebuild");
+            return false;
+          }
+          const bool cssCacheChanged =
+              cssParseResult == CssParser::ParseResult::Complete ||
+              (cssParseResult == CssParser::ParseResult::Partial && cacheStatus != CssParser::CacheStatus::Partial);
+          if (cssCacheChanged) {
+            // The CSS cache changed, so section caches must use the same rule set.
+            Storage.removeDir((cachePath + "/sections").c_str());
+          }
         }
       }
     }
@@ -662,7 +681,7 @@ bool Epub::generateCoverBmp(bool cropped) const {
     if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverJpg, 1024);
+    readItemContentsToStream(coverImageHref, coverJpg, kStreamChunkSize);
     // Explicitly close() file before reopening for reading
     coverJpg.close();
 
@@ -788,7 +807,7 @@ bool Epub::generateThumbBmp(int height) const {
     if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverPng, 1024);
+    readItemContentsToStream(coverImageHref, coverPng, kStreamChunkSize);
     // Explicitly close() file before reopening for reading
     coverPng.close();
 
@@ -850,6 +869,17 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 
   const std::string path = FsHelpers::normalisePath(itemHref);
+#ifdef BOARD_HAS_PSRAM
+  // Preflight: use the PSRAM ZIP cache to obtain the entry size without
+  // a central-directory scan. The actual streaming is delegated to ZipFile,
+  // which re-scans only if its own per-instance cache is empty.
+  if (zipCache_) {
+    const ZipFile::FileStatSlim* stat = zipCache_->get(path.c_str());
+    if (stat) {
+      (void)stat;  // stat confirmed entry exists; fall through to ZipFile.
+    }
+  }
+#endif
   return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);
 }
 
@@ -871,6 +901,15 @@ bool Epub::extractItemToFile(const std::string& itemHref, const std::string& des
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
   const std::string path = FsHelpers::normalisePath(itemHref);
+#ifdef BOARD_HAS_PSRAM
+  if (zipCache_) {
+    const ZipFile::FileStatSlim* stat = zipCache_->get(path.c_str());
+    if (stat) {
+      *size = stat->uncompressedSize;
+      return true;
+    }
+  }
+#endif
   return ZipFile(filepath).getInflatedFileSize(path.c_str(), size);
 }
 
@@ -1021,3 +1060,22 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
   }
   return -1;
 }
+
+#ifdef BOARD_HAS_PSRAM
+void Epub::ZipFileCache::load(const char* epubPath) {
+  ZipFile zf(epubPath);
+  if (!zf.open()) return;
+  if (!zf.loadAllFileStatSlims()) return;
+  cache_ = zf.getFileStatSlimCache();
+  loaded_ = true;
+  LOG_DBG("ZIP", "ZIP cache loaded: %zu entries", static_cast<size_t>(cache_.size()));
+}
+
+const ZipFile::FileStatSlim* Epub::ZipFileCache::get(const char* itemPath) const {
+  if (!loaded_) return nullptr;
+  const std::string path = FsHelpers::normalisePath(itemPath);
+  auto it = cache_.find(path);
+  if (it == cache_.end()) return nullptr;
+  return &it->second;
+}
+#endif

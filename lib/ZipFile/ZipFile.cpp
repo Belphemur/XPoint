@@ -5,6 +5,11 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <atomic>
+
+// Profiling counters.
+static std::atomic<uint32_t> g_load_all_stat_slims_count{0};
+static std::atomic<uint32_t> g_fsfile_open_count{0};
 
 struct ZipInflateCtx {
   HalFile* file = nullptr;
@@ -108,6 +113,8 @@ bool ZipFile::loadAllFileStatSlims() {
   // Set cursor to start of central directory for sequential access
   lastCentralDirPos = zipDetails.centralDirOffset;
   lastCentralDirPosValid = true;
+
+  g_load_all_stat_slims_count++;
 
   return true;
 }
@@ -278,6 +285,7 @@ bool ZipFile::open() {
   if (!Storage.openFileForRead("ZIP", filePath, file)) {
     return false;
   }
+  g_fsfile_open_count++;
   return true;
 }
 

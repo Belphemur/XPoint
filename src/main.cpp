@@ -24,6 +24,7 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 
+#include <atomic>
 #include <cstring>
 
 #include "BoardFeatures.h"
@@ -54,6 +55,11 @@ SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
 static unsigned long lastX4ProPowerClickAt = 0;
+
+// Profiling counters for Phase 1 memory instrumentation.
+size_t g_psram_free_at_boot = 0;
+static std::atomic<uint32_t> g_load_all_stat_slims_count{0};
+static std::atomic<uint32_t> g_fsfile_open_count{0};
 
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
@@ -550,6 +556,8 @@ void setup() {
 #endif
 
   HalSystem::begin();
+  g_psram_free_at_boot = ESP.getFreePsram();
+  logMemAt("boot");
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
   const bool rebootedFromPanic = HalSystem::isRebootFromPanic();

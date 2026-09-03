@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <esp_system.h>
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
@@ -246,12 +247,14 @@ bool Section::clearCache() const {
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
   // One-shot build: start, then lay out the whole section in a single pass.
+  logMemAt("section_build_start");
   if (!startBuild(spec, popupFn)) {
     return false;
   }
   if (!buildSomeMore(0)) {  // 0 = build to completion
     return false;
   }
+  logMemAt("section_build_end");
   return buildComplete_;
 }
 
@@ -465,6 +468,13 @@ bool Section::buildSomeMore(const int maxPages) {
     // ParseStatus::More: yield once we've laid out the requested number of pages.
     if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
+      // Periodic partial checkpoint: commit every 5 s while building.
+      const uint32_t now = millis();
+      if (now - lastPartialCheckpointMs_ >= 5000) {
+        lastPartialCheckpointMs_ = now;
+        const uint32_t consumed = static_cast<uint32_t>(build_->parser->parseBytesConsumed());
+        commitBuildFile(SECTION_FILE_PARTIAL_VERSION, consumed, build_->totalBytes);
+      }
       return true;
     }
   }
@@ -638,6 +648,7 @@ bool Section::finalizeBuild() {
   }
 
   const bool committed = commitBuildFile(SECTION_FILE_VERSION, 0, 0);
+  logMemAt("section_build_end");
   if (build_->cssParser) build_->cssParser->clear();
   build_.reset();
   if (!committed) {
@@ -655,15 +666,48 @@ bool Section::finalizeBuild() {
   return true;
 }
 
+bool Section::hasValidOnDiskPartial(uint32_t currentBytesConsumed) {
+  if (!Storage.exists(filePath.c_str())) return false;
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) return false;
+  uint8_t version;
+  serialization::readPod(f, version);
+  if (version == SECTION_FILE_VERSION) {
+    // A finalized section already exists — no partial commit needed.
+    return true;
+  }
+  if (version != SECTION_FILE_PARTIAL_VERSION) {
+    return false;
+  }
+  // Read pageCount from the header to locate the watermark trailer.
+  uint16_t pageCount;
+  f.seek(HEADER_SIZE - sizeof(uint32_t) * 5 - sizeof(uint16_t));
+  serialization::readPod(f, pageCount);
+  uint32_t visibleLutOffset = 0;
+  f.seek(HEADER_SIZE - sizeof(uint32_t));
+  serialization::readPod(f, visibleLutOffset);
+  const uint32_t trailerOffset = visibleLutOffset + static_cast<uint32_t>(pageCount) * sizeof(uint32_t);
+  if (trailerOffset + 2 * sizeof(uint32_t) > static_cast<uint32_t>(f.size())) {
+    return false;
+  }
+  f.seek(trailerOffset);
+  uint32_t storedBytesConsumed = 0;
+  serialization::readPod(f, storedBytesConsumed);
+  return storedBytesConsumed >= currentBytesConsumed;
+}
+
 void Section::suspendBuild() {
   if (!build_) return;
+
+  // Skip committing a partial if a valid on-disk partial already covers this build's progress.
+  const bool skipCommit = hasValidOnDiskPartial(build_->bytesConsumed);
 
   // Only worth persisting if this build produced pages a pre-existing partial doesn't
   // already cover; otherwise keep the older (bigger) partial and just drop the tmp.
   const bool worthKeeping = builtPageCount_ > 0 && (!partial_ || builtPageCount_ > partialPageCount_);
 
   bool committed = false;
-  if (worthKeeping) {
+  if (worthKeeping && !skipCommit) {
     // Capture the parse watermark and commit before tearing the parser down (the anchor
     // map is read from it). The incomplete trailing page is intentionally not flushed:
     // only fully laid-out pages are persisted, and the rebuild re-derives the rest.
@@ -676,6 +720,8 @@ void Section::suspendBuild() {
       partialTotalBytes_ = build_->totalBytes;
       LOG_INF("SCT", "Suspended build: %u pages persisted", builtPageCount_);
     }
+  } else if (skipCommit) {
+    LOG_DBG("SCT", "Valid partial exists, skipping redundant suspend commit");
   }
 
   if (build_->parser) build_->parser->abortParse();
