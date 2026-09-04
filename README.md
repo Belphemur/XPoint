@@ -1,15 +1,24 @@
-# CrossPoint X-Reader (`crosspoint-x-reader`)
+# XPoint (`XPoint`)
 
-![CrossPoint X-Reader logo](./docs/images/repo_logo.png)
+![XPoint logo](./docs/images/repo_logo.jpg)
 
 > ## ⚠️ Personal fork notice
-> This repository (`Belphemur/crosspoint-x-reader`, "CrossPoint X-Reader") is a **personal fork** of
-> [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader).
+> This repository (`Belphemur/XPoint`, "XPoint") is a **personal fork** of
+> [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
+> (formerly hosted at `Belphemur/crosspoint-x-reader`; renamed to `XPoint` on 2026-09-04).
 > It is **not** an official build. It focuses specifically on the **user experience of the
 > Xteink X4 Pro** (X4 Pro) device and carries X4-Pro-oriented tweaks and conveniences that may
 > never be upstreamed. Use it at your own risk; it is provided as-is with no warranty.
 > OTA updates in this fork are delivered from this repository's own GitHub releases and are
 > verified against an Ed25519 signature shipped with the fork — see [OTA signing](docs/OTA_SIGNING.md).
+
+> ## ⚠️ OTA cutover (2026-09-04)
+> This fork was renamed `crosspoint-x-reader` → `XPoint`. **Devices on a firmware build
+> older than the next release published after this commit** will fail to find OTA updates
+> because the GitHub release URL has changed. Re-flash once manually (USB or
+> [web installer](https://crosspointreader.com/#flash-tools) → "Custom .bin") with a
+> `firmware.bin` from the new release page to re-enable OTA. There is **no automatic
+> redirect** from the old release URL.
 
 ## What this fork adds on top of CrossPoint
 
@@ -197,8 +206,8 @@ Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` 
 ### Setup
 
 ```bash
-git clone --recursive https://github.com/Belphemur/crosspoint-x-reader
-cd crosspoint-x-reader
+git clone --recursive https://github.com/Belphemur/XPoint
+cd XPoint
 
 # if cloned without --recursive:
 git submodule update --init --recursive

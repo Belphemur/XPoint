@@ -7,10 +7,10 @@
 namespace {
 
 const char* kRealisticPretty = R"({
-  "url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345",
-  "assets_url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345/assets",
-  "upload_url": "https://uploads.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345/assets{?name,label}",
-  "html_url": "https://github.com/Belphemur/crosspoint-x-reader/releases/tag/v2.4.1",
+  "url": "https://api.github.com/repos/Belphemur/XPoint/releases/12345",
+  "assets_url": "https://api.github.com/repos/Belphemur/XPoint/releases/12345/assets",
+  "upload_url": "https://uploads.github.com/repos/Belphemur/XPoint/releases/12345/assets{?name,label}",
+  "html_url": "https://github.com/Belphemur/XPoint/releases/tag/v2.4.1",
   "id": 12345,
   "author": {
     "login": "releasebot",
@@ -24,17 +24,17 @@ const char* kRealisticPretty = R"({
   "node_id": "RE_kwDOAbCdEf4AADBN",
   "tag_name": "v2.4.1",
   "target_commitish": "main",
-  "name": "crosspoint-x-reader v2.4.1",
+  "name": "XPoint v2.4.1",
   "draft": false,
   "prerelease": false,
   "created_at": "2026-04-28T10:00:00Z",
   "published_at": "2026-04-28T10:30:00Z",
   "assets": [
     {
-      "url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/assets/100001",
+      "url": "https://api.github.com/repos/Belphemur/XPoint/releases/assets/100001",
       "id": 100001,
       "node_id": "RA_kwDOAbCdEf4AAGHR",
-      "name": "crosspoint-x-reader-v2.4.1-source.zip",
+      "name": "XPoint-v2.4.1-source.zip",
       "label": null,
       "uploader": {
         "login": "releasebot",
@@ -48,10 +48,10 @@ const char* kRealisticPretty = R"({
       "download_count": 42,
       "created_at": "2026-04-28T10:15:00Z",
       "updated_at": "2026-04-28T10:15:30Z",
-      "browser_download_url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/crosspoint-x-reader-v2.4.1-source.zip"
+      "browser_download_url": "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/XPoint-v2.4.1-source.zip"
     },
     {
-      "url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/assets/100002",
+      "url": "https://api.github.com/repos/Belphemur/XPoint/releases/assets/100002",
       "id": 100002,
       "node_id": "RA_kwDOAbCdEf4AAGHS",
       "name": "firmware.bin",
@@ -68,10 +68,10 @@ const char* kRealisticPretty = R"({
       "download_count": 187,
       "created_at": "2026-04-28T10:16:00Z",
       "updated_at": "2026-04-28T10:16:45Z",
-      "browser_download_url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/firmware.bin"
+      "browser_download_url": "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin"
     },
     {
-      "url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/assets/100003",
+      "url": "https://api.github.com/repos/Belphemur/XPoint/releases/assets/100003",
       "id": 100003,
       "node_id": "RA_kwDOAbCdEf4AAGHR",
       "name": "checksums.sha256",
@@ -88,14 +88,14 @@ const char* kRealisticPretty = R"({
       "download_count": 15,
       "created_at": "2026-04-28T10:17:00Z",
       "updated_at": "2026-04-28T10:17:10Z",
-      "browser_download_url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/checksums.sha256"
+      "browser_download_url": "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/checksums.sha256"
     }
   ],
-  "tarball_url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/tarball/v2.4.1",
-  "zipball_url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/zipball/v2.4.1",
-  "body": "## What's Changed\n\n* Fixed orientation crash (#123)\n* Improved EPUB rendering performance\n* Added Serbian translation\n\n**Full Changelog**: https://github.com/Belphemur/crosspoint-x-reader/compare/v2.4.0...v2.4.1",
+  "tarball_url": "https://api.github.com/repos/Belphemur/XPoint/tarball/v2.4.1",
+  "zipball_url": "https://api.github.com/repos/Belphemur/XPoint/zipball/v2.4.1",
+  "body": "## What's Changed\n\n* Fixed orientation crash (#123)\n* Improved EPUB rendering performance\n* Added Serbian translation\n\n**Full Changelog**: https://github.com/Belphemur/XPoint/compare/v2.4.0...v2.4.1",
   "reactions": {
-    "url": "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345/reactions",
+    "url": "https://api.github.com/repos/Belphemur/XPoint/releases/12345/reactions",
     "total_count": 5,
     "+1": 3,
     "-1": 0,
@@ -109,18 +109,18 @@ const char* kRealisticPretty = R"({
 })";
 
 const char* kRealisticMinified =
-    R"({"url":"https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345","assets_url":"https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345/assets","id":12345,"author":{"login":"releasebot","id":99887766,"node_id":"MDQ6VXNlcjk5ODg3NzY2","type":"User","site_admin":false},"tag_name":"v2.4.1","target_commitish":"main","name":"crosspoint-x-reader v2.4.1","draft":false,"prerelease":false,"assets":[{"url":"https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/assets/100001","id":100001,"name":"crosspoint-x-reader-v2.4.1-source.zip","uploader":{"login":"releasebot","id":99887766},"content_type":"application/zip","state":"uploaded","size":2048576,"download_count":42,"browser_download_url":"https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/crosspoint-x-reader-v2.4.1-source.zip"},{"url":"https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/assets/100002","id":100002,"name":"firmware.bin","uploader":{"login":"releasebot","id":99887766},"content_type":"application/octet-stream","state":"uploaded","size":1572864,"download_count":187,"browser_download_url":"https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/firmware.bin"},{"url":"https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/assets/100003","id":100003,"name":"checksums.sha256","uploader":{"login":"releasebot","id":99887766},"content_type":"text/plain","state":"uploaded","size":192,"download_count":15,"browser_download_url":"https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/checksums.sha256"}],"body":"## What's Changed\n\n* Fixed orientation crash","reactions":{"url":"https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/12345/reactions","total_count":5,"+1":3}})";
+    R"({"url":"https://api.github.com/repos/Belphemur/XPoint/releases/12345","assets_url":"https://api.github.com/repos/Belphemur/XPoint/releases/12345/assets","id":12345,"author":{"login":"releasebot","id":99887766,"node_id":"MDQ6VXNlcjk5ODg3NzY2","type":"User","site_admin":false},"tag_name":"v2.4.1","target_commitish":"main","name":"XPoint v2.4.1","draft":false,"prerelease":false,"assets":[{"url":"https://api.github.com/repos/Belphemur/XPoint/releases/assets/100001","id":100001,"name":"XPoint-v2.4.1-source.zip","uploader":{"login":"releasebot","id":99887766},"content_type":"application/zip","state":"uploaded","size":2048576,"download_count":42,"browser_download_url":"https://github.com/Belphemur/XPoint/releases/download/v2.4.1/XPoint-v2.4.1-source.zip"},{"url":"https://api.github.com/repos/Belphemur/XPoint/releases/assets/100002","id":100002,"name":"firmware.bin","uploader":{"login":"releasebot","id":99887766},"content_type":"application/octet-stream","state":"uploaded","size":1572864,"download_count":187,"browser_download_url":"https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin"},{"url":"https://api.github.com/repos/Belphemur/XPoint/releases/assets/100003","id":100003,"name":"checksums.sha256","uploader":{"login":"releasebot","id":99887766},"content_type":"text/plain","state":"uploaded","size":192,"download_count":15,"browser_download_url":"https://github.com/Belphemur/XPoint/releases/download/v2.4.1/checksums.sha256"}],"body":"## What's Changed\n\n* Fixed orientation crash","reactions":{"url":"https://api.github.com/repos/Belphemur/XPoint/releases/12345/reactions","total_count":5,"+1":3}})";
 
 // Release body carrying a signed manifest alongside the firmware asset.
 const char* kReleaseWithManifest =
-    R"({"tag_name":"v1.9.0","name":"crosspoint-x-reader v1.9.0","draft":false,"prerelease":false,)"
+    R"({"tag_name":"v1.9.0","name":"XPoint v1.9.0","draft":false,"prerelease":false,)"
     R"("assets":[)"
     R"({"name":"firmware-x4pro.bin","content_type":"application/octet-stream","size":5435936,)"
-    R"("browser_download_url":"https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/firmware-x4pro.bin"},)"
+    R"("browser_download_url":"https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-x4pro.bin"},)"
     R"({"name":"manifest.json","content_type":"application/octet-stream","size":1101,)"
-    R"("browser_download_url":"https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/manifest.json"},)"
+    R"("browser_download_url":"https://github.com/Belphemur/XPoint/releases/download/v1.9.0/manifest.json"},)"
     R"({"name":"manifest.json.sig","content_type":"application/octet-stream","size":96,)"
-    R"("browser_download_url":"https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/manifest.json.sig"}]})";
+    R"("browser_download_url":"https://github.com/Belphemur/XPoint/releases/download/v1.9.0/manifest.json.sig"}]})";
 
 // Signed manifest shape used by the release workflow (v1.9.0): a bare-semver
 // version plus one boards[] entry per board with the exact asset URL, byte
@@ -132,25 +132,25 @@ const char* kManifestV190 = R"({
       "board": "papermono",
       "sha256": "1111111122222222333333334444444455555555666666667777777788888888",
       "size": 5401231,
-      "url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/firmware-papermono.bin"
+      "url": "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-papermono.bin"
     },
     {
       "board": "sticky",
       "sha256": "99990000111122223333444455556666777788889999aaaabbbbccccddddeeee",
       "size": 5420096,
-      "url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/firmware-sticky.bin"
+      "url": "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-sticky.bin"
     },
     {
       "board": "x4pro",
       "sha256": "a5f3c9d2e1b8074a6f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607182",
       "size": 5435936,
-      "url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/firmware-x4pro.bin"
+      "url": "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-x4pro.bin"
     },
     {
       "board": "x4",
       "sha256": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
       "size": 5390000,
-      "url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/firmware-x4.bin"
+      "url": "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-x4.bin"
     }
   ]
 })";
@@ -187,7 +187,7 @@ TEST(OtaReleaseParse, RealisticPrettyPrinted) {
   EXPECT_STREQ(info.tagName, "v2.4.1");
   EXPECT_TRUE(info.hasFirmware);
   EXPECT_STREQ(info.firmwareUrl,
-               "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/firmware.bin");
+               "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin");
   EXPECT_EQ(info.firmwareSize, 1572864u);
   EXPECT_FALSE(info.hasManifest);
   EXPECT_STREQ(info.manifestUrl, "");
@@ -201,7 +201,7 @@ TEST(OtaReleaseParse, RealisticMinified) {
   EXPECT_STREQ(info.tagName, "v2.4.1");
   EXPECT_TRUE(info.hasFirmware);
   EXPECT_STREQ(info.firmwareUrl,
-               "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v2.4.1/firmware.bin");
+               "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin");
   EXPECT_EQ(info.firmwareSize, 1572864u);
   EXPECT_FALSE(info.hasManifest);
 }
@@ -274,13 +274,13 @@ TEST(OtaReleaseParse, ManifestAssetCaptured) {
   EXPECT_EQ(info.firmwareSize, 5435936u);
   EXPECT_TRUE(info.hasManifest);
   EXPECT_STREQ(info.manifestUrl,
-               "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/manifest.json");
+               "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/manifest.json");
 }
 
 TEST(OtaReleaseParse, ExtraUnknownKeysIgnored) {
   const char* json = R"({
       "node_id": "RE_kwDOAbCdEf4AADBN",
-      "discussion_url": "https://github.com/Belphemur/crosspoint-x-reader/discussions/99",
+      "discussion_url": "https://github.com/Belphemur/XPoint/discussions/99",
       "author": {"login": "dev", "id": 1, "nested": {"deep": true}},
       "tag_name": "v6.0",
       "reactions": {"url": "https://reactions", "total_count": 0, "+1": 0},
@@ -366,7 +366,7 @@ TEST(OtaManifestParse, RealV190Manifest) {
   const ManifestBoardEntry* x4pro = findBoardEntry(entries, count, "x4pro", 5);
   ASSERT_NE(x4pro, nullptr);
   EXPECT_STREQ(x4pro->url,
-               "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.9.0/firmware-x4pro.bin");
+               "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-x4pro.bin");
   EXPECT_EQ(x4pro->size, 5435936u);
   EXPECT_TRUE(x4pro->hasSha);
   static constexpr uint8_t kExpectedSha[32] = {0xa5, 0xf3, 0xc9, 0xd2, 0xe1, 0xb8, 0x07, 0x4a, 0x6f, 0x2c, 0x3d,

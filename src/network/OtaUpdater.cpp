@@ -21,11 +21,16 @@
 #include "OtaSignature.h"
 
 namespace {
-// This fork (crosspoint-x-reader) publishes its firmware as GitHub releases on
-// the renamed repo. The updater reads the latest release + a signed manifest
-// attached to it. The manifest is what we actually verify; the firmware is
-// stream-checked against the manifest's signed SHA-256 (not locked/co-signed).
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/Belphemur/crosspoint-x-reader/releases/latest";
+// This fork (XPoint) publishes its firmware as GitHub releases on the
+// "Belphemur/XPoint" repo (renamed from crosspoint-x-reader). The updater reads
+// the latest release + a signed manifest attached to it. The manifest is what
+// we actually verify; the firmware is stream-checked against the manifest's
+// signed SHA-256 (not locked/co-signed).
+//
+// OTA_REPO is defined as a build flag in platformio.ini [base] so different
+// builds (e.g. an upstream-synced branch) can point at a different host without
+// touching this file.
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/" OTA_REPO "/releases/latest";
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {

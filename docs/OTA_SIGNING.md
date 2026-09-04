@@ -15,10 +15,10 @@ SHA-256. This is the standard *sign the digest, stream-verify the bytes* pattern
    ```json
    {
      "version": "1.2.3",
-     "repository": "Belphemur/crosspoint-x-reader",
+     "repository": "Belphemur/XPoint",
      "boards": [
        { "board": "x4pro", "asset": "firmware-x4pro.bin",
-         "url": "https://github.com/Belphemur/crosspoint-x-reader/releases/download/v1.2.3/firmware-x4pro.bin",
+         "url": "https://github.com/Belphemur/XPoint/releases/download/v1.2.3/firmware-x4pro.bin",
          "size": 1234567, "sha256": "<64 hex>" }
      ]
    }

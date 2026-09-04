@@ -17,7 +17,7 @@ void BootActivity::onEnter() {
   // icon is upright on the device's native LandscapeCounterClockwise orientation.
   renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
   // Fork brand text — hardcoded on purpose (not translated).
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "CROSSPOINT X", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "XPOINT", true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, "Booting ...");
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, CROSSPOINT_VERSION);
   renderer.displayBuffer();
