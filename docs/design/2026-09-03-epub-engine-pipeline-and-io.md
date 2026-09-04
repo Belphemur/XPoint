@@ -209,6 +209,8 @@ Inside `readFileToStream` (`ZipFile.cpp:449-572`), the inflate loop reads `chunk
 
 ### B.7 SD I/O table — book open (cold cache)
 
+> **Note (2026-09-03):** The counts in this table reflect the **pre-Phase-1** state. After Phase 1 (commit `b74d2a49`), the in-RAM `ZipFileCache` (E.2) reduces `ZipFile` open + central-dir scan from 15–30 to **1** on PSRAM boards — the cache is populated once at `Epub::load()` and reused for all subsequent `getItemSize()` / `readItemContentsToStream()` / `discoverCssFilesFromZip()` calls. The Phase 1 verification report (see §B.7 cross-reference §D.6) documents the measured reduction.
+
 | Operation | File:line | Count per book-open | Bytes per count | Total bytes | SD reads |
 |---|---|---|---|---|---|
 | `ZipFile` open + central-dir scan | `Epub.cpp:219,828-836,853-854; ZipFile.cpp:278` | ~15–30 (one per `readItemContentsToStream`/`getItemSize`/`readItemContentsToBytes`) | ~2KB (EOCD + CD scan) | 30–60KB scan traffic | 15–30 file-opens; ~60–180 SD-block reads (sector-aligned) |
@@ -323,7 +325,7 @@ Before the per-subsystem PSRAM migration plan, the lifetimes of every cached/buf
 | Active section's in-RAM `pages` (the laid-out pages used by the render task) | `Section` (member) | `Section::loadSectionFile()` (rehydration from `.bin`) or built from `BuildContext` on first build | **One chapter reading.** Persists across page turns (page-turn is in-RAM pointer advance, not a re-load). | `Section::abandonBuild()` (rare) or `~Section()` (chapter close). | DRAM today; ~16 KB working set. |
 | `HomeActivity::coverBuffer` | `HomeActivity` (member) | `HomeActivity::storeCoverBuffer()` when a book tile is rendered | **One render of the home screen tile.** Allocated per-tile, freed when the tile is no longer visible. | `HomeActivity::freeCoverBuffer()` (called on home screen exit). | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.2. |
 | `PixelCache::buffer` (image decode band) | `PixelCache` (member) | `PixelCache::begin()` per image | **One image decode.** Allocated before `JpegToBmpConverter::decodeToFramebuffer()` or `PngToBmpConverter::decodeToFramebuffer()`, freed at end. | `PixelCache::end()` (or dtor). | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.3. |
-| `JPEGDEC` / `PNG` decoder objects | Local in `JpegToFramebufferConverter::decodeToFramebuffer()` / `PngToFramebufferConverter::decodeToFramebuffer()` | At start of each decode | **One image decode.** ~20 KB / ~44 KB respectively. | Local `std::unique_ptr` / explicit `delete` at end of decode. | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.4. |
+| `JPEGDEC` / `PNG` decoder objects | Local in `JpegToFramebufferConverter::decodeToFramebuffer()` / `PngToFramebufferConverter::decodeToFramebuffer()` | At start of each decode | **One image decode.** ~20 KB / ~44 KB respectively. | Local `std::unique_ptr` / explicit `delete` at end of decode. | DRAM. PSRAM migration (D.4) was attempted and reverted — see D.4 §note. |
 | PSRAM pre-fetch ring (D.7, Phase 3 only) | `Epub` (member) | `Epub::load()` when dual-core parse task is enabled | **One book reading session.** Ring of 2–3 pre-built sections. | `Epub` dtor via `std::deque` destructor. | PSRAM (Phase 3). |
 
 **Key invariants:**
@@ -342,12 +344,12 @@ Before the per-subsystem PSRAM migration plan, the lifetimes of every cached/buf
 
 Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` object is built in DRAM and serialised to the `.bin` file. The `BuildContext::lut` (`vector<PageLutEntry>`, `Section.h:39`) and the `ChapterHtmlSlimParser` working set are in DRAM. After `finalizeBuild()`, only the `.bin` file on SD remains; the DRAM is freed.
 
-> **D.1 status (2026-09-03):** Attempted and **reverted**. `Section::build_` is a `std::unique_ptr<BuildContext>` whose nested type `BuildContext` contains `std::unique_ptr<ChapterHtmlSlimParser>`. The static_assert in `unique_ptr`'s deleter requires the parser's full type at the deleter's instantiation point; using a non-default PSRAM deleter requires the parser's complete definition. Forward-declaring the parser (the existing approach) is incompatible with a non-default deleter when `BuildContext` is also nested. The ~16 KB DRAM cost is accepted on X4 Pro. Other Phase 2 PSRAM optimisations (D.2 coverBuffer, D.3 PixelCache band, D.4 decoder scratch via heap_caps_malloc, ZipFileCache) still apply.
+> **D.1 status (2026-09-03):** Attempted and **reverted**. `Section::build_` is a `std::unique_ptr<BuildContext>` whose nested type `BuildContext` contains `std::unique_ptr<ChapterHtmlSlimParser>`. The static_assert in `unique_ptr`'s deleter requires the parser's full type at the deleter's instantiation point; using a non-default PSRAM deleter requires the parser's complete definition. Forward-declaring the parser (the existing approach) is incompatible with a non-default deleter when `BuildContext` is also nested. The ~16 KB DRAM cost is accepted on X4 Pro. Other Phase 2 PSRAM optimisations (D.2 coverBuffer, D.3 PixelCache band) still apply. **D.4 (JPEGDEC/PNG decoder PSRAM) was also reverted** for the same `.release()` reason — the `std::unique_ptr<T, fn-deleter>.release()` pattern leaks the PSRAM deleter to a default `delete`; the decoders stay in DRAM (~20/44KB transient during one image decode). See §D.4 §note below.
 
 **Migration (planned, deferred):** On X4 Pro, keep the active section's `Page` objects and LUT in PSRAM during the build. The `BuildContext` can be allocated with `heap_caps_malloc(sizeof(BuildContext), MALLOC_CAP_SPIRAM)` (or a `makeUniqueNoThrowPsram<BuildContext>()` helper, see D.8 note) — `makeUniqueNoThrow` alone is **not** sufficient (it does not request SPIRAM caps). The `lut` vector and `Page` elements stay in PSRAM.
 
 - **DRAM saved:** ~16KB (active LUT + parser working set per chapter).
-- **PSRAM used:** ~1MB (cached HTML for the active section; typical novel chapter is 50–200KB HTML, well within PSRAM for multiple sections).
+- **PSRAM used:** **0**. The HTML cache (`html/<spineIndex>.html`) is streamed to **SD** in `Section::startBuild()` (Section.cpp:322: `epub->readItemContentsToStream(localPath, tmpHtml, 8192)`); the active `BuildContext` is ~16KB in **DRAM** (D.1 reverted, see §D.1 §note).
 - **Gate:** `#ifdef BOARD_HAS_PSRAM`.
 - **Risk:** Low. The `Page` objects are serialised to `.bin` on `onPageComplete()` anyway; keeping them in PSRAM during the build is an optimisation, not a correctness change.
 - **Verification:** `LOG_INF` PSRAM at section open; re-open same chapter and measure time.
@@ -377,6 +379,8 @@ Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` ob
 - **Verification:** `LOG_INF` PSRAM before/after decode.
 
 ### D.4 JPEG/PNG decoder state
+
+> **D.4 status (2026-09-03):** Attempted and **reverted**. The `std::unique_ptr<JPEGDEC, fn-deleter>.release()` and `std::unique_ptr<PNG, fn-deleter>.release()` patterns (D.4 attempt in `f21b4a05` parent commit) leak the PSRAM deleter to a default `delete`, which would corrupt the heap on PSRAM boards. The decoders stay in DRAM (`new (std::nothrow) JPEGDEC()` / `new (std::nothrow) PNG()`). The ~20/44KB transient cost is accepted on X4 Pro. Future D.4 re-attempt should use raw `heap_caps_malloc(sizeof(JPEGDEC), MALLOC_CAP_SPIRAM)` + `heap_caps_free` (no unique_ptr), or a custom `unique_ptr` deleter that does NOT leak via `.release()`.
 
 `JpegToFramebufferConverter.cpp:96-97` (`constexpr size_t JPEG_DECODER_APPROX_SIZE = 20 * 1024`) and `PngToFramebufferConverter.cpp:86-87,352` (`constexpr size_t PNG_DECODER_APPROX_SIZE = 44 * 1024`). Both use `new (std::nothrow) JPEGDEC()` / `new (std::nothrow) PNG()` inside `decodeToFramebuffer()` / `getDimensionsStatic()`.
 
@@ -443,8 +447,8 @@ The PSRAM ring uses a **separate, typed reader/writer API** (e.g., `SectionCache
 **Migration:** A `std::deque<SectionCache>` in PSRAM, where each `SectionCache` holds the LUT + active page data for one section. The parse task builds section N+1 into PSRAM; the render task reads section N from PSRAM. When the render task finishes section N, it signals the parse task to build N+1 (or N+2 if the user is fast).
 
 - **DRAM saved:** — (buffer lives in PSRAM; the `BuildContext` on core 0 is smaller because the result is written directly to PSRAM).
-- **PSRAM used:** ≤500KB (2–3 sections × ~50–200KB each, but only the LUT + active page data, not the full HTML).
-- **Gate:** `#ifdef BOARD_HAS_PSRAM && BOARD_X4PRO` (only when dual-core parse is enabled).
+- **PSRAM used:** ≤600KB (2–3 sections × ~50–200KB each, but only the LUT + active page data, not the full HTML).
+- **Gate:** `#if defined(BOARD_HAS_PSRAM) && defined(BOARD_X4PRO)` (only when dual-core parse is enabled).
 - **Risk:** Medium. Requires the dual-core parse task (Option A) to be implemented first. Ring-buffer semantics (which section to evict) need careful design; resume path on ring-miss must be defined.
 - **Verification:** `LOG_INF` PSRAM at section pre-fetch; measure page-turn latency with/without pre-fetch.
 
@@ -452,13 +456,13 @@ The PSRAM ring uses a **separate, typed reader/writer API** (e.g., `SectionCache
 
 | Structure | DRAM saved (KB) | PSRAM used (KB) | Gate | Risk |
 |---|---|---|---|---|
-| Parsed section cache (active build, in-RAM `pages`) | ~16 | ~1000 | `BOARD_HAS_PSRAM` | Low |
+| Parsed section cache (active build, in-RAM `pages`) | 0 (D.1 reverted) | 0 (D.1 reverted) | `BOARD_HAS_PSRAM` | Low |
 | Cover thumbnail buffer | ~16 | ~16 | `BOARD_HAS_PSRAM` | Low |
 | PixelCache band buffer | ≤24 | ≤24 | `BOARD_HAS_PSRAM` (via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | Low-Medium |
-| JPEGDEC decoder | ≤20 | ≤20 | `BOARD_HAS_PSRAM` (via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | Low |
-| PNG decoder | ≤44 | ≤44 | `BOARD_HAS_PSRAM` (via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | Low |
+| JPEGDEC decoder | 0 (D.4 reverted) | 0 (D.4 reverted) | n/a (DRAM) | n/a |
+| PNG decoder | 0 (D.4 reverted) | 0 (D.4 reverted) | n/a (DRAM) | n/a |
 | ZIP central-dir cache | — | ≤64 | `BOARD_HAS_PSRAM` | Low |
-| Section pre-fetch ring (typed, NOT `.bin`-shaped) | — | ≤500 | `BOARD_HAS_PSRAM && BOARD_X4PRO` | Medium |
+| Section pre-fetch ring (typed, NOT `.bin`-shaped) | — | ≤600 | `BOARD_HAS_PSRAM && BOARD_X4PRO` | Medium |
 | Second framebuffer (Phase 4 `x4pro_perf` only) | 0 (moved to PSRAM) | +48 | `BOARD_HAS_PSRAM && BOARD_X4PRO && EINK_DISPLAY_SINGLE_BUFFER_MODE == 0` | High |
 
 **`makeUniqueNoThrow` → PSRAM note (CodeRabbit review 2026-09-03):** `makeUniqueNoThrow<T>()` wraps `new (std::nothrow)` without requesting `MALLOC_CAP_SPIRAM`. ESP-IDF may place such allocations in internal DRAM or PSRAM depending on configuration and size — it does **not** equate to "this lives in PSRAM". For PSRAM placement, use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM)` directly, or wrap as:
@@ -642,7 +646,7 @@ Each phase is shippable independently and gated behind `#ifdef BOARD_HAS_PSRAM` 
 1. **Change D.1 (reverted — see D.1 §note):** *Was* keep active section's `Page` objects and LUT in PSRAM during build (`BuildContext` allocation via `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`). Reverted due to unique_ptr<ChapterHtmlSlimParser> static_assert conflict. The 16 KB DRAM cost is accepted on X4 Pro.
 2. **Change D.2:** Cover thumbnail buffer via `heap_caps_malloc(needed, MALLOC_CAP_SPIRAM)` (`HomeActivity.cpp:166`).
 3. **Change D.3:** PixelCache band buffer via `heap_caps_malloc(bufSize, MALLOC_CAP_SPIRAM)` (`PixelCache.h:91`).
-4. **Change D.4:** JPEGDEC/PNG decoder state via `heap_caps_malloc(sizeof(JPEGDEC/PNG), MALLOC_CAP_SPIRAM)` (`JpegToFramebufferConverter.cpp:368,399; PngToFramebufferConverter.cpp:352`).
+4. **Change D.4 (reverted — see D.4 §note):** *Was* JPEGDEC/PNG decoder state via `heap_caps_malloc(sizeof(JPEGDEC/PNG), MALLOC_CAP_SPIRAM)` (`JpegToFramebufferConverter.cpp:368,399; PngToFramebufferConverter.cpp:352`). Reverted: the `std::unique_ptr<T, fn-deleter>.release()` pattern leaks the PSRAM deleter to default `delete`. Decoders stay in DRAM (~20/44KB transient).
 5. **Change D.6:** ZIP central-dir cache (if not done in Phase 1).
 6. Add `heap_free_kb` / `psram_used_kb` `LOG_INF` at book open and page turn.
 
