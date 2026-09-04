@@ -32,8 +32,8 @@ enum MenuItem {
                // BASE_MENU_ITEMS otherwise)
   ITEM_CLOCK_FORMAT,  // every device; same runtime gate as ITEM_CLOCK
   ITEM_TIME_ZONE,     // every device; same runtime gate as ITEM_CLOCK
-  ITEM_CLOCK_SYNC,  // every device; same runtime gate as ITEM_CLOCK — on RTC-failed boards the row is hidden, so use
-                    // the web UI or reconnect Wi-Fi to auto-sync
+  ITEM_CLOCK_SYNC,    // every device; same runtime gate as ITEM_CLOCK — on RTC-failed boards the row is hidden, so use
+                      // the web UI or reconnect Wi-Fi to auto-sync
   ITEM_COUNT
 };
 
