@@ -12,13 +12,13 @@
 > OTA updates in this fork are delivered from this repository's own GitHub releases and are
 > verified against an Ed25519 signature shipped with the fork — see [OTA signing](docs/OTA_SIGNING.md).
 
-> ## ⚠️ OTA cutover (2026-09-04)
-> This fork was renamed `crosspoint-x-reader` → `XPoint`. **Devices on a firmware build
-> older than the next release published after this commit** will fail to find OTA updates
-> because the GitHub release URL has changed. Re-flash once manually (USB or
-> [web installer](https://crosspointreader.com/#flash-tools) → "Custom .bin") with a
-> `firmware.bin` from the new release page to re-enable OTA. There is **no automatic
-> redirect** from the old release URL.
+> ## ℹ️ Rebrand (2026-09-04)
+> This fork was renamed `crosspoint-x-reader` → `XPoint`. The GitHub release URL changed
+> accordingly, and **GitHub's rename redirect handles existing devices transparently**
+> — the firmware's `HttpDownloader` follows HTTP redirects, so a device flashed on the
+> old URL fetches the new release via the `Location:` header. No manual re-flash is
+> needed for the rename itself. The OTA host is now configured at build time via
+> `-DOTA_REPO="Belphemur/XPoint"` in `platformio.ini` (see `src/network/OtaUpdater.cpp`).
 
 ## What this fork adds on top of CrossPoint
 
