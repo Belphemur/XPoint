@@ -1,6 +1,12 @@
 #pragma once
 
+// ESP-IDF (real firmware build) exposes heap_caps_malloc; the host unit-test
+// build does not. Gate the include + PSRAM helpers so the host test (which
+// does NOT define ESP_PLATFORM / BOARD_HAS_PSRAM) compiles cleanly with the
+// non-PSRAM makeUniqueNoThrow overloads only.
+#ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
+#endif
 
 #include <cstddef>
 #include <memory>
@@ -46,6 +52,11 @@ std::unique_ptr<T> makeUniqueNoThrow(size_t count) {
 // the allocation in PSRAM (or returns nullptr if PSRAM is full / unsupported).
 // The custom deleter calls the destructor and heap_caps_free (matching cap),
 // NOT free() — heap_caps_malloc memory must be released with heap_caps_free.
+// Only defined on ESP builds (need esp_heap_caps.h). On the host unit-test
+// build (which has no ESP_PLATFORM) the makeUniqueNoThrow<T> overloads above
+// remain available and the calls at call sites are gated by #ifdef
+// BOARD_HAS_PSRAM (which is also undefined on host).
+#ifdef ESP_PLATFORM
 template <typename T, typename... Args>
   requires(!std::is_array_v<T>)
 auto makeUniqueNoThrowPsram(Args&&... args) {
@@ -71,6 +82,7 @@ auto makeUniqueNoThrowPsram(size_t count) {
   Elem* arr = static_cast<Elem*>(p);
   return std::unique_ptr<T, Deleter>(arr, [](T* t) noexcept { heap_caps_free(t); });
 }
+#endif  // ESP_PLATFORM
 
 // Helper struct to call a cleanup function on exit from any scope.
 // Use with a lambda to avoid unnecessary allocations from std::function/std::bind:
