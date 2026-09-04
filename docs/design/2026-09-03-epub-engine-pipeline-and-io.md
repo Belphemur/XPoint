@@ -308,6 +308,36 @@ The single most impactful change is to move the chapter build off the render tas
 
 For each bulky structure, DRAM → PSRAM migration plan with gate and risk. `HalDisplay::BUFFER_SIZE = 48,000 bytes` (`HalDisplay.h:32`). Framebuffer stays in DRAM (display controller accesses DRAM directly).
 
+### D.0 Cache and buffer lifetimes (who owns what, when it's freed)
+
+Before the per-subsystem PSRAM migration plan, the lifetimes of every cached/buffered structure must be explicit — otherwise the migration risks use-after-free, double-free, or memory leaks when objects cross task boundaries or activity exits. The table below is the authoritative lifetime map for the structures D.1–D.7 + the Phase 1 `ZipFileCache`.
+
+| Structure | Owner | Allocated by | Lifetime | Freed by | Storage placement (post-Phase 1) |
+|---|---|---|---|---|---|
+| `ZipFileCache` (`zipCache_`) | `Epub` (member, PSRAM-allocated via `heap_caps_malloc(MALLOC_CAP_SPIRAM)`) | `Epub::load()` start, line ~457 | **One book reading session.** A new `Epub` is created per `loadBook()` (`EpubReaderActivity.cpp:301`), the cache is built once, used for the whole session, freed at session end. | `Epub` dtor (default) → `std::unique_ptr<ZipFileCache>` → `heap_caps_free()` on the `ZipFileCache` object. Triggered by `epub.reset()` (EpubReaderActivity.cpp:196, 199, 1110; KOReaderSyncActivity.cpp:74, 338), or `EpubReaderActivity` destruction. | PSRAM on X4 Pro / Paper Mono; absent on C3 / Sticky. |
+| `html/<spineIndex>.html` (unzipped HTML cache, on SD) | SD card under `.crosspoint/epub_<hash>/html/` | `Section::startBuild()` once per spine item | **Persistent across book re-opens.** Re-read by future opens. | `Epub::clearCache()` removes the directory; book deletion removes the whole cache dir. | SD card (durable). |
+| `sections/<spineIndex>.bin` (serialized Section cache, on SD) | SD card under `.crosspoint/epub_<hash>/sections/` | `Section::commitBuildFile()` on build completion | **Persistent across book re-opens.** Versioned (`SECTION_FILE_VERSION = 45`). Re-read on next open via `Section::loadSectionFile()`. | `Epub::clearCache()` removes the directory; section cache invalidation on render-setting change (`cssCacheChanged` in `Epub::load()`). | SD card (durable). |
+| `book.bin` (book metadata cache, on SD) | SD card under `.crosspoint/epub_<hash>/` | `BookMetadataCache::buildBookBin()` during `Epub::load()` | **Persistent across book re-opens.** Versioned (`BOOK_CACHE_VERSION = 10`). | `Epub::clearCache()` removes the file; on reader-settings change that invalidates the metadata, the next `load()` rebuilds it. | SD card (durable). |
+| `BuildContext` (active section build state) | `Section` (member, `std::unique_ptr<BuildContext>`) | `Section::createSectionFile()` (and on rebuild after partial) | **One section build.** Created at build start, lives across `buildSomeMore()` yields, freed at `finalizeBuild()` (or `abandonBuild()` / `~Section()`). | `build_.reset()` in `finalizeBuild()` / `abandonBuild()` / `suspendBuild()`. | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.1. |
+| `Page` objects + LUT (`BuildContext::lut`) | `BuildContext` (member) | `Section::createSectionFile()` and `onPageComplete()` | **One section build.** Each new `Page` is allocated during build; the LUT is appended to. | `build_.reset()` (after serialize-to-`.bin` completes). | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.1. |
+| Active section's in-RAM `pages` (the laid-out pages used by the render task) | `Section` (member) | `Section::loadSectionFile()` (rehydration from `.bin`) or built from `BuildContext` on first build | **One chapter reading.** Persists across page turns (page-turn is in-RAM pointer advance, not a re-load). | `Section::abandonBuild()` (rare) or `~Section()` (chapter close). | DRAM today; ~16 KB working set. |
+| `HomeActivity::coverBuffer` | `HomeActivity` (member) | `HomeActivity::storeCoverBuffer()` when a book tile is rendered | **One render of the home screen tile.** Allocated per-tile, freed when the tile is no longer visible. | `HomeActivity::freeCoverBuffer()` (called on home screen exit). | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.2. |
+| `PixelCache::buffer` (image decode band) | `PixelCache` (member) | `PixelCache::begin()` per image | **One image decode.** Allocated before `JpegToBmpConverter::decodeToFramebuffer()` or `PngToBmpConverter::decodeToFramebuffer()`, freed at end. | `PixelCache::end()` (or dtor). | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.3. |
+| `JPEGDEC` / `PNG` decoder objects | Local in `JpegToFramebufferConverter::decodeToFramebuffer()` / `PngToFramebufferConverter::decodeToFramebuffer()` | At start of each decode | **One image decode.** ~20 KB / ~44 KB respectively. | Local `std::unique_ptr` / explicit `delete` at end of decode. | DRAM today; PSRAM under `BOARD_HAS_PSRAM` after Phase 2 D.4. |
+| PSRAM pre-fetch ring (D.7, Phase 3 only) | `Epub` (member) | `Epub::load()` when dual-core parse task is enabled | **One book reading session.** Ring of 2–3 pre-built sections. | `Epub` dtor via `std::deque` destructor. | PSRAM (Phase 3). |
+
+**Key invariants:**
+
+1. **`Epub` owns the `ZipFileCache`** — the cache is freed when the user opens a different book, exits the reader activity, or any code calls `epub.reset()`. There is no manual "clear cache" command (none is needed — see §B.2 of the verification report: the cache is rebuilt from a single CD scan on each `Epub::load()`).
+
+2. **No cache survives across different books.** A new `Epub` object is constructed for every `loadBook()` call (`EpubReaderActivity.cpp:301`), so the in-RAM `ZipFileCache` is recreated from scratch on every book open. The on-SD caches (`.bin`, `book.bin`, `html/`) do persist across books and across power cycles — they are the durable cache.
+
+3. **In a single book session, the cache is stable across page turns.** The `MEM` log from the x4pro device on 2026-09-03 showed `PSRAMUsed=107KB` constant across two page turns, confirming the cache is allocated once at book open and reused (not re-read or re-copied) for every page.
+
+4. **Cross-task safety:** the `Epub` is accessed by the render task (core 1) and (when Phase 3 lands) the parse task (core 0). The `ZipFileCache` is read-only after population, so no lock is needed. The PSRAM pre-fetch ring (D.7, Phase 3) requires the Section-task-ownership rules in §D.5.
+
+5. **No invalidation path for the in-RAM `ZipFileCache`.** If the EPUB file changes on disk while the reader is open (e.g., OPDS re-download mid-session), the cache becomes stale. In practice this does not happen — the reader activity is exclusive, and a file change requires exiting the reader. Documented as "no practical risk" by the verification report.
+
 ### D.1 Parsed section cache (the `.bin` payload materialised in RAM)
 
 Today: during `Section::createSectionFile()` / `buildSomeMore()`, each `Page` object is built in DRAM and serialised to the `.bin` file. The `BuildContext::lut` (`vector<PageLutEntry>`, `Section.h:39`) and the `ChapterHtmlSlimParser` working set are in DRAM. After `finalizeBuild()`, only the `.bin` file on SD remains; the DRAM is freed.
