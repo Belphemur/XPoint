@@ -196,7 +196,7 @@ jobs:
           # Flip `--draft` to `--latest` (or add `--latest`) to auto-publish.
           gh release create "${{ steps.collect.outputs.tag }}" \
             --draft \
-            --title "CrossPoint X-Reader ${{ steps.collect.outputs.tag }}" \
+            --title "XPoint ${{ steps.collect.outputs.tag }}" \
             --notes "Personal fork release. See README fork notice. OTA is signed (Ed25519); verify before flashing." \
             dist/firmware.bin dist/firmware-sticky.bin dist/firmware-x4pro.bin \
             dist/firmware-papermono.bin dist/manifest.json dist/manifest.json.sig
