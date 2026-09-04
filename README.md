@@ -33,7 +33,7 @@ exist upstream, and stay out of your way until you want them.
    cold boot.
 6. **Signed OTA updates.** Every release ships a `manifest.json` + Ed25519
    signature. The device verifies against a key baked into the firmware before
-   flashing — corrupted or tampered updates are rejected. Manual flashing still
+   flashing; corrupted or tampered updates are rejected. Manual flashing still
    works. See [OTA signing](docs/OTA_SIGNING.md).
 7. **Time left and progress on every home card.** "42% • 2h 30m" right under each
    book in *Recent books*, so you can pick up where you left off without opening
@@ -41,16 +41,9 @@ exist upstream, and stay out of your way until you want them.
 8. **Timezone auto-detected on NTP sync.** Sync the clock over Wi-Fi and your
    public-IP timezone is applied automatically. Travelled? Next sync re-detects.
    Falls back gracefully on failure.
-
-- **Power button: short press sleeps, long press shuts down.** 400 ms hold =
+9. **Power button: short press sleeps, long press shuts down.** 400 ms hold =
   proper shutdown with cover screen + rail cut. Short press keeps its own
   binding and defaults to Sleep.
-- **Independent release pipeline.** Tagged, GPG-signed, and Ed25519-manifested
-  in this repo — separate cadence from upstream.
-
-This fork tracks upstream `develop` and ports work from
-[CrossInk](https://github.com/uxjulia/CrossInk) where it fits the X4 Pro;
-the `BookStatsView` card is a direct port — credit to @uxjulia.
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
