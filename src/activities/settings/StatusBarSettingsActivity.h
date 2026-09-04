@@ -19,7 +19,8 @@ class StatusBarSettingsActivity final : public UiListActivity {
  private:
   OptionPopup optionPopup;
 
-  // Decided in onEnter() based on halClock.isAvailable() so clock entries are hidden on X4.
+  // Decided in onEnter() based on halClock.isAvailable(): rows are hidden if
+  // the RTC probe failed (runtime fault, not a per-board compile-time gate).
   int visibleItemCount = 0;
 
   int listCount() const override { return visibleItemCount; }

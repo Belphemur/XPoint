@@ -28,10 +28,10 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_CLOCK,         // X3 only
-  ITEM_CLOCK_FORMAT,  // X3 only
-  ITEM_TIME_ZONE,     // X3 only, shows the auto-detected zone (read-only)
-  ITEM_CLOCK_SYNC,    // X3 only, launches ClockSyncActivity
+  ITEM_CLOCK,         // every device; runtime-gated by halClock.isAvailable()
+  ITEM_CLOCK_FORMAT,  // every device; runtime-gated by halClock.isAvailable()
+  ITEM_TIME_ZONE,     // every device; shows the auto-detected zone (read-only)
+  ITEM_CLOCK_SYNC,    // every device; launches ClockSyncActivity
   ITEM_COUNT
 };
 

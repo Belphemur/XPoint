@@ -84,12 +84,6 @@ void SettingsActivity::rebuildSettingsLists() {
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
-  // Manual "Sync clock now": forces an NTP sync and re-detects the time zone
-  // from the device's public IP (useful after travel or when time is wrong).
-  // Placed under Network so it sits next to Wi-Fi; ClockSyncActivity connects
-  // to Wi-Fi first if needed, then performs the sync. On boards without an
-  // external RTC (x4pro) the NTP sync drives the system clock via SNTP.
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_CLOCK_SYNC_NOW, SettingAction::SyncClock));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
@@ -400,12 +394,6 @@ void SettingsActivity::toggleCurrentSetting() {
         }
         break;
 #endif
-      case SettingAction::SyncClock:
-        // Manual "Sync clock now": force an NTP sync and re-detect the time zone
-        // from this device's public IP (e.g. after travel). Works on every board,
-        // including x4pro which has no external RTC (sync drives the system clock).
-        startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), resultHandler);
-        break;
       case SettingAction::None:
         // Do nothing
         break;
@@ -478,12 +466,6 @@ void SettingsActivity::openAutoPowerOffPicker() {
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.type == SettingType::ACTION) {
-    // The "Sync clock now" row shows the currently detected time zone so the
-    // user can see what they'll refresh; before the first sync there is none.
-    if (setting.action == SettingAction::SyncClock) {
-      if (SETTINGS.clockTimeZoneId[0] != '\0') return SETTINGS.clockTimeZoneId;
-      return tr(STR_TIME_ZONE_NEED_SYNC);
-    }
     return "";
   }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
