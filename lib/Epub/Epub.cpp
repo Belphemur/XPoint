@@ -457,11 +457,14 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // the unique_ptr control block and the cache map both land in PSRAM rather
   // than the default (DRAM-first) heap. The internal std::string keys still
   // use the default allocator; this puts the per-ZipFileCache overhead (~16 B
-  // for an empty cache, growing to ~5-20 KB for a typical EPUB) in PSRAM.
+  // for an empty cache, growing to ~5-20 KB for a typical EPUB) in PSRAM. The
+  // PSRAM deleter (kZipFileCacheDeleter / ZipFileCache::deleteSelfPsram) is
+  // a function-pointer, not default_delete, so the placement cap is matched
+  // exactly (CodeRabbit IPVX).
   void* p = heap_caps_malloc(sizeof(ZipFileCache), MALLOC_CAP_SPIRAM);
   if (p) {
     new (p) ZipFileCache();  // placement-new
-    zipCache_.reset(static_cast<ZipFileCache*>(p));
+    zipCache_ = std::unique_ptr<ZipFileCache, ZipFileCacheDeleter>(static_cast<ZipFileCache*>(p), kZipFileCacheDeleter);
     if (zipCache_) {
       zipCache_->load(filepath);
     }
@@ -914,8 +917,15 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
         if (zf.readFileToStream(*stat, out, chunkSize, allowEarlyStop)) {
           return true;
         }
-        // If the cached stat did not produce a valid read (e.g. localHeaderOffset
-        // shifted), fall through to the non-cached path below.
+        // Cached read failed (rare: shifted localHeaderOffset, mid-stream inflate
+        // error, output write error). Do NOT fall through to a non-cached
+        // re-read on the same `out` — if bytes were already written, appending
+        // again would corrupt the output. Mark the cached entry stale (so a
+        // future read re-scans) and return false. The caller treats this as
+        // a read failure, the same as pre-cache behaviour.
+        LOG_ERR("EBP", "Cached ZIP read failed for %s; invalidating cache entry", path.c_str());
+        zipCache_->invalidate(path);
+        return false;
       }
     }
   }
@@ -1132,4 +1142,28 @@ const ZipFile::FileStatSlim* Epub::ZipFileCache::get(std::string_view itemPath) 
   }
   return nullptr;
 }
+
+void Epub::ZipFileCache::invalidate(std::string_view itemPath) {
+  // Erase one cached entry so the next read re-scans the ZIP central
+  // directory for this item. No-op if the entry is not present.
+  cache_.erase(std::string{itemPath});
+}
+
+#ifdef BOARD_HAS_PSRAM
+// PSRAM deleter for the ZipFileCache object itself: placement-new'd in load()
+// via heap_caps_malloc(MALLOC_CAP_SPIRAM). The matching free MUST be
+// heap_caps_free to release the cap-matched allocation; default_delete's
+// `delete` would call operator delete, which on ESP-IDF routes to
+// heap_caps_free (works in practice) but is not cap-safe in general.
+// CodeRabbit IPVX: make the deleter a function pointer to avoid the
+// unique_ptr<ChapterHtmlSlimParser> static_assert issue (this is a leaf
+// type so the static_assert passes, but the function-pointer form is the
+// project convention).
+void Epub::ZipFileCache::deleteSelfPsram(ZipFileCache* p) {
+  if (p) {
+    p->~ZipFileCache();
+    heap_caps_free(p);
+  }
+}
+#endif
 #endif

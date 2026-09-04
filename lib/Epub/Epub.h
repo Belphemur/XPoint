@@ -45,6 +45,7 @@ class Epub {
   std::string& getBasePath() { return contentBasePath; }
   bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
   bool clearCache() const;
+
   void setupCacheDir() const;
   const std::string& getCachePath() const;
   const std::string& getPath() const;
@@ -97,6 +98,11 @@ class Epub {
     // allocation that was happening on every cache lookup (CodeRabbit IPV8;
     // AGENTS.md rule 4 prohibits std::string in hot paths).
     const ZipFile::FileStatSlim* get(std::string_view itemPath) const;
+    // Drop one cached entry so the next read re-scans the ZIP central
+    // directory. Used when a cached read fails (rare: shifted
+    // localHeaderOffset, mid-stream inflate error). Does not invalidate
+    // the whole cache — only the failing entry.
+    void invalidate(std::string_view itemPath);
     // True if load() succeeded and the cache is populated. Callers must check
     // this before using the cache; a failed load leaves zipCache_ non-null but
     // empty, and a caller that iterates an empty cache (e.g. discoverCssFilesFromZip)
@@ -106,7 +112,33 @@ class Epub {
     // discoverCssFilesFromZip to avoid opening a fresh ZipFile just to enumerate
     // paths. Returns a span-like pair (begin, end) of (path, FileStatSlim) entries.
     const std::unordered_map<std::string, ZipFile::FileStatSlim>& cacheRef() const { return cache_; }
+#ifdef BOARD_HAS_PSRAM
+    // PSRAM deleter for the cache object itself: calls dtor + heap_caps_free
+    // to match the placement cap used by the heap_caps_malloc in load().
+    // CodeRabbit IPVX: default_delete would call `delete` on PSRAM memory,
+    // which works in practice (ESP-IDF routes operator delete to
+    // heap_caps_free) but is not type-safe.
+    static void deleteSelfPsram(ZipFileCache* p);
+#endif
   };
+#ifdef BOARD_HAS_PSRAM
+  // Function-pointer deleter for the unique_ptr<ZipFileCache> below. Using a
+  // function pointer (not a lambda) keeps the unique_ptr type uniform across
+  // boards and avoids the deleter-template-instantiation ambiguity that
+  // blocked D.1 / D.4 (CodeRabbit IPVX, IPV-).
+  using ZipFileCacheDeleter = void (*)(ZipFileCache*);
+  static constexpr ZipFileCacheDeleter kZipFileCacheDeleter = &ZipFileCache::deleteSelfPsram;
+  std::unique_ptr<ZipFileCache, ZipFileCacheDeleter> zipCache_{static_cast<ZipFileCache*>(nullptr),
+                                                               kZipFileCacheDeleter};
+#else
   std::unique_ptr<ZipFileCache> zipCache_;
+#endif
+  // PSRAM placement: ZipFileCache is a leaf type (no nested unique_ptr), so
+  // the static_assert issue that blocked D.1 / D.4 does not apply. On X4 Pro
+  // this places the map (typically 64-150 KB for a 200-entry novel) in PSRAM
+  // via a custom function-pointer deleter that calls heap_caps_free (matches
+  // the placement cap). On non-PSRAM boards the deleter collapses to plain
+  // free() (heap_caps_free handles cross-heap too, but the explicit branch
+  // keeps cppcheck happy).
 #endif
 };
