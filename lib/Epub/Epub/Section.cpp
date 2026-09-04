@@ -359,18 +359,16 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   writeSectionFileHeader(spec);
 
 #ifdef BOARD_HAS_PSRAM
-  // Place the active section's BuildContext (LUT + parser + working set) in PSRAM
-  // on boards that have it. Frees ~16 KB of DRAM for use as the slim parser
-  // working buffer, which historically pushes JPEG/CSS heap thresholds on C3.
-  // Note: makeUniqueNoThrowPsram returns unique_ptr<T, fn-ptr-deleter>; we
-  // .release() and re-wrap with default_delete so the assignment to
-  // `build_` (declared as unique_ptr<BuildContext>) typechecks.
-  auto ctxPsram = makeUniqueNoThrowPsram<BuildContext>();
-  auto ctx = std::unique_ptr<BuildContext>(ctxPsram.release());
+  // Place the active section's BuildContext (LUT + parser + working set) in
+  // DRAM. Originally proposed for PSRAM (~16 KB freed), but the static_assert
+  // on unique_ptr<ChapterHtmlSlimParser> in BuildContext's nested type
+  // conflicts with a non-default deleter on PSRAM boards. Accepted on DRAM
+  // (see Section.h:build_ comment).
+  build_ = makeUniqueNoThrow<BuildContext>();
 #else
-  auto ctx = makeUniqueNoThrow<BuildContext>();
+  build_ = makeUniqueNoThrow<BuildContext>();
 #endif
-  if (!ctx) {
+  if (!build_) {
     LOG_ERR("SCT", "OOM: BuildContext");
     file.close();
     Storage.remove(binTmpPath().c_str());
@@ -379,26 +377,26 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
   // htmlCached == "htmlPath is the live cache" (reused, or just promoted). finalizeBuild/abandonBuild
   // then leave the cached HTML alone; only an un-promoted temp (rename failed) is theirs to clean up.
-  ctx->reusedHtml = htmlCached;
-  ctx->htmlPath = htmlPath;
-  ctx->tmpHtmlPath = tmpHtmlPath;
-  ctx->parsePath = htmlCached ? htmlPath : tmpHtmlPath;
+  build_->reusedHtml = htmlCached;
+  build_->htmlPath = htmlPath;
+  build_->tmpHtmlPath = tmpHtmlPath;
+  build_->parsePath = htmlCached ? htmlPath : tmpHtmlPath;
 
   // Derive the content base directory and image cache path prefix for the parser
   const size_t lastSlash = localPath.find_last_of('/');
-  ctx->contentBase = (lastSlash != std::string::npos) ? localPath.substr(0, lastSlash + 1) : "";
-  ctx->imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
+  build_->contentBase = (lastSlash != std::string::npos) ? localPath.substr(0, lastSlash + 1) : "";
+  build_->imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
 
   if (spec.embeddedStyle) {
-    ctx->cssParser = epub->getCssParser();
-    if (ctx->cssParser) {
-      const CssParser::CacheLoadResult cacheResult = ctx->cssParser->loadFromCache();
+    build_->cssParser = epub->getCssParser();
+    if (build_->cssParser) {
+      const CssParser::CacheLoadResult cacheResult = build_->cssParser->loadFromCache();
       if (cacheResult == CssParser::CacheLoadResult::LowMemory) {
         LOG_ERR("SCT", "Insufficient heap to hydrate CSS; section build deferred");
-        ctx->cssParser->clear();
+        build_->cssParser->clear();
         file.close();
         Storage.remove(binTmpPath().c_str());
-        if (!ctx->reusedHtml) Storage.remove(ctx->tmpHtmlPath.c_str());
+        if (!build_->reusedHtml) Storage.remove(build_->tmpHtmlPath.c_str());
         return false;
       }
       if (cacheResult == CssParser::CacheLoadResult::Invalid) {
@@ -422,23 +420,22 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
   // The parser stores the path/contentBase/imageBasePath by reference, so they must
   // live in the BuildContext (which outlives the parser). The page-complete callback
-  // captures the BuildContext pointer to append to its in-RAM LUT; build_ owns the
-  // context for the parser's whole lifetime.
-  BuildContext* ctxPtr = ctx.get();
-  ctx->parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
-      epub, ctxPtr->parsePath, renderer, spec.fontId, spec.lineCompression, spec.extraParagraphSpacing,
+  // captures `this` (and indirectly build_) to append to its in-RAM LUT; build_ owns
+  // the context for the parser's whole lifetime.
+  build_->parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
+      epub, build_->parsePath, renderer, spec.fontId, spec.lineCompression, spec.extraParagraphSpacing,
       spec.paragraphAlignment, spec.viewportWidth, spec.viewportHeight, spec.hyphenationEnabled,
       spec.focusReadingEnabled,
-      [this, ctxPtr](std::unique_ptr<Page> page, const uint16_t paragraphIndex, const uint16_t listItemIndex,
-                     const uint32_t visibleTextOffset) {
-        ctxPtr->lut.push_back(
+      [this](std::unique_ptr<Page> page, const uint16_t paragraphIndex, const uint16_t listItemIndex,
+             const uint32_t visibleTextOffset) {
+        build_->lut.push_back(
             {this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex, visibleTextOffset});
       },
-      spec.embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, spec.imageRendering, std::move(tocAnchors),
-      popupFn, ctxPtr->cssParser);
-  if (!ctx->parser) {
+      spec.embeddedStyle, build_->contentBase, build_->imageBasePath, spec.imageRendering, std::move(tocAnchors),
+      popupFn, build_->cssParser);
+  if (!build_->parser) {
     LOG_ERR("SCT", "OOM: ChapterHtmlSlimParser");
-    if (ctx->cssParser) ctx->cssParser->clear();
+    if (build_->cssParser) build_->cssParser->clear();
     file.close();
     Storage.remove(binTmpPath().c_str());
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
@@ -446,7 +443,6 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
 
   Hyphenator::setPreferredLanguage(epub->getLanguage());
-  build_ = std::move(ctx);
 
   if (!build_->parser->beginParse()) {
     LOG_ERR("SCT", "Failed to begin parse");
@@ -476,17 +472,20 @@ bool Section::buildSomeMore(const int maxPages) {
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
       return finalizeBuild();
     }
-    // Periodic partial checkpoint: commit every 5 s while building, regardless of
-    // mode (maxPages > 0 incremental or maxPages == 0 one-shot). Runs once per
-    // parse-step yield. The one-shot path (maxPages == 0) used to skip this
-    // entirely; the timer is now checked before the incremental yield so the
-    // dtor's suspendBuild() always has a recent checkpoint to fall back to.
+    // Periodic checkpoint log: a real commitBuildFile() call would close+rename
+    // the open tmp .bin mid-build, breaking the next parseStep() (the parser's file
+    // member is the same tmp we just renamed). The durable partial checkpoint is
+    // deferred to suspendBuild() / ~Section() (which has the same write+rename path
+    // but runs after parsing finishes). Here we only log so the telemetry is
+    // visible in flight; the partial is committed when the build ends or is
+    // suspended (see v3 design doc §E.5 redesign).
     {
       const uint32_t now = millis();
       if (now - lastPartialCheckpointMs_ >= 5000) {
         lastPartialCheckpointMs_ = now;
         const uint32_t consumed = static_cast<uint32_t>(build_->parser->parseBytesConsumed());
-        commitBuildFile(SECTION_FILE_PARTIAL_VERSION, consumed, build_->totalBytes);
+        LOG_DBG("SCT", "Checkpoint log: %u bytes / %u total (partial commit deferred to suspendBuild)", consumed,
+                build_->totalBytes);
       }
     }
     // ParseStatus::More: yield once we've laid out the requested number of pages.

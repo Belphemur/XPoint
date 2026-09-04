@@ -227,10 +227,13 @@ bool Epub::parseTocNavFile() const {
 void Epub::discoverCssFilesFromZip() {
   const std::string& opfDir = contentBasePath;
   // Prefer the PSRAM ZIP cache (no SD access, no ZipFile construction). If the
-  // cache is unavailable (e.g. non-PSRAM board, or load failed) fall back to
-  // opening a fresh ZipFile and using its per-instance enumerateFilePaths.
+  // cache is unavailable (non-PSRAM board, load() failed, or .zip unreadable)
+  // fall back to opening a fresh ZipFile and using its per-instance
+  // enumerateFilePaths. isLoaded() guards against the silent-empty-cache failure
+  // (CodeRabbit IPV2): a load() that returns early leaves zipCache_ non-null
+  // but empty; iterating it would skip CSS files.
 #ifdef BOARD_HAS_PSRAM
-  if (zipCache_) {
+  if (zipCache_ && zipCache_->isLoaded()) {
     for (const auto& entry : zipCache_->cacheRef()) {
       const std::string_view filePath = entry.first;
       if (!opfDir.empty() && filePath.find(opfDir) != 0) {
@@ -460,7 +463,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     new (p) ZipFileCache();  // placement-new
     zipCache_.reset(static_cast<ZipFileCache*>(p));
     if (zipCache_) {
-      zipCache_->load(filepath.c_str());
+      zipCache_->load(filepath);
     }
   } else {
     LOG_ERR("EBP", "Failed to allocate ZipFileCache in PSRAM (%u bytes); continuing without cache",
@@ -904,7 +907,7 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   // We open the ZIP once, then call the FileStatSlim overload of readFileToStream
   // which avoids the second CD scan that loadFileStatSlim would otherwise do.
   if (zipCache_) {
-    const ZipFile::FileStatSlim* stat = zipCache_->get(path.c_str());
+    const ZipFile::FileStatSlim* stat = zipCache_->get(path);
     if (stat) {
       ZipFile zf(filepath);
       if (zf.open()) {
@@ -940,7 +943,7 @@ bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
   const std::string path = FsHelpers::normalisePath(itemHref);
 #ifdef BOARD_HAS_PSRAM
   if (zipCache_) {
-    const ZipFile::FileStatSlim* stat = zipCache_->get(path.c_str());
+    const ZipFile::FileStatSlim* stat = zipCache_->get(path);
     if (stat) {
       *size = stat->uncompressedSize;
       return true;
@@ -1099,7 +1102,12 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
 }
 
 #ifdef BOARD_HAS_PSRAM
-void Epub::ZipFileCache::load(const char* epubPath) {
+void Epub::ZipFileCache::load(const std::string& epubPath) {
+  // ZipFile stores its filePath as a const std::string& member. Pass an lvalue
+  // reference (from the caller's stored std::string) so the reference stays
+  // valid for the lifetime of the ZipFile. A const char* here would create a
+  // temporary std::string that expires at the end of this full-expression,
+  // leaving ZipFile::filePath as a dangling reference (CodeRabbit IPV5).
   ZipFile zf(epubPath);
   if (!zf.open()) return;
   if (!zf.loadAllFileStatSlims()) return;
@@ -1110,11 +1118,18 @@ void Epub::ZipFileCache::load(const char* epubPath) {
   LOG_DBG("ZIP", "ZIP cache loaded: %zu entries", static_cast<size_t>(cache_.size()));
 }
 
-const ZipFile::FileStatSlim* Epub::ZipFileCache::get(const char* itemPath) const {
+const ZipFile::FileStatSlim* Epub::ZipFileCache::get(std::string_view itemPath) const {
   if (!loaded_) return nullptr;
-  const std::string path = FsHelpers::normalisePath(itemPath);
-  auto it = cache_.find(path);
-  if (it == cache_.end()) return nullptr;
-  return &it->second;
+  // Allocate the lookup key once. Caller passes std::string_view to avoid
+  // the per-call FsHelpers::normalisePath() + string copy the old API did
+  // (CodeRabbit IPV8; AGENTS.md rule 4); the std::string here is unavoidable
+  // without C++20 heterogeneous lookup (transparent hash + comparator on the
+  // map). The cost is one short-string allocation per cache lookup, which is
+  // still far less than the previous path (which allocated a path AND
+  // normalised it AND compared to a std::string key).
+  if (auto it = cache_.find(std::string{itemPath}); it != cache_.end()) {
+    return &it->second;
+  }
+  return nullptr;
 }
 #endif

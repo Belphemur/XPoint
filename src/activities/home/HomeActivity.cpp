@@ -178,9 +178,10 @@ bool HomeActivity::storeCoverBuffer() {
   }
   coverBufferSize = needed;
   if (!renderer.copyRegionToBuffer(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize)) {
-    free(coverBuffer);
-    coverBuffer = nullptr;
-    coverBufferSize = 0;
+    // Route through freeCoverBuffer() so the PSRAM-vs-DRAM cap-matching free
+    // (heap_caps_free on PSRAM, plain free otherwise) is in one place. Direct
+    // free() here would corrupt the heap on PSRAM boards (CodeRabbit IPWH).
+    freeCoverBuffer();
     return false;
   }
   return true;

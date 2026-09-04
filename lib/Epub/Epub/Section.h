@@ -53,6 +53,14 @@ class Section {
     float smoothedEstimate = 0;
     uint32_t smoothedAtConsumed = 0;
   };
+  // build_ holds the active section's BuildContext (LUT + parser + working set).
+  // Originally proposed for PSRAM placement (~16 KB freed for the slim parser
+  // working buffer), but the static_assert on std::unique_ptr<ChapterHtmlSlimParser>
+  // requires the full parser type visible at the deleter-instantiation point,
+  // which conflicts with the private-nested-type declaration of BuildContext.
+  // Reverted to plain DRAM allocation + makeUniqueNoThrow (the AGENTS.md-compliant
+  // pattern). The other Phase 2 PSRAM optimizations (PixelCache, decoders via
+  // heap_caps_malloc, ZipFileCache) still apply.
   std::unique_ptr<BuildContext> build_;
   bool buildComplete_ = false;
   // Pages laid out by the active build (== build_->lut.size()). Distinct from pageCount,

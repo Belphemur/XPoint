@@ -86,8 +86,22 @@ class Epub {
     bool loaded_ = false;
 
    public:
-    void load(const char* epubPath);
-    const ZipFile::FileStatSlim* get(const char* itemPath) const;
+    // Note: takes const std::string& (not const char*) because ZipFile stores
+    // its filePath as a const std::string& member. A const char* here would force
+    // a temporary std::string at the call site that dies at the end of the
+    // full-expression, leaving ZipFile::filePath as a dangling reference.
+    void load(const std::string& epubPath);
+    // take std::string_view (no allocation) and compare to the map key directly.
+    // The callers already have a normalized std::string in hand; passing it as a
+    // view avoids the redundant FsHelpers::normalisePath() + std::string
+    // allocation that was happening on every cache lookup (CodeRabbit IPV8;
+    // AGENTS.md rule 4 prohibits std::string in hot paths).
+    const ZipFile::FileStatSlim* get(std::string_view itemPath) const;
+    // True if load() succeeded and the cache is populated. Callers must check
+    // this before using the cache; a failed load leaves zipCache_ non-null but
+    // empty, and a caller that iterates an empty cache (e.g. discoverCssFilesFromZip)
+    // would skip the ZipFile fallback path and miss CSS files (CodeRabbit IPV2).
+    bool isLoaded() const { return loaded_; }
     // Iterate the cache (PSRAM-backed on BOARD_HAS_PSRAM boards). Used by
     // discoverCssFilesFromZip to avoid opening a fresh ZipFile just to enumerate
     // paths. Returns a span-like pair (begin, end) of (path, FileStatSlim) entries.

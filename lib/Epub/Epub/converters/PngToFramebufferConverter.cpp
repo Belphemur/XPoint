@@ -320,13 +320,7 @@ bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
     return false;
   }
 
-  std::unique_ptr<PNG> png(
-#ifdef BOARD_HAS_PSRAM
-      makeUniqueNoThrowPsram<PNG>().release()
-#else
-      new (std::nothrow) PNG()
-#endif
-  );
+  std::unique_ptr<PNG> png(new (std::nothrow) PNG());
   if (!png) {
     LOG_ERR("PNG", "Failed to allocate PNG decoder for dimensions");
     return false;
@@ -355,13 +349,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   }
 
   // Heap-allocate PNG decoder (~42 KB) - freed at end of function
-  std::unique_ptr<PNG> png(
-#ifdef BOARD_HAS_PSRAM
-      makeUniqueNoThrowPsram<PNG>().release()
-#else
-      new (std::nothrow) PNG()
-#endif
-  );
+  std::unique_ptr<PNG> png(new (std::nothrow) PNG());
   if (!png) {
     LOG_ERR("PNG", "Failed to allocate PNG decoder");
     return false;

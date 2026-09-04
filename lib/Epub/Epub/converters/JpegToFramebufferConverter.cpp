@@ -365,13 +365,7 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
     return false;
   }
 
-  std::unique_ptr<JPEGDEC> jpeg(
-#ifdef BOARD_HAS_PSRAM
-      makeUniqueNoThrowPsram<JPEGDEC>().release()
-#else
-      new (std::nothrow) JPEGDEC()
-#endif
-  );
+  std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
   if (!jpeg) {
     LOG_ERR("JPG", "Failed to allocate JPEG decoder for dimensions");
     return false;
@@ -402,13 +396,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     return false;
   }
 
-  std::unique_ptr<JPEGDEC> jpeg(
-#ifdef BOARD_HAS_PSRAM
-      makeUniqueNoThrowPsram<JPEGDEC>().release()
-#else
-      new (std::nothrow) JPEGDEC()
-#endif
-  );
+  std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
   if (!jpeg) {
     LOG_ERR("JPG", "Failed to allocate JPEG decoder");
     return false;
