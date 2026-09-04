@@ -7,6 +7,7 @@
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <Utf8.h>
 #include <Xtc.h>
 
@@ -163,7 +164,14 @@ bool HomeActivity::storeCoverBuffer() {
   freeCoverBuffer();
   const size_t needed = renderer.getRegionByteSize(coverRectX, coverRectY, coverRectW, coverRectH);
   if (needed == 0) return false;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM: cover buffer is a transient working set used only during the cover
+  // animation window. PSRAM placement frees DRAM (which is tighter on X4 Pro
+  // due to second framebuffer headroom) without affecting performance.
+  coverBuffer = static_cast<uint8_t*>(heap_caps_malloc(needed, MALLOC_CAP_SPIRAM));
+#else
   coverBuffer = static_cast<uint8_t*>(malloc(needed));
+#endif
   if (!coverBuffer) {
     LOG_ERR("HOME", "OOM: cover buffer (%u bytes)", (unsigned)needed);
     return false;
@@ -185,7 +193,11 @@ bool HomeActivity::restoreCoverBuffer() {
 
 void HomeActivity::freeCoverBuffer() {
   if (coverBuffer) {
+#ifdef BOARD_HAS_PSRAM
+    heap_caps_free(coverBuffer);
+#else
     free(coverBuffer);
+#endif
     coverBuffer = nullptr;
   }
   coverBufferSize = 0;

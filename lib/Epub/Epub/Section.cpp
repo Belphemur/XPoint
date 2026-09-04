@@ -358,7 +358,18 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it.
   writeSectionFileHeader(spec);
 
+#ifdef BOARD_HAS_PSRAM
+  // Place the active section's BuildContext (LUT + parser + working set) in PSRAM
+  // on boards that have it. Frees ~16 KB of DRAM for use as the slim parser
+  // working buffer, which historically pushes JPEG/CSS heap thresholds on C3.
+  // Note: makeUniqueNoThrowPsram returns unique_ptr<T, fn-ptr-deleter>; we
+  // .release() and re-wrap with default_delete so the assignment to
+  // `build_` (declared as unique_ptr<BuildContext>) typechecks.
+  auto ctxPsram = makeUniqueNoThrowPsram<BuildContext>();
+  auto ctx = std::unique_ptr<BuildContext>(ctxPsram.release());
+#else
   auto ctx = makeUniqueNoThrow<BuildContext>();
+#endif
   if (!ctx) {
     LOG_ERR("SCT", "OOM: BuildContext");
     file.close();
