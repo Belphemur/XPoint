@@ -13,66 +13,44 @@
 
 ## What this fork adds on top of CrossPoint
 
-Every feature below is a fork-only addition — the device ships them by default, but they
-do not exist in the upstream `crosspoint-reader` repository. They are tuned for the
-Xteink X4 Pro (and papermono variant) and are designed to be invisible when you don't
-want them and useful when you do.
+Eight fork-only features, tuned for the Xteink X4 Pro. They ship by default, don't
+exist upstream, and stay out of your way until you want them.
 
-1. **Reading stats, with a CrossInk-style card.** Per-book *and* global stats, driven
-   by a Kindle-style trimmed-mean WPM tracker. The home card and the per-book stats
-   view are a direct port of CrossInk's `BookStatsView` — design, copy, and the
-   card-grid layout — full credit to [@uxjulia](https://github.com/uxjulia). See
-   *Time left in a chapter* below for the same engine in the reader.
-2. **Time left in the current chapter.** Shown right in the status bar while you read.
-   Uses a calibrated 220-words-per-page assumption, your own rolling WPM (book-level
-   once it has enough samples, otherwise global), and a 15-sample trimmed mean with
-   sane clamps — the same approach Kindle uses, ported to fit the X4 Pro's memory
-   budget. Show it on the left, the right, or hide it; your choice.
-3. **Dictionary on long-press.** Long-press a word in the reader and the dictionary
-   comes up directly — no need to open the selection menu first. The long-press
-   action is itself configurable (dictionary, footnote, …) and StarDict
-   dictionaries are supported the same way as in upstream.
-4. **Configurable Home button.** The Home key has three independent actions and you
-   can bind each one to whatever you want: short-press, double-click, and long-press
-   are all separately remappable from *Settings → Controls*. Pick from back-one-level,
-   toggle frontlight, open menu, and more.
-5. **Auto power off.** A dwell timer that runs while the device is asleep. Enter
-   sleep (or let the inactivity timeout fire) and, if the device is still asleep when
-   the timer elapses, the RTC wakes it, it paints a shutdown screen (current book
-   cover, or the logo fallback), and it cuts the peripheral rail instead of
-   draining the battery in deep sleep. Configurable in *System → Auto power off*
-   from 2 to 12 hours in 2-hour steps, with 12 h rendering as "Off"; default 4 h.
-   The next power-button press is a normal cold boot.
-6. **Signed OTA updates.** Firmware is delivered from this fork's own GitHub releases
-   and each release ships a `manifest.json` + `manifest.json.sig`. The device
-   verifies the manifest against an Ed25519 public key baked into the firmware
-   before flashing — so a corrupted or tampered update is rejected before it can
-   brick the device. The firmware itself is *not* locked, so you can still flash
-   any build manually. See [OTA signing](docs/OTA_SIGNING.md).
-7. **Time left and progress on the home card.** Every book in *Recent books* shows
-   its completion percentage and an estimated time-left in the same line —
-   "42% • 2h 30m" — so you can pick up where you left off without opening the
-   book. The estimate uses the same Kindle-style WPM engine as the chapter timer
-   (above), so it gets more accurate the more you read.
-8. **Timezone auto-detected on NTP sync.** When the device syncs its clock over
-   Wi-Fi, it also detects your public-IP timezone and applies it — set once and
-   the on-screen clock, stats buckets, and reading history all line up with
-   wherever you actually are. Travelling across a border? The next manual sync
-   picks up the new zone. Falls back gracefully if detection fails.
+1. **Reading stats with a CrossInk-style card.** Per-book and global stats, driven
+   by a Kindle-style WPM tracker. The home card and the per-book stats view are a
+   direct port of CrossInk's `BookStatsView` — full credit to [@uxjulia](https://github.com/uxjulia).
+2. **Time left in the current chapter.** A live "47 min left" estimate in the
+   status bar, computed from your real reading speed (220 wpm baseline, 15-sample
+   trimmed mean, 80–900 wpm clamps — Kindle's algorithm). Show it left, right,
+   or hide it.
+3. **Dictionary on long-press.** Long-press a word, get the definition. No menu
+   detour. Long-press action is configurable (dictionary, footnote, …).
+4. **Configurable Home button.** Short-press, double-click, and long-press are
+   three independent bindings, each remappable in *Settings → Controls*.
+5. **Auto power off.** After a configurable idle (default 4 h, range 2–12 h, "12 h"
+   = Off) the device wakes on the RTC, paints a shutdown screen, and cuts the
+   peripheral rail instead of draining in deep sleep. Next power press is a
+   cold boot.
+6. **Signed OTA updates.** Every release ships a `manifest.json` + Ed25519
+   signature. The device verifies against a key baked into the firmware before
+   flashing — corrupted or tampered updates are rejected. Manual flashing still
+   works. See [OTA signing](docs/OTA_SIGNING.md).
+7. **Time left and progress on every home card.** "42% • 2h 30m" right under each
+   book in *Recent books*, so you can pick up where you left off without opening
+   it. Same Kindle-WPM engine as the chapter timer.
+8. **Timezone auto-detected on NTP sync.** Sync the clock over Wi-Fi and your
+   public-IP timezone is applied automatically. Travelled? Next sync re-detects.
+   Falls back gracefully on failure.
 
-- **Power button: short press sleeps, long press shuts down.** Holding the power
-  button for 400 ms powers the device off (shutdown screen, then rail cut), while
-  the short press keeps its own configurable binding and defaults to **Sleep**.
-  Previously the hold path doubled as the sleep gesture and there was no
-  dedicated power-off path.
-- **Independent release pipeline.** This fork tags and publishes its own releases
-  via `release.yml` (Compile Release), separate from upstream's cadence. Every
-  release is GPG-signed and its manifest is Ed25519-signed (see #6).
+- **Power button: short press sleeps, long press shuts down.** 400 ms hold =
+  proper shutdown with cover screen + rail cut. Short press keeps its own
+  binding and defaults to Sleep.
+- **Independent release pipeline.** Tagged, GPG-signed, and Ed25519-manifested
+  in this repo — separate cadence from upstream.
 
-This fork tracks upstream `develop` and includes conveniences ported from
-[CrossInk](https://github.com/uxjulia/CrossInk) where they fit the X4 Pro workflow;
-the reading-stats card and its `BookStatsView` are a direct port, with credit to
-@uxjulia.
+This fork tracks upstream `develop` and ports work from
+[CrossInk](https://github.com/uxjulia/CrossInk) where it fits the X4 Pro;
+the `BookStatsView` card is a direct port — credit to @uxjulia.
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
