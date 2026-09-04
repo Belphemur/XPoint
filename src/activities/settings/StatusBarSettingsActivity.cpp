@@ -28,10 +28,12 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_CLOCK,         // every device; runtime-gated by halClock.isAvailable()
-  ITEM_CLOCK_FORMAT,  // every device; runtime-gated by halClock.isAvailable()
-  ITEM_TIME_ZONE,     // every device; shows the auto-detected zone (read-only)
-  ITEM_CLOCK_SYNC,    // every device; launches ClockSyncActivity
+  ITEM_CLOCK,  // every device, but only visible when _sdkRtc.begin() succeeds (onEnter() truncates visibleItemCount to
+               // BASE_MENU_ITEMS otherwise)
+  ITEM_CLOCK_FORMAT,  // every device; same runtime gate as ITEM_CLOCK
+  ITEM_TIME_ZONE,     // every device; same runtime gate as ITEM_CLOCK
+  ITEM_CLOCK_SYNC,  // every device; same runtime gate as ITEM_CLOCK — on RTC-failed boards the row is hidden, so use
+                    // the web UI or reconnect Wi-Fi to auto-sync
   ITEM_COUNT
 };
 
