@@ -186,8 +186,7 @@ TEST(OtaReleaseParse, RealisticPrettyPrinted) {
   EXPECT_TRUE(info.hasTag);
   EXPECT_STREQ(info.tagName, "v2.4.1");
   EXPECT_TRUE(info.hasFirmware);
-  EXPECT_STREQ(info.firmwareUrl,
-               "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin");
+  EXPECT_STREQ(info.firmwareUrl, "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin");
   EXPECT_EQ(info.firmwareSize, 1572864u);
   EXPECT_FALSE(info.hasManifest);
   EXPECT_STREQ(info.manifestUrl, "");
@@ -200,8 +199,7 @@ TEST(OtaReleaseParse, RealisticMinified) {
   EXPECT_TRUE(info.hasTag);
   EXPECT_STREQ(info.tagName, "v2.4.1");
   EXPECT_TRUE(info.hasFirmware);
-  EXPECT_STREQ(info.firmwareUrl,
-               "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin");
+  EXPECT_STREQ(info.firmwareUrl, "https://github.com/Belphemur/XPoint/releases/download/v2.4.1/firmware.bin");
   EXPECT_EQ(info.firmwareSize, 1572864u);
   EXPECT_FALSE(info.hasManifest);
 }
@@ -273,8 +271,7 @@ TEST(OtaReleaseParse, ManifestAssetCaptured) {
   EXPECT_TRUE(info.hasFirmware);
   EXPECT_EQ(info.firmwareSize, 5435936u);
   EXPECT_TRUE(info.hasManifest);
-  EXPECT_STREQ(info.manifestUrl,
-               "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/manifest.json");
+  EXPECT_STREQ(info.manifestUrl, "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/manifest.json");
 }
 
 TEST(OtaReleaseParse, ExtraUnknownKeysIgnored) {
@@ -365,8 +362,7 @@ TEST(OtaManifestParse, RealV190Manifest) {
 
   const ManifestBoardEntry* x4pro = findBoardEntry(entries, count, "x4pro", 5);
   ASSERT_NE(x4pro, nullptr);
-  EXPECT_STREQ(x4pro->url,
-               "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-x4pro.bin");
+  EXPECT_STREQ(x4pro->url, "https://github.com/Belphemur/XPoint/releases/download/v1.9.0/firmware-x4pro.bin");
   EXPECT_EQ(x4pro->size, 5435936u);
   EXPECT_TRUE(x4pro->hasSha);
   static constexpr uint8_t kExpectedSha[32] = {0xa5, 0xf3, 0xc9, 0xd2, 0xe1, 0xb8, 0x07, 0x4a, 0x6f, 0x2c, 0x3d,
