@@ -557,6 +557,27 @@ void setup() {
 #endif
 
   HalSystem::begin();
+#if defined(BOARD_HAS_PSRAM)
+  // The ESP32-S3 Arduino framework's early system-init (priority 99) calls
+  // psramInit() during boot, but on some X4 Pro boards it fails silently
+  // (esp_psram_init returns an error), leaving spiramDetected=false and
+  // psramFound()=false. The result is heap_caps_malloc(MALLOC_CAP_SPIRAM)
+  // returns nullptr, which silently disables the ZipFileCache and other
+  // PSRAM-backed buffers -- turning a 380 KB DRAM ceiling into a death by
+  // a thousand SD re-reads during section building.
+  // Retry psramInit() here, after the SDMMC peripheral clocks are up but
+  // before any PSRAM allocation is attempted.
+  if (!psramFound()) {
+    const bool ok = psramInit();
+    if (ok) {
+      // psramInit() only sets the spiramDetected flag; psramAddToHeap()
+      // actually registers PSRAM with the heap allocator so heap_caps_malloc
+      // with MALLOC_CAP_SPIRAM can use it.
+      psramAddToHeap();
+    }
+    LOG_INF("SYS", "PSRAM init: %s (free=%u bytes)", ok ? "OK" : "FAILED", ESP.getFreePsram());
+  }
+#endif
   g_psram_free_at_boot = ESP.getFreePsram();
   logMemAt("boot");
   // checkPanic() clears the watchdog capture marker after a successful SD
