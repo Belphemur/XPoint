@@ -27,7 +27,6 @@ enum class SettingAction {
 #ifdef READING_STATS_ENABLED
   ReadingStats,
 #endif
-  SyncClock,
 };
 
 struct SettingInfo {

@@ -299,9 +299,9 @@ bool HalClock::syncFromNTP() {
       struct tm timeinfo;
       gmtime_r(&now, &timeinfo);
 
-      // Boards without an external RTC (e.g. x4pro) still get a correct system
-      // clock from SNTP here; there is no hardware to persist to, so report
-      // success once the system clock is set.
+      // Boards without an external RTC still get a correct system clock from
+      // SNTP here; there is no hardware to persist to, so report success once
+      // the system clock is set.
       if (!_available) {
         LOG_INF("CLK", "System clock synced via NTP (no external RTC)");
         return true;
