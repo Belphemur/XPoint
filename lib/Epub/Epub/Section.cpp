@@ -472,22 +472,14 @@ bool Section::buildSomeMore(const int maxPages) {
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
       return finalizeBuild();
     }
-    // Periodic checkpoint log: a real commitBuildFile() call would close+rename
-    // the open tmp .bin mid-build, breaking the next parseStep() (the parser's file
-    // member is the same tmp we just renamed). The durable partial checkpoint is
-    // deferred to suspendBuild() / ~Section() (which has the same write+rename path
-    // but runs after parsing finishes). Here we only log so the telemetry is
-    // visible in flight; the partial is committed when the build ends or is
-    // suspended (see v3 design doc §E.5 redesign).
-    {
-      const uint32_t now = millis();
-      if (now - lastPartialCheckpointMs_ >= 5000) {
-        lastPartialCheckpointMs_ = now;
-        const uint32_t consumed = static_cast<uint32_t>(build_->parser->parseBytesConsumed());
-        LOG_DBG("SCT", "Checkpoint log: %u bytes / %u total (partial commit deferred to suspendBuild)", consumed,
-                build_->totalBytes);
-      }
-    }
+    // No active-loop checkpoint: calling commitBuildFile() here would
+    // close+rename the open tmp .bin mid-build, breaking the next
+    // parseStep() (the parser's file member is the same tmp we just
+    // renamed). The durable partial is written by suspendBuild() / ~Section()
+    // after the build ends. On a power-loss mid-build, the next open
+    // re-enters loadSectionFile() (returns false) and rebuilds from the
+    // on-SD HTML cache (Phase 2); see v3 design doc §E.5.
+
     // ParseStatus::More: yield once we've laid out the requested number of pages.
     if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();

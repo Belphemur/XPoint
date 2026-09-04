@@ -73,8 +73,6 @@ class Section {
   // Parse watermark from the partial's trailer, for estimating the total page count.
   uint32_t partialBytesConsumed_ = 0;
   uint32_t partialTotalBytes_ = 0;
-  // Monotonic millis of the last partial .bin checkpoint commit (0 = none).
-  uint32_t lastPartialCheckpointMs_ = 0;
   bool finalizeBuild();
   // Write the LUTs/anchor map (and, for a partial, the watermark trailer), patch the
   // header, stamp the version byte, and swap the tmp .bin over filePath.
