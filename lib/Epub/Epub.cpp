@@ -445,22 +445,26 @@ CssParser::ParseResult Epub::parseCssFiles(const CssParser::CacheStatus existing
 
 // load in the meta data for the epub file
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
+#ifdef BOOK_PROFILE
+  uint32_t load_start_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
+#ifdef BOOK_PROFILE
+  uint32_t cache_init_ms = millis();
+#endif
   // Always create CssParser - needed for inline style parsing even without CSS files
   cssParser.reset(new CssParser(cachePath));
+#ifdef BOOK_PROFILE
+  LOG_INF("PROF", "phase=loadBook_cssParser core=%d", core);
+#endif
 #ifdef BOARD_HAS_PSRAM
   // Parse the ZIP central directory once and cache entry info in PSRAM.
-  // Allocate the ZipFileCache itself in PSRAM via heap_caps_malloc to ensure
-  // the unique_ptr control block and the cache map both land in PSRAM rather
-  // than the default (DRAM-first) heap. The internal std::string keys still
-  // use the default allocator; this puts the per-ZipFileCache overhead (~16 B
-  // for an empty cache, growing to ~5-20 KB for a typical EPUB) in PSRAM. The
-  // PSRAM deleter (kZipFileCacheDeleter / ZipFileCache::deleteSelfPsram) is
-  // a function-pointer, not default_delete, so the placement cap is matched
-  // exactly (CodeRabbit IPVX).
   void* p = heap_caps_malloc(sizeof(ZipFileCache), MALLOC_CAP_SPIRAM);
   if (p) {
     new (p) ZipFileCache();  // placement-new
@@ -476,6 +480,13 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
+#ifdef BOOK_PROFILE
+    uint32_t cache_load_ms = millis() - load_start_ms;
+    uint32_t psram_free_after = ESP.getFreePsram();
+    uint32_t heap_free_after = ESP.getFreeHeap();
+    LOG_INF("PROF", "phase=loadBook_cacheHit core=%d load_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+            cache_load_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
     if (!skipLoadingCss) {
       const CssParser::CacheStatus cacheStatus = cssParser->inspectCache();
       CssParser::CacheLoadResult cacheLoadResult = CssParser::CacheLoadResult::Invalid;

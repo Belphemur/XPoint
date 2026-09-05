@@ -98,6 +98,13 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
   }
   LOG_DBG("SCT", "Page %d processed", builtPageCount_);
 
+#ifdef BOOK_PROFILE
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_after = ESP.getFreePsram();
+  uint32_t heap_free_after = ESP.getFreeHeap();
+  LOG_DBG("PROF", "page=%d core=%d psram_free=%uB heap=%uB", builtPageCount_, core, psram_free_after, heap_free_after);
+#endif
+
   builtPageCount_++;
   // pageCount is the pages available to read: a rebuild over a partial only raises it
   // once it has laid out more pages than the partial already covers.
@@ -246,15 +253,29 @@ bool Section::clearCache() const {
 }
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
+#ifdef BOOK_PROFILE
+  uint32_t profile_start_ms = millis();
+#endif
   // One-shot build: start, then lay out the whole section in a single pass.
   logMemAt("section_build_start");
   if (!startBuild(spec, popupFn)) {
     return false;
   }
+#ifdef BOOK_PROFILE
+  uint32_t profile_end_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   if (!buildSomeMore(0)) {  // 0 = build to completion
     return false;
   }
-  logMemAt("section_build_end");
+#ifdef BOOK_PROFILE
+  uint32_t psram_free_after = ESP.getFreePsram();
+  uint32_t heap_free_after = ESP.getFreeHeap();
+  LOG_INF("PROF", "phase=createSectionFile core=%d parse_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+          profile_end_ms - profile_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
   return buildComplete_;
 }
 
@@ -454,6 +475,12 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 }
 
 bool Section::buildSomeMore(const int maxPages) {
+#ifdef BOOK_PROFILE
+  uint32_t profile_start_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   if (!build_ || !build_->parser) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
@@ -470,6 +497,12 @@ bool Section::buildSomeMore(const int maxPages) {
       return false;
     }
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
+#ifdef BOOK_PROFILE
+      uint32_t psram_free_after = ESP.getFreePsram();
+      uint32_t heap_free_after = ESP.getFreeHeap();
+      LOG_INF("PROF", "phase=buildSomeMore core=%d step_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+              millis() - profile_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
       return finalizeBuild();
     }
     // No active-loop checkpoint: calling commitBuildFile() here would
@@ -483,6 +516,12 @@ bool Section::buildSomeMore(const int maxPages) {
     // ParseStatus::More: yield once we've laid out the requested number of pages.
     if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
+#ifdef BOOK_PROFILE
+      uint32_t psram_free_after = ESP.getFreePsram();
+      uint32_t heap_free_after = ESP.getFreeHeap();
+      LOG_INF("PROF", "phase=buildSomeMore_yield core=%d yield_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+              millis() - profile_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
       return true;
     }
   }

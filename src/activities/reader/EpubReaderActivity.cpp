@@ -312,9 +312,22 @@ bool EpubReaderActivity::loadBook() {
 
   bool loaded;
   {
+#ifdef BOOK_PROFILE
+    uint32_t load_start_ms = millis();
+    uint8_t core = xPortGetCoreID();
+    uint32_t psram_free_before = ESP.getFreePsram();
+    uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
     std::optional<GfxRenderer::FrameBufferLoan> loan;
     if (uncached) loan.emplace(renderer);
     loaded = loadedEpub->load(true, SETTINGS.embeddedStyle == 0);
+#ifdef BOOK_PROFILE
+    uint32_t load_end_ms = millis();
+    uint32_t psram_free_after = ESP.getFreePsram();
+    uint32_t heap_free_after = ESP.getFreeHeap();
+    LOG_INF("PROF", "phase=loadBook core=%d load_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+            load_end_ms - load_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
   }
   logMemAt("book_open");
   if (!loaded) {
@@ -1265,6 +1278,12 @@ bool EpubReaderActivity::skipLoopDelay() {
 }
 
 void EpubReaderActivity::renderBook() {
+#ifdef BOOK_PROFILE
+  uint32_t render_book_start_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   if (!epub) return;
 
   const auto showPendingSyncSaveError = [this]() {
@@ -1283,6 +1302,9 @@ void EpubReaderActivity::renderBook() {
   if (currentSpineIndex > epub->getSpineItemsCount()) currentSpineIndex = epub->getSpineItemsCount();
 
   if (currentSpineIndex == epub->getSpineItemsCount()) {
+#ifdef BOOK_PROFILE
+    LOG_INF("PROF", "phase=renderBook exit: no more spines core=%d", core);
+#endif
     return;
   }
 
@@ -1318,6 +1340,12 @@ void EpubReaderActivity::renderBook() {
     partialRebuildStartFailed = false;
 
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
+#ifdef BOOK_PROFILE
+    uint32_t psram_free_after = ESP.getFreePsram();
+    uint32_t heap_free_after = ESP.getFreeHeap();
+    LOG_INF("PROF", "phase=renderBook_cacheLoad core=%d cache_loaded=%s psram_free=%uB->%uB heap=%uB->%uB", core,
+            cacheLoaded ? "yes" : "no", psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
     if (cacheLoaded) {
       cachedChapterTotalPageCount = 0;
       cachedVisibleTextOffset.reset();
@@ -1351,6 +1379,12 @@ void EpubReaderActivity::renderBook() {
           showBuildError();
           return;
         }
+#ifdef BOOK_PROFILE
+        uint32_t psram_free_after = ESP.getFreePsram();
+        uint32_t heap_free_after = ESP.getFreeHeap();
+        LOG_INF("PROF", "phase=renderBook_createSection core=%d create_psram_free=%uB->%uB heap_free=%uB->%uB", core,
+                psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
         loan.end();
       } else {
         const int target = pendingPageJump.has_value() ? *pendingPageJump : (nextPageNumber < 0 ? 0 : nextPageNumber);
@@ -1546,9 +1580,24 @@ void EpubReaderActivity::renderBook() {
     // needs that slot, then snapshot the newly rendered page below.
     discardOverlayPage();
 
+#ifdef BOOK_PROFILE
+    uint8_t render_core = xPortGetCoreID();
+    uint32_t render_start_ms = millis();
+    uint32_t psram_free_before_r = ESP.getFreePsram();
+    uint32_t heap_free_before_r = ESP.getFreeHeap();
+    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    uint32_t psram_free_after_r = ESP.getFreePsram();
+    uint32_t heap_free_after_r = ESP.getFreeHeap();
+    uint32_t render_end_ms = millis();
+    LOG_INF("PROF", "phase=renderContents core=%d render_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", render_core,
+            render_end_ms - render_start_ms, psram_free_before_r, psram_free_after_r, heap_free_before_r,
+            heap_free_after_r);
+    LOG_DBG("ERS", "Rendered page in %dms", render_end_ms - render_start_ms);
+#else
     const auto start = millis();
     renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
+#endif
     lastRenderCompleteMs = millis();
 #ifdef READING_STATS_ENABLED
     pageShownAtMs = millis();
