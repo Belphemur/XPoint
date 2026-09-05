@@ -600,15 +600,17 @@ bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool 
   // a large image scale past the border. (CodeRabbit finding.)
   renderer.drawBitmap(bitmap, placement.x, placement.y, innerW, innerH, placement.cropX, placement.cropY);
   renderer.drawRect(frameX, frameY, frameW, frameH);
+  // Caption BEFORE any inversion: invertScreen flips the whole framebuffer, so
+  // drawing the caption after it would hide black ink on the flipped panel.
+  drawShutdownCaption(renderer, frameY + frameH + 24);
 
   const bool hasGreyscale = bitmap.hasGreyscale() &&
                             SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
   if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
-    // Same filter semantics as the sleep screen; flips frame and caption too.
+    // Same filter semantics as the sleep screen; flips frame, image, caption.
     renderer.invertScreen();
   }
 
-  drawShutdownCaption(renderer, frameY + frameH + 24);
   displayImageWithGrayscale(renderer, bitmap, placement.x, placement.y, innerW, innerH, placement.cropX,
                             placement.cropY, hasGreyscale);
   return true;

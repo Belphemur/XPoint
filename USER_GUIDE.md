@@ -92,7 +92,7 @@ If the frontlight doesn't come back on after the device wakes from sleep, check 
 To turn the device on or off, **press and hold the Power button for approximately half a second**.
 A **short press** of the Power button puts the device to sleep instead; you can change this binding in the **[Controls Settings](#363-controls)**.
 
-The power-off screen shows the picture configured by the **[Sleep Screen](#361-display)** setting — framed with a prompt explaining how to turn the device back on.
+The power-off screen follows the picture configured by the **[Sleep Screen](#361-display)** setting — framed and accompanied by a prompt explaining how to turn the device back on. Modes without a standalone picture (blank screen, logo screens, quick resume) show only that prompt.
 
 The device also powers itself off automatically after being asleep for the duration set by **Auto power off** in the **[System Settings](#364-system)** (4 hours by default). When that happens, the sleep screen displays a prompt before the device turns off completely.
 

@@ -1,6 +1,6 @@
 # Poweroff screen follows the Sleep Screen setting
 
-Status: design (reviewed, pre-implementation)
+Status: implemented (PR #65; device verification pending)
 Related: `docs/design/auto-power-off.md`, `docs/design/shutdown-reason-marker.md`
 
 ## Problem

@@ -397,9 +397,9 @@ static bool loadSleepFrameBuffer() {
 // Stage the shutdown cover for the power off screen while the book is still
 // available; at wake it is only read back and painted. requireTimerEnabled
 // gates staging on the auto power off setting for deep-sleep entry; manual
-// power off passes false so the screen keeps its book cover unconditionally.
-// Only modes whose shutdown screen shows the staged cover pay for cover
-// generation (renderShutdownScreen falls back per sleepScreen otherwise).
+// power off passes false. Only modes whose shutdown screen shows the staged
+// cover (COVER, or COVER_CUSTOM from the reader) pay for cover generation;
+// renderShutdownScreen falls back per sleepScreen otherwise.
 static void stageAutoPowerOffCover(bool requireTimerEnabled) {
   APP_STATE.autoPowerOffCoverBmpPath.clear();
   if (requireTimerEnabled && SETTINGS.getAutoPowerOffMs() == 0) return;
