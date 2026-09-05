@@ -28,7 +28,7 @@ enum Color : uint8_t { Clear = 0x00, White = 0x01, LightGray = 0x05, DarkGray = 
 
 class GfxRenderer {
  public:
-  enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
+  enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB, GRAYSCALE_DUAL };
 
   // Logical screen orientation from the perspective of callers
   enum Orientation {
@@ -79,6 +79,10 @@ class GfxRenderer {
   // the BW framebuffer (no storeBwBuffer). Mutable because the render path is
   // const. See beginStripTarget()/endStripTarget().
   mutable uint8_t* _stripBuf = nullptr;
+  // GRAYSCALE_DUAL second (MSB) plane target. Only meaningful while a strip
+  // target is active: _stripBuf carries the LSB plane band, _dualBuf the MSB
+  // band, so one render walk flags both planes. See beginStripTarget().
+  mutable uint8_t* _dualBuf = nullptr;
   mutable int _stripY0 = 0;
   mutable int _stripRows = 0;
   mutable bool _stripActive = false;
@@ -230,7 +234,9 @@ class GfxRenderer {
   // whose physical row falls outside the band are clipped. The clip is applied
   // after the orientation rotate, so it is orientation-agnostic. Used to render
   // grayscale planes band-by-band without a full second buffer.
-  void beginStripTarget(uint8_t* scratch, int stripY0, int stripRows) const;
+  // Pass `msbScratch` (same dimensions) to render GRAYSCALE_DUAL: one walk
+  // flags the LSB bits into `scratch` and the MSB bits into `msbScratch`.
+  void beginStripTarget(uint8_t* scratch, int stripY0, int stripRows, uint8_t* msbScratch = nullptr) const;
   void endStripTarget() const;
 
   // Band culling for tiled grayscale. Takes a glyph bounding box in logical
@@ -248,9 +254,16 @@ class GfxRenderer {
   uint8_t* getWriteTarget() const { return _stripActive ? _stripBuf : frameBuffer; }
   int getWriteOriginY() const { return _stripActive ? _stripY0 : 0; }
   int getWriteRows() const { return _stripActive ? _stripRows : panelHeight; }
+  // GRAYSCALE_DUAL second (MSB) plane target; nullptr unless a dual strip
+  // target is active. DirectPixelWriter picks it up in init().
+  uint8_t* getDualWriteTarget() const { return _stripActive ? _dualBuf : nullptr; }
 
   // Drawing
   void drawPixel(int x, int y, bool state = true) const;
+  // GRAYSCALE_DUAL: flag one pixel into the two gray plane bands
+  // independently (msb/lsb decide per plane; e.g. light tone = MSB only,
+  // dark = both). No-op outside an active dual strip target.
+  void drawGrayDualPixel(int x, int y, bool msb, bool lsb) const;
   void drawLine(int x1, int y1, int x2, int y2, bool state = true) const;
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, bool state) const;
   void drawArc(int maxRadius, int cx, int cy, int xDir, int yDir, int lineWidth, bool state) const;
@@ -332,7 +345,12 @@ class GfxRenderer {
   int getTextHeight(int fontId) const;
 
   // Grayscale functions
-  void setRenderMode(const RenderMode mode) { this->renderMode = mode; }
+  void setRenderMode(const RenderMode mode) {
+    this->renderMode = mode;
+    if (mode != GRAYSCALE_DUAL) {
+      _dualBuf = nullptr;  // leaving DUAL releases the second target
+    }
+  }
   RenderMode getRenderMode() const { return renderMode; }
   // Grayscale preconditioning settle pass (no-op on X4). The rect overload
   // takes the gray region in LOGICAL screen coordinates and rotates it to the
@@ -346,6 +364,11 @@ class GfxRenderer {
   void displayGrayscaleBase(HalDisplay::RefreshMode fallback = HalDisplay::HALF_REFRESH) const;
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
+  // Explicit-plane overloads for the nontiled dual path: the gray planes are
+  // rendered into private buffers, then copied to the driver from there
+  // instead of from the framebuffer.
+  void copyGrayscaleLsbBuffers(const uint8_t* plane) const;
+  void copyGrayscaleMsbBuffers(const uint8_t* plane) const;
   void displayGrayBuffer() const;
 
   // Tiled grayscale (X4): stream one band of a plane straight to controller RAM

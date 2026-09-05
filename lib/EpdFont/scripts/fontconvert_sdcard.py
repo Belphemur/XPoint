@@ -671,7 +671,8 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
                     pixels4g.append(px)
                     px = 0
 
-            # Downsample to 2-bit bitmap
+            # Tone bands match fontconvert.py (FreeInkBook kInkSolid/kInkFloor
+            # anchor): >=9 black, >=6 dark grey, >=3 light grey, else white.
             pixels2b = []
             px = 0
             pitch = (bitmap.width // 2) + (bitmap.width % 2)
@@ -681,11 +682,11 @@ def rasterize_font_style(fontfile, size, intervals, style_id=0, force_autohint=F
                     bm = pixels4g[y * pitch + (x // 2)]
                     bm = (bm >> ((x % 2) * 4)) & 0xF
 
-                    if bm >= 12:
+                    if bm >= 9:
                         px += 3
-                    elif bm >= 8:
+                    elif bm >= 6:
                         px += 2
-                    elif bm >= 4:
+                    elif bm >= 3:
                         px += 1
 
                     if (y * bitmap.width + x) % 4 == 3:
