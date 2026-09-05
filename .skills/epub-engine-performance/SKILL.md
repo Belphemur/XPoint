@@ -327,4 +327,30 @@ RLkW.
   (cite file:line, no hype, evidence > assertion).
 - `crosspoint-reader-dev` (in `~/.hermes/skills/`) — the
   top-level CrossPoint reader workflow (build, test, release,
+
+## Phase 3 Profiling Outcome (2026-09-06)
+
+**Dual-core parse OFFLOAD was DEFERRED** based on profiling data from
+X4 Pro with "The Infinite and the Divine" EPUB. Key findings:
+
+- Parse is ~24-27% of (parse + render) time on cold builds, 0% on
+  cached chapters — below the 30% threshold for CPU-bound parse
+- PSRAM pressure during parse: 0% (well below 70% contention threshold)
+- SD I/O per chapter: < 500ms (well below threshold)
+- `buildSomeMore_yield` durations: 55-522us (already well-yielded)
+
+**The dominant cost is the render/display pipeline: ~1100-1200ms per
+page, of which ~850-950ms is e-ink panel waveform time.** CPU-bound
+work (render + grayscale passes + restore) is only ~150-200ms.
+
+**Next optimization focus:**
+1. Overlap e-ink refresh (dead time) with next-page pre-rendering on
+   the other core (requires careful framebuffer management — single
+   framebuffer constraint)
+2. Cold-build overlap: move `createSectionFile()` blocking loop to
+   core 0 during `EpubReaderActivity::renderBook()` cold-build path
+   (lines 1428-1442), requires thread-safety audit of Section state
+
+The `BOOK_PROFILE` instrumentation code remains in-repo for future
+re-evaluation after render optimizations are deployed.
   design-doc-before-code).

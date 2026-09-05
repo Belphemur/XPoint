@@ -152,6 +152,42 @@ Profiled on X4 Pro (ESP32-S3, 8MB PSRAM, dual-core) with "The Infinite and the D
 
 **Next steps:** Focus optimization effort on the **render path** (e-ink panel update times) and **cold-build parse time** (the ~3 seconds spent on first build of chapters), rather than dual-core parse offload. The instrumentation code can remain in-repo behind `BOOK_PROFILE` for future re-evaluation after render optimizations are deployed.
 
+### 7. Next Steps — Render Path Optimization
+
+Profiling reveals the **render/display pipeline is the dominant cost**, not parsing:
+
+| Phase | Duration | Notes |
+|---|---|---|
+| Prewarm (font/SD prep) | 5-33ms | Already well-fragmented |
+| BW render (text to framebuffer) | 22-46ms | CPU-bound work |
+| e-ink base refresh (FAST/HALF) | 569-1458ms | e-ink panel waveform |
+| Grayscale LSB pass | 49-72ms | CPU-bound work |
+| Grayscale MSB pass | 61-88ms | CPU-bound work |
+| e-ink grayscale display | 286-293ms | e-ink panel waveform |
+| BW restore | 42-44ms | CPU-bound work |
+
+**Total per page: ~1100-1200ms, of which ~850-950ms is e-ink display time.**
+
+#### 7.1 Async Display + Next-Page Pre-render
+
+The biggest opportunity is overlapping the **e-ink refresh** (dead time) with **next-page pre-rendering** on the other core:
+
+1. When a page is sent to `displayBuffer()` on core 1, immediately start pre-rendering the **next page** on core 0 (text rendering + grayscale passes)
+2. Use `displayBufferAsync()` for the current page, then `waitRefreshComplete()` only when the next page is actually needed
+3. This requires careful framebuffer management — the current page's framebuffer must be preserved while the next page is built
+
+**Constraint**: The renderer uses a single framebuffer (X4 Pro has one framebuffer). Both pages cannot be rendered simultaneously. The pre-render must target a temporary buffer or the offscreen area.
+
+#### 7.2 Cold-Build Overlap
+
+The cold-build blocking loop (lines 1428-1442 in `EpubReaderActivity.cpp`) blocks core 1 while building. During this time, core 0 is idle. Options:
+
+- Move `createSectionFile()` to core 0 using `xTaskCreatePinnedToCore(..., 0)`
+- Show a "Loading…" screen on core 1 while the build runs on core 0
+- Once the target page is built, hand off to core 1 for rendering
+
+**Constraint**: The Section build accesses shared state (parser, LUT, CSS cache). Thread-safety must be ensured — currently all access is single-threaded.
+
 ### 6. How to Collect the Profile Data
 
 1. **Build**: `pio run -e x4pro -DBOOK_PROFILE` (or any S3 environment: `sticky`, `papermono`, `x4c`)
