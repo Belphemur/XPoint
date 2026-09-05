@@ -364,7 +364,7 @@ for i_start, i_end in intervals:
                 # coverage): solid ink starts at >=9/16 (~56%, was 12/16) and
                 # the faintest fringe drops (<3/16, was <4). The mid band is
                 # narrower and feeds more pixels into the solid core, which is
-                # what reads as "washed out" on e-paper at body sizes. 0-3
+                # what reads as "washed out" on e-paper at body sizes. 0-2
                 # white, 3-5 light grey, 6-8 dark grey, 9-15 black.
                 pixels2b = []
                 px = 0

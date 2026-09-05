@@ -158,7 +158,7 @@ the MSB arm → MSB target and the LSB arm → LSB target; both fire in one walk
 
 | # | Code path | File:line (working tree) | Dual-mode action |
 |---|-----------|--------------------------|------------------|
-| 1 | `renderCharImpl` 2-bit | GfxRenderer.cpp:457 (arms :524/:529/:534) | MSB→MSB tgt, LSB→LSB tgt (DUAL, 1 walk) |
+| 1 | `renderCharImpl` 2-bit | GfxRenderer.cpp:457 (arms :524/:529/:534) | DUAL: evaluate `setMsb(rawTone)` and `setLsb(rawTone)` independently, write each to its own target — NOT a shared `drawPixel` on one target. Same per-target contract for scaled glyphs (row 2), `drawBitmap` (#5), `DirectPixelWriter` (#7) |
 | 2 | `renderCharImpl` 1-bit | :540-:558 (:558) | none — 1-bit is BW ink |
 | 3 | `renderCharScaled` 2-bit | GfxRenderer.cpp:380 (planBlock:417; arms :423/:425) | mirror #1 via `plan.msb`/`.lsb` |
 | 4 | `renderCharScaled` 1-bit | :431-:452 (:432) | none |
@@ -195,10 +195,13 @@ emitting both plane buffers during the same overlap window (the framebuffer is s
 plane buffers are separate allocations, as today). The `lsbPlaneBuf`/`msbPlaneBuf` allocation stays:
 one buffer per plane, filled in a single walk instead of two.
 
-A real simplification: today's `else`-branch fallback at :1764-1765 re-renders the **MSB into the LSB
-buffer** *after* `waitRefreshComplete()` (the second `makeUniqueNoThrow` failed) — that second walk
-loses its overlap. Dual mode does one walk during overlap regardless of which allocation survived, so
-even the OOM-fallback case keeps one overlapping walk. The post-walk
+A real simplification of today's `else`-branch fallback at :1764-1765 (the second `makeUniqueNoThrow`
+failed): the single walk always runs during the overlap window, and the surviving buffer receives its
+plane's bits. **What it does NOT do is fill both planes from one walk when only one buffer exists** —
+DUAL mode by definition writes two targets. The OOM contract therefore follows §7 risk #7: when
+`msbPlaneBuf` is null, DUAL does NOT engage; after `waitRefreshComplete()` the code retains today's
+two-pass fallback (re-render the missing plane into the surviving buffer, :1764-1765). Dual only
+claims a win when both buffers are live. The post-walk
 `writeGrayscalePlaneStrip(true,…)` (:1760) + `writeGrayscalePlaneStrip(false,…)` (:1762, and :1765 in the
 reuse fallback) sequence is unchanged — it already takes one plane buffer each; `displayGrayBuffer()`
 :1770 and `cleanupGrayscaleWithFrameBuffer()` :1773 are unchanged.
@@ -330,8 +333,12 @@ non-overlap path with zero growth in the overlap path. The only boards *unaffect
    (:1770/:1819/:1853) and `cleanupGrayscaleWithFrameBuffer` (:1773/:1822), keep the `planeBufFits`
    guard (:1745-:1748). Rename the `ERS` LOG_DBG field `gray_lsb`/`gray_msb`→`gray_both` *only on the
    dual path*; leave the nontiled LOG_DBG untouched as the X4-UC8179 baseline.
-4. Gate: DUAL engages **only** when `tiledGrayscale` (:1685) — never on X4-UC8179 (`supportsStripGrayscale`
-   false → :1685 is false).
+4. Gate: DUAL engages **only** when `tiledGrayscale && !pageHasImages` (:1685) — never on X4-UC8179
+   (`supportsStripGrayscale` false → :1685 is false), and never on image pages in phase 1. Image pages
+   gray-render through `drawBitmap`/`DirectPixelWriter` plus the `preserveImagePolarity` RMW, whose
+   dual-target form is phase 2 (§7 risk #2); routing them through DUAL with a single-target RMW would
+   give one plane wrong polarity. Image pages keep the two-pass walk until phase 2 lands both-target
+   polarity.
 
 ### Phase 2 — extensions (separate review)
 - Nontiled `storeBwBuffer` path (:1835-1856): would need a **second** 48 KB full framebuffer to hold

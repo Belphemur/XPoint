@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 // Tone-to-plane mapping for the 2-bit (4-level) reader fonts, shared by the
 // glyph renderers in GfxRenderer.cpp. Tones are the font's raw values:
 // 0 = white, 1 = light gray, 2 = dark gray, 3 = black.
