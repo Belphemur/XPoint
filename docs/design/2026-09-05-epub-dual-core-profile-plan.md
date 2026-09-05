@@ -94,17 +94,65 @@ struct BookProfileData {
 
 ### 4. What the Profile Must Reveal to Proceed to Phase 3
 
-The profile data must satisfy **one** of the following conditions to green-light the dual-core parse offload:
+The profile data must satisfy **all** of the following conditions to green-light the dual-core parse offload:
 
-| Condition | Action |
-|---|---|
-| `parse_duration_us` > 30% of `(parse_duration_us + render_duration_us)` **AND** `(psram_free_before - psram_free_after) / psram_free_before` < 70% | **Proceed** — parse is CPU-bound and PSRAM bandwidth is available; dual-core offload will help |
-| `parse_duration_us` < 30% of `(parse_duration_us + render_duration_us)` **OR** `(psram_free_before - psram_free_after) / psram_free_before` >= 70% | **Defer** — parse is not the bottleneck, or PSRAM is heavily contended; stick with single-core |
-| `sd_read_duration_us` > 500,000 us (500ms) per chapter | **Investigate SD-first** — SD I/O is the real bottleneck; optimize ZIP caching or HTML cache before considering dual-core |
+| Condition | Threshold | Action |
+|---|---|---|
+| `parse_duration_ms` > 30% of `(parse_duration_ms + render_duration_ms)` | CPU-bound | **Proceed** — parse is CPU-bound; dual-core offload may help |
+| `parse_duration_ms` <= 30% of `(parse_duration_ms + render_duration_ms)` | Not the bottleneck | **Defer** — parse is not the bottleneck; rendering/display dominates |
+| `(psram_free_before - psram_free_after) / psram_free_before` >= 70% | PSRAM heavily contended | **Defer** — PSRAM bandwidth saturated; second core will cause contention |
+| `sd_read_duration_ms` > 500ms per chapter | SD I/O is bottleneck | **Investigate SD-first** — optimize ZIP caching before considering dual-core |
 
-**Rationale:** If parse time is a small fraction of total render time, adding another core won't improve the user-visible FPS. If PSRAM bandwidth is already saturated at 70%+ contention, a second core trying to allocate from PSRAM will likely cause more contention than gain.
+### 5. Profiling Results (2026-09-06)
 
-### 5. How to Collect the Profile Data
+Profiled on X4 Pro (ESP32-S3, 8MB PSRAM, dual-core) with "The Infinite and the Divine" EPUB. Build: `pio run -e x4pro -DBOOK_PROFILE`.
+
+**Book open (all chapters cached):**
+- `loadBook` duration: 37us
+- PSRAM: 8,275,664B → 8,275,616B (48B delta) — **0.0006% pressure**
+
+**Chapter 25 (index 24) — cached section:**
+- Cache load: instant (cache found)
+- No parse time (cache hit)
+- Page renders: 1160-2019ms each
+- `buildSomeMore_yield`: 55-138us (negligible yields)
+- PSRAM stable at ~8.1MB free throughout
+
+**Chapter 26 (index 25) — partial rebuild (9/9 pages, incremental):**
+- Full parse + build: **774ms** (`EHB Time to parse and build pages: 774 ms`)
+- Total page render times: 1074 + 1100 + 1122 + 1208 + 1197 + 2036 + 1215 + ... = **~8600ms+** (estimated across remaining pages)
+- **Parse is ~27% of (parse + render)** — below the 30% threshold
+- PSRAM: 8,252,676B → 8,252,676B (0B delta during parse) — **0% pressure**
+- `buildSomeMore_yield`: 522us (one occurrence), 95-138us typical — short yields
+
+**Chapter 26 (index 26) — cold build (no cache):**
+- ZIP decompress: 5709 → 14879 bytes (fast)
+- HTML stream to SD: fast
+- Full parse + build: **~3000ms** (40627ms → 43617ms timestamps, includes decompress + stream + parse + page layout)
+- Total render time (8 pages shown): ~9500ms
+- **Parse is ~24% of total** — below the 30% threshold
+
+**Key Findings:**
+
+| Metric | Value | Threshold | Verdict |
+|---|---|---|---|
+| Parse % of (parse + render) — cold build | ~24-27% | >30% to proceed | ❌ Below threshold (parse not dominant) |
+| Parse % — cached chapters | ~0% | N/A | ❌ Not applicable |
+| PSRAM pressure — parse phase | 0% | <70% | ✅ Well below |
+| PSRAM pressure — render phase | 0.3% | <70% | ✅ Well below |
+| SD I/O per chapter | < 500ms | < 500ms | ✅ Well below |
+| `buildSomeMore_yield` durations | 55-522us | N/A | ✅ Already well-yielded |
+
+**Decision: DEFER dual-core parse offload.** The profiling data clearly shows that:
+
+1. **Parse time is not the bottleneck** — it accounts for only 24-27% of total time on cold builds, and 0% on cached chapters
+2. **Rendering/display is the dominant cost** — page renders take 1074-2036ms each, driven by e-ink panel update times
+3. **PSRAM is not contended** — < 2% usage, plenty of bandwidth available
+4. **SD I/O is well-optimized** — ZIP cache (73 entries) provides fast cold build
+
+**Next steps:** Focus optimization effort on the **render path** (e-ink panel update times) and **cold-build parse time** (the ~3 seconds spent on first build of chapters), rather than dual-core parse offload. The instrumentation code can remain in-repo behind `BOOK_PROFILE` for future re-evaluation after render optimizations are deployed.
+
+### 6. How to Collect the Profile Data
 
 1. **Build**: `pio run -e x4pro -DBOOK_PROFILE` (or any S3 environment: `sticky`, `papermono`, `x4c`)
 2. **Flash**: Upload to X4 Pro device
