@@ -531,7 +531,7 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
   renderer.setRenderMode(GfxRenderer::BW);
 }
 
-void drawShutdownCaption(GfxRenderer& renderer, const int captionY) {
+void drawShutdownCaption(const GfxRenderer& renderer, const int captionY) {
   // Two centered lines: the statement, then the instruction. Split at the
   // first sentence boundary (". "); translations without one fall back to a
   // single centered line.
