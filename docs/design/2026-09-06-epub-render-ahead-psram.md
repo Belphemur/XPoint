@@ -22,8 +22,11 @@ uses a fraction of that window for next-chapter prefetch.
 ### Goal
 
 Eliminate the **649ms base-refresh wait** on X4 Pro by pre-rendering the next page
-into a PSRAM framebuffer during the current page's panel refresh. Target: 30-40%
-reduction in perceived page-turn latency, from ~1.1s to ~700ms.
+into a PSRAM framebuffer during the current page's panel refresh. Target: hide
+~30-70ms of re-render time per forward page turn (the BW render duration of the
+next page), yielding a ~3-6% latency reduction on same-chapter forward turns
+(~1.1s → ~1.05s). The larger win is **eliminating visible jank** — the user never
+sees a render pause because the next page was already rasterized.
 
 ### Key insight
 
@@ -52,10 +55,13 @@ PSRAM (8MB, ~8.1MB free):
 └── EPUB metadata, CSS, TOC caches
 ```
 
-The grayscale planes (`_grayLsb`, `_grayMsb`, `_lastBw`, `_pendingBw`) are allocated
-in PSRAM via `heap_caps_malloc(MALLOC_CAP_SPIRAM)` in `PaperMonoDriver::allocateBuffers()`.
-They are **only used during the grayscale pass** of the current page — after
-the page is displayed, they sit idle until the next grayscale page.
+The grayscale planes (`_grayLsb`, `_grayMsb`, `_lastBw`, `_pendingBw`) are temporary
+DRAM heap buffers allocated per grayscale page via `makeUniqueNoThrow<uint8_t[]>(planeBytes)`
+in `EpubReaderActivity.cpp` (storeBwBuffer/restoreBwBuffer), **not** PSRAM planes in
+the display driver. They are freed after each grayscale display pass. On X4 Pro,
+`PaperMonoDriver` is not used — the SSD1677/UC8179/UC8279 driver is single-buffer
+(`EINK_DISPLAY_SINGLE_BUFFER_MODE=1`, `supportsAsyncDisplay() = false`).
+`FREEINK_FB_PSRAM` is 0 for X4 Pro, so the framebuffer is plain DRAM `malloc`.
 
 ### Proposed design
 
@@ -189,15 +195,19 @@ DRAM.
   in the hot render path — here we render to it once (write), then display it
   once (read), which is the optimal access pattern.
 
-- **Thread safety**: Core 0 is blocked in `waitRefreshComplete()`. The pre-render
-  on Core 1 touches only the PSRAM framebuffer and the immutable Section/PageRender
-  data — no shared mutable state with the display path.
+- **Thread safety**: The render loop and async display overlap run single-threaded on
+the same loop task/core — the overlap window is entered via `waitRefreshComplete()`
+which yields the task. Pre-render touches only the PSRAM framebuffer and immutable
+Section/PageRender data — no shared mutable state with the display path. The safety
+argument is single-threadedness, not dual-core isolation.
 
-- **Display path compatibility**: `displayBufferAsync()` on X4 (dual-buffer
-  PaperMono driver) swaps `frameBuffer` to the secondary buffer internally. Our
-  PSRAM framebuffer is a separate buffer entirely — we'd use
-  `setFramebuffer(psramFrameBuffer)` to make the panel scan it, or copy it to
-  the real framebuffer if that's safer.
+- **Display path compatibility**: X4 Pro uses single-buffer mode
+(`EINK_DISPLAY_SINGLE_BUFFER_MODE=1`) with `displayBufferAsync()` employing an
+async shadow buffer (48KB DRAM, lazily allocated on first async call). After
+`displayBufferAsync()` returns, the framebuffer is safe to modify — the panel
+scans from its internal copy. Our PSRAM framebuffer would be displayed via
+`setFramebuffer(psramFrameBuffer)` (a memcpy into `frameBuffer` in
+`FreeInkDisplay`), or by swapping `frameBuffer` to point at the PSRAM region.
 
 ### What doesn't overlap
 
@@ -394,6 +404,29 @@ grayscale path: ~1-2ms. Not a concern.
 - `freeink-sdk/libs/display/FreeInkDisplay/src/FreeInkDisplay.cpp:380-384` — `allocFrameBufferStorage()` with `FREEINK_FB_PSRAM` fallback to `malloc`
 - `lib/Memory/Memory.h` — `makeUniqueNoThrowPsram<T>()` helper already exists
 - `platformio.ini:29` — `EINK_DISPLAY_SINGLE_BUFFER_MODE=1` (single framebuffer)
+
+### Device profiling results
+
+Instrumentation (`phase=preload_next_loadpage` / `phase=preload_next_rasterize` /
+`phase=preload_next_total`) was added in `profile/render-pipeline` branch (PR #63) and
+captured on X4 Pro with `-e x4pro_profile` across 20 page turns. Results:
+
+| Metric | Observed | Budget |
+|--------|----------|--------|
+| `preload_next_total` (loadPage + render N+1) | 42–162ms, mean ~89ms | 526-1375ms overlap |
+| `loadPage(N+1)` alone | 11-34ms, mean ~16ms | — |
+| `rasterize` alone | 29-138ms, mean ~71ms | — |
+| `async_display_overlap` (idle window) | 526-1375ms, mean ~660ms | — |
+| Remaining after pre-render | 364–1333ms | room for prefetch+build |
+
+**All 20 samples fit within the overlap window.** Even the heaviest page
+(162ms preload during a 526ms grayscale overlap) left 364ms for chapter prefetch
+and `buildSomeMore()`. The loadPage/rasterize split confirms `loadPage` is far
+cheaper than rasterization (~16ms vs ~71ms average) — pre-rendering pays off
+because rasterization dominates next-page cost.
+
+Heavy pages (106-162ms) correlate with SD font glyph misses (`Overflow: loaded
+U+XXXX on demand`), confirming the review's concern about SD-font prewarm scope.
 
 ## OpenCode Review
 
