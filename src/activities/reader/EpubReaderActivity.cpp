@@ -10,6 +10,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <SdCardFont.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -1792,6 +1793,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   } pxcSlotGuard;
 
   auto* fcm = renderer.getFontCacheManager();
+  // BOOK_PROFILE: reset SD font overflow stats for this page turn.
+  // The summary is logged at the end of the async display overlap block
+  // below (phase=font_overflow).
+#ifdef BOOK_PROFILE
+  for (auto& [fontId, sdFont] : renderer.getSdCardFonts()) {
+    sdFont->resetStats();
+  }
+#endif
   auto scope = fcm->createPrewarmScope();
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   // Scan the status bar too: a CJK book/chapter title redirected to the SD
@@ -1870,6 +1879,20 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       LOG_DBG("PROF", "phase=async_display_overlap dur=%lums core=%d prefetch_active=%d build_active=%d",
               millis() - overlapStartMs, overlapCore, nextSectionPrefetch ? 1 : 0,
               section && section->isBuilding() ? 1 : 0);
+
+      // BOOK_PROFILE: summarize SD font overflow misses during this page turn.
+      // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
+      // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
+      const auto& sdFonts = renderer.getSdCardFonts();
+      uint32_t totalOverflowMisses = 0;
+      uint32_t maxOverflowFill = 0;
+      for (const auto& [fontId, sdFont] : sdFonts) {
+        const auto& stats = sdFont->getStats();
+        totalOverflowMisses += stats.overflowMisses;
+        if (stats.overflowCountAtLog > maxOverflowFill) maxOverflowFill = stats.overflowCountAtLog;
+      }
+      LOG_DBG("PROF", "phase=font_overflow misses=%u max_fill=%u/%u", totalOverflowMisses, maxOverflowFill,
+              SdCardFont::getOverflowCapacity());
 #endif
     }
   }
@@ -2217,7 +2240,7 @@ std::string EpubReaderActivity::textRowName(int row) const {
 }
 
 std::string EpubReaderActivity::textRowValue(int row) const {
-  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
+  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN};
   switch (row) {
     case 0:
       if (SETTINGS.sdFontFamilyName[0] != '\0') return SETTINGS.sdFontFamilyName;

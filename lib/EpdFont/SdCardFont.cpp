@@ -1545,6 +1545,12 @@ int SdCardFont::buildAdvanceTable(const std::deque<std::string>& words, bool inc
 void SdCardFont::logStats(const char* label) {
   LOG_DBG("SDCF", "[%s] total=%ums sd_read=%ums seeks=%u glyphs=%u bitmap=%u bytes", label, stats_.prewarmTotalMs,
           stats_.sdReadTimeMs, stats_.seekCount, stats_.uniqueGlyphs, stats_.bitmapBytes);
+#ifdef BOOK_PROFILE
+  if (stats_.overflowMisses > 0 || stats_.overflowCountAtLog > 0) {
+    LOG_DBG("PROF", "[%s] overflow_misses=%u overflow_fill=%u/%u (capacity=%u)", label, stats_.overflowMisses,
+            stats_.overflowCountAtLog, OVERFLOW_CAPACITY, OVERFLOW_CAPACITY);
+  }
+#endif
 }
 
 void SdCardFont::resetStats() { stats_ = Stats{}; }
@@ -1609,6 +1615,10 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   // Look up global glyph index via full intervals
   int32_t globalIdx = self->findGlobalGlyphIndex(s, codepoint);
   if (globalIdx < 0) return nullptr;
+
+  // BOOK_PROFILE: count the overflow miss (cache miss → SD read required)
+  self->stats_.overflowMisses++;
+  self->stats_.overflowCountAtLog = self->overflowCount_;
 
   // Pick overflow slot (ring buffer). Read into temporaries first so the
   // existing slot stays valid if SD I/O fails. Bookkeeping (count/next)
