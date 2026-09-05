@@ -896,8 +896,14 @@ void loop() {
   renderer.setFadingFix(SETTINGS.fadingFix);
 
   if (Serial && millis() - lastMemPrint >= 10000) {
-    LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),
-            ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
+#ifdef BOARD_HAS_PSRAM
+    LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes, PSRAMFree: %uKB, PSRAMUsed: %uKB",
+            ESP.getFreeHeap(), ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(),
+            static_cast<unsigned>(ESP.getFreePsram() / 1024), static_cast<unsigned>((g_psram_free_at_boot - ESP.getFreePsram()) / 1024));
+#else
+    LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes",
+            ESP.getFreeHeap(), ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
+#endif
     lastMemPrint = millis();
   }
 
