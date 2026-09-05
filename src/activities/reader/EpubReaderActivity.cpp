@@ -1865,6 +1865,39 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       if (section && section->isBuilding() && !section->isBuildComplete() && buildTickHeapGate()) {
         section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
       }
+      // BOOK_PROFILE: measure what it would cost to loadPage + rasterize the next
+      // page of the CURRENT chapter (same-section +1) during this refresh window.
+      // This is the split the render-ahead design doc needs to price.
+#ifdef BOOK_PROFILE
+      if (section && section->pageCount > 0) {
+        const int nextPage = section->currentPage + 1;
+        if (nextPage < section->estimatedTotalPages()) {
+          const auto tLoadStart = millis();
+          auto np = section->loadPage(nextPage);
+          const auto tLoadEnd = millis();
+          if (np) {
+            LOG_DBG("PROF", "phase=preload_next_loadpage spine=%d page=%d dur=%lums core=%d", currentSpineIndex,
+                    nextPage, tLoadEnd - tLoadStart, xPortGetCoreID());
+            const auto tRenderStart = millis();
+            // Render to the real framebuffer (read-only on PSRAM FB not wired yet).
+            // This is a profiling-only walk; the framebuffer will be overwritten by
+            // the normal renderContents path immediately after.
+            np->render(renderer, SETTINGS.getReaderFontId(), orientedMarginLeft, orientedMarginTop);
+            const auto tRenderEnd = millis();
+            LOG_DBG("PROF", "phase=preload_next_rasterize spine=%d page=%d dur=%lums core=%d", currentSpineIndex,
+                    nextPage, tRenderEnd - tRenderStart, xPortGetCoreID());
+            LOG_DBG("PROF", "phase=preload_next_total spine=%d page=%d load=%lums render=%lums total=%lums core=%d",
+                    currentSpineIndex, nextPage, tLoadEnd - tLoadStart, tRenderEnd - tRenderStart,
+                    tRenderEnd - tLoadStart, xPortGetCoreID());
+            // Restore framebuffer: clear so the panel gets a known state after waitRefreshComplete
+            renderer.clearScreen();
+          } else {
+            LOG_DBG("PROF", "phase=preload_next_loadpage_fail spine=%d page=%d dur=%lums core=%d", currentSpineIndex,
+                    nextPage, tLoadEnd - tLoadStart, xPortGetCoreID());
+          }
+        }
+      }
+#endif
       renderer.waitRefreshComplete();
 #ifdef BOOK_PROFILE
       LOG_DBG("PROF", "phase=async_display_overlap dur=%lums core=%d prefetch_active=%d build_active=%d",
