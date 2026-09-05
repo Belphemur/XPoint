@@ -77,16 +77,16 @@ main.cpp:666 before the shutdown render).
 
 ### Code touch points
 
-- `src/activities/boot_sleep/SleepActivity.h` / `.cpp`
-  - Make the sleep render helpers static member functions taking
-    `GfxRenderer&` (`renderCustomSleepScreen`, `renderCoverSleepScreen`,
-    `renderBitmapSleepScreen`, `renderDefaultSleepScreen`, plus
-    `renderBlankSleepScreen` — needed by the `BLANK` branch). They already
-    touch no instance state — only the member `renderer`, which becomes the
-    parameter — so `renderShutdownScreen` (static) can reuse them instead of
-    duplicating the selection logic. `renderCoverSleepScreen`'s no-cover
-    fallback dispatch changes from pointer-to-member to plain function
-    pointers. The shutdown path still never constructs a `SleepActivity`.
+- `src/activities/boot_sleep/SleepActivity.cpp` (header unchanged)
+  - The framed shutdown path cannot reuse the sleep render helpers
+    themselves — they render full-screen, and covers come from the staged
+    path rather than live resolution — so the shutdown branches live in
+    `renderShutdownScreen` plus file-local helpers. The shared surface is:
+    `selectRandomSleepFile` (extended with a `commitRecent` flag, sleep
+    callers unchanged), `calculateBitmapPlacementInBounds` (unchanged), and
+    a new file-local `flushGrayscaleImage` extracted from
+    `renderBitmapSleepScreen`'s three-pass grayscale tail (bullet below).
+    The shutdown path still never constructs a `SleepActivity`.
   - Single-source the three-pass grayscale flush: extract the
     `displayGrayscaleBase(HALF)` → per-plane `bitmap.rewindToData()` →
     `clearScreen(0x00)` → `setRenderMode(LSB/MSB)` → `drawBitmap` →
@@ -166,7 +166,9 @@ main.cpp:666 before the shutdown render).
 ## Design review pass applied (OpenCode kimi-k3, 2026-09-05)
 
 All seven code claims verified against sources; no blockers. Findings folded
-in: F1 static-conversion scope (blank helper, function-pointer dispatch),
+in: F1 superseded — the static-conversion shape was replaced after
+re-derivation by file-local shutdown helpers sharing `selectRandomSleepFile`
+and the extracted gray flush tail (smaller surface, no header churn),
 F2 grayscale compositing mechanism documented per controller family,
 F4 `SETTINGS.loadFromFile()` ordering note, F7 manual-path polarity
 normalization via `setInverted(false)`, F9 `commitRecent` split (no
@@ -197,9 +199,10 @@ acceptance, F11 shared gray flush tail + `x4c` verification, F12
 - **QUICK_RESUME/TRANSPARENT treated as CUSTOM** — rejected (user decision):
   quick-resume art is the retained panel frame and overlays composite over an
   existing screen; neither exists after a cold power cut.
-- **Duplicate selection logic in the shutdown path** — rejected: the sleep
-  helpers are already renderer-only; a static refactor is smaller and keeps
-  one source of truth for `/sleep.bmp` → `/.sleep` → `/sleep` resolution.
+- **Duplicate selection logic in the shutdown path** — rejected: the shutdown
+  branches share `selectRandomSleepFile` and the extracted gray flush tail
+  with sleep, keeping one source of truth for `/sleep.bmp` → `/.sleep` →
+  `/sleep` resolution and the grayscale sequence.
 - **Duplicate the gray flush sequence in the framed helper** — rejected
   (review F11): the three-pass sequence exists exactly once; the framed case
   differs only in placement bounds.
