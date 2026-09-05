@@ -397,10 +397,17 @@ static bool loadSleepFrameBuffer() {
 // Stage the shutdown cover for the power off screen while the book is still
 // available; at wake it is only read back and painted. requireTimerEnabled
 // gates staging on the auto power off setting for deep-sleep entry; manual
-// power off passes false so the screen keeps its book cover unconditionally.
+// power off passes false. Only modes whose shutdown screen shows the staged
+// cover (COVER, or COVER_CUSTOM from the reader) pay for cover generation;
+// renderShutdownScreen falls back per sleepScreen otherwise.
 static void stageAutoPowerOffCover(bool requireTimerEnabled) {
   APP_STATE.autoPowerOffCoverBmpPath.clear();
   if (requireTimerEnabled && SETTINGS.getAutoPowerOffMs() == 0) return;
+  const auto sleepMode = static_cast<CrossPointSettings::SLEEP_SCREEN_MODE>(SETTINGS.sleepScreen);
+  const bool coverShown =
+      sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
+      (sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && APP_STATE.lastSleepFromReader);
+  if (!coverShown) return;
   if (APP_STATE.openEpubPath.empty()) return;
   std::string coverPath;
   if (SleepActivity::resolveCoverBmpPath(APP_STATE.openEpubPath, coverPath)) {
@@ -464,6 +471,9 @@ void enterDeepSleep(bool fromTimeout = false) {
 // boot (same next-boot state as the auto power off shutdown).
 void enterPowerOff() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for shutdown preparation
+  // Fresh from-reader context for the COVER_CUSTOM shutdown branch (the
+  // timer-wake path reads the value persisted at deep-sleep entry instead).
+  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
   stageAutoPowerOffCover(false);
   {
     RenderLock lock;
