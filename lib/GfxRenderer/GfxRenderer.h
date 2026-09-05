@@ -364,6 +364,11 @@ class GfxRenderer {
   void displayGrayscaleBase(HalDisplay::RefreshMode fallback = HalDisplay::HALF_REFRESH) const;
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
+  // Explicit-plane overloads for the nontiled dual path: the gray planes are
+  // rendered into private buffers, then copied to the driver from there
+  // instead of from the framebuffer.
+  void copyGrayscaleLsbBuffers(const uint8_t* plane) const;
+  void copyGrayscaleMsbBuffers(const uint8_t* plane) const;
   void displayGrayBuffer() const;
 
   // Tiled grayscale (X4): stream one band of a plane straight to controller RAM

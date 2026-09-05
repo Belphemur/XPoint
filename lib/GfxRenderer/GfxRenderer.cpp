@@ -2471,7 +2471,11 @@ void GfxRenderer::preconditionGrayscale(int x, int y, int w, int h) const {
 
 void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuffers(frameBuffer); }
 
+void GfxRenderer::copyGrayscaleLsbBuffers(const uint8_t* plane) const { display.copyGrayscaleLsbBuffers(plane); }
+
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
+
+void GfxRenderer::copyGrayscaleMsbBuffers(const uint8_t* plane) const { display.copyGrayscaleMsbBuffers(plane); }
 
 void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFix); }
 

@@ -1689,10 +1689,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // flash on every AA page.
   const bool combinedGrayscaleBase = tiledGrayscale && !pageHasImages && renderer.combinesGrayscaleBase();
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
-  // GRAYSCALE_DUAL: one render walk flags both plane buffers. Phase-1 gate is
-  // text pages on strip-capable panels only — image pages keep the two-pass
-  // walk until preserveImagePolarity learns a dual target (design doc §8).
-  const bool dualPlane = tiledGrayscale && !pageHasImages;
+  // GRAYSCALE_DUAL: one render walk flags both plane buffers. Gated to text
+  // pages — image pages keep the two-pass walk until preserveImagePolarity
+  // learns a dual target (design doc §8). Each path (tiled/nontiled) checks
+  // its own buffer prerequisites before engaging.
+  const bool dualPlane = !pageHasImages;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
       page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
@@ -1726,12 +1727,26 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, overlapRefresh);
   }
   const auto tDisplay = millis();
+  // Path selection trace: which gray route this page takes and why.
+  LOG_DBG("ERS", "Gray path: tiled=%d dual=%d textAA=%d images=%d overlap=%d", tiledGrayscale, dualPlane,
+          needsTextGrayscale, pageHasImages, overlapRefresh);
+  // Full-frame gray plane size for both dual paths (tiled async buffers and
+  // nontiled dual): panel-stride bytes × full display height.
+  const int dualHeight = renderer.getDisplayHeight();
+  const size_t planeBytes = static_cast<size_t>(renderer.getDisplayWidthBytes()) * dualHeight;
+  // Heap gate shared by every dual allocation (async overlap buffers, the
+  // 8KB dual scratch, and the nontiled 2x48KB planes).
+  constexpr size_t PLANE_BUF_HEADROOM = 60000;
+  constexpr size_t PLANE_BUF_MAX_ALLOC_RESERVE = 16 * 1024;
+  const auto planeBufFits = [planeBytes] {
+    return ESP.getFreeHeap() >= planeBytes + PLANE_BUF_HEADROOM &&
+           ESP.getMaxAllocHeap() >= planeBytes + PLANE_BUF_MAX_ALLOC_RESERVE;
+  };
 
   if (tiledGrayscale) {
     constexpr int STRIP_ROWS = 80;
-    const int gh = renderer.getDisplayHeight();
+    const int gh = dualHeight;
     const int gwBytes = renderer.getDisplayWidthBytes();
-    const size_t planeBytes = static_cast<size_t>(gwBytes) * gh;
 
     auto renderPlaneToBuffer = [&](const bool lsbPlane, uint8_t* buf) {
       renderer.setRenderMode(lsbPlane ? GfxRenderer::GRAYSCALE_LSB : GfxRenderer::GRAYSCALE_MSB);
@@ -1744,12 +1759,6 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
     };
 
-    constexpr size_t PLANE_BUF_HEADROOM = 60000;
-    constexpr size_t PLANE_BUF_MAX_ALLOC_RESERVE = 16 * 1024;
-    const auto planeBufFits = [planeBytes] {
-      return ESP.getFreeHeap() >= planeBytes + PLANE_BUF_HEADROOM &&
-             ESP.getMaxAllocHeap() >= planeBytes + PLANE_BUF_MAX_ALLOC_RESERVE;
-    };
     auto lsbPlaneBuf = (overlapRefresh && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
     auto msbPlaneBuf = (lsbPlaneBuf && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
 
@@ -1881,36 +1890,81 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
   } else {
     if (needsAnyGrayscale) {
+      // Nontiled dual: the gray planes are rendered into two private
+      // full-frame buffers and copied to the driver explicitly, so the BW
+      // base can stay in the framebuffer for displayGrayBuffer(). Costs
+      // 2x 48KB transient heap — gated by planeBufFits() like the async
+      // overlap buffers; OOM falls back to the classic framebuffer passes.
+      const bool nontiledDual = dualPlane && planeBufFits();
+      auto lsbPlane = nontiledDual ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+      auto msbPlane = (lsbPlane && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+      if (!msbPlane) {
+        lsbPlane = nullptr;
+      }
+      if (!nontiledDual || !msbPlane) {
+        LOG_DBG("ERS", "Nontiled dual unavailable (heap); using framebuffer gray passes");
+      }
+
       if (!renderer.storeBwBuffer()) {
         LOG_ERR("ERS", "Failed to store BW buffer for grayscale render; skipping grayscale this page");
         return;
       }
       const auto tBwStore = millis();
 
-      renderer.clearScreen(0x00);
-      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      renderGrayscalePass();
-      renderer.copyGrayscaleLsbBuffers();
-      const auto tGrayLsb = millis();
+      if (lsbPlane && msbPlane) {
+        // One DUAL walk over a "full-frame strip" (origin 0, panelHeight rows):
+        // drawGrayDualPixel's rotate+clip then lands each tone's plane bits in
+        // the two private buffers. The BW base stays in the framebuffer so
+        // displayGrayBuffer() can stream it as usual.
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+        renderer.beginStripTarget(lsbPlane.get(), 0, dualHeight, msbPlane.get());
+        renderer.clearScreen(0x00);
+        renderGrayscalePass();
+        renderer.endStripTarget();
+        const auto tGrayBoth = millis();
 
-      renderer.clearScreen(0x00);
-      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      renderGrayscalePass();
-      renderer.copyGrayscaleMsbBuffers();
-      const auto tGrayMsb = millis();
+        renderer.copyGrayscaleLsbBuffers(lsbPlane.get());
+        renderer.copyGrayscaleMsbBuffers(msbPlane.get());
+        const auto tGrayCopy = millis();
 
-      renderer.displayGrayBuffer();
-      const auto tGrayDisplay = millis();
-      renderer.setRenderMode(GfxRenderer::BW);
-      renderer.restoreBwBuffer();
-      const auto tBwRestore = millis();
+        renderer.displayGrayBuffer();
+        const auto tGrayDisplay = millis();
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.restoreBwBuffer();
+        const auto tBwRestore = millis();
 
-      const auto tEnd = millis();
-      LOG_DBG("ERS",
-              "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
-              "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
-              tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
-              tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+        const auto tEnd = millis();
+        LOG_DBG("ERS",
+                "Page render (nontiled dual): prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
+                "gray_both=%lums gray_copy=%lums gray_display=%lums bw_restore=%lums total=%lums",
+                tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayBoth - tBwStore,
+                tGrayCopy - tGrayBoth, tGrayDisplay - tGrayCopy, tBwRestore - tGrayDisplay, tEnd - t0);
+      } else {
+        renderer.clearScreen(0x00);
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+        renderGrayscalePass();
+        renderer.copyGrayscaleLsbBuffers();
+        const auto tGrayLsb = millis();
+
+        renderer.clearScreen(0x00);
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+        renderGrayscalePass();
+        renderer.copyGrayscaleMsbBuffers();
+        const auto tGrayMsb = millis();
+
+        renderer.displayGrayBuffer();
+        const auto tGrayDisplay = millis();
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.restoreBwBuffer();
+        const auto tBwRestore = millis();
+
+        const auto tEnd = millis();
+        LOG_DBG("ERS",
+                "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
+                "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
+                tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
+                tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+      }
     } else {
       const auto tEnd = millis();
       LOG_DBG("ERS", "Page render: prewarm=%lums bw_render=%lums display=%lums total=%lums", tPrewarm - t0,
