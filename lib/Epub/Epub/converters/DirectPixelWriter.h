@@ -190,20 +190,23 @@ struct DirectPixelWriter {
     const uint16_t byteIndex = static_cast<uint16_t>(sy * displayWidthBytes + (phyX >> 3));
     const uint8_t bitMask = 1 << (7 - (phyX & 7));
 
+    if (mode == GfxRenderer::GRAYSCALE_DUAL) {
+      // Per-plane writes only: fb carries the LSB plane bits (dark = 2),
+      // dualFb the MSB bits (light or dark). The legacy single-target write
+      // below would set both values into fb and cannot express MSB-only.
+      if (lsb) {
+        fb[byteIndex] |= bitMask;
+      }
+      if (msb && dualFb != nullptr) {
+        dualFb[byteIndex] |= bitMask;
+      }
+      return;
+    }
+
     if (state) {
       fb[byteIndex] &= ~bitMask;  // Clear bit (draw black)
     } else {
       fb[byteIndex] |= bitMask;  // Set bit (draw white)
-    }
-
-    // DUAL second target (MSB plane). Identical coords and band clip as the
-    // first write, so the single band check above covers both targets; each
-    // plane gets its own bit per the tone (dark sets both, light MSB only).
-    if (lsb) {
-      fb[byteIndex] |= bitMask;
-    }
-    if (msb && dualFb != nullptr) {
-      dualFb[byteIndex] |= bitMask;
     }
   }
 };

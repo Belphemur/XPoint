@@ -1807,10 +1807,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tGrayWrite - tWait, tGrayDisplay - tGrayWrite, tEnd - tGrayDisplay, tEnd - t0, msbPlaneBuf ? 2 : 1);
     } else {
       // Dual needs both plane bands live for the whole walk; a shared 8 KB
-      // scratch cannot hold two bands, so allocate a second one for the MSB.
-      // OOM degrades to the two-pass walk below (same fallback as today).
-      auto msbScratch = dualPlane ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS) : nullptr;
+      // scratch cannot hold two bands. Allocate the required scratch FIRST,
+      // then attempt the optional MSB scratch — if memory only fits one band,
+      // the two-pass fallback still runs instead of skipping AA.
       auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
+      auto msbScratch = (dualPlane && scratch && planeBufFits())
+                            ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS)
+                            : nullptr;
       renderer.waitRefreshComplete();
       if (!scratch) {
         LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);

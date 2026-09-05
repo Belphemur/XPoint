@@ -1488,8 +1488,10 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_DUAL && (val == 1 || val == 2)) {
-        // Tone 2 → both planes, tone 1 → MSB only.
-        drawGrayDualPixel(screenX, screenY, val == 1 || val == 2, val == 2);
+        // Match the two-pass arms exactly: MSB for 1|2, LSB for 1. (Bitmap
+        // value 1 is dark on the panel, value 2 light — the BMP packs its
+        // 2-bit samples white-first, unlike the font tone encoding.)
+        drawGrayDualPixel(screenX, screenY, val == 1 || val == 2, val == 1);
       }
     }
   }
