@@ -359,8 +359,13 @@ for i_start, i_end in intervals:
                     px = 0
 
             if is2Bit:
-                # 0-3 white, 4-7 light grey, 8-11 dark grey, 12-15 black
-                # Downsample to 2-bit bitmap
+                # Tone bands anchored to FreeInkBook's device-proven contrast
+                # curve (PageRenderer.cpp kInkSolid=140, kInkFloor=40 on 8-bit
+                # coverage): solid ink starts at >=9/16 (~56%, was 12/16) and
+                # the faintest fringe drops (<3/16, was <4). The mid band is
+                # narrower and feeds more pixels into the solid core, which is
+                # what reads as "washed out" on e-paper at body sizes. 0-3
+                # white, 3-5 light grey, 6-8 dark grey, 9-15 black.
                 pixels2b = []
                 px = 0
                 pitch = (bitmap.width // 2) + (bitmap.width % 2)
@@ -370,11 +375,11 @@ for i_start, i_end in intervals:
                         bm = pixels4g[y * pitch + (x // 2)]
                         bm = (bm >> ((x % 2) * 4)) & 0xF
 
-                        if bm >= 12:
+                        if bm >= 9:
                             px += 3
-                        elif bm >= 8:
+                        elif bm >= 6:
                             px += 2
-                        elif bm >= 4:
+                        elif bm >= 3:
                             px += 1
 
                         if (y * bitmap.width + x) % 4 == 3:
