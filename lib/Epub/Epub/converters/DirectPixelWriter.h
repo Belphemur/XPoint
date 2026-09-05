@@ -16,6 +16,9 @@
 // and the JPEG/PNG callbacks pre-clamp destination ranges to screen bounds.
 struct DirectPixelWriter {
   uint8_t* fb;
+  // GRAYSCALE_DUAL second (MSB) plane target, picked up in init() from the
+  // renderer's dual strip target (nullptr outside DUAL).
+  uint8_t* dualFb = nullptr;
   GfxRenderer::RenderMode mode;
   uint16_t displayWidthBytes;  // Runtime framebuffer stride (X4: 100, X3: 99)
   // Active write target: for tiled grayscale, fb is the band scratch, originY is
@@ -37,6 +40,7 @@ struct DirectPixelWriter {
 
   void init(GfxRenderer& renderer) {
     fb = renderer.getWriteTarget();
+    dualFb = renderer.getDualWriteTarget();
     originY = renderer.getWriteOriginY();
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
@@ -148,6 +152,8 @@ struct DirectPixelWriter {
     // Determine whether to draw based on render mode
     bool draw;
     bool state;
+    bool msb = false;  // GRAYSCALE_DUAL: per-plane bits (dark → both, light → MSB)
+    bool lsb = false;
     switch (mode) {
       case GfxRenderer::BW:
         draw = writeWhiteInBw || pixelValue < 3;
@@ -160,6 +166,12 @@ struct DirectPixelWriter {
       case GfxRenderer::GRAYSCALE_LSB:
         draw = (pixelValue == 1);
         state = false;
+        break;
+      case GfxRenderer::GRAYSCALE_DUAL:
+        draw = (pixelValue == 1 || pixelValue == 2);
+        state = false;
+        msb = draw;
+        lsb = (pixelValue == 2);
         break;
       default:
         return;
@@ -182,6 +194,16 @@ struct DirectPixelWriter {
       fb[byteIndex] &= ~bitMask;  // Clear bit (draw black)
     } else {
       fb[byteIndex] |= bitMask;  // Set bit (draw white)
+    }
+
+    // DUAL second target (MSB plane). Identical coords and band clip as the
+    // first write, so the single band check above covers both targets; each
+    // plane gets its own bit per the tone (dark sets both, light MSB only).
+    if (lsb) {
+      fb[byteIndex] |= bitMask;
+    }
+    if (msb && dualFb != nullptr) {
+      dualFb[byteIndex] |= bitMask;
     }
   }
 };

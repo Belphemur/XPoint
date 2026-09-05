@@ -1689,6 +1689,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // flash on every AA page.
   const bool combinedGrayscaleBase = tiledGrayscale && !pageHasImages && renderer.combinesGrayscaleBase();
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
+  // GRAYSCALE_DUAL: one render walk flags both plane buffers. Phase-1 gate is
+  // text pages on strip-capable panels only — image pages keep the two-pass
+  // walk until preserveImagePolarity learns a dual target (design doc §8).
+  const bool dualPlane = tiledGrayscale && !pageHasImages;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
       page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
@@ -1750,8 +1754,22 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     auto msbPlaneBuf = (lsbPlaneBuf && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
 
     if (lsbPlaneBuf) {
-      renderPlaneToBuffer(true, lsbPlaneBuf.get());
-      if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf.get());
+      if (msbPlaneBuf && dualPlane) {
+        // Async overlap, both buffers live: one DUAL walk fills both planes
+        // while the BW refresh is in flight.
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+        for (int y = 0; y < gh; y += STRIP_ROWS) {
+          const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+          renderer.beginStripTarget(lsbPlaneBuf.get() + static_cast<size_t>(y) * gwBytes, y, rows,
+                                    msbPlaneBuf.get() + static_cast<size_t>(y) * gwBytes);
+          renderer.clearScreen(0x00);
+          renderGrayscalePass();
+          renderer.endStripTarget();
+        }
+      } else {
+        renderPlaneToBuffer(true, lsbPlaneBuf.get());
+        if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf.get());
+      }
       const auto tGrayRender = millis();
 
       renderer.waitRefreshComplete();
@@ -1779,6 +1797,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayRender - tDisplay, tWait - tGrayRender,
               tGrayWrite - tWait, tGrayDisplay - tGrayWrite, tEnd - tGrayDisplay, tEnd - t0, msbPlaneBuf ? 2 : 1);
     } else {
+      // Dual needs both plane bands live for the whole walk; a shared 8 KB
+      // scratch cannot hold two bands, so allocate a second one for the MSB.
+      // OOM degrades to the two-pass walk below (same fallback as today).
+      auto msbScratch = dualPlane ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS) : nullptr;
       auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
       renderer.waitRefreshComplete();
       if (!scratch) {
@@ -1792,6 +1814,33 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           // page reaches the panel even without its grays.
           renderer.cleanupGrayscaleWithFrameBuffer();
         }
+      } else if (msbScratch) {
+        // One DUAL walk per band: LSB bits land in `scratch`, MSB in `msbScratch`.
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+        for (int y = 0; y < gh; y += STRIP_ROWS) {
+          const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+          renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
+          renderer.clearScreen(0x00);
+          renderGrayscalePass();
+          renderer.endStripTarget();
+          renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+          renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
+        }
+        const auto tGrayBoth = millis();
+
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.displayGrayBuffer();
+        const auto tGrayDisplay = millis();
+
+        renderer.cleanupGrayscaleWithFrameBuffer();
+        const auto tCleanup = millis();
+
+        const auto tEnd = millis();
+        LOG_DBG("ERS",
+                "Page render (tiled dual): prewarm=%lums bw_render=%lums display=%lums gray_both=%lums "
+                "gray_display=%lums cleanup=%lums total=%lums",
+                tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayBoth - tDisplay,
+                tGrayDisplay - tGrayBoth, tCleanup - tGrayDisplay, tEnd - t0);
       } else {
         renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
         for (int y = 0; y < gh; y += STRIP_ROWS) {

@@ -424,6 +424,9 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
             renderer.drawPixel(baseX + dstX, baseY + dstY, false);
           } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && plan.lsb) {
             renderer.drawPixel(baseX + dstX, baseY + dstY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_DUAL && (plan.msb || plan.lsb)) {
+            // Dark blocks flag both planes, light-only blocks MSB.
+            renderer.drawGrayDualPixel(baseX + dstX, baseY + dstY, plan.msb, plan.lsb);
           }
         }
       }
@@ -534,6 +537,12 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
           } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && grayplanes::setLsb(rawTone)) {
             // Dark gray
             renderer.drawPixel(screenX, screenY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_DUAL) {
+            // One walk flags both planes independently: dark → LSB+MSB,
+            // light → MSB only (matching the LSB/MSB arms above).
+            if (grayplanes::setMsb(rawTone)) {
+              renderer.drawGrayDualPixel(screenX, screenY, true, grayplanes::setLsb(rawTone));
+            }
           }
         }
       }
@@ -1478,6 +1487,9 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {
         drawPixel(screenX, screenY, false);
+      } else if (renderMode == GRAYSCALE_DUAL && (val == 1 || val == 2)) {
+        // Tone 2 → both planes, tone 1 → MSB only.
+        drawGrayDualPixel(screenX, screenY, val == 1 || val == 2, val == 2);
       }
     }
   }
@@ -1668,17 +1680,21 @@ void GfxRenderer::clearScreen(const uint8_t color) const {
   if (_stripActive) {
     // Clear only the active band's scratch, not the shared framebuffer.
     memset(_stripBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
+    if (_dualBuf != nullptr) {
+      memset(_dualBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
+    }
     return;
   }
   display.clearScreen(color);
 }
 
-void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows) const {
+void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows, uint8_t* msbScratch) const {
   // Band is caller-guaranteed in-bounds (the reader's grayscale loop computes
   // it); assert catches future misuse in debug before it mis-renders or wraps
   // the downstream uint16_t cast in writeGrayscalePlaneStrip.
   assert(scratch != nullptr && stripRows > 0 && stripY0 >= 0 && stripY0 <= static_cast<int>(panelHeight) - stripRows);
   _stripBuf = scratch;
+  _dualBuf = msbScratch;
   _stripY0 = stripY0;
   _stripRows = stripRows;
   _stripActive = true;
@@ -1687,8 +1703,35 @@ void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows)
 void GfxRenderer::endStripTarget() const {
   _stripActive = false;
   _stripBuf = nullptr;
+  _dualBuf = nullptr;
   _stripY0 = 0;
   _stripRows = 0;
+}
+
+// GRAYSCALE_DUAL per-plane flag write. Mirrors drawPixel's band clip and bit
+// addressing; the two planes get independent bits so light tones stay MSB-only.
+void GfxRenderer::drawGrayDualPixel(const int x, const int y, const bool msb, const bool lsb) const {
+  if ((!msb && !lsb) || _dualBuf == nullptr) {
+    return;
+  }
+  int phyX = 0;
+  int phyY = 0;
+  rotateCoordinates(orientation, x, y, &phyX, &phyY, panelWidth, panelHeight);
+  if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) {
+    return;
+  }
+  if (phyY < _stripY0 || phyY >= _stripY0 + _stripRows) {
+    return;  // outside the active band
+  }
+  const uint32_t rowY = static_cast<uint32_t>(phyY - _stripY0);
+  const uint32_t byteIndex = rowY * panelWidthBytes + (phyX / 8);
+  const uint8_t mask = static_cast<uint8_t>(0x80 >> (phyX & 7));
+  if (lsb) {
+    _stripBuf[byteIndex] |= mask;
+  }
+  if (msb) {
+    _dualBuf[byteIndex] |= mask;
+  }
 }
 
 bool GfxRenderer::glyphIntersectsStrip(int x0, int y0, int x1, int y1) const {
