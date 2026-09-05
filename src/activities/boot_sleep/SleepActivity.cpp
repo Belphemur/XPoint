@@ -416,7 +416,8 @@ bool findNextValidSleepImage(HalFile& dir, const SleepRecentKind recentKind, cha
   return false;
 }
 
-bool selectRandomSleepFile(const char* dirPath, const SleepRecentKind recentKind, std::string& selectedPath) {
+bool selectRandomSleepFile(const char* dirPath, const SleepRecentKind recentKind, std::string& selectedPath,
+                           const bool commitRecent = true) {
   auto dir = Storage.open(dirPath);
   if (!dir || !dir.isDirectory()) return false;
 
@@ -449,8 +450,12 @@ bool selectRandomSleepFile(const char* dirPath, const SleepRecentKind recentKind
   selectedPath = dirPath;
   selectedPath += "/";
   selectedPath += name.get();
-  pushRecentSleepIndex(recentKind, randomFileIndex);
-  APP_STATE.saveToFile();
+  // Shutdown-only picks must neither skew the sleep exclusion window nor pay
+  // an SD write on the timer-wake path (which otherwise never persists).
+  if (commitRecent) {
+    pushRecentSleepIndex(recentKind, randomFileIndex);
+    APP_STATE.saveToFile();
+  }
   return true;
 }
 
@@ -488,6 +493,125 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
     fcm->releaseSdFontCaches();
     LOG_DBG("SLP", "Free heap before sleep image decode: %d bytes", ESP.getFreeHeap());
   }
+}
+
+// Flush an image that is already drawn into the BW framebuffer (at the given
+// placement) to the panel, running the OEM grayscale pipeline when the bitmap
+// carries gray levels. The gray plane passes only mark gray pixels, so other
+// content in the base framebuffer (frames, captions, overlays) survives: on
+// SSD1677 the (0,0) LUT group is a hold waveform, on UC8279 displayStart
+// snapshots the base and the plane copies fold it into the absolute planes.
+void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, const int x, const int y, const int maxW,
+                               const int maxH, const float cropX, const float cropY, const bool hasGreyscale) {
+  if (!hasGreyscale) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    return;
+  }
+
+  // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
+  // calibrated against the pixel state the single-pass HALF waveform leaves
+  // behind. A FULL (GC) base parks pixels in a different charge state and
+  // the differential nudge then lands unevenly (blotchy noise in gray areas).
+  renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+
+  constexpr GfxRenderer::RenderMode grayPasses[2] = {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB};
+  for (const auto mode : grayPasses) {
+    bitmap.rewindToData();
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(mode);
+    renderer.drawBitmap(bitmap, x, y, maxW, maxH, cropX, cropY);
+    if (mode == GfxRenderer::GRAYSCALE_LSB) {
+      renderer.copyGrayscaleLsbBuffers();
+    } else {
+      renderer.copyGrayscaleMsbBuffers();
+    }
+  }
+
+  renderer.displayGrayBuffer();
+  renderer.setRenderMode(GfxRenderer::BW);
+}
+
+void drawShutdownCaption(GfxRenderer& renderer, const int captionY) {
+  // Two centered lines: the statement, then the instruction. Split at the
+  // first sentence boundary (". "); translations without one fall back to a
+  // single centered line.
+  const char* caption = tr(STR_SHUTDOWN_PRESS_POWER);
+  const char* sentenceBreak = std::strstr(caption, ". ");
+  if (sentenceBreak) {
+    const std::string firstLine(caption, sentenceBreak + 1);  // keep the period
+    renderer.drawCenteredText(UI_10_FONT_ID, captionY, firstLine.c_str(), true);
+    renderer.drawCenteredText(UI_10_FONT_ID, captionY + renderer.getLineHeight(UI_10_FONT_ID), sentenceBreak + 2, true);
+  } else {
+    renderer.drawCenteredText(UI_10_FONT_ID, captionY, caption, true);
+  }
+}
+
+// Resolve the custom sleep art for the shutdown screen: same source order as
+// the custom sleep screen, but WITHOUT committing to the recent-sleep window
+// or persisting state (an SD write here would delay the timer-wake rail cut).
+// Returns true when outPath holds a usable image.
+bool selectShutdownCustomImage(std::string& outPath) {
+  HalFile file;
+  if (Storage.openFileForRead("SLP", "/sleep.bmp", file)) {
+    Bitmap bitmap(file, true);
+    if (bitmap.parseHeaders() == BmpReaderError::Ok) {
+      outPath = "/sleep.bmp";
+      return true;
+    }
+  }
+
+  if (!selectRandomSleepFile("/.sleep", SleepRecentKind::Standard, outPath, /*commitRecent=*/false)) {
+    selectRandomSleepFile("/sleep", SleepRecentKind::Standard, outPath, /*commitRecent=*/false);
+  }
+  if (!outPath.empty()) delay(100);  // Same settle window as the sleep random pick.
+  return !outPath.empty();
+}
+
+// Draw one image framed for the shutdown screen: centered border (~2/3 panel,
+// inset 6), caption below, cover filter applied like the sleep screen does.
+// Flushes the panel itself (the bitmap must stay open through the grayscale
+// passes). Returns false when the BMP is unusable and the caller must fall
+// back.
+bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool dithering, const char* pathForLog) {
+  Bitmap bitmap(file, dithering);
+  const auto parseResult = bitmap.parseHeaders();
+  if (parseResult != BmpReaderError::Ok) {
+    LOG_ERR("SLP", "Invalid shutdown image BMP %s: %s", pathForLog, Bitmap::errorToString(parseResult));
+    return false;
+  }
+
+  const auto pageWidth = renderer.getScreenWidth();
+  const auto pageHeight = renderer.getScreenHeight();
+  constexpr float FRAME_FRACTION = 0.66f;
+  constexpr int FRAME_INSET = 6;
+  const int frameW = static_cast<int>(static_cast<float>(pageWidth) * FRAME_FRACTION);
+  const int frameH = static_cast<int>(static_cast<float>(pageHeight) * FRAME_FRACTION);
+  const int frameX = (pageWidth - frameW) / 2;
+  const int frameY = (pageHeight - frameH) / 2;
+
+  const int innerX = frameX + FRAME_INSET;
+  const int innerY = frameY + FRAME_INSET;
+  const int innerW = frameW - 2 * FRAME_INSET;
+  const int innerH = frameH - 2 * FRAME_INSET;
+  const auto placement =
+      calculateBitmapPlacementInBounds(bitmap.getWidth(), bitmap.getHeight(), renderer, innerX, innerY, innerW, innerH);
+  // Draw against the INSET bounds, not the full panel: drawBitmap fits the
+  // (cropped) bitmap into maxWidth/maxHeight, so passing the panel size lets
+  // a large image scale past the border. (CodeRabbit finding.)
+  renderer.drawBitmap(bitmap, placement.x, placement.y, innerW, innerH, placement.cropX, placement.cropY);
+  renderer.drawRect(frameX, frameY, frameW, frameH);
+
+  const bool hasGreyscale = bitmap.hasGreyscale() &&
+                            SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
+  if (SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
+    // Same filter semantics as the sleep screen; flips frame and caption too.
+    renderer.invertScreen();
+  }
+
+  drawShutdownCaption(renderer, frameY + frameH + 24);
+  displayImageWithGrayscale(renderer, bitmap, placement.x, placement.y, innerW, innerH, placement.cropX,
+                            placement.cropY, hasGreyscale);
+  return true;
 }
 
 }  // namespace
@@ -643,32 +767,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     renderer.invertScreen();
   }
 
-  if (hasGreyscale) {
-    // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
-    // calibrated against the pixel state the single-pass HALF waveform leaves
-    // behind. A FULL (GC) base parks pixels in a different charge state and
-    // the differential nudge then lands unevenly (blotchy noise in gray areas).
-    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
-  } else {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-  }
-
-  if (hasGreyscale) {
-    bitmap.rewindToData();
-    renderer.clearScreen(0x00);
-    renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-    renderer.copyGrayscaleLsbBuffers();
-
-    bitmap.rewindToData();
-    renderer.clearScreen(0x00);
-    renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
-    renderer.copyGrayscaleMsbBuffers();
-
-    renderer.displayGrayBuffer();
-    renderer.setRenderMode(GfxRenderer::BW);
-  }
+  displayImageWithGrayscale(renderer, bitmap, x, y, pageWidth, pageHeight, cropX, cropY, hasGreyscale);
 }
 
 bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog) const {
@@ -844,67 +943,55 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
 
+  // Manual power off renders outside ActivityManager's per-render polarity
+  // resolution, so normalize output polarity first: under night mode the
+  // blank/logo fallback would otherwise paint an unreadable inverted panel.
+  // The timer-wake path boots cold and is already normal.
+  display.setInverted(false);
+
   renderer.clearScreen();
 
-  bool haveCover = false;
-  // frameY/frameH live at function scope: the caption position reads them even
-  // when no cover rendered (they stay 0 there). frameX/frameW are only needed
-  // inside the cover branch (cppcheck variableScope/unreadVariable).
-  int frameY = 0;
-  int frameH = 0;
+  const auto sleepMode = static_cast<CrossPointSettings::SLEEP_SCREEN_MODE>(SETTINGS.sleepScreen);
+  // COVER_CUSTOM mirrors the sleep screen: cover art when sleeping from the
+  // reader, custom art when sleeping from home (persisted for the timer-wake
+  // path; set fresh in enterPowerOff for the manual one).
+  const bool useCover =
+      sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER ||
+      (sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && APP_STATE.lastSleepFromReader);
 
-  const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
-  HalFile file;
-  if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {
-    Bitmap bitmap(file);
-    const auto parseResult = bitmap.parseHeaders();
-    if (parseResult == BmpReaderError::Ok) {
-      // Frame the cover in a centered border occupying ~2/3 of the panel.
-      constexpr float FRAME_FRACTION = 0.66f;
-      constexpr int FRAME_INSET = 6;
-      const int frameW = static_cast<int>(static_cast<float>(pageWidth) * FRAME_FRACTION);
-      frameH = static_cast<int>(static_cast<float>(pageHeight) * FRAME_FRACTION);
-      const int frameX = (pageWidth - frameW) / 2;
-      frameY = (pageHeight - frameH) / 2;
-
-      const int innerX = frameX + FRAME_INSET;
-      const int innerY = frameY + FRAME_INSET;
-      const int innerW = frameW - 2 * FRAME_INSET;
-      const int innerH = frameH - 2 * FRAME_INSET;
-      const auto placement = calculateBitmapPlacementInBounds(bitmap.getWidth(), bitmap.getHeight(), renderer, innerX,
-                                                              innerY, innerW, innerH);
-      // Draw against the INSET bounds, not the full panel: drawBitmap fits the
-      // (cropped) bitmap into maxWidth/maxHeight, so passing the panel size lets
-      // a large cover scale past the border. (CodeRabbit finding.)
-      renderer.drawBitmap(bitmap, placement.x, placement.y, innerW, innerH, placement.cropX, placement.cropY);
-      renderer.drawRect(frameX, frameY, frameW, frameH);
-      haveCover = true;
-    } else {
-      LOG_ERR("SLP", "Invalid shutdown cover BMP %s: %s", coverPath.c_str(), Bitmap::errorToString(parseResult));
+  bool haveImage = false;
+  if (useCover) {
+    const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
+    HalFile file;
+    if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {
+      haveImage = renderShutdownImageFramed(renderer, file, /*dithering=*/false, coverPath.c_str());
     }
   }
 
-  if (!haveCover) {
-    // Transparent blit: same rationale as renderDefaultSleepScreen — keep the natural
-    // polarity of the framebuffer, only paint ink.
-    renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  // CUSTOM art also backs COVER_CUSTOM when its cover is missing or unusable.
+  if (!haveImage && (sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::CUSTOM ||
+                     sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM)) {
+    std::string customPath;
+    if (selectShutdownCustomImage(customPath)) {
+      HalFile file;
+      if (Storage.openFileForRead("SLP", customPath, file)) {
+        haveImage = renderShutdownImageFramed(renderer, file, /*dithering=*/true, customPath.c_str());
+      }
+    }
   }
 
-  const int captionY = haveCover ? frameY + frameH + 24 : pageHeight / 2 + 95;
-  // Render the caption as two centered lines: the statement, then the
-  // instruction. Split at the first sentence boundary (". "); translations
-  // without one fall back to a single centered line.
-  const char* caption = tr(STR_SHUTDOWN_PRESS_POWER);
-  const char* sentenceBreak = std::strstr(caption, ". ");
-  if (sentenceBreak) {
-    const std::string firstLine(caption, sentenceBreak + 1);  // keep the period
-    renderer.drawCenteredText(UI_10_FONT_ID, captionY, firstLine.c_str(), true);
-    renderer.drawCenteredText(UI_10_FONT_ID, captionY + renderer.getLineHeight(UI_10_FONT_ID), sentenceBreak + 2, true);
-  } else {
-    renderer.drawCenteredText(UI_10_FONT_ID, captionY, caption, true);
+  if (!haveImage) {
+    if (sleepMode != CrossPointSettings::SLEEP_SCREEN_MODE::BLANK) {
+      // Transparent blit: same rationale as renderDefaultSleepScreen — keep the natural
+      // polarity of the framebuffer, only paint ink.
+      renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+    }
+    // BLANK stays faithful to the setting: blank panel, caption only.
+    drawShutdownCaption(
+        renderer, sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::BLANK ? pageHeight / 2 : pageHeight / 2 + 95);
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
 
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   APP_STATE.autoPowerOffCoverBmpPath.clear();
 }
 
