@@ -437,6 +437,9 @@ bool EpubReaderActivity::buildTickHeapGate() {
 
 void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
 #if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+#ifdef BOOK_PROFILE
+  const auto prefetchStart = millis();
+#endif
   if (!epub) return;
   if (buildHeapPaused) return;
   const int nextSpine = currentSpineIndex + 1;
@@ -447,20 +450,32 @@ void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
     // Continue the existing prefetch build
     if (nextSectionPrefetch->isBuilding() && !nextSectionPrefetch->isBuildComplete()) {
       nextSectionPrefetch->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
+#ifdef BOOK_PROFILE
+      LOG_DBG("PROF", "phase=prefetch_continue spine=%d pages_built=%d dur=%lums core=%d", nextSpine,
+              nextSectionPrefetch->pageCount, millis() - prefetchStart, xPortGetCoreID());
+#endif
     }
     return;
   }
 
   // Start a new prefetch for the next chapter
   const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
-  nextSectionPrefetch = std::unique_ptr<Section>(new Section(epub, nextSpine, renderer));
+  nextSectionPrefetch = std::make_unique<Section>(epub, nextSpine, renderer);
   nextSectionSpineIndex = nextSpine;
 
   // Try loading existing cache first; if missing, start a build
-  if (!nextSectionPrefetch->loadSectionFile(renderSpec)) {
-    // No cache — start a lightweight build (just first few pages)
+  if (nextSectionPrefetch->loadSectionFile(renderSpec)) {
+#ifdef BOOK_PROFILE
+    LOG_DBG("PROF", "phase=prefetch_cache_hit spine=%d dur=%lums core=%d", nextSpine, millis() - prefetchStart,
+            xPortGetCoreID());
+#endif
+  } else {
     nextSectionPrefetch->startBuild(renderSpec);
     nextSectionPrefetch->buildSomeMore(BUILD_PAGES_PER_CHUNK);
+#ifdef BOOK_PROFILE
+    LOG_DBG("PROF", "phase=prefetch_cold_build spine=%d pages_built=%d dur=%lums core=%d", nextSpine,
+            nextSectionPrefetch->pageCount, millis() - prefetchStart, xPortGetCoreID());
+#endif
   }
 #endif
 }
@@ -1837,11 +1852,20 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, canAsyncDisplay);
     if (canAsyncDisplay) {
       // E-ink refresh is running. While it completes, run background work.
+#ifdef BOOK_PROFILE
+      const uint32_t overlapStartMs = millis();
+      const uint8_t overlapCore = xPortGetCoreID();
+#endif
       prefetchNextChapterDuringDisplay();
       if (section && section->isBuilding() && !section->isBuildComplete() && buildTickHeapGate()) {
         section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
       }
       renderer.waitRefreshComplete();
+#ifdef BOOK_PROFILE
+      LOG_DBG("PROF", "phase=async_display_overlap dur=%lums core=%d prefetch_active=%d build_active=%d",
+              millis() - overlapStartMs, overlapCore, nextSectionPrefetch ? 1 : 0,
+              section && section->isBuilding() ? 1 : 0);
+#endif
     }
   }
   const auto tDisplay = millis();
