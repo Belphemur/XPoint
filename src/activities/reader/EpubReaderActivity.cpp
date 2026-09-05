@@ -189,6 +189,9 @@ EpubReaderActivity::~EpubReaderActivity() {
   }
 
   section.reset();
+  nextSectionPrefetch.reset();
+  nextSectionSpineIndex = -1;
+
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -430,6 +433,36 @@ bool EpubReaderActivity::buildTickHeapGate() {
   const size_t maxBlock = ESP.getMaxAllocHeap();
   buildHeapPaused = freeHeap < BACKGROUND_BUILD_MIN_FREE_HEAP || maxBlock < BACKGROUND_BUILD_MIN_MAX_ALLOC;
   return !buildHeapPaused;
+}
+
+void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
+#if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+  if (!epub) return;
+  if (buildHeapPaused) return;
+  const int nextSpine = currentSpineIndex + 1;
+  if (nextSpine >= epub->getSpineItemsCount()) return;
+
+  // Only prefetch if the next chapter hasn't been cached yet
+  if (nextSectionPrefetch && nextSectionSpineIndex == nextSpine) {
+    // Continue the existing prefetch build
+    if (nextSectionPrefetch->isBuilding() && !nextSectionPrefetch->isBuildComplete()) {
+      nextSectionPrefetch->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
+    }
+    return;
+  }
+
+  // Start a new prefetch for the next chapter
+  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
+  nextSectionPrefetch = std::unique_ptr<Section>(new Section(epub, nextSpine, renderer));
+  nextSectionSpineIndex = nextSpine;
+
+  // Try loading existing cache first; if missing, start a build
+  if (!nextSectionPrefetch->loadSectionFile(renderSpec)) {
+    // No cache — start a lightweight build (just first few pages)
+    nextSectionPrefetch->startBuild(renderSpec);
+    nextSectionPrefetch->buildSomeMore(BUILD_PAGES_PER_CHUNK);
+  }
+#endif
 }
 
 void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFullRefresh) {
@@ -1210,7 +1243,13 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
-      section.reset();
+      // Promote a prefetched next-section if it matches the new chapter
+      if (nextSectionPrefetch && nextSectionSpineIndex == currentSpineIndex) {
+        section = std::move(nextSectionPrefetch);
+        nextSectionSpineIndex = -1;
+      } else {
+        section.reset();
+      }
       lastPageTurnTime = millis();
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
@@ -1226,6 +1265,11 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       pendingPageJump = std::numeric_limits<uint16_t>::max();
       currentSpineIndex--;
       section.reset();
+      // Clear prefetch if it doesn't match the new current chapter
+      if (nextSectionSpineIndex != currentSpineIndex) {
+        nextSectionPrefetch.reset();
+        nextSectionSpineIndex = -1;
+      }
       lastPageTurnTime = millis();
     } else {
       return false;
@@ -1245,6 +1289,14 @@ bool EpubReaderActivity::skipPages(int amount) {
     RenderLock lock;
     nextPageNumber = 0;
     currentSpineIndex++;
+    // Promote prefetched section if it matches, otherwise discard stale prefetch
+    if (nextSectionPrefetch && nextSectionSpineIndex == currentSpineIndex) {
+      section = std::move(nextSectionPrefetch);
+      nextSectionSpineIndex = -1;
+    } else {
+      nextSectionPrefetch.reset();
+      nextSectionSpineIndex = -1;
+    }
     section.reset();
     return true;
   } else {
@@ -1256,6 +1308,11 @@ bool EpubReaderActivity::skipPages(int amount) {
       nextPageNumber = 0;
       currentSpineIndex--;
       section.reset();
+      // Clear prefetch if it doesn't match the new current chapter
+      if (nextSectionSpineIndex != currentSpineIndex) {
+        nextSectionPrefetch.reset();
+        nextSectionSpineIndex = -1;
+      }
       return true;
     }
   }
@@ -1334,6 +1391,9 @@ void EpubReaderActivity::renderBook() {
   const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
 
   if (!section) {
+    // Chapter changed or first load — clear stale prefetch
+    nextSectionPrefetch.reset();
+    nextSectionSpineIndex = -1;
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
@@ -1770,7 +1830,19 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // base + grays as one waveform.
     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh);
   } else {
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, overlapRefresh);
+    // Non-grayscale path: use async display when supported so we can overlap
+    // the e-ink refresh (569-648ms) with background section builds and
+    // next-chapter prefetch on the same core.
+    const bool canAsyncDisplay = renderer.supportsAsyncRefresh() && !pageHasImages;
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, canAsyncDisplay);
+    if (canAsyncDisplay) {
+      // E-ink refresh is running. While it completes, run background work.
+      prefetchNextChapterDuringDisplay();
+      if (section && section->isBuilding() && !section->isBuildComplete() && buildTickHeapGate()) {
+        section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
+      }
+      renderer.waitRefreshComplete();
+    }
   }
   const auto tDisplay = millis();
 
