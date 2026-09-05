@@ -12,6 +12,7 @@
 #include <algorithm>
 
 #include "FontCacheManager.h"
+#include "GrayPlanes.h"
 
 namespace {
 
@@ -413,8 +414,17 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
             if (raw > maxRaw) maxRaw = raw;
           }
         }
-        if (maxRaw >= 2 || coverage >= 2) {
-          renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+        const grayplanes::BlockPlan plan = grayplanes::planBlock(renderMode == GfxRenderer::BW, maxRaw, coverage);
+        if (plan.plot || (renderMode != GfxRenderer::BW && (plan.msb || plan.lsb))) {
+          // Grayscale passes: solid-black blocks skip (the B/W base carries
+          // them); dark-flagged blocks set both planes, light-only blocks MSB.
+          if (plan.plot) {
+            renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && plan.msb) {
+            renderer.drawPixel(baseX + dstX, baseY + dstY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && plan.lsb) {
+            renderer.drawPixel(baseX + dstX, baseY + dstY, false);
+          }
         }
       }
     }
@@ -507,20 +517,21 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
 
           const uint8_t byte = bitmap[pixelPosition >> 2];
           const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
-          // the direct bit from the font is 0 -> white, 1 -> light gray, 2 -> dark gray, 3 -> black
-          // we swap this to better match the way images and screen think about colors:
-          // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
-          const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
+          // Raw font tone: 0 = white, 1 = light gray, 2 = dark gray, 3 = black
+          // (the screen-convention value is 3 - rawTone: 0 -> black, 3 -> white).
+          const uint8_t rawTone = (byte >> bit_index) & 0x3;
 
-          if (renderMode == GfxRenderer::BW && bmpVal < 3) {
-            // Black (also paints over the grays in BW mode)
-            renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
+          if (renderMode == GfxRenderer::BW) {
+            // Any ink paints over as solid black in BW mode.
+            if (rawTone != 0) {
+              renderer.drawPixel(screenX, screenY, pixelState);
+            }
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && grayplanes::setMsb(rawTone)) {
             // Light gray (also mark the MSB if it's going to be a dark gray too)
             // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
             // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
             renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && grayplanes::setLsb(rawTone)) {
             // Dark gray
             renderer.drawPixel(screenX, screenY, false);
           }
