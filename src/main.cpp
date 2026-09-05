@@ -24,6 +24,7 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 
+#include <atomic>
 #include <cstring>
 
 #include "BoardFeatures.h"
@@ -54,6 +55,12 @@ SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
 static unsigned long lastX4ProPowerClickAt = 0;
+
+// Profiling counters for Phase 1 memory instrumentation. g_psram_free_at_boot
+// is the boot-time PSRAM baseline (defined here, extern'd in Logging.h). The
+// central-directory and file-open counters live in ZipFile.cpp; do not duplicate
+// them as static (internal-linkage) here or they will report 0 forever.
+size_t g_psram_free_at_boot = 0;
 
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
@@ -550,6 +557,29 @@ void setup() {
 #endif
 
   HalSystem::begin();
+#if defined(BOARD_HAS_PSRAM)
+  // The ESP32-S3 Arduino framework's early system-init (priority 99) calls
+  // psramInit() during boot, but on some X4 Pro boards it fails silently
+  // (esp_psram_init returns an error), leaving spiramDetected=false and
+  // psramFound()=false. The result is heap_caps_malloc(MALLOC_CAP_SPIRAM)
+  // returns nullptr, which silently disables the ZipFileCache and other
+  // PSRAM-backed buffers -- turning a 380 KB DRAM ceiling into a death by
+  // a thousand SD re-reads during section building.
+  // Retry psramInit() here, after the SDMMC peripheral clocks are up but
+  // before any PSRAM allocation is attempted.
+  if (!psramFound()) {
+    const bool ok = psramInit();
+    if (ok) {
+      // psramInit() only sets the spiramDetected flag; psramAddToHeap()
+      // actually registers PSRAM with the heap allocator so heap_caps_malloc
+      // with MALLOC_CAP_SPIRAM can use it.
+      psramAddToHeap();
+    }
+    LOG_INF("SYS", "PSRAM init: %s (free=%u bytes)", ok ? "OK" : "FAILED", ESP.getFreePsram());
+  }
+#endif
+  g_psram_free_at_boot = ESP.getFreePsram();
+  logMemAt("boot");
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
   const bool rebootedFromPanic = HalSystem::isRebootFromPanic();
@@ -866,8 +896,16 @@ void loop() {
   renderer.setFadingFix(SETTINGS.fadingFix);
 
   if (Serial && millis() - lastMemPrint >= 10000) {
+#ifdef BOARD_HAS_PSRAM
+    LOG_INF("MEM",
+            "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes, PSRAMFree: %uKB, PSRAMUsed: %uKB",
+            ESP.getFreeHeap(), ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(),
+            static_cast<unsigned>(ESP.getFreePsram() / 1024),
+            static_cast<unsigned>((g_psram_free_at_boot - ESP.getFreePsram()) / 1024));
+#else
     LOG_INF("MEM", "Free: %d bytes, Total: %d bytes, Min Free: %d bytes, MaxAlloc: %d bytes", ESP.getFreeHeap(),
             ESP.getHeapSize(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
+#endif
     lastMemPrint = millis();
   }
 

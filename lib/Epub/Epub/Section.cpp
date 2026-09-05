@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Serialization.h>
+#include <esp_system.h>
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
@@ -96,6 +97,13 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
     return 0;
   }
   LOG_DBG("SCT", "Page %d processed", builtPageCount_);
+
+#ifdef BOOK_PROFILE
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_after = ESP.getFreePsram();
+  uint32_t heap_free_after = ESP.getFreeHeap();
+  LOG_DBG("PROF", "page=%d core=%d psram_free=%uB heap=%uB", builtPageCount_, core, psram_free_after, heap_free_after);
+#endif
 
   builtPageCount_++;
   // pageCount is the pages available to read: a rebuild over a partial only raises it
@@ -245,13 +253,29 @@ bool Section::clearCache() const {
 }
 
 bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
+#ifdef BOOK_PROFILE
+  uint32_t profile_start_ms = millis();
+#endif
   // One-shot build: start, then lay out the whole section in a single pass.
+  logMemAt("section_build_start");
   if (!startBuild(spec, popupFn)) {
     return false;
   }
+#ifdef BOOK_PROFILE
+  uint32_t profile_end_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   if (!buildSomeMore(0)) {  // 0 = build to completion
     return false;
   }
+#ifdef BOOK_PROFILE
+  uint32_t psram_free_after = ESP.getFreePsram();
+  uint32_t heap_free_after = ESP.getFreeHeap();
+  LOG_INF("PROF", "phase=createSectionFile core=%d parse_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+          profile_end_ms - profile_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
   return buildComplete_;
 }
 
@@ -355,8 +379,17 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it.
   writeSectionFileHeader(spec);
 
-  auto ctx = makeUniqueNoThrow<BuildContext>();
-  if (!ctx) {
+#ifdef BOARD_HAS_PSRAM
+  // Place the active section's BuildContext (LUT + parser + working set) in
+  // DRAM. Originally proposed for PSRAM (~16 KB freed), but the static_assert
+  // on unique_ptr<ChapterHtmlSlimParser> in BuildContext's nested type
+  // conflicts with a non-default deleter on PSRAM boards. Accepted on DRAM
+  // (see Section.h:build_ comment).
+  build_ = makeUniqueNoThrow<BuildContext>();
+#else
+  build_ = makeUniqueNoThrow<BuildContext>();
+#endif
+  if (!build_) {
     LOG_ERR("SCT", "OOM: BuildContext");
     file.close();
     Storage.remove(binTmpPath().c_str());
@@ -365,26 +398,26 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
   // htmlCached == "htmlPath is the live cache" (reused, or just promoted). finalizeBuild/abandonBuild
   // then leave the cached HTML alone; only an un-promoted temp (rename failed) is theirs to clean up.
-  ctx->reusedHtml = htmlCached;
-  ctx->htmlPath = htmlPath;
-  ctx->tmpHtmlPath = tmpHtmlPath;
-  ctx->parsePath = htmlCached ? htmlPath : tmpHtmlPath;
+  build_->reusedHtml = htmlCached;
+  build_->htmlPath = htmlPath;
+  build_->tmpHtmlPath = tmpHtmlPath;
+  build_->parsePath = htmlCached ? htmlPath : tmpHtmlPath;
 
   // Derive the content base directory and image cache path prefix for the parser
   const size_t lastSlash = localPath.find_last_of('/');
-  ctx->contentBase = (lastSlash != std::string::npos) ? localPath.substr(0, lastSlash + 1) : "";
-  ctx->imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
+  build_->contentBase = (lastSlash != std::string::npos) ? localPath.substr(0, lastSlash + 1) : "";
+  build_->imageBasePath = epub->getCachePath() + "/img_" + std::to_string(spineIndex) + "_";
 
   if (spec.embeddedStyle) {
-    ctx->cssParser = epub->getCssParser();
-    if (ctx->cssParser) {
-      const CssParser::CacheLoadResult cacheResult = ctx->cssParser->loadFromCache();
+    build_->cssParser = epub->getCssParser();
+    if (build_->cssParser) {
+      const CssParser::CacheLoadResult cacheResult = build_->cssParser->loadFromCache();
       if (cacheResult == CssParser::CacheLoadResult::LowMemory) {
         LOG_ERR("SCT", "Insufficient heap to hydrate CSS; section build deferred");
-        ctx->cssParser->clear();
+        build_->cssParser->clear();
         file.close();
         Storage.remove(binTmpPath().c_str());
-        if (!ctx->reusedHtml) Storage.remove(ctx->tmpHtmlPath.c_str());
+        if (!build_->reusedHtml) Storage.remove(build_->tmpHtmlPath.c_str());
         return false;
       }
       if (cacheResult == CssParser::CacheLoadResult::Invalid) {
@@ -408,23 +441,22 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
   // The parser stores the path/contentBase/imageBasePath by reference, so they must
   // live in the BuildContext (which outlives the parser). The page-complete callback
-  // captures the BuildContext pointer to append to its in-RAM LUT; build_ owns the
-  // context for the parser's whole lifetime.
-  BuildContext* ctxPtr = ctx.get();
-  ctx->parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
-      epub, ctxPtr->parsePath, renderer, spec.fontId, spec.lineCompression, spec.extraParagraphSpacing,
+  // captures `this` (and indirectly build_) to append to its in-RAM LUT; build_ owns
+  // the context for the parser's whole lifetime.
+  build_->parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
+      epub, build_->parsePath, renderer, spec.fontId, spec.lineCompression, spec.extraParagraphSpacing,
       spec.paragraphAlignment, spec.viewportWidth, spec.viewportHeight, spec.hyphenationEnabled,
       spec.focusReadingEnabled,
-      [this, ctxPtr](std::unique_ptr<Page> page, const uint16_t paragraphIndex, const uint16_t listItemIndex,
-                     const uint32_t visibleTextOffset) {
-        ctxPtr->lut.push_back(
+      [this](std::unique_ptr<Page> page, const uint16_t paragraphIndex, const uint16_t listItemIndex,
+             const uint32_t visibleTextOffset) {
+        build_->lut.push_back(
             {this->onPageComplete(std::move(page)), paragraphIndex, listItemIndex, visibleTextOffset});
       },
-      spec.embeddedStyle, ctxPtr->contentBase, ctxPtr->imageBasePath, spec.imageRendering, std::move(tocAnchors),
-      popupFn, ctxPtr->cssParser);
-  if (!ctx->parser) {
+      spec.embeddedStyle, build_->contentBase, build_->imageBasePath, spec.imageRendering, std::move(tocAnchors),
+      popupFn, build_->cssParser);
+  if (!build_->parser) {
     LOG_ERR("SCT", "OOM: ChapterHtmlSlimParser");
-    if (ctx->cssParser) ctx->cssParser->clear();
+    if (build_->cssParser) build_->cssParser->clear();
     file.close();
     Storage.remove(binTmpPath().c_str());
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
@@ -432,7 +464,6 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   }
 
   Hyphenator::setPreferredLanguage(epub->getLanguage());
-  build_ = std::move(ctx);
 
   if (!build_->parser->beginParse()) {
     LOG_ERR("SCT", "Failed to begin parse");
@@ -444,6 +475,12 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 }
 
 bool Section::buildSomeMore(const int maxPages) {
+#ifdef BOOK_PROFILE
+  uint32_t profile_start_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   if (!build_ || !build_->parser) {
     LOG_ERR("SCT", "buildSomeMore with no active build");
     return false;
@@ -460,11 +497,31 @@ bool Section::buildSomeMore(const int maxPages) {
       return false;
     }
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
+#ifdef BOOK_PROFILE
+      uint32_t psram_free_after = ESP.getFreePsram();
+      uint32_t heap_free_after = ESP.getFreeHeap();
+      LOG_INF("PROF", "phase=buildSomeMore core=%d step_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+              millis() - profile_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
       return finalizeBuild();
     }
+    // No active-loop checkpoint: calling commitBuildFile() here would
+    // close+rename the open tmp .bin mid-build, breaking the next
+    // parseStep() (the parser's file member is the same tmp we just
+    // renamed). The durable partial is written by suspendBuild() / ~Section()
+    // after the build ends. On a power-loss mid-build, the next open
+    // re-enters loadSectionFile() (returns false) and rebuilds from the
+    // on-SD HTML cache (Phase 2); see v3 design doc §E.5.
+
     // ParseStatus::More: yield once we've laid out the requested number of pages.
     if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
+#ifdef BOOK_PROFILE
+      uint32_t psram_free_after = ESP.getFreePsram();
+      uint32_t heap_free_after = ESP.getFreeHeap();
+      LOG_INF("PROF", "phase=buildSomeMore_yield core=%d yield_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+              millis() - profile_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
       return true;
     }
   }
@@ -638,6 +695,7 @@ bool Section::finalizeBuild() {
   }
 
   const bool committed = commitBuildFile(SECTION_FILE_VERSION, 0, 0);
+  logMemAt("section_build_end");
   if (build_->cssParser) build_->cssParser->clear();
   build_.reset();
   if (!committed) {
@@ -655,15 +713,48 @@ bool Section::finalizeBuild() {
   return true;
 }
 
+bool Section::hasValidOnDiskPartial(uint32_t currentBytesConsumed) {
+  if (!Storage.exists(filePath.c_str())) return false;
+  HalFile f;
+  if (!Storage.openFileForRead("SCT", filePath, f)) return false;
+  uint8_t version;
+  serialization::readPod(f, version);
+  if (version == SECTION_FILE_VERSION) {
+    // A finalized section already exists — no partial commit needed.
+    return true;
+  }
+  if (version != SECTION_FILE_PARTIAL_VERSION) {
+    return false;
+  }
+  // Read pageCount from the header to locate the watermark trailer.
+  uint16_t pageCount;
+  f.seek(HEADER_SIZE - sizeof(uint32_t) * 5 - sizeof(uint16_t));
+  serialization::readPod(f, pageCount);
+  uint32_t visibleLutOffset = 0;
+  f.seek(HEADER_SIZE - sizeof(uint32_t));
+  serialization::readPod(f, visibleLutOffset);
+  const uint32_t trailerOffset = visibleLutOffset + static_cast<uint32_t>(pageCount) * sizeof(uint32_t);
+  if (trailerOffset + 2 * sizeof(uint32_t) > static_cast<uint32_t>(f.size())) {
+    return false;
+  }
+  f.seek(trailerOffset);
+  uint32_t storedBytesConsumed = 0;
+  serialization::readPod(f, storedBytesConsumed);
+  return storedBytesConsumed >= currentBytesConsumed;
+}
+
 void Section::suspendBuild() {
   if (!build_) return;
+
+  // Skip committing a partial if a valid on-disk partial already covers this build's progress.
+  const bool skipCommit = hasValidOnDiskPartial(build_->bytesConsumed);
 
   // Only worth persisting if this build produced pages a pre-existing partial doesn't
   // already cover; otherwise keep the older (bigger) partial and just drop the tmp.
   const bool worthKeeping = builtPageCount_ > 0 && (!partial_ || builtPageCount_ > partialPageCount_);
 
   bool committed = false;
-  if (worthKeeping) {
+  if (worthKeeping && !skipCommit) {
     // Capture the parse watermark and commit before tearing the parser down (the anchor
     // map is read from it). The incomplete trailing page is intentionally not flushed:
     // only fully laid-out pages are persisted, and the rebuild re-derives the rest.
@@ -676,6 +767,8 @@ void Section::suspendBuild() {
       partialTotalBytes_ = build_->totalBytes;
       LOG_INF("SCT", "Suspended build: %u pages persisted", builtPageCount_);
     }
+  } else if (skipCommit) {
+    LOG_DBG("SCT", "Valid partial exists, skipping redundant suspend commit");
   }
 
   if (build_->parser) build_->parser->abortParse();

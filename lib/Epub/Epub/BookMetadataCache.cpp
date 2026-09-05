@@ -494,6 +494,7 @@ bool BookMetadataCache::load() {
   }
 
   loaded = true;
+  LOG_INF("BMC", "load: rebuilt");
   LOG_DBG("BMC", "Loaded cache data: %d spine, %d TOC entries", spineCount, tocCount);
   return true;
 }

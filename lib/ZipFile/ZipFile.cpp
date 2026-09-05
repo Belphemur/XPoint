@@ -5,6 +5,11 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <atomic>
+
+// Profiling counters.
+static std::atomic<uint32_t> g_load_all_stat_slims_count{0};
+static std::atomic<uint32_t> g_fsfile_open_count{0};
 
 struct ZipInflateCtx {
   HalFile* file = nullptr;
@@ -108,6 +113,8 @@ bool ZipFile::loadAllFileStatSlims() {
   // Set cursor to start of central directory for sequential access
   lastCentralDirPos = zipDetails.centralDirOffset;
   lastCentralDirPosValid = true;
+
+  g_load_all_stat_slims_count++;
 
   return true;
 }
@@ -278,6 +285,7 @@ bool ZipFile::open() {
   if (!Storage.openFileForRead("ZIP", filePath, file)) {
     return false;
   }
+  g_fsfile_open_count++;
   return true;
 }
 
@@ -452,6 +460,19 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
   FileStatSlim fileStat = {};
   if (!loadFileStatSlim(filename, &fileStat)) return false;
+
+  return readFileToStream(fileStat, out, chunkSize, allowEarlyStop);
+}
+
+bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const size_t chunkSize,
+                               const bool allowEarlyStop) {
+  // If the cache already holds a matching entry we are using the in-memory stat;
+  // otherwise the caller must have opened the ZIP themselves. Either way, do not
+  // re-scan the central directory: use getDataOffset() directly with the provided stat.
+  if (!file) {
+    LOG_ERR("ZIP", "readFileToStream(FileStatSlim) called without an open ZIP");
+    return false;
+  }
 
   const long fileOffset = getDataOffset(fileStat);
   if (fileOffset < 0) return false;
