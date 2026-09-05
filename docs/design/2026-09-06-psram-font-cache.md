@@ -138,9 +138,9 @@ Current heavy page cost: 138ms rasterize (with SD font misses)
 
 - No GfxRenderer modifications needed (this is pure data-cache expansion)
 - No display path changes (no `clearScreen` corruption risk)
-- No invalidation complexity (font caches already handle font unload)
-- Host unit tests need no changes (PSRAM paths gated behind `BOARD_HAS_PSRAM`, undefined in host)
+- No invalidation complexity (font caches already handle font unload via `freeAll()`/`clearPersistentCache()`)
 - `BOOK_PROFILE` instrumentation already exists and can measure the delta
+- **Host unit tests cannot cover this** — `test/font_cache_manager/` uses stubs for `SdCardFont` and `FontDecompressor` (stubs/SdCardFont.h, stubs/FontDecompressor.h). The real classes are never built on host. All new behavior is device-verified only.
 
 ### Risks
 
