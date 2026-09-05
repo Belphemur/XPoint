@@ -8,7 +8,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <cstring>
 
 inline uint32_t millis() { return 0; }
 inline void delay(uint32_t) {}

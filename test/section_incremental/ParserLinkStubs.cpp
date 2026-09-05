@@ -16,7 +16,6 @@
 #include <Epub/hyphenation/Hyphenator.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
-
 #include <ImageConverters.h>
 
 const char* lookupHtmlEntity(const char*, size_t) { return nullptr; }
@@ -62,9 +61,7 @@ namespace {
 // next page's entries differ from the previous ones.
 constexpr uint32_t kPageMarker = 0x50414745u;  // "PAGE"
 
-bool writePageMarker(HalFile& file) {
-  return file.write(&kPageMarker, sizeof(kPageMarker)) == sizeof(kPageMarker);
-}
+bool writePageMarker(HalFile& file) { return file.write(&kPageMarker, sizeof(kPageMarker)) == sizeof(kPageMarker); }
 
 }  // namespace
 

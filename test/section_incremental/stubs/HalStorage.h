@@ -40,16 +40,12 @@ class HalFile : public Print {
   size_t write(const uint8_t* buffer, size_t count) override {
     return file_ ? std::fwrite(buffer, 1, count, file_) : 0;
   }
-  size_t write(const void* buffer, size_t count) {
-    return write(static_cast<const uint8_t*>(buffer), count);
-  }
+  size_t write(const void* buffer, size_t count) { return write(static_cast<const uint8_t*>(buffer), count); }
 
   bool flush() { return file_ && std::fflush(file_) == 0; }
   bool seek(size_t pos) { return file_ && std::fseek(file_, static_cast<long>(pos), SEEK_SET) == 0; }
   bool seekSet(size_t pos) { return seek(pos); }
-  bool seekCur(int64_t offset) {
-    return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_CUR) == 0;
-  }
+  bool seekCur(int64_t offset) { return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_CUR) == 0; }
   bool close() {
     if (!file_) return false;
     const bool ok = std::fclose(file_) == 0;
@@ -84,13 +80,9 @@ class HalStorage {
   }
 
   bool openFileForRead(const char*, const char* path, HalFile& file) { return file.open(path, "rb"); }
-  bool openFileForRead(const char*, const std::string& path, HalFile& file) {
-    return file.open(path.c_str(), "rb");
-  }
+  bool openFileForRead(const char*, const std::string& path, HalFile& file) { return file.open(path.c_str(), "rb"); }
   bool openFileForWrite(const char*, const char* path, HalFile& file) { return file.open(path, "wb"); }
-  bool openFileForWrite(const char*, const std::string& path, HalFile& file) {
-    return file.open(path.c_str(), "wb");
-  }
+  bool openFileForWrite(const char*, const std::string& path, HalFile& file) { return file.open(path.c_str(), "wb"); }
 
   bool exists(const char* path) const {
     std::FILE* file = std::fopen(path, "rb");

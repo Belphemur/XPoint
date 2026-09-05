@@ -31,16 +31,15 @@
 // evidence step: serial capture at LOG_LEVEL=2 during ch1→ch2 navigation to
 // see which LOG_ERR fires.
 
+#include <Epub.h>
+#include <GfxRenderer.h>
+#include <ReaderRenderSpec.h>
+#include <Section.h>
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <memory>
 #include <string>
-
-#include <Epub.h>
-#include <GfxRenderer.h>
-#include <ReaderRenderSpec.h>
-#include <Section.h>
 
 namespace fs = std::filesystem;
 
@@ -92,15 +91,14 @@ class SectionIncrementalTest : public ::testing::Test {
     }
     for (int chunk = 0; chunk < kMaxBuildChunks && !section.isBuildComplete(); ++chunk) {
       if (!section.buildSomeMore(/*maxPages=*/4)) {
-        ADD_FAILURE() << "buildSomeMore() returned false for spine " << spineIndex
-                      << " after " << section.pageCount << " pages — reader path: showBuildError() "
+        ADD_FAILURE() << "buildSomeMore() returned false for spine " << spineIndex << " after " << section.pageCount
+                      << " pages — reader path: showBuildError() "
                       << "→ STR_INDEX_FAILED (" << chunkSite << ")";
         return false;
       }
     }
     if (!section.isBuildComplete()) {
-      ADD_FAILURE() << "build for spine " << spineIndex << " did not complete within " << kMaxBuildChunks
-                    << " chunks";
+      ADD_FAILURE() << "build for spine " << spineIndex << " did not complete within " << kMaxBuildChunks << " chunks";
       return false;
     }
     if (section.pageCount == 0) {
@@ -116,8 +114,7 @@ class SectionIncrementalTest : public ::testing::Test {
     Section section(epub_, spineIndex, renderer_);
     if (!section.loadSectionFile(spec_)) {
       // No cache yet: build it, as the reader does.
-      if (!runIncrementalBuild(section, spineIndex, "EpubReaderActivity.cpp:1391",
-                               "EpubReaderActivity.cpp:1405")) {
+      if (!runIncrementalBuild(section, spineIndex, "EpubReaderActivity.cpp:1391", "EpubReaderActivity.cpp:1405")) {
         return false;
       }
     }
@@ -177,8 +174,7 @@ TEST_F(SectionIncrementalTest, SequentialBuildOfAllChapters) {
     SCOPED_TRACE("spine " + std::to_string(spine));
     Section section(epub_, spine, renderer_);
     section.loadSectionFile(spec_);  // false except nothing cached yet per spine
-    EXPECT_TRUE(runIncrementalBuild(section, spine, "EpubReaderActivity.cpp:1467",
-                                    "EpubReaderActivity.cpp:1477"));
+    EXPECT_TRUE(runIncrementalBuild(section, spine, "EpubReaderActivity.cpp:1467", "EpubReaderActivity.cpp:1477"));
   }
 }
 
@@ -215,12 +211,10 @@ TEST_F(SectionIncrementalTest, ResumeSuspendedPartialBuild) {
         << "buildSomeMore() failed on first tick — STR_INDEX_FAILED (EpubReaderActivity.cpp:1405)";
     if (!partial.isBuildComplete()) suspendedSpine = spine;
   }
-  ASSERT_GE(suspendedSpine, 0)
-      << "no chapter could be suspended mid-build even at the reduced viewport";
+  ASSERT_GE(suspendedSpine, 0) << "no chapter could be suspended mid-build even at the reduced viewport";
 
   Section resumed(epub_, suspendedSpine, renderer_);
-  ASSERT_TRUE(resumed.loadSectionFile(smallSpec))
-      << "suspended build was not persisted as a partial section file";
+  ASSERT_TRUE(resumed.loadSectionFile(smallSpec)) << "suspended build was not persisted as a partial section file";
   ASSERT_TRUE(resumed.isPartial()) << "reopened section is not marked partial";
 
   EXPECT_TRUE(resumed.startBuild(smallSpec))

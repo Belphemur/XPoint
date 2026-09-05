@@ -23,6 +23,10 @@
 // Expected: this test FAILS on the unfixed engine (reproduces the bug)
 // and must PASS once the fix lands.
 
+#include <Epub.h>
+#include <GfxRenderer.h>
+#include <ReaderRenderSpec.h>
+#include <Section.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -30,11 +34,6 @@
 #include <fstream>
 #include <memory>
 #include <string>
-
-#include <Epub.h>
-#include <GfxRenderer.h>
-#include <ReaderRenderSpec.h>
-#include <Section.h>
 
 namespace fs = std::filesystem;
 
@@ -90,15 +89,14 @@ class SectionIncrementalReproTest : public ::testing::Test {
     }
     for (int chunk = 0; chunk < kMaxBuildChunks && !section.isBuildComplete(); ++chunk) {
       if (!section.buildSomeMore(/*maxPages=*/4)) {
-        ADD_FAILURE() << "buildSomeMore() returned false for spine " << spineIndex
-                      << " after " << section.pageCount << " pages — reader path: showBuildError() "
+        ADD_FAILURE() << "buildSomeMore() returned false for spine " << spineIndex << " after " << section.pageCount
+                      << " pages — reader path: showBuildError() "
                       << "→ STR_INDEX_FAILED (" << chunkSite << ")";
         return false;
       }
     }
     if (!section.isBuildComplete()) {
-      ADD_FAILURE() << "build for spine " << spineIndex << " did not complete within " << kMaxBuildChunks
-                    << " chunks";
+      ADD_FAILURE() << "build for spine " << spineIndex << " did not complete within " << kMaxBuildChunks << " chunks";
       return false;
     }
     if (section.pageCount == 0) {
@@ -115,8 +113,7 @@ class SectionIncrementalReproTest : public ::testing::Test {
   bool buildAndCacheSpine(int spineIndex) {
     Section section(epub_, spineIndex, renderer_);
     if (!section.loadSectionFile(spec_)) {
-      if (!runIncrementalBuild(section, spineIndex, "EpubReaderActivity.cpp:1391",
-                               "EpubReaderActivity.cpp:1405")) {
+      if (!runIncrementalBuild(section, spineIndex, "EpubReaderActivity.cpp:1391", "EpubReaderActivity.cpp:1405")) {
         return false;
       }
     }
@@ -155,8 +152,7 @@ TEST_F(SectionIncrementalReproTest, ActThreeThenJumpBackToChapterOne) {
   ASSERT_FALSE(nextSection.loadSectionFile(spec_))
       << "spine[8] cache should not exist (first visit after the Act Three build)";
 
-  EXPECT_TRUE(runIncrementalBuild(nextSection, 8, "EpubReaderActivity.cpp:1391",
-                                  "EpubReaderActivity.cpp:1405"))
+  EXPECT_TRUE(runIncrementalBuild(nextSection, 8, "EpubReaderActivity.cpp:1391", "EpubReaderActivity.cpp:1405"))
       << "Building Act One Chapter One (spine[8]) failed after Act Three build — "
       << "this is the on-device 'Failed to index' (STR_INDEX_FAILED) path.";
 }
@@ -172,8 +168,7 @@ TEST_F(SectionIncrementalReproTest, ActThreeCoverThenBuildActThreeChapterOne) {
   Section nextSection(epub_, 21, renderer_);  // Act Three Chapter One
   ASSERT_FALSE(nextSection.loadSectionFile(spec_));
 
-  EXPECT_TRUE(runIncrementalBuild(nextSection, 21, "EpubReaderActivity.cpp:1391",
-                                  "EpubReaderActivity.cpp:1405"));
+  EXPECT_TRUE(runIncrementalBuild(nextSection, 21, "EpubReaderActivity.cpp:1391", "EpubReaderActivity.cpp:1405"));
 }
 
 // The "go back to first Chapter One from deep in the book" case — the most
@@ -187,8 +182,7 @@ TEST_F(SectionIncrementalReproTest, DeepInActThreeThenJumpToFirstChapter) {
   Section nextSection(epub_, 8, renderer_);  // Act One Chapter One
   ASSERT_FALSE(nextSection.loadSectionFile(spec_));
 
-  EXPECT_TRUE(runIncrementalBuild(nextSection, 8, "EpubReaderActivity.cpp:1391",
-                                  "EpubReaderActivity.cpp:1405"));
+  EXPECT_TRUE(runIncrementalBuild(nextSection, 8, "EpubReaderActivity.cpp:1391", "EpubReaderActivity.cpp:1405"));
 }
 
 }  // namespace

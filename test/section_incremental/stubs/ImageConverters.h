@@ -10,13 +10,11 @@
 class JpegToBmpConverter {
  public:
   static bool jpegFileToBmpStream(HalFile& jpegFile, HalFile& bmpFile, bool cropped);
-  static bool jpegFileTo1BitBmpStreamWithSize(HalFile& jpegFile, HalFile& bmpFile, int targetWidth,
-                                              int targetHeight);
+  static bool jpegFileTo1BitBmpStreamWithSize(HalFile& jpegFile, HalFile& bmpFile, int targetWidth, int targetHeight);
 };
 
 class PngToBmpConverter {
  public:
   static bool pngFileToBmpStream(HalFile& pngFile, HalFile& bmpFile, bool cropped);
-  static bool pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, HalFile& bmpFile, int targetWidth,
-                                             int targetHeight);
+  static bool pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, HalFile& bmpFile, int targetWidth, int targetHeight);
 };
