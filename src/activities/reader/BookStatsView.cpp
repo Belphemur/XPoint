@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <numeric>
 
 #include "ReadingStatsUtils.h"
 #include "components/UITheme.h"
@@ -247,10 +248,10 @@ void drawHorizontalBars(GfxRenderer& renderer, const int x, const int y, const i
   const int rowGap = layout.barGap + extraPerSlot;
   const int contentTop = y + layout.sectionTitleH + topPadding;
   const int rowStride = rowContentH + rowGap;
-  int maxLabelW = 0;
-  for (size_t i = 0; i < N; ++i) {
-    maxLabelW = std::max(maxLabelW, renderer.getTextWidth(layout.chartLabelFontId, I18n::getInstance().get(labels[i])));
-  }
+  const int maxLabelW =
+      std::accumulate(labels.begin(), labels.end(), 0, [&renderer, &layout](int acc, const StrId label) {
+        return std::max(acc, renderer.getTextWidth(layout.chartLabelFontId, I18n::getInstance().get(label)));
+      });
   const int labelColumnW = std::max(layout.chartLabelW, labelLeftPadding + maxLabelW + labelRightPadding);
   const int barX = x + labelColumnW + barLeftGap;
   const int barW = std::max(0, w - labelColumnW - barLeftGap - rightPadding);
@@ -266,7 +267,7 @@ void drawHorizontalBars(GfxRenderer& renderer, const int x, const int y, const i
   }
 }
 
-void drawPerBookStatsCard(GfxRenderer& renderer, const int x, const int y, const int w, const int h,
+void drawPerBookStatsCard(const GfxRenderer& renderer, const int x, const int y, const int w, const int h,
                           const std::string& bookTitle, const BookReadingStats& stats, const float progressPercent,
                           const bool hasEstimatedTimeLeft, const uint32_t estimatedTimeLeftSeconds,
                           const StatsLayout& layout) {
@@ -367,8 +368,8 @@ void drawPerBookStatsCard(GfxRenderer& renderer, const int x, const int y, const
                finished ? tr(STR_STATS_FINISHED_DATE) : tr(STR_STATS_EST_FINISH_DATE));
 }
 
-void drawGlobalStatsCard(GfxRenderer& renderer, const int x, const int y, const int w, const int h, const char* title,
-                         const GlobalReadingStats& stats, const StatsLayout& layout) {
+void drawGlobalStatsCard(const GfxRenderer& renderer, const int x, const int y, const int w, const int h,
+                         const char* title, const GlobalReadingStats& stats, const StatsLayout& layout) {
   renderer.drawRect(x, y, w, h);
   renderer.drawLine(x, y + layout.topCardTitleH, x + w, y + layout.topCardTitleH);
   const bool showRtcStats = shouldShowRtcBasedStats();
@@ -540,7 +541,7 @@ void renderGlobalStatsPage(GfxRenderer& renderer, const MappedInputManager* /*ma
   }
 }
 
-void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManager* /*mappedInput*/,
+void renderNoRtcCombinedStatsPage(const GfxRenderer& renderer, const MappedInputManager* /*mappedInput*/,
                                   const std::string& bookTitle, const BookReadingStats& bookStats,
                                   const float progressPercent, const bool hasEstimatedTimeLeft,
                                   const uint32_t estimatedTimeLeftSeconds, const GlobalReadingStats& deviceStats,

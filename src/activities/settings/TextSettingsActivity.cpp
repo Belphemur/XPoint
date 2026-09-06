@@ -35,10 +35,11 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
     // UI list has VISIBLE_BUILTIN_FONT_COUNT built-in entries + SD entries.
     // SD font UI index = VISIBLE_BUILTIN_FONT_COUNT + i (not BUILTIN_FONT_COUNT).
     constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
-    for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      if (families[i].name == sdFontFamilyName) {
-        return VISIBLE_BUILTIN_FONT_COUNT + i;
-      }
+    const auto family = std::find_if(families.begin(), families.end(), [sdFontFamilyName](const auto& candidate) {
+      return candidate.name == sdFontFamilyName;
+    });
+    if (family != families.end()) {
+      return VISIBLE_BUILTIN_FONT_COUNT + static_cast<int>(family - families.begin());
     }
   }
 
