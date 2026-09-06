@@ -81,7 +81,7 @@ This is the re-ordered plan per the OpenCode review. The primary fix targets the
 
 4. **Move `fullIntervals` to PSRAM** (codepoint coverage tables for large CJK fonts)
 
-**Total PSRAM impact**: ~0.5MB worst case (300KB mini arenas + 100KB advance + 15KB overflow + 20KB intervals) — ~6% of 8MB
+**Total PSRAM impact**: ~0.5–0.6 MB worst case (300 KB mini arenas + 100 KB advance + 15 KB overflow + 20 KB intervals) — ~6–7.8% of 8 MB
 
 #### Option B: Full PSRAM migration (aggressive, NOT recommended)
 
@@ -139,8 +139,8 @@ Current heavy page cost: 138ms rasterize (with SD font misses)
 - No GfxRenderer modifications needed (this is pure data-cache expansion)
 - No display path changes (no `clearScreen` corruption risk)
 - No invalidation complexity (font caches already handle font unload via `freeAll()`/`clearPersistentCache()`)
-- `BOOK_PROFILE` instrumentation already exists and can measure the delta
-- **Host unit tests cannot cover this** — `test/font_cache_manager/` uses stubs for `SdCardFont` and `FontDecompressor` (stubs/SdCardFont.h, stubs/FontDecompressor.h). The real classes are never built on host. All new behavior is device-verified only.
+- `BOOK_PROFILE` instrumentation added in step 0 — counters for overflow misses per page, max overflow fill, and the `phase=font_overflow` summary log
+|- **Host unit tests cannot cover this** — `test/font_cache_manager/` uses stubs for `SdCardFont` and `FontDecompressor` (stubs/SdCardFont.h, stubs/FontDecompressor.h). The real classes are never built on host. All new behavior is device-verified only.
 
 ### Risks
 

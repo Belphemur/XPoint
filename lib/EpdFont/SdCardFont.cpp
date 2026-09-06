@@ -1618,7 +1618,6 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
 
   // BOOK_PROFILE: count the overflow miss (cache miss → SD read required)
   self->stats_.overflowMisses++;
-  self->stats_.overflowCountAtLog = self->overflowCount_;
 
   // Pick overflow slot (ring buffer). Read into temporaries first so the
   // existing slot stays valid if SD I/O fails. Bookkeeping (count/next)
@@ -1672,6 +1671,9 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   } else {
     self->overflowCount_++;
   }
+  // BOOK_PROFILE: capture fill level after the successful increment so the
+  // summary reports the post-insert count (not pre-insert).
+  self->stats_.overflowCountAtLog = self->overflowCount_;
   self->overflowNext_ = (slot + 1) % OVERFLOW_CAPACITY;
   self->overflow_[slot].glyph = tempGlyph;
   self->overflow_[slot].bitmap = tempBitmap;

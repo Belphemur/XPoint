@@ -1797,7 +1797,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // The summary is logged at the end of the async display overlap block
   // below (phase=font_overflow).
 #ifdef BOOK_PROFILE
-  for (auto& [fontId, sdFont] : renderer.getSdCardFonts()) {
+  for (auto& [sdFontId, sdFont] : renderer.getSdCardFonts()) {
     sdFont->resetStats();
   }
 #endif
@@ -1879,23 +1879,26 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       LOG_DBG("PROF", "phase=async_display_overlap dur=%lums core=%d prefetch_active=%d build_active=%d",
               millis() - overlapStartMs, overlapCore, nextSectionPrefetch ? 1 : 0,
               section && section->isBuilding() ? 1 : 0);
-
-      // BOOK_PROFILE: summarize SD font overflow misses during this page turn.
-      // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
-      // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
-      const auto& sdFonts = renderer.getSdCardFonts();
-      uint32_t totalOverflowMisses = 0;
-      uint32_t maxOverflowFill = 0;
-      for (const auto& [fontId, sdFont] : sdFonts) {
-        const auto& stats = sdFont->getStats();
-        totalOverflowMisses += stats.overflowMisses;
-        if (stats.overflowCountAtLog > maxOverflowFill) maxOverflowFill = stats.overflowCountAtLog;
-      }
-      LOG_DBG("PROF", "phase=font_overflow misses=%u max_fill=%u/%u", totalOverflowMisses, maxOverflowFill,
-              SdCardFont::getOverflowCapacity());
-#endif
     }
   }
+  // BOOK_PROFILE: summarize SD font overflow misses during this page turn.
+  // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
+  // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
+  // Emitted after all gray paths (tiled, dual, async) so every page turn is profiled.
+#ifdef BOOK_PROFILE
+  {
+    const auto& sdFonts = renderer.getSdCardFonts();
+    uint32_t totalOverflowMisses = 0;
+    uint32_t maxOverflowFill = 0;
+    for (const auto& [sdFontId, sdFont] : sdFonts) {
+      const auto& stats = sdFont->getStats();
+      totalOverflowMisses += stats.overflowMisses;
+      if (stats.overflowCountAtLog > maxOverflowFill) maxOverflowFill = stats.overflowCountAtLog;
+    }
+    LOG_DBG("PROF", "phase=font_overflow misses=%u max_fill=%u/%u", totalOverflowMisses, maxOverflowFill,
+            SdCardFont::getOverflowCapacity());
+  }
+#endif
   const auto tDisplay = millis();
   // Path selection trace: which gray route this page takes and why.
   LOG_DBG("ERS", "Gray path: tiled=%d dual=%d textAA=%d images=%d overlap=%d", tiledGrayscale, dualPlane,
@@ -2240,7 +2243,7 @@ std::string EpubReaderActivity::textRowName(int row) const {
 }
 
 std::string EpubReaderActivity::textRowValue(int row) const {
-  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
+  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN};
   switch (row) {
     case 0:
       if (SETTINGS.sdFontFamilyName[0] != '\0') return SETTINGS.sdFontFamilyName;

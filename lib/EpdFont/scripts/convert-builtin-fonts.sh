@@ -5,9 +5,10 @@ set -e
 cd "$(dirname "$0")"
 
 # Font family names and their styles.
-# NotoSans reader font is replaced by Atkinson Hyperlegible Next (AHN).
-# The internal font names stay "notosans_*" to preserve the existing font ID
-# infrastructure, enum values, and stored user settings (fontFamily=1 → Atkinson).
+# Reader font: Atkinson Hyperlegible Next (AHN), replacing NotoSans.
+# Internal font names are now \"atkinson_hn_*\" to match the actual font,
+# while NOTOSANS_* enum values and font IDs are retained as aliases
+# for backward compatibility with stored user settings (fontFamily=1 → Atkinson).
 READER_FONT_STYLES=("Regular" "Italic" "Bold" "BoldItalic")
 NOTOSERIF_FONT_SIZES=(12 14 16 18)
 NOTOSANS_FONT_SIZES=(12 14 16 18)
@@ -30,7 +31,7 @@ done
 # Extended Additional (U+1EA0-U+1EF9).
 for size in ${NOTOSANS_FONT_SIZES[@]}; do
   for style in ${READER_FONT_STYLES[@]}; do
-    font_name="notosans_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+    font_name="atkinson_hn_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
     # Map style name to Atkinson Hyperlegible Next OTF file names:
     # Italic → RegularItalic (AHN has multiple weights, so the plain style
     # variant is prefixed with its weight name).
@@ -119,9 +120,10 @@ python verify-ui-noto-fonts.py
 
 # Small font: Atkinson Hyperlegible Next Regular at 8pt.
 # AHN has no Hebrew, so stack NotoSansHebrew Regular (same pattern as before).
-python fontconvert.py notosans_8_regular 8 \
+python fontconvert.py atkinson_hn_8_regular 8 \
   ../builtinFonts/source/AtkinsonHyperlegibleNext/AtkinsonHyperlegibleNext-Regular.otf \
   ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \
+  ../builtinFonts/source/NotoSansArabic/NotoSansArabic-Regular.ttf \
   --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/notosans_8_regular.h
 
 echo ""

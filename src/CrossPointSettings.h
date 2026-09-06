@@ -112,8 +112,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTONS_DISABLED = 2, SIDE_BUTTON_LAYOUT_COUNT };
 
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
-  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
-  static constexpr uint8_t LEGACY_OPENDYSLEXIC = 2;
+  // NOTOSANS remains for backward compatibility (existing saved settings use value 1);
+  // ATKINSON_HN is the same font (Atkinson Hyperlegible Next) with an explicit label.
+  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, ATKINSON_HN = 2, FONT_FAMILY_COUNT };
+  static constexpr uint8_t LEGACY_OPENDYSLEXIC = 3;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Reader font size is a point size, not an enum slot — see fontPointSize.
   // Legacy 1.4-and-earlier files stored a 0..3 SMALL/MEDIUM/LARGE/EXTRA_LARGE
