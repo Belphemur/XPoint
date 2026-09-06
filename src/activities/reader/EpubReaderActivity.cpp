@@ -1879,14 +1879,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       LOG_DBG("PROF", "phase=async_display_overlap dur=%lums core=%d prefetch_active=%d build_active=%d",
               millis() - overlapStartMs, overlapCore, nextSectionPrefetch ? 1 : 0,
               section && section->isBuilding() ? 1 : 0);
+#endif
     }
   }
-  // BOOK_PROFILE: summarize SD font overflow misses during this page turn.
+  // BOOK_PROFILE: define a summary lambda for SD font overflow misses.
   // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
   // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
-  // Emitted at the end of renderContents() after all gray paths, so every
-  // page turn — including gray-pass image-caption text misses — is profiled.
-  // Also called before the early return on storeBwBuffer() failure.
+  // Called at the end of renderContents() (after all gray paths) and before
+  // the early return on storeBwBuffer() failure.
 #ifdef BOOK_PROFILE
   auto logOverflowSummary = [&] {
     const auto& sdFonts = renderer.getSdCardFonts();
