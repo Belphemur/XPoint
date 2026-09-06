@@ -388,9 +388,9 @@ bool EpubReaderActivity::openShortcutMenu() const {
   return true;
 }
 
-// Any reader chrome (toolbar sheet / panel / popup) closes with the global
-// back gesture instead of the gesture leaving the book; with no chrome the
-// gesture falls through (caller pops / goes home as before).
+// Any reader chrome (toolbar sheet / panel / popup / open footnote) closes with
+// the global back gesture instead of the gesture leaving the book; with no
+// chrome the gesture falls through (caller pops / goes home as before).
 bool EpubReaderActivity::handleHomeGesture() {
   if (!isChromeOpen()) return false;
   if (overlay != Overlay::None) {
@@ -402,7 +402,9 @@ bool EpubReaderActivity::handleHomeGesture() {
   return true;
 }
 
-bool EpubReaderActivity::isChromeOpen() const { return overlay != Overlay::None || overlayPopup.isActive(); }
+bool EpubReaderActivity::isChromeOpen() const {
+  return overlay != Overlay::None || overlayPopup.isActive() || footnoteDepth > 0;
+}
 
 void EpubReaderActivity::openReaderMenu() {
   pendingManualTurn = 0;

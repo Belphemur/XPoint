@@ -65,8 +65,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // over the page instead of pushing the full-screen list menu. Select opens the
   // Toolbar; its tools open the Contents/Text/More bottom-sheet panels.
   enum class Overlay { None, Toolbar, Contents, Text, More, Stats };
-  // Toolbar tool focus: 0=Contents, 1=Text, then the optional stats tile
-  // (READING_STATS_ENABLED) and More last. Panels index the same way.
+  // Toolbar tool focus. 0=Contents, 1=Text, then the stats tile
+  // (READING_STATS_ENABLED only) and More last — kTool* + kToolTileCount are
+  // the source of truth, never bare literals.
   static constexpr int kToolContents = 0;
   static constexpr int kToolText = 1;
   static constexpr int kToolStats = 2;
@@ -79,7 +80,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // Number of tiles in the tool row (kToolMore is the last one).
   static constexpr int kToolTileCount = kToolMore + 1;
   Overlay overlay = Overlay::None;
-  int focusedTool = 0;  // toolbar tool focus: 0=Contents, 1=Text, 2=More
+  int focusedTool = 0;  // toolbar tool focus: kToolContents..kToolMore
   int panelIndex = 0;   // selected row within the active panel
   // Panel list navigation: a tap steps one row, a hold jumps PANEL_HOLD_STEP rows in one go
   // (a contents list runs to hundreds of chapters). One jump per hold, not a repeat -- every
