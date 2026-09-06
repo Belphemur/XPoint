@@ -10,6 +10,10 @@ from pathlib import Path
 
 
 def configure_rom_libc(env):
+    # Integration dumps (pio project config / IDE metadata) re-execute extra
+    # scripts with no build environment behind them; skip all side effects.
+    if env.IsIntegrationDump():
+        return
     if env.BoardConfig().get("build.mcu") != "esp32c3":
         return
     # The outer core-generation pass has not installed its new sdkconfig yet.
