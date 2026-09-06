@@ -2661,12 +2661,16 @@ void EpubReaderActivity::handleOverlayInput() {
           requestUpdate();
         });
       } else {
-        // Global (all-books) stats; the reader pushes it so Back returns here.
+        // Global (all-books) stats; the reader pushes it so Back returns to
+        // the page (not the panel) — same teardown as the per-book branch.
         auto globalStatsActivity = makeUniqueNoThrow<GlobalStatsActivity>(renderer, mappedInput);
         if (!globalStatsActivity) {
           LOG_ERR("ERS", "OOM: GlobalStatsActivity");
           return;
         }
+        overlay = Overlay::None;
+        overlayPopup.dismiss();
+        discardOverlayPage();
         startActivityForResult(std::move(globalStatsActivity), [this](const ActivityResult& result) {
           (void)result;
           requestUpdate();
