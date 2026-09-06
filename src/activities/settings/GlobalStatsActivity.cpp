@@ -21,6 +21,11 @@ void GlobalStatsActivity::onEnter() {
   // The card grid is laid out for portrait; it does not fit landscape heights.
   previousOrientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
+  // First paint is ours to request: no other notification is pending at this
+  // point (push consumed the previous screen's), and without this the render
+  // task idles until the next unrelated notify (header-clock minute tick or a
+  // keypress) — the screen looks frozen for up to a minute.
+  requestUpdate();
 }
 
 void GlobalStatsActivity::onExit() {

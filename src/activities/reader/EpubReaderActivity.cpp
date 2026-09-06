@@ -28,6 +28,7 @@
 #include "activities/ActivityResult.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
+#include "activities/settings/GlobalStatsActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #endif
 #include "EpubReaderBookmarksActivity.h"
@@ -2486,8 +2487,10 @@ void EpubReaderActivity::renderOverlay() {
     model.rowValue = [this](int i) { return textRowValue(i); };
   } else if (overlay == Overlay::Stats) {
     model.panelTitle = tr(STR_READING_STATS);
-    model.itemCount = 1;
-    model.rowText = [](int) { return std::string(tr(STR_STATS_SHOW_BOOK_STATS)); };
+    model.itemCount = 2;
+    model.rowText = [](int row) {
+      return std::string(I18N.get(row == 0 ? StrId::STR_STATS_SHOW_BOOK_STATS : StrId::STR_STATS_ALL_TIME));
+    };
   } else {
     model.panelTitle = tr(STR_TOOL_MORE);
     model.itemCount = static_cast<int>(moreItems.size());
@@ -2620,7 +2623,7 @@ void EpubReaderActivity::handleOverlayInput() {
   // --- Panels (Contents / Text / More) ---
   const int count = overlay == Overlay::Contents ? epub->getTocItemsCount()
                     : overlay == Overlay::Text   ? kTextRowCount
-                    : overlay == Overlay::Stats  ? 1
+                    : overlay == Overlay::Stats  ? 2
                                                  : static_cast<int>(moreItems.size());
   const int pageRows = std::max(1, toolbarUi->visibleRows());
 
@@ -2667,28 +2670,46 @@ void EpubReaderActivity::handleOverlayInput() {
       requestUpdate();
     } else if (overlay == Overlay::Stats) {
 #ifdef READING_STATS_ENABLED
-      recordCurrentPageReadingTime();
-      BookReadingStats displayStats = stats;
-      if (SETTINGS.shouldTrackReadingStats()) {
-        displayStats.totalReadingSeconds += sessionReadingSeconds;
-      }
-      // Full-screen per-book stats; Back returns to the page (not the panel).
-      // Nothrow allocation: on OOM keep the panel open instead of aborting.
-      auto statsActivity = makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats);
-      if (!statsActivity) {
-        LOG_ERR("ERS", "OOM: BookStatsActivity");
-        return;
-      }
-      overlay = Overlay::None;
-      overlayPopup.dismiss();
-      discardOverlayPage();
-      startActivityForResult(std::move(statsActivity), [this](const ActivityResult& result) {
-        if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
-          stats.clearWpmStats();
-          stats.save(epub->getCachePath());
+      if (panelIndex == 0) {
+        recordCurrentPageReadingTime();
+        BookReadingStats displayStats = stats;
+        if (SETTINGS.shouldTrackReadingStats()) {
+          displayStats.totalReadingSeconds += sessionReadingSeconds;
         }
-        requestUpdate();
-      });
+        // Full-screen per-book stats; Back returns to the page (not the panel).
+        // Nothrow allocation: on OOM keep the panel open instead of aborting.
+        auto statsActivity =
+            makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats);
+        if (!statsActivity) {
+          LOG_ERR("ERS", "OOM: BookStatsActivity");
+          return;
+        }
+        overlay = Overlay::None;
+        overlayPopup.dismiss();
+        discardOverlayPage();
+        startActivityForResult(std::move(statsActivity), [this](const ActivityResult& result) {
+          if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
+            stats.clearWpmStats();
+            stats.save(epub->getCachePath());
+          }
+          requestUpdate();
+        });
+      } else {
+        // Global (all-books) stats; the reader pushes it so Back returns to
+        // the page (not the panel) — same teardown as the per-book branch.
+        auto globalStatsActivity = makeUniqueNoThrow<GlobalStatsActivity>(renderer, mappedInput);
+        if (!globalStatsActivity) {
+          LOG_ERR("ERS", "OOM: GlobalStatsActivity");
+          return;
+        }
+        overlay = Overlay::None;
+        overlayPopup.dismiss();
+        discardOverlayPage();
+        startActivityForResult(std::move(globalStatsActivity), [this](const ActivityResult& result) {
+          (void)result;
+          requestUpdate();
+        });
+      }
 #endif
     } else if (overlay == Overlay::More) {
       activateMoreRow(panelIndex);
