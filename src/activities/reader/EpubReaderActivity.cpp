@@ -27,8 +27,8 @@
 #include "activities/ActivityResult.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
-#include "activities/util/ConfirmationActivity.h"
 #include "activities/settings/GlobalStatsActivity.h"
+#include "activities/util/ConfirmationActivity.h"
 #endif
 #include "EpubReaderBookmarksActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
