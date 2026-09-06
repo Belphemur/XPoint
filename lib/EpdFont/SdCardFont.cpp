@@ -1553,7 +1553,12 @@ void SdCardFont::logStats(const char* label) {
 #endif
 }
 
-void SdCardFont::resetStats() { stats_ = Stats{}; }
+void SdCardFont::resetStats() {
+  stats_ = Stats{};
+  // Seed the fill snapshot with the live ring count so a page that only
+  // reuses pre-filled slots still reports the true fill level.
+  stats_.overflowCountAtLog = overflowCount_;
+}
 
 // --- Public accessors ---
 

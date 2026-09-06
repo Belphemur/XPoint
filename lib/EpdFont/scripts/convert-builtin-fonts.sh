@@ -13,13 +13,13 @@ READER_FONT_STYLES=("Regular" "Italic" "Bold" "BoldItalic")
 NOTOSERIF_FONT_SIZES=(12 14 16 18)
 NOTOSANS_FONT_SIZES=(12 14 16 18)
 
-for size in ${NOTOSERIF_FONT_SIZES[@]}; do
-  for style in ${READER_FONT_STYLES[@]}; do
-    font_name="notoserif_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+for size in "${NOTOSERIF_FONT_SIZES[@]}"; do
+  for style in "${READER_FONT_STYLES[@]}"; do
+    font_name="notoserif_${size}_$(echo "$style" | tr '[:upper:]' '[:lower:]')"
     font_path="../builtinFonts/source/NotoSerif/NotoSerif-${style}.ttf"
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path --2bit --compress --pnum --zopfli > $output_path
-    echo "Generated $output_path"
+    python fontconvert.py "$font_name" "$size" "$font_path" --2bit --compress --pnum --zopfli > "$output_path"
+    echo "Generated ${output_path}"
   done
 done
 
@@ -29,9 +29,9 @@ done
 # (same reason), ordered by descending priority — same pattern as the
 # old NotoSans build. Vietnamese cut is not needed: AHN covers Latin
 # Extended Additional (U+1EA0-U+1EF9).
-for size in ${NOTOSANS_FONT_SIZES[@]}; do
-  for style in ${READER_FONT_STYLES[@]}; do
-    font_name="atkinson_hn_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+for size in "${NOTOSANS_FONT_SIZES[@]}"; do
+  for style in "${READER_FONT_STYLES[@]}"; do
+    font_name="atkinson_hn_${size}_$(echo "$style" | tr '[:upper:]' '[:lower:]')"
     # Map style name to Atkinson Hyperlegible Next OTF file names:
     # Italic → RegularItalic (AHN has multiple weights, so the plain style
     # variant is prefixed with its weight name).
@@ -42,11 +42,11 @@ for size in ${NOTOSANS_FONT_SIZES[@]}; do
     esac
     font_path="../builtinFonts/source/AtkinsonHyperlegibleNext/AtkinsonHyperlegibleNext-${ahn_style}.otf"
     output_path="../builtinFonts/${font_name}.h"
-    python fontconvert.py $font_name $size $font_path \
+    python fontconvert.py "$font_name" "$size" "$font_path" \
       ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \
       ../builtinFonts/source/NotoSansArabic/NotoSansArabic-Regular.ttf \
-      --2bit --compress --pnum --zopfli > $output_path
-    echo "Generated $output_path"
+      --2bit --compress --pnum --zopfli > "$output_path"
+    echo "Generated ${output_path}"
   done
 done
 
@@ -108,11 +108,11 @@ for size in ${UI_FONT_SIZES[@]}; do
     # verify-ui-noto-fonts.py allows. Ubuntu Bold keeps its own hints, but
     # Ubuntu Medium's bytecode grid-fits U+0442 wider than its advance and lands
     # its left bearing at -1, so that face runs on the auto-hinter as well.
-    autohint_args=(--autohint-font $hebrew_path)
-    if [ "$style" = "Medium" ]; then autohint_args+=(--autohint-font $font_path); fi
-    python fontconvert.py $font_name $size $font_path $hebrew_path $arabic_path $viet_path \
-      --mono "${autohint_args[@]}" --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > $output_path
-    echo "Generated $output_path"
+    autohint_args=(--autohint-font "$hebrew_path")
+    if [ "$style" = "Medium" ]; then autohint_args+=(--autohint-font "$font_path"); fi
+    python fontconvert.py "$font_name" "$size" "$font_path" "$hebrew_path" "$arabic_path" "$viet_path" \
+      --mono "${autohint_args[@]}" --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > "$output_path"
+    echo "Generated ${output_path}"
   done
 done
 
@@ -124,7 +124,7 @@ python fontconvert.py atkinson_hn_8_regular 8 \
   ../builtinFonts/source/AtkinsonHyperlegibleNext/AtkinsonHyperlegibleNext-Regular.otf \
   ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \
   ../builtinFonts/source/NotoSansArabic/NotoSansArabic-Regular.ttf \
-  --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/notosans_8_regular.h
+  --additional-intervals 0x05D0,0x05EA "${ARABIC_INTERVALS[@]}" > ../builtinFonts/atkinson_hn_8_regular.h
 
 echo ""
 echo "Running compression verification..."

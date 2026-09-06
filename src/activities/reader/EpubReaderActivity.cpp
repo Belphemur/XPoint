@@ -1884,9 +1884,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // BOOK_PROFILE: summarize SD font overflow misses during this page turn.
   // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
   // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
-  // Emitted after all gray paths (tiled, dual, async) so every page turn is profiled.
+  // Emitted at the end of renderContents() after all gray paths, so every
+  // page turn — including gray-pass image-caption text misses — is profiled.
+  // Also called before the early return on storeBwBuffer() failure.
 #ifdef BOOK_PROFILE
-  {
+  auto logOverflowSummary = [&] {
     const auto& sdFonts = renderer.getSdCardFonts();
     uint32_t totalOverflowMisses = 0;
     uint32_t maxOverflowFill = 0;
@@ -1897,7 +1899,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
     LOG_DBG("PROF", "phase=font_overflow misses=%u max_fill=%u/%u", totalOverflowMisses, maxOverflowFill,
             SdCardFont::getOverflowCapacity());
-  }
+  };
 #endif
   const auto tDisplay = millis();
   // Path selection trace: which gray route this page takes and why.
@@ -2083,6 +2085,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       if (!renderer.storeBwBuffer()) {
         LOG_ERR("ERS", "Failed to store BW buffer for grayscale render; skipping grayscale this page");
+#ifdef BOOK_PROFILE
+        logOverflowSummary();
+#endif
         return;
       }
       const auto tBwStore = millis();
@@ -2147,6 +2152,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
     }
   }
+#ifdef BOOK_PROFILE
+  logOverflowSummary();
+#endif
 }
 
 void EpubReaderActivity::renderStatusBar() const {

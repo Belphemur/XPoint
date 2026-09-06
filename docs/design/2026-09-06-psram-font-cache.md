@@ -53,7 +53,7 @@ OverflowEntry overflow_[OVERFLOW_CAPACITY = 8];  // 8-entry ring, DRAM — on-de
 AdvanceEntry* advanceTable_[4];    // 768 entries × 6 bytes = 4.5KB/style, DRAM
 ```
 
-**Current DRAM footprint per SD font per style**: ~4.5KB (advance table) + 8 × ~180B (overflow) = ~5KB+
+**Current DRAM footprint per SD font**: 4 × ~4.5KB advance tables (one per style) + 8 × ~180B overflow ring (shared across styles) ≈ ~19KB
 **Current PSRAM usage**: Unknown — Arduino-ESP32 S3 may already spill allocations >~16KB to PSRAM via `CONFIG_SPIRAM_USE_MALLOC`. Must snapshot `heap_caps_get_info` before assuming baseline.
 
 ### Proposed design
@@ -81,7 +81,7 @@ This is the re-ordered plan per the OpenCode review. The primary fix targets the
 
 4. **Move `fullIntervals` to PSRAM** (codepoint coverage tables for large CJK fonts)
 
-**Total PSRAM impact**: ~0.5–0.6 MB worst case (300 KB mini arenas + 100 KB advance + 15 KB overflow + 20 KB intervals) — ~6–7.8% of 8 MB
+**Total PSRAM impact**: 435–635 KB worst case (300–500 KB mini arenas + 100 KB advance + 15 KB overflow + 20 KB intervals) — ~5.3–7.8% of 8 MB
 
 #### Option B: Full PSRAM migration (aggressive, NOT recommended)
 
