@@ -87,9 +87,9 @@ ARABIC_INTERVALS=(
   --additional-intervals 0xFE80,0xFEFC  # Presentation Forms-B: core Arabic + Lam-Alef
 )
 
-for size in ${UI_FONT_SIZES[@]}; do
-  for style in ${UI_FONT_STYLES[@]}; do
-    font_name="ubuntu_${size}_$(echo $style | tr '[:upper:]' '[:lower:]')"
+for size in "${UI_FONT_SIZES[@]}"; do
+  for style in "${UI_FONT_STYLES[@]}"; do
+    font_name="ubuntu_${size}_$(echo "$style" | tr '[:upper:]' '[:lower:]')"
     font_path="../builtinFonts/source/Ubuntu/Ubuntu-${style}.ttf"
     # UI-specific optical faces retain readable stroke weight under --mono.
     if [ "$style" = "Bold" ]; then noto_style="UIBold"; else noto_style="UIMedium"; fi
