@@ -31,10 +31,17 @@ If `clang-format` is missing or too old locally, see [Getting Started](./getting
 ## 4) Open the PR
 
 - Target `develop` (the repository's default branch)
-- Use a semantic title (example: `fix: avoid crash when opening malformed epub`)
+- Use a Conventional Commit title with a release type prefix. The prefix is
+  required by the release tooling; a title without one is rejected.
+- Supported release types are: `feat`, `fix`, `docs`, `style`, `refactor`,
+  `perf`, `test`, `build`, `ci`, `chore`, and `revert`.
+- Use the form `<type>: <short description>`, for example:
+  `fix: avoid crash when opening malformed epub`
 - Fill out `.github/PULL_REQUEST_TEMPLATE.md`
 - Describe the problem, approach, and any tradeoffs
 - Include reproduction and verification steps for bug fixes
+- Be transparent about AI assistance by completing the **AI Usage** section
+  in the pull request template (`YES`, `PARTIALLY`, or `NO`).
 
 ## 5) Review etiquette
 
