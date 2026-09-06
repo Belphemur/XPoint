@@ -393,8 +393,12 @@ bool EpubReaderActivity::openShortcutMenu() const {
 // chrome the gesture falls through (caller pops / goes home as before).
 bool EpubReaderActivity::handleHomeGesture() {
   if (!isChromeOpen()) return false;
+  // Close only the topmost layer per gesture, matching the Back button's
+  // stepped behavior: a sheet over an open footnote restores the sheet first
+  // and leaves the footnote jump for the next gesture.
   if (overlay != Overlay::None) {
     closeOverlayToPage();
+    return true;
   }
   if (footnoteDepth > 0) {
     restoreSavedPosition();
@@ -2513,7 +2517,10 @@ void EpubReaderActivity::handleOverlayInput() {
     if (tool == EpubReaderActivity::kToolContents) return Overlay::Contents;
     if (tool == EpubReaderActivity::kToolText) return Overlay::Text;
 #ifdef READING_STATS_ENABLED
-    if (tool == EpubReaderActivity::kToolStats) return Overlay::Stats;
+    // Tracking-off builds keep the tile visible but gated, like the classic
+    // menu's dimmed row: opening the panel is refused, so BookStatsActivity
+    // can never launch from the toolbar.
+    if (tool == EpubReaderActivity::kToolStats && SETTINGS.shouldTrackReadingStats()) return Overlay::Stats;
 #endif
     return Overlay::More;
   };
@@ -2632,17 +2639,22 @@ void EpubReaderActivity::handleOverlayInput() {
         displayStats.totalReadingSeconds += sessionReadingSeconds;
       }
       // Full-screen per-book stats; Back returns to the page (not the panel).
+      // Nothrow allocation: on OOM keep the panel open instead of aborting.
+      auto statsActivity = makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats);
+      if (!statsActivity) {
+        LOG_ERR("ERS", "OOM: BookStatsActivity");
+        return;
+      }
       overlay = Overlay::None;
       overlayPopup.dismiss();
       discardOverlayPage();
-      startActivityForResult(std::make_unique<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats),
-                             [this](const ActivityResult& result) {
-                               if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
-                                 stats.clearWpmStats();
-                                 stats.save(epub->getCachePath());
-                               }
-                               requestUpdate();
-                             });
+      startActivityForResult(std::move(statsActivity), [this](const ActivityResult& result) {
+        if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
+          stats.clearWpmStats();
+          stats.save(epub->getCachePath());
+        }
+        requestUpdate();
+      });
 #endif
     } else if (overlay == Overlay::More) {
       activateMoreRow(panelIndex);
