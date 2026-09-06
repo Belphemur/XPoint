@@ -10,6 +10,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <SdCardFont.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -1814,6 +1815,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   } pxcSlotGuard;
 
   auto* fcm = renderer.getFontCacheManager();
+  // BOOK_PROFILE: reset SD font overflow stats for this page turn.
+  // The summary is logged at the end of the async display overlap block
+  // below (phase=font_overflow).
+#ifdef BOOK_PROFILE
+  for (auto& [sdFontId, sdFont] : renderer.getSdCardFonts()) {
+    sdFont->resetStats();
+  }
+#endif
   auto scope = fcm->createPrewarmScope();
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   // Scan the status bar too: a CJK book/chapter title redirected to the SD
@@ -1895,6 +1904,25 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 #endif
     }
   }
+  // BOOK_PROFILE: define a summary lambda for SD font overflow misses.
+  // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
+  // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
+  // Called at the end of renderContents() (after all gray paths) and before
+  // the early return on storeBwBuffer() failure.
+#ifdef BOOK_PROFILE
+  auto logOverflowSummary = [&] {
+    const auto& sdFonts = renderer.getSdCardFonts();
+    uint32_t totalOverflowMisses = 0;
+    uint32_t maxOverflowFill = 0;
+    for (const auto& [sdFontId, sdFont] : sdFonts) {
+      const auto& stats = sdFont->getStats();
+      totalOverflowMisses += stats.overflowMisses;
+      if (stats.overflowCountAtLog > maxOverflowFill) maxOverflowFill = stats.overflowCountAtLog;
+    }
+    LOG_DBG("PROF", "phase=font_overflow misses=%u max_fill=%u/%u", totalOverflowMisses, maxOverflowFill,
+            SdCardFont::getOverflowCapacity());
+  };
+#endif
   const auto tDisplay = millis();
   // Path selection trace: which gray route this page takes and why.
   LOG_DBG("ERS", "Gray path: tiled=%d dual=%d textAA=%d images=%d overlap=%d", tiledGrayscale, dualPlane,
@@ -2079,6 +2107,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
       if (!renderer.storeBwBuffer()) {
         LOG_ERR("ERS", "Failed to store BW buffer for grayscale render; skipping grayscale this page");
+#ifdef BOOK_PROFILE
+        logOverflowSummary();
+#endif
         return;
       }
       const auto tBwStore = millis();
@@ -2143,6 +2174,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
     }
   }
+#ifdef BOOK_PROFILE
+  logOverflowSummary();
+#endif
 }
 
 void EpubReaderActivity::renderStatusBar() const {
@@ -2239,7 +2273,7 @@ std::string EpubReaderActivity::textRowName(int row) const {
 }
 
 std::string EpubReaderActivity::textRowValue(int row) const {
-  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
+  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN};
   switch (row) {
     case 0:
       if (SETTINGS.sdFontFamilyName[0] != '\0') return SETTINGS.sdFontFamilyName;

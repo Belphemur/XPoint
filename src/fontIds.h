@@ -5,13 +5,23 @@
 #define NOTOSERIF_14_FONT_ID (95310219)
 #define NOTOSERIF_16_FONT_ID (1728087153)
 #define NOTOSERIF_18_FONT_ID (1143837945)
-#define NOTOSANS_12_FONT_ID (985665776)
-#define NOTOSANS_14_FONT_ID (-114833992)
-#define NOTOSANS_16_FONT_ID (1495736104)
-#define NOTOSANS_18_FONT_ID (1989717754)
+
+// Atkinson Hyperlegible Next reader font (replaces NotoSans).
+// Both NOTOSANS_* and ATKINSON_HN_* share the same font IDs so existing
+// settings (fontFamily == NOTOSANS == 1) and new settings
+// (fontFamily == ATKINSON_HN == 2) resolve to the same font data.
+#define ATKINSON_HN_12_FONT_ID (-774383679)
+#define ATKINSON_HN_14_FONT_ID (1734093753)
+#define ATKINSON_HN_16_FONT_ID (-773356809)
+#define ATKINSON_HN_18_FONT_ID (-523918292)
+#define NOTOSANS_12_FONT_ID ATKINSON_HN_12_FONT_ID
+#define NOTOSANS_14_FONT_ID ATKINSON_HN_14_FONT_ID
+#define NOTOSANS_16_FONT_ID ATKINSON_HN_16_FONT_ID
+#define NOTOSANS_18_FONT_ID ATKINSON_HN_18_FONT_ID
+
 #define UI_10_FONT_ID (-831767735)
 #define UI_12_FONT_ID (-331336086)
-#define SMALL_FONT_ID (1465627787)
+#define SMALL_FONT_ID (-1833992267)
 
 // Font ID 0 is reserved as the "not found" sentinel.
 // Guard against any hash accidentally producing 0.
@@ -19,6 +29,10 @@ static_assert(NOTOSERIF_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSERIF_14_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSERIF_16_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSERIF_18_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(ATKINSON_HN_12_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(ATKINSON_HN_14_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(ATKINSON_HN_16_FONT_ID != 0, "Font ID collision with sentinel");
+static_assert(ATKINSON_HN_18_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_12_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_14_FONT_ID != 0, "Font ID collision with sentinel");
 static_assert(NOTOSANS_16_FONT_ID != 0, "Font ID collision with sentinel");

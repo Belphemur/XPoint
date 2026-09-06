@@ -266,6 +266,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     needsResave = true;
   }
 
+  // Migrate font family: NOTOSANS (1) → ATKINSON_HN (2). The font data is the
+  // same (Atkinson Hyperlegible Next), but the display label changed. Users
+  // who explicitly chose "Noto Sans" before should see "Atkinson Hyperlegible
+  // Next" in settings and have the new enum value, without a visible jump.
+  if (fontFamily == NOTOSANS) {
+    fontFamily = ATKINSON_HN;
+    needsResave = true;
+  }
+
   if (needsResave) {
     LOG_DBG("CPS", "Resaving settings to update format");
     requestResave();
@@ -409,7 +418,7 @@ int CrossPointSettings::getReaderFontId() const {
   // in the page render loop) so rendering is correct even before it has run.
   const uint8_t pt =
       snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, std::size(BUILTIN_READER_POINT_SIZES), fontPointSize);
-  const bool sans = (fontFamily == NOTOSANS);
+  const bool sans = (fontFamily == NOTOSANS || fontFamily == ATKINSON_HN);
   switch (pt) {
     case 12:
       return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
