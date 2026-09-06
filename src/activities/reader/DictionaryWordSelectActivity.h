@@ -41,7 +41,20 @@ class DictionaryWordSelectActivity final : public Activity {
     int16_t width;
     uint16_t row;
     const char* text;
+    uint16_t textOffset;
+    uint16_t textLength;
     EpdFontFamily::Style style;
+    uint32_t selectionGroup;
+    bool syntheticHyphen;
+  };
+
+  // A logical word may contain several rendered boxes when pagination split it
+  // across lines. The segment indexes are kept in one flat vector to avoid a
+  // heap allocation per word on the X4 Pro.
+  struct WordSelection {
+    uint32_t group;
+    uint16_t segmentStart;
+    uint16_t segmentCount;
   };
 
   enum class Popup : uint8_t { None, Busy, NotFound, Error };
@@ -49,9 +62,12 @@ class DictionaryWordSelectActivity final : public Activity {
   void extractWords();
   int closestInRow(uint16_t row, int centerX) const;
   int wordAt(int x, int y) const;
+  std::string selectionText(int selectionIndex) const;
   std::string resolveFootnoteHref(const char* word) const;
   void moveVertical(int direction);
   void performLookup();
+  void performLookup(const std::string& query);
+  void drawHighlightRange() const;
   bool drawHighlightWithSnapshot();
   void drawHints() const;
 
@@ -65,9 +81,10 @@ class DictionaryWordSelectActivity final : public Activity {
   int lineHeight = 0;
 
   std::vector<WordBox> words;
+  std::vector<WordSelection> selections;
+  std::vector<uint16_t> selectionSegments;
   int selected = 0;
   uint16_t rowCount = 0;
-  unsigned long lastHorizontalMoveTime = 0;
 
   Dictionary dict;
   bool dictOpenAttempted = false;
@@ -79,7 +96,7 @@ class DictionaryWordSelectActivity final : public Activity {
   unsigned long popupTime = 0;
 
   // Differential highlight repaint: the pixels under the current highlight
-  // box, so a cursor move restores them and repaints only the two affected
+  // box, so a selection move restores them and repaints only the two affected
   // boxes instead of re-running the full two-pass page render (which also
   // reloads every SD-font glyph on the page). snapshotIdx is the word whose
   // under-pixels are saved; -1 means the framebuffer no longer holds a clean

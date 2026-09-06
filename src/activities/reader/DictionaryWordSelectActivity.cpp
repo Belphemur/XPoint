@@ -7,36 +7,20 @@
 #include <freertos/task.h>
 
 #include <algorithm>
-#include <cctype>
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 
 #include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
+#include "util/DictionarySelection.h"
 
 namespace {
 
 constexpr unsigned long POPUP_DURATION_MS = 1500;
 constexpr size_t MARKER_BUF_SIZE = 64;
-
-// A token is selectable when it has an ASCII alphanumeric or a non-ASCII
-// codepoint outside U+2000-U+206F (dashes, bullets and other General
-// Punctuation that appear as standalone tokens are not words).
-bool isSelectableToken(const char* text) {
-  for (const uint8_t* p = reinterpret_cast<const uint8_t*>(text); *p != 0; p++) {
-    if (*p < 0x80) {
-      if (std::isalnum(*p)) return true;
-    } else if (*p == 0xE2 && (p[1] == 0x80 || p[1] == 0x81)) {
-      if (p[2] == 0) break;  // truncated sequence: skipping would step past the NUL
-      p += 2;                // skip the 3-byte General Punctuation codepoint
-    } else {
-      return true;
-    }
-  }
-  return false;
-}
 
 void indexBuildYield(void*) { vTaskDelay(1); }
 
@@ -100,16 +84,22 @@ bool isNumericMarker(const char* word) {
 
 void DictionaryWordSelectActivity::onEnter() {
   Activity::onEnter();
+  const unsigned long enterStart = millis();
+  LOG_DBG("DICT", "Selector onEnter start");
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
   // No null check: a failed allocation just disables the differential
   // fast path (drawHighlightWithSnapshot skips the read), keeping the
   // full-repaint path as the fallback.
   snapshot = makeUniqueNoThrow<uint8_t[]>(SNAPSHOT_CAPACITY);
+  LOG_DBG("DICT", "Selector snapshot allocated=%d; extracting words", snapshot ? 1 : 0);
   extractWords();
+  LOG_DBG("DICT", "Selector extraction complete: words=%u groups=%u rows=%u in %lums",
+          static_cast<unsigned>(words.size()), static_cast<unsigned>(selections.size()),
+          static_cast<unsigned>(rowCount), millis() - enterStart);
   // Start on the middle row's word nearest mid-screen instead of top-left:
   // any word on the page is then at most half a page of moves away.
-  if (!words.empty()) {
+  if (!selections.empty()) {
     const int initial = closestInRow(rowCount / 2, renderer.getScreenWidth() / 2);
     if (initial >= 0) selected = initial;
   }
@@ -118,32 +108,27 @@ void DictionaryWordSelectActivity::onEnter() {
     const int hit = wordAt(initialX, initialY);
     if (hit >= 0) {
       selected = hit;
-      if (mode == TouchLongPressMode::Footnote && isFootnoteMarker(words[hit].text)) {
-        const std::string href = resolveFootnoteHref(words[hit].text);
-        if (!href.empty()) {
-          setResult(ActivityResult(FootnoteResult{href}));
-          finish();
-          return;
-        }
-        // Numeric body note references are guaranteed-miss dictionary lookups;
-        // just return to the reader instead of running one.
-        if (isNumericMarker(words[hit].text)) {
-          finish();
-          return;
-        }
-        // Non-numeric marker miss: fall through to dictionary lookup.
-      }
+      // The reader's long-press already suppresses the original touch
+      // contact. Look up the selected logical word immediately; the selector
+      // remains available as the fallback when no word was hit.
       performLookup();
       return;
     }
   }
 
   requestUpdate();
+  LOG_DBG("DICT", "Selector onEnter complete in %lums", millis() - enterStart);
 }
 
 void DictionaryWordSelectActivity::extractWords() {
+  const unsigned long extractStart = millis();
+  LOG_DBG("DICT", "extractWords start: elements=%u", static_cast<unsigned>(page->elements.size()));
   words.clear();
+  selections.clear();
+  selectionSegments.clear();
   words.reserve(128);
+  selections.reserve(128);
+  selectionSegments.reserve(128);
   rowCount = 0;
 
   // Single walk: collect the selectable words while accumulating their text
@@ -166,7 +151,10 @@ void DictionaryWordSelectActivity::extractWords() {
     const int rubyShift = block->getRubyShift(ascender);
     for (uint16_t i = 0; i < block->wordCount(); i++) {
       const char* text = block->wordText(i);
-      if (!isSelectableToken(text)) continue;
+      if (!DictionarySelection::isSelectableToken(text)) continue;
+      const DictionarySelection::TokenSpan span =
+          DictionarySelection::trimTokenEdges(std::string_view(text, block->wordTextLen(i)));
+      if (span.length == 0) continue;
 
       WordBox box;
       box.x = static_cast<int16_t>(line->xPos + block->wordXpos(i) + marginLeft);
@@ -175,6 +163,10 @@ void DictionaryWordSelectActivity::extractWords() {
       box.width = 0;  // measured below, once the advance table is ready
       box.row = rowCount;
       box.text = text;
+      box.textOffset = static_cast<uint16_t>(span.start);
+      box.textLength = static_cast<uint16_t>(span.length);
+      box.selectionGroup = block->selectionGroup(i);
+      box.syntheticHyphen = block->hasSyntheticHyphen(i);
       words.push_back(box);
       rowHasWords = true;
 
@@ -186,10 +178,31 @@ void DictionaryWordSelectActivity::extractWords() {
   }
 
   if (styleMask == 0) styleMask = 0x01;  // REGULAR
+  LOG_DBG("DICT", "extractWords collected: words=%u rows=%u bytes=%u styles=0x%02X; warming font",
+          static_cast<unsigned>(words.size()), static_cast<unsigned>(rowCount), static_cast<unsigned>(pageText.size()),
+          styleMask);
   renderer.ensureSdCardFontReady(fontId, pageText.c_str(), styleMask);
+  LOG_DBG("DICT", "extractWords font warm complete after %lums", millis() - extractStart);
   for (auto& word : words) {
-    word.width = static_cast<int16_t>(renderer.getTextAdvanceX(fontId, word.text, word.style));
+    const std::string prefix(word.text, word.textOffset);
+    const std::string selectedText(word.text + word.textOffset, word.textLength);
+    word.x = static_cast<int16_t>(word.x + renderer.getTextAdvanceX(fontId, prefix.c_str(), word.style));
+    word.width = static_cast<int16_t>(renderer.getTextAdvanceX(fontId, selectedText.c_str(), word.style));
   }
+
+  std::vector<uint32_t> sourceGroups;
+  sourceGroups.reserve(words.size());
+  std::transform(words.begin(), words.end(), std::back_inserter(sourceGroups),
+                 [](const auto& word) { return word.selectionGroup; });
+  const auto grouped = DictionarySelection::groupTokens(sourceGroups);
+  std::transform(grouped.groups.begin(), grouped.groups.end(), std::back_inserter(selections), [](const auto& group) {
+    return WordSelection{group.sourceGroup, static_cast<uint16_t>(group.segmentStart),
+                         static_cast<uint16_t>(group.segmentCount)};
+  });
+  std::transform(grouped.segments.begin(), grouped.segments.end(), std::back_inserter(selectionSegments),
+                 [](const size_t segment) { return static_cast<uint16_t>(segment); });
+  LOG_DBG("DICT", "extractWords complete: groups=%u in %lums", static_cast<unsigned>(selections.size()),
+          millis() - extractStart);
 }
 
 // Index of the word whose box (with finger-sized slop) contains the touch
@@ -197,13 +210,38 @@ void DictionaryWordSelectActivity::extractWords() {
 // slop grows them, at worst they touch, so first hit wins.
 int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
   constexpr int SLOP = 4;  // matches the highlight box (+2) plus finger error
-  for (int i = 0; i < static_cast<int>(words.size()); i++) {
-    const WordBox& word = words[i];
-    if (x >= word.x - SLOP && x < word.x + word.width + SLOP && y >= word.y - SLOP && y < word.y + lineHeight + SLOP) {
-      return i;
+  for (int selection = 0; selection < static_cast<int>(selections.size()); selection++) {
+    const auto& group = selections[selection];
+    for (uint16_t i = 0; i < group.segmentCount; i++) {
+      const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+      if (x >= word.x - SLOP && x < word.x + word.width + SLOP && y >= word.y - SLOP &&
+          y < word.y + lineHeight + SLOP) {
+        return selection;
+      }
     }
   }
   return -1;
+}
+
+std::string DictionaryWordSelectActivity::selectionText(const int selectionIndex) const {
+  std::string text;
+  if (selectionIndex < 0 || selectionIndex >= static_cast<int>(selections.size())) return text;
+
+  const auto& group = selections[selectionIndex];
+  size_t totalBytes = 0;
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    totalBytes += word.textLength;
+  }
+  text.reserve(totalBytes);
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    const std::string_view wordView(word.text + word.textOffset, word.textLength);
+    const size_t length = DictionarySelection::logicalSegmentLength(wordView, word.syntheticHyphen);
+    const char* wordText = word.text + word.textOffset;
+    text.append(wordText, length);
+  }
+  return text;
 }
 
 std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) const {
@@ -226,19 +264,26 @@ std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) 
 int DictionaryWordSelectActivity::closestInRow(const uint16_t row, const int centerX) const {
   int best = -1;
   int bestDistance = INT_MAX;
-  for (int i = 0; i < static_cast<int>(words.size()); i++) {
-    if (words[i].row != row) continue;
-    const int distance = std::abs(words[i].x + words[i].width / 2 - centerX);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = i;
+  for (int selection = 0; selection < static_cast<int>(selections.size()); selection++) {
+    const auto& group = selections[selection];
+    for (uint16_t i = 0; i < group.segmentCount; i++) {
+      const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+      if (word.row != row) continue;
+      const int distance = std::abs(word.x + word.width / 2 - centerX);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = selection;
+      }
     }
   }
   return best;
 }
 
 void DictionaryWordSelectActivity::moveVertical(const int direction) {
-  const WordBox& current = words[selected];
+  if (selected < 0 || selected >= static_cast<int>(selections.size())) return;
+  const auto& currentGroup = selections[selected];
+  if (currentGroup.segmentCount == 0) return;
+  const WordBox& current = words[selectionSegments[currentGroup.segmentStart]];
   const int targetRow = static_cast<int>(current.row) + direction;
   if (targetRow < 0 || targetRow >= static_cast<int>(rowCount)) return;
 
@@ -249,7 +294,23 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
   }
 }
 
-void DictionaryWordSelectActivity::performLookup() {
+void DictionaryWordSelectActivity::performLookup() { performLookup(selectionText(selected)); }
+
+void DictionaryWordSelectActivity::performLookup(const std::string& query) {
+  if (mode == TouchLongPressMode::Footnote) {
+    if (isFootnoteMarker(query.c_str())) {
+      const std::string href = resolveFootnoteHref(query.c_str());
+      if (!href.empty()) {
+        setResult(ActivityResult(FootnoteResult{href}));
+        finish();
+        return;
+      }
+      if (isNumericMarker(query.c_str())) {
+        finish();
+        return;
+      }
+    }
+  }
   popup = Popup::Busy;
   if (!dictOpenAttempted) {
     dictOpenAttempted = true;
@@ -272,20 +333,22 @@ void DictionaryWordSelectActivity::performLookup() {
   std::string definition;
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  const bool found = ok && dict.lookup(words[selected].text, definition, headword, &result);
+  const bool found = ok && dict.lookup(query.c_str(), definition, headword, &result);
 
   if (found) {
     popup = Popup::None;
-    startActivityForResult(
-        std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
-                                                       std::move(definition), dict.definitionsAreHtml()),
-        [this](const ActivityResult&) {
-          if (initialX >= 0 && initialY >= 0) {
-            finish();
-          } else {
-            requestUpdate();
-          }
-        });
+    startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(
+                               renderer, mappedInput, std::move(headword), std::move(definition),
+                               SETTINGS.dictionaryName, dict.definitionsAreHtml()),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
+                               performLookup(std::get<DictionarySearchResult>(result.data).text);
+                             } else if (initialX >= 0 && initialY >= 0) {
+                               finish();
+                             } else {
+                               requestUpdate();
+                             }
+                           });
     return;
   }
   // Name the failure: a genuine miss is "Not found"; a word that WAS found but
@@ -328,6 +391,26 @@ void DictionaryWordSelectActivity::performLookup() {
         break;
     }
   }
+
+  // A long-press miss should still lead to an editable dictionary lookup.
+  // Show the same definition overlay and open its keyboard with the failed
+  // word prefilled; this keeps correction in one interaction instead of
+  // forcing the user back to the reader first.
+  if (initialX >= 0 && initialY >= 0 && ok && result == Dictionary::LookupResult::NotFound) {
+    popup = Popup::None;
+    startActivityForResult(
+        std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, query, tr(STR_DICT_NOT_FOUND),
+                                                       SETTINGS.dictionaryName, false, true),
+        [this](const ActivityResult& result) {
+          if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
+            performLookup(std::get<DictionarySearchResult>(result.data).text);
+          } else {
+            finish();
+          }
+        });
+    return;
+  }
+
   popupTime = millis();
   requestUpdate();
 }
@@ -349,12 +432,12 @@ void DictionaryWordSelectActivity::loop() {
     finish();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) && !words.empty()) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) && !selections.empty()) {
     performLookup();
     return;
   }
 
-  if (words.empty()) return;
+  if (selections.empty()) return;
 
   // Touch: a touch-down moves the highlight to the touched word (differential
   // repaint), a tap on a word selects and looks it up in one go.
@@ -377,7 +460,7 @@ void DictionaryWordSelectActivity::loop() {
     return;
   }
 
-  const bool hasNextWord = selected + 1 < static_cast<int>(words.size());
+  const bool hasNextWord = selected + 1 < static_cast<int>(selections.size());
   if (mappedInput.wasPressed(MappedInputManager::Button::ScreenLeft) && selected > 0) {
     selected--;
     requestUpdate();
@@ -391,28 +474,38 @@ void DictionaryWordSelectActivity::loop() {
   }
 }
 
-// Saves the pixels under words[selected]'s highlight box, then draws the
-// highlight over them. Returns false when the pixels could not be saved
-// (no buffer / oversize box) — the highlight is drawn regardless, but the
-// next cursor move must do a full repaint.
+// Saves the pixels under all rendered segments of selections[selected], then
+// draws the highlight over them. A logically whole word can span two lines
+// after pagination, so the snapshot is the union rectangle of those segments.
+// Returns false when the pixels could not be saved (no buffer / oversize box) —
+// the highlight is drawn regardless, but the next selection move must do a full
+// repaint.
 bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
-  const WordBox& word = words[selected];
-  int hx = word.x - 2;
-  int hy = word.y - 2;
-  int hw = word.width + 4;
-  int hh = lineHeight + 4;
-  // Clamp to the panel so save, draw and restore all use the same box.
-  if (hx < 0) {
-    hw += hx;
-    hx = 0;
+  if (selected < 0 || selected >= static_cast<int>(selections.size())) return false;
+  const auto& group = selections[selected];
+  if (group.segmentCount == 0) return false;
+
+  const int screenWidth = renderer.getScreenWidth();
+  const int screenHeight = renderer.getScreenHeight();
+  int left = screenWidth;
+  int top = screenHeight;
+  int right = 0;
+  int bottom = 0;
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    left = std::min(left, std::max(0, static_cast<int>(word.x) - 2));
+    top = std::min(top, std::max(0, static_cast<int>(word.y) - 2));
+    right = std::max(right, std::min(screenWidth, static_cast<int>(word.x) + word.width + 2));
+    bottom = std::max(bottom, std::min(screenHeight, static_cast<int>(word.y) + lineHeight + 2));
   }
-  if (hy < 0) {
-    hh += hy;
-    hy = 0;
-  }
+  const int hx = left;
+  const int hy = top;
+  const int hw = right - left;
+  const int hh = bottom - top;
+  if (hw <= 0 || hh <= 0) return false;
 
   bool saved = false;
-  if (snapshot && hw > 0 && hh > 0) {
+  if (snapshot) {
     saved = renderer.readFramebufferRegion(hx, hy, hw, hh, snapshot.get(), SNAPSHOT_CAPACITY) > 0;
   }
   snapshotX = static_cast<int16_t>(hx);
@@ -421,9 +514,30 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
   snapshotH = static_cast<int16_t>(hh);
   snapshotIdx = saved ? selected : -1;
 
-  renderer.fillRect(hx, hy, hw, hh, true);
-  renderer.drawText(fontId, word.x, word.y, word.text, false, word.style);
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    const int wordX = std::max(0, static_cast<int>(word.x) - 2);
+    const int wordY = std::max(0, static_cast<int>(word.y) - 2);
+    const int wordRight = std::min(screenWidth, static_cast<int>(word.x) + word.width + 2);
+    const int wordBottom = std::min(screenHeight, static_cast<int>(word.y) + lineHeight + 2);
+    renderer.fillRect(wordX, wordY, wordRight - wordX, wordBottom - wordY, true);
+    const std::string selectedText(word.text + word.textOffset, word.textLength);
+    renderer.drawText(fontId, word.x, word.y, selectedText.c_str(), false, word.style);
+  }
   return saved;
+}
+
+void DictionaryWordSelectActivity::drawHighlightRange() const {
+  if (selected < 0 || selected >= static_cast<int>(selections.size())) return;
+  const auto& group = selections[selected];
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    const std::string selectedText(word.text + word.textOffset, word.textLength);
+    if (word.width <= 0 || selectedText.empty()) continue;
+    renderer.fillRect(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
+                      word.width + 4, lineHeight + 4, true);
+    renderer.drawText(fontId, word.x, word.y, selectedText.c_str(), false, word.style);
+  }
 }
 
 // Front-button bar (Back/Confirm/Left/Right). Drawn last on every repaint
@@ -433,9 +547,9 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
 // spare gutter for them, so a hint box there would hide text.
 void DictionaryWordSelectActivity::drawHints() const {
   // No selectable word on this page: Confirm and navigation are all no-ops
-  // (guarded by words.empty() in loop()/performLookup), so only Back does
+  // (guarded by selections.empty() in loop()/performLookup), so only Back does
   // anything and only Back is hinted.
-  if (words.empty()) {
+  if (selections.empty()) {
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     return;
@@ -446,16 +560,23 @@ void DictionaryWordSelectActivity::drawHints() const {
 }
 
 void DictionaryWordSelectActivity::render(RenderLock&&) {
+  const unsigned long renderStart = millis();
+  LOG_DBG("DICT", "Selector render start: words=%u groups=%u popup=%u", static_cast<unsigned>(words.size()),
+          static_cast<unsigned>(selections.size()), static_cast<unsigned>(popup));
   // Differential fast path: only the highlight moved and the framebuffer
   // still holds a clean page (no popup or sub-activity since the last full
   // repaint). Restore the pixels under the old highlight, draw the new one,
   // and push — skipping the two-pass page render entirely.
-  if (popup == Popup::None && snapshotIdx >= 0 && !words.empty() && selected != snapshotIdx) {
+  if (popup == Popup::None && snapshotIdx >= 0 && !selections.empty() && selected != snapshotIdx) {
     renderer.writeFramebufferRegion(snapshotX, snapshotY, snapshotW, snapshotH, snapshot.get());
     // The full path's PrewarmScope cleared the glyph cache on exit; batch-load
     // just the highlighted word's glyphs before drawing them white-on-black.
-    renderer.getFontCacheManager()->prewarmCache(
-        fontId, words[selected].text, static_cast<uint8_t>(1u << (static_cast<uint8_t>(words[selected].style) & 0x03)));
+    const auto& group = selections[selected];
+    for (uint16_t i = 0; i < group.segmentCount; i++) {
+      const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+      renderer.getFontCacheManager()->prewarmCache(
+          fontId, word.text, static_cast<uint8_t>(1u << (static_cast<uint8_t>(word.style) & 0x03)));
+    }
     if (drawHighlightWithSnapshot()) {
       drawHints();
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -465,18 +586,20 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   }
 
   renderer.clearScreen();
+  LOG_DBG("DICT", "Selector render cleared screen");
 
   // Same prewarm-scan-then-render pass the reader uses, so SD-card fonts hit
   // the in-RAM glyph cache during the real draw.
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
   page->render(renderer, fontId, marginLeft, marginTop);
+  LOG_DBG("DICT", "Selector render first page pass complete in %lums", millis() - renderStart);
   scope.endScanAndPrewarm();
+  LOG_DBG("DICT", "Selector render font prewarm complete in %lums", millis() - renderStart);
   page->render(renderer, fontId, marginLeft, marginTop);
+  LOG_DBG("DICT", "Selector render second page pass complete in %lums", millis() - renderStart);
 
-  if (!words.empty()) {
-    drawHighlightWithSnapshot();
-  }
+  if (!selections.empty()) drawHighlightRange();
 
   drawHints();
 
@@ -490,4 +613,5 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
     return;
   }
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  LOG_DBG("DICT", "Selector render complete in %lums", millis() - renderStart);
 }
