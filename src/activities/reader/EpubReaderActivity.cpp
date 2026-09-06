@@ -388,6 +388,28 @@ bool EpubReaderActivity::openShortcutMenu() const {
   return true;
 }
 
+// Any reader chrome (toolbar sheet / panel / popup / open footnote) closes with
+// the global back gesture instead of the gesture leaving the book; with no
+// chrome the gesture falls through (caller pops / goes home as before).
+bool EpubReaderActivity::handleHomeGesture() {
+  if (!isChromeOpen()) return false;
+  // Close only the topmost layer per gesture, matching the Back button's
+  // stepped behavior: a sheet over an open footnote restores the sheet first
+  // and leaves the footnote jump for the next gesture.
+  if (overlay != Overlay::None) {
+    closeOverlayToPage();
+    return true;
+  }
+  if (footnoteDepth > 0) {
+    restoreSavedPosition();
+  }
+  return true;
+}
+
+bool EpubReaderActivity::isChromeOpen() const {
+  return overlay != Overlay::None || overlayPopup.isActive() || footnoteDepth > 0;
+}
+
 void EpubReaderActivity::openReaderMenu() {
   pendingManualTurn = 0;
   if (usesToolbarMenu()) {
@@ -2428,6 +2450,10 @@ void EpubReaderActivity::renderOverlay() {
     model.itemCount = kTextRowCount;
     model.rowText = [this](int i) { return textRowName(i); };
     model.rowValue = [this](int i) { return textRowValue(i); };
+  } else if (overlay == Overlay::Stats) {
+    model.panelTitle = tr(STR_READING_STATS);
+    model.itemCount = 1;
+    model.rowText = [](int) { return std::string(tr(STR_STATS_SHOW_BOOK_STATS)); };
   } else {
     model.panelTitle = tr(STR_TOOL_MORE);
     model.itemCount = static_cast<int>(moreItems.size());
@@ -2488,7 +2514,15 @@ void EpubReaderActivity::handleOverlayInput() {
     requestUpdate();
   };
   const auto toolOverlay = [](int tool) {
-    return tool == 0 ? Overlay::Contents : (tool == 1 ? Overlay::Text : Overlay::More);
+    if (tool == EpubReaderActivity::kToolContents) return Overlay::Contents;
+    if (tool == EpubReaderActivity::kToolText) return Overlay::Text;
+#ifdef READING_STATS_ENABLED
+    // Tracking-off builds keep the tile visible but gated, like the classic
+    // menu's dimmed row: opening the panel is refused, so BookStatsActivity
+    // can never launch from the toolbar.
+    if (tool == EpubReaderActivity::kToolStats && SETTINGS.shouldTrackReadingStats()) return Overlay::Stats;
+#endif
+    return Overlay::More;
   };
 
   // Touch first: FreeInkUI routes the frame against the tap targets the last
@@ -2526,13 +2560,13 @@ void EpubReaderActivity::handleOverlayInput() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      focusedTool = (focusedTool + 2) % 3;
+      focusedTool = (focusedTool + EpubReaderActivity::kToolTileCount - 1) % EpubReaderActivity::kToolTileCount;
       panelCursorShown = true;
       fastRedraw();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      focusedTool = (focusedTool + 1) % 3;
+      focusedTool = (focusedTool + 1) % EpubReaderActivity::kToolTileCount;
       panelCursorShown = true;
       fastRedraw();
       return;
@@ -2552,6 +2586,7 @@ void EpubReaderActivity::handleOverlayInput() {
   // --- Panels (Contents / Text / More) ---
   const int count = overlay == Overlay::Contents ? epub->getTocItemsCount()
                     : overlay == Overlay::Text   ? kTextRowCount
+                    : overlay == Overlay::Stats  ? 1
                                                  : static_cast<int>(moreItems.size());
   const int pageRows = std::max(1, toolbarUi->visibleRows());
 
@@ -2596,6 +2631,31 @@ void EpubReaderActivity::handleOverlayInput() {
       overlay = Overlay::None;
       discardOverlayPage();
       requestUpdate();
+    } else if (overlay == Overlay::Stats) {
+#ifdef READING_STATS_ENABLED
+      recordCurrentPageReadingTime();
+      BookReadingStats displayStats = stats;
+      if (SETTINGS.shouldTrackReadingStats()) {
+        displayStats.totalReadingSeconds += sessionReadingSeconds;
+      }
+      // Full-screen per-book stats; Back returns to the page (not the panel).
+      // Nothrow allocation: on OOM keep the panel open instead of aborting.
+      auto statsActivity = makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats);
+      if (!statsActivity) {
+        LOG_ERR("ERS", "OOM: BookStatsActivity");
+        return;
+      }
+      overlay = Overlay::None;
+      overlayPopup.dismiss();
+      discardOverlayPage();
+      startActivityForResult(std::move(statsActivity), [this](const ActivityResult& result) {
+        if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
+          stats.clearWpmStats();
+          stats.save(epub->getCachePath());
+        }
+        requestUpdate();
+      });
+#endif
     } else if (overlay == Overlay::More) {
       activateMoreRow(panelIndex);
     }
@@ -2746,15 +2806,20 @@ void EpubReaderActivity::applyReaderTextSettings() {
 }
 
 // The More panel carries everything the classic list menu offers except the
-// two entries that have their own tool (chapters -> Contents, text -> Text).
+// entries with their own surface: chapters -> Contents tool, text -> Text
+// tool, per-book stats -> its own tool tile (stats build only).
 void EpubReaderActivity::buildMoreActions() {
   using MA = EpubReaderMenuActivity::MenuAction;
+#ifdef READING_STATS_ENABLED
+  EpubReaderMenuActivity::buildToolbarMoreItems(moreItems, !currentPageFootnotes.empty(), !cachedBookmarks.empty());
+#else
   EpubReaderMenuActivity::buildMenuItems(moreItems, !currentPageFootnotes.empty(), !cachedBookmarks.empty());
   moreItems.erase(std::remove_if(moreItems.begin(), moreItems.end(),
                                  [](const auto& item) {
                                    return item.action == MA::SELECT_CHAPTER || item.action == MA::TEXT_SETTINGS;
                                  }),
                   moreItems.end());
+#endif
 }
 
 std::string EpubReaderActivity::moreRowName(int row) const {

@@ -24,9 +24,6 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   TextSettings,
-#ifdef READING_STATS_ENABLED
-  ReadingStats,
-#endif
 };
 
 struct SettingInfo {

@@ -266,8 +266,11 @@ bool executeHomeButtonAction(uint8_t action) {
       return true;
     }
     case CrossPointSettings::HOME_ACT_GO_BACK:
-      // Climb one activity level; at the top of the stack this falls back to
-      // the home screen (mirroring the X4's left-edge back swipe).
+      // The current activity gets first claim: in the reader this closes an
+      // open popup/panel/toolbar sheet instead of leaving the book. At the top
+      // of the stack it falls back to the home screen (mirroring the X4's
+      // left-edge back swipe).
+      if (activityManager.handleBackOnCurrent()) return true;
       activityManager.popActivity();
       return true;
     default:

@@ -40,6 +40,9 @@ class EpubReaderMenuActivity final : public UiListActivity {
   };
 
   static void buildMenuItems(std::vector<MenuItem>& items, bool hasFootnotes, bool hasBookmarks);
+  // Toolbar variant: drops the rows that have their own tool (chapters, text)
+  // and the per-book stats row (its own tool tile).
+  static void buildToolbarMoreItems(std::vector<MenuItem>& items, bool hasFootnotes, bool hasBookmarks);
 
   explicit EpubReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& title,
                                   const int currentPage, const int totalPages, const int bookProgressPercent,

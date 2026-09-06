@@ -27,6 +27,9 @@
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Recents, File transfer, Settings
+#ifdef READING_STATS_ENABLED
+  count++;  // Reading Stats
+#endif
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -225,6 +228,11 @@ void HomeActivity::loop() {
       case HomeMenuItem::OPDS_BROWSER:
         onOpdsBrowserOpen();
         break;
+#ifdef READING_STATS_ENABLED
+      case HomeMenuItem::READING_STATS:
+        onReadingStatsOpen();
+        break;
+#endif
       case HomeMenuItem::FILE_TRANSFER:
         onFileTransferOpen();
         break;
@@ -344,9 +352,16 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this), recentBookProgressLines);
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS),
+#ifdef READING_STATS_ENABLED
+                                        tr(STR_READING_STATS),
+#endif
+                                        tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
+  std::vector<UIIcon> menuIcons = {Folder, Recent,
+#ifdef READING_STATS_ENABLED
+                                   Chart,
+#endif
+                                   Transfer, Settings};
 
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
@@ -396,3 +411,9 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onReadingStatsOpen() {
+#ifdef READING_STATS_ENABLED
+  activityManager.goToGlobalStats();
+#endif
+}
