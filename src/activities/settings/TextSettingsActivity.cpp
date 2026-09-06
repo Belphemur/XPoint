@@ -32,9 +32,12 @@ constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_FOCUS_READING, StrId::STR_HYP
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName, uint8_t fontFamily) {
   if (sdFontFamilyName[0] != '\0' && registry) {
     const auto& families = registry->getFamilies();
+    // UI list has VISIBLE_BUILTIN_FONT_COUNT built-in entries + SD entries.
+    // SD font UI index = VISIBLE_BUILTIN_FONT_COUNT + i (not BUILTIN_FONT_COUNT).
+    constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
       if (families[i].name == sdFontFamilyName) {
-        return CrossPointSettings::BUILTIN_FONT_COUNT + i;
+        return VISIBLE_BUILTIN_FONT_COUNT + i;
       }
     }
   }
@@ -46,7 +49,8 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
   if (fontFamily == CrossPointSettings::NOTOSANS || fontFamily == CrossPointSettings::ATKINSON_HN) {
     return 1;
   }
-  return fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? 0 : 0;
+  // NOTOSERIF (0) maps to UI index 0; NOTOSANS (1) is already handled above.
+  return 0;
 }
 
 constexpr StrId LINE_SPACING_IDS[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
@@ -73,7 +77,8 @@ void TextSettingsActivity::onEnter() {
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
 
   fonts_.clear();
-  fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
+  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
+  fonts_.reserve(VISIBLE_BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
   // Built-in fonts: NOTOSERIF (0) + ATKINSON_HN (2). NOTOSANS (1) is deprecated
   // — migrated to ATKINSON_HN on settings load — and is NOT shown as a separate
   // menu entry to avoid a duplicate "Atkinson Hyperlegible Next" row.

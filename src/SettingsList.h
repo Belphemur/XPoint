@@ -22,11 +22,16 @@
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
-  // Built-in font labels (StrId) — positionally indexed by FONT_FAMILY enum value.
-  // NOTOSANS (value 1) is deprecated; it's migrated to ATKINSON_HN (value 2)
+  // Built-in font labels shown in the settings UI. The UI list is positional:
+  // index 0 = NOTOSERIF (enum 0), index 1 = ATKINSON_HN (enum 2).
+  // NOTOSANS (enum 1) is deprecated; it's migrated to ATKINSON_HN (enum 2)
   // on settings load. Only 2 entries are shown in the settings UI (NOTOSERIF
   // + ATKINSON_HN); the deprecated NOTOSANS slot is hidden to avoid a
   // duplicate "Atkinson Hyperlegible Next" row.
+  // VISIBLE_BUILTIN_FONT_COUNT = 2 is used for UI list indexing (built-in +
+  // SD font offset); BUILTIN_FONT_COUNT (= 3) is still used for enum-value
+  // range checks since NOTOSANS remains a valid (if deprecated) enum value.
+  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
   std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN};
   // Runtime string labels for SD card fonts
   std::vector<std::string> enumStringValues;
@@ -71,12 +76,13 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
                    [](const SdCardFontFamilyInfo& f) { return f.name; });
   }
 
-  s.valueGetter = [sdFamilyNames]() -> uint8_t {
-    // If an SD card font is selected, find its index
+  s.valueGetter = [sdFamilyNames, VISIBLE_BUILTIN_FONT_COUNT]() -> uint8_t {
+    // If an SD card font is selected, find its index in the UI list.
+    // UI layout: [NOTOSERIF(0), ATKINSON_HN(1), SD-font(2), SD-font(3), ...]
     if (SETTINGS.sdFontFamilyName[0] != '\0') {
       for (int i = 0; i < static_cast<int>(sdFamilyNames.size()); i++) {
         if (sdFamilyNames[i] == SETTINGS.sdFontFamilyName) {
-          return static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i);
+          return static_cast<uint8_t>(VISIBLE_BUILTIN_FONT_COUNT + i);
         }
       }
       // SD font name not found in registry — fall through to built-in
@@ -87,17 +93,18 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
     if (SETTINGS.fontFamily == CrossPointSettings::ATKINSON_HN || SETTINGS.fontFamily == CrossPointSettings::NOTOSANS) {
       return 1;
     }
-    return SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? 0 : 0;
+    // NOTOSERIF (0) maps to UI index 0; NOTOSANS (1) already handled above.
+    return 0;
   };
 
-  s.valueSetter = [sdFamilyNames](uint8_t v) {
-    if (v < CrossPointSettings::BUILTIN_FONT_COUNT) {
+  s.valueSetter = [sdFamilyNames, VISIBLE_BUILTIN_FONT_COUNT](uint8_t v) {
+    if (v < VISIBLE_BUILTIN_FONT_COUNT) {
       // Map UI positions to enum values: 0→NOTOSERIF, 1→ATKINSON_HN
       // (NOTOSANS/1 is skipped; settings migration handles old values.)
       SETTINGS.fontFamily = (v == 0) ? CrossPointSettings::NOTOSERIF : CrossPointSettings::ATKINSON_HN;
       SETTINGS.sdFontFamilyName[0] = '\0';
     } else {
-      int sdIdx = v - CrossPointSettings::BUILTIN_FONT_COUNT;
+      int sdIdx = v - VISIBLE_BUILTIN_FONT_COUNT;
       if (sdIdx < static_cast<int>(sdFamilyNames.size())) {
         strncpy(SETTINGS.sdFontFamilyName, sdFamilyNames[sdIdx].c_str(), sizeof(SETTINGS.sdFontFamilyName) - 1);
         SETTINGS.sdFontFamilyName[sizeof(SETTINGS.sdFontFamilyName) - 1] = '\0';
