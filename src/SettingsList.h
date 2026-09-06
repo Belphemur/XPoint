@@ -24,8 +24,10 @@
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   // Built-in font labels (StrId) — positionally indexed by FONT_FAMILY enum value.
   // NOTOSANS (value 1) is deprecated; it's migrated to ATKINSON_HN (value 2)
-  // on settings load. Both map to the same font (Atkinson Hyperlegible Next).
-  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN};
+  // on settings load. Only 2 entries are shown in the settings UI (NOTOSERIF
+  // + ATKINSON_HN); the deprecated NOTOSANS slot is hidden to avoid a
+  // duplicate "Atkinson Hyperlegible Next" row.
+  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN};
   // Runtime string labels for SD card fonts
   std::vector<std::string> enumStringValues;
 
@@ -47,7 +49,6 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   std::vector<std::string> allStringValues;
   if (sdFontCount > 0) {
     allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF));
-    allStringValues.push_back(I18N.get(StrId::STR_ATKINSON_HN));
     allStringValues.push_back(I18N.get(StrId::STR_ATKINSON_HN));
     allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
   }
@@ -80,12 +81,20 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
       }
       // SD font name not found in registry — fall through to built-in
     }
-    return SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? SETTINGS.fontFamily : 0;
+    // Map built-in fontFamily enum values to UI list positions.
+    // UI has 2 entries: NOTOSERIF (0) and ATKINSON_HN (1).
+    // NOTOSANS (1) is deprecated and hidden; treat as ATKINSON_HN → UI index 1.
+    if (SETTINGS.fontFamily == CrossPointSettings::ATKINSON_HN || SETTINGS.fontFamily == CrossPointSettings::NOTOSANS) {
+      return 1;
+    }
+    return SETTINGS.fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? 0 : 0;
   };
 
   s.valueSetter = [sdFamilyNames](uint8_t v) {
     if (v < CrossPointSettings::BUILTIN_FONT_COUNT) {
-      SETTINGS.fontFamily = v;
+      // Map UI positions to enum values: 0→NOTOSERIF, 1→ATKINSON_HN
+      // (NOTOSANS/1 is skipped; settings migration handles old values.)
+      SETTINGS.fontFamily = (v == 0) ? CrossPointSettings::NOTOSERIF : CrossPointSettings::ATKINSON_HN;
       SETTINGS.sdFontFamilyName[0] = '\0';
     } else {
       int sdIdx = v - CrossPointSettings::BUILTIN_FONT_COUNT;
