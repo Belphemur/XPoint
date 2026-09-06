@@ -541,7 +541,7 @@ void renderGlobalStatsPage(GfxRenderer& renderer, const MappedInputManager* /*ma
   }
 }
 
-void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManager* /*mappedInput*/,
+void renderNoRtcCombinedStatsPage(const GfxRenderer& renderer, const MappedInputManager* /*mappedInput*/,
                                   const std::string& bookTitle, const BookReadingStats& bookStats,
                                   const float progressPercent, const bool hasEstimatedTimeLeft,
                                   const uint32_t estimatedTimeLeftSeconds, const GlobalReadingStats& deviceStats,
