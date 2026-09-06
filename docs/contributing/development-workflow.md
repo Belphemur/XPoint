@@ -42,6 +42,10 @@ If `clang-format` is missing or too old locally, see [Getting Started](./getting
 - Include reproduction and verification steps for bug fixes
 - Be transparent about AI assistance by completing the **AI Usage** section
   in the pull request template (`YES`, `PARTIALLY`, or `NO`).
+- When applicable, use wording such as:
+  `YES — an AI coding agent assisted with diagnosis, implementation,
+  verification, and PR drafting; the behavior was verified on X4 Pro
+  hardware.` If hardware verification is still pending, say so explicitly.
 
 ## 5) Review etiquette
 
