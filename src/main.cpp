@@ -108,7 +108,7 @@ EpdFont atkinson_hn12BoldFont(&atkinson_hn_12_bold);
 EpdFont atkinson_hn12ItalicFont(&atkinson_hn_12_italic);
 EpdFont atkinson_hn12BoldItalicFont(&atkinson_hn_12_bolditalic);
 EpdFontFamily atkinson_hn12FontFamily(&atkinson_hn12RegularFont, &atkinson_hn12BoldFont, &atkinson_hn12ItalicFont,
-                                       &atkinson_hn12BoldItalicFont);
+                                      &atkinson_hn12BoldItalicFont);
 EpdFont atkinson_hn14RegularFont(&atkinson_hn_14_regular);
 EpdFont atkinson_hn14BoldFont(&atkinson_hn_14_bold);
 EpdFont atkinson_hn14ItalicFont(&atkinson_hn_14_italic);
@@ -120,7 +120,7 @@ EpdFont atkinson_hn16BoldFont(&atkinson_hn_16_bold);
 EpdFont atkinson_hn16ItalicFont(&atkinson_hn_16_italic);
 EpdFont atkinson_hn16BoldItalicFont(&atkinson_hn_16_bolditalic);
 EpdFontFamily atkinson_hn16FontFamily(&atkinson_hn16RegularFont, &atkinson_hn16BoldFont, &atkinson_hn16ItalicFont,
-                                       &atkinson_hn16BoldItalicFont);
+                                      &atkinson_hn16BoldItalicFont);
 EpdFont atkinson_hn18RegularFont(&atkinson_hn_18_regular);
 EpdFont atkinson_hn18BoldFont(&atkinson_hn_18_bold);
 EpdFont atkinson_hn18ItalicFont(&atkinson_hn_18_italic);
