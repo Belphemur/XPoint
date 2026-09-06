@@ -64,7 +64,20 @@ class EpubReaderActivity final : public ReaderActivity {
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
   // Toolbar; its tools open the Contents/Text/More bottom-sheet panels.
-  enum class Overlay { None, Toolbar, Contents, Text, More };
+  enum class Overlay { None, Toolbar, Contents, Text, More, Stats };
+  // Toolbar tool focus: 0=Contents, 1=Text, then the optional stats tile
+  // (READING_STATS_ENABLED) and More last. Panels index the same way.
+  static constexpr int kToolContents = 0;
+  static constexpr int kToolText = 1;
+  static constexpr int kToolStats = 2;
+  static constexpr int kToolMore =
+#ifdef READING_STATS_ENABLED
+      3;
+#else
+      2;
+#endif
+  // Number of tiles in the tool row (kToolMore is the last one).
+  static constexpr int kToolTileCount = kToolMore + 1;
   Overlay overlay = Overlay::None;
   int focusedTool = 0;  // toolbar tool focus: 0=Contents, 1=Text, 2=More
   int panelIndex = 0;   // selected row within the active panel
@@ -153,6 +166,11 @@ class EpubReaderActivity final : public ReaderActivity {
   void openReaderMenu();
   // Toolbar reader menu (see Overlay above).
   bool usesToolbarMenu() const;
+  // True while any reader chrome is up (toolbar sheet, a panel, or a popup
+  // over a panel). The Home-key "Go Back" shortcut / home gesture close it
+  // instead of leaving the book.
+  bool isChromeOpen() const;
+  bool handleHomeGesture() override;
   void openOverlay(Overlay target);
   void closeOverlayToPage();
   void discardOverlayPage();

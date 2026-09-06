@@ -92,9 +92,6 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
-#ifdef READING_STATS_ENABLED
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_READING_STATS, SettingAction::ReadingStats));
-#endif
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.insert(readerSettings.begin() + 1,
@@ -168,13 +165,6 @@ void SettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
-#ifdef READING_STATS_ENABLED
-    // Reading Stats row dims when tracking is off (design §7.1); enabled=false
-    // gates touch, and the action case below no-ops button Confirm.
-    if (settings[i].action == SettingAction::ReadingStats) {
-      item.enabled = SETTINGS.shouldTrackReadingStats();
-    }
-#endif
     rowItems_.push_back(item);
   }
 }
@@ -385,15 +375,6 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
         break;
-#ifdef READING_STATS_ENABLED
-      case SettingAction::ReadingStats:
-        // The row is disabled when tracking is off; enabled=false gates touch
-        // but not button Confirm, so guard the launch too (design §7.1.2).
-        if (SETTINGS.shouldTrackReadingStats()) {
-          startActivityForResult(std::make_unique<GlobalStatsActivity>(renderer, mappedInput), resultHandler);
-        }
-        break;
-#endif
       case SettingAction::None:
         // Do nothing
         break;
