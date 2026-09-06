@@ -39,7 +39,14 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
     }
   }
 
-  return fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? fontFamily : 0;
+  // Map built-in font family enum values to UI list positions.
+  // The UI shows 2 entries: NOTOSERIF (0) and ATKINSON_HN (2).
+  // NOTOSANS (1) is deprecated and hidden, but old settings may still hold it;
+  // treat it as ATKINSON_HN (same font) → UI index 1.
+  if (fontFamily == CrossPointSettings::NOTOSANS || fontFamily == CrossPointSettings::ATKINSON_HN) {
+    return 1;
+  }
+  return fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? 0 : 0;
 }
 
 constexpr StrId LINE_SPACING_IDS[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
@@ -67,9 +74,11 @@ void TextSettingsActivity::onEnter() {
 
   fonts_.clear();
   fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
+  // Built-in fonts: NOTOSERIF (0) + ATKINSON_HN (2). NOTOSANS (1) is deprecated
+  // — migrated to ATKINSON_HN on settings load — and is NOT shown as a separate
+  // menu entry to avoid a duplicate "Atkinson Hyperlegible Next" row.
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, static_cast<uint8_t>(CrossPointSettings::NOTOSERIF)});
   fonts_.push_back({I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::ATKINSON_HN)});
-  fonts_.push_back({I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::NOTOSANS)});
   if (registry_) {
     const auto& families = registry_->getFamilies();
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
