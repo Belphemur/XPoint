@@ -205,6 +205,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // right edge adjusts brightness. Independent of touchReaderControls.
   // Gated by FREEINK_CAP_FRONTLIGHT (compile-time) + settings toggle (runtime).
   // Returns true when a side-swipe was consumed (skips page-turn for this frame).
+  //
+  // Uses continuous touch tracking (not wasSideSwipe/decodeSwipe) for 1%
+  // precision: the SDK's swipe recognizer requires 60px minimum travel before
+  // it fires, which maps to ~4% on a 1448px screen — too coarse for night-time
+  // fine adjustment. Instead, drag state is tracked across loop() calls via
+  // wasScreenTouchDown + isScreenTouchHeld + wasScreenTouchReleased.
   bool handleSideSwipeFrontlight();
   bool launchKOReaderSync();
   unsigned long confirmLongPressThreshold() const;
@@ -226,6 +232,19 @@ class EpubReaderActivity final : public ReaderActivity {
   // the activity stack, and Pop restores it without onEnter(), so the drift has
   // to be noticed here rather than assumed away.
   uint8_t appliedOrientation = 0;
+
+#if FREEINK_CAP_FRONTLIGHT
+  // Continuous frontlight drag state. Updated by handleSideSwipeFrontlight()
+  // across loop() frames: wasScreenTouchDown starts the drag, isScreenTouchHeld
+  // reports incremental deltas each frame, wasScreenTouchReleased ends it.
+  struct FrontlightDragState {
+    bool active = false;
+    bool leftSide = false;  // true = warmth edge, false = brightness edge
+    int touchStartY = 0;    // logical screen Y where the drag began
+  };
+  FrontlightDragState frontlightDrag;
+#endif
+
 
   bool loadBook() override;
   std::string getBookTitle() const override { return epub ? epub->getTitle() : ""; }

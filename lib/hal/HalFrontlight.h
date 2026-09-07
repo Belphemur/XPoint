@@ -2,6 +2,13 @@
 
 #include <FrontlightManager.h>
 
+// Minimum brightness the slider/panel can set (0 turns the light off entirely
+// via setOn(false); the slider clamps to this floor so dragging to the bottom
+// edge turns the light off, not to a visible 0% level). Shared between
+// FrontlightPanelActivity and the reader's side-swipe handler so both
+// present a consistent 1% minimum.
+constexpr uint8_t FRONTLIGHT_MIN_BRIGHTNESS = 1;
+
 // Thin firmware HAL over the SDK frontlight manager. It is inert on boards
 // without a frontlight, so callers do not need board-specific conditionals.
 class HalFrontlight {

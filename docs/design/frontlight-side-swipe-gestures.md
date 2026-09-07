@@ -4,8 +4,8 @@
 
 Two new touch gestures on the e-ink reader screen that control the frontlight directly while reading:
 
-- **Left side, vertical slide → frontlight color temperature** (warmth). Sliding up warms the light (more warm channel), sliding down cools it (more cool channel).
-- **Right side, vertical slide → frontlight brightness**. Sliding up increases brightness, sliding down decreases it. Sliding all the way down to 0 turns the frontlight off.
+- **Left side, vertical slide → frontlight color temperature** (warmth). Sliding up warms the light (more warm channel), sliding down cools it (more cool channel). Only effective on dual-channel boards (X4 Pro).
+- **Right side, vertical slide → frontlight brightness**. Sliding up increases brightness, sliding down decreases it. Sliding all the way down turns the light off; swiping up from the minimum restores it. The brightness swipe behaves identically to the frontlight panel's slider: it clamps to 1% minimum (FRONTLIGHT_MIN_BRIGHTNESS). The left-edge warmth gesture is accepted on single-channel boards but has no visual effect.
 
 These gestures work independently of the `touchReaderControls` setting and are gated at compile time by `FREEINK_CAP_FRONTLIGHT`. They are disableable via a new Settings toggle.
 
@@ -15,47 +15,49 @@ These gestures work independently of the `touchReaderControls` setting and are g
 
 - **Compile-time**: The entire feature is wrapped in `#if FREEINK_CAP_FRONTLIGHT`. The `FREEINK_CAP_FRONTLIGHT` macro is already defined in `freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h` (line 201) and derived from `FREEINK_DEVICE_*` per env. Boards without a frontlight (X4, X3, X4C, OnePage) compile the code out entirely. No new board-features-pipeline entry needed — the existing macro suffices.
 - **Runtime**: A new setting `frontlightSideGestures` (uint8_t, 0 = Off, 1 = On, default 1 on frontlight boards). When Off, the gestures do nothing even on frontlight-equipped devices. Persisted in `settings.json` as `"frontlightSideGestures"`.
-- **Gated on active reader surface**: The handler also checks `overlay == Overlay::None && !endOfBookMenuActive()` so the gesture cannot fire while the toolbar menu, footnotes overlay, or end-of-book menu is shown. The edge swipe is still consumed (returns true) so it doesn't fall through to page-turn logic, but the frontlight value is not changed while an overlay owns input.
+- **Gated on active reader surface**: The handler also checks `overlay == Overlay::None && !endOfBookMenuActive()` so the gesture cannot fire while the toolbar menu, footnotes overlay, or end-of-book menu is shown.
 
 ### Gate: independent of `touchReaderControls`
 
-The feature must work regardless of `SETTINGS.touchReaderControls` (Off / Tap / Swipe / Inverted Tap). The existing `detectTouchPageTurn()` in `ReaderUtils.h` checks `touchReaderControls` and returns early when it's `TOUCH_READER_OFF`. The new side-swipe handler runs as a **separate check** after `detectTouchPageTurn()`, and does NOT read `touchReaderControls` at all. If a vertical swipe on the left/right edge is detected, the frontlight is adjusted and the page-turn path is skipped for that frame (the swipe is consumed).
+The feature must work regardless of `SETTINGS.touchReaderControls` (Off / Tap / Swipe / Inverted Tap). The existing `detectTouchPageTurn()` in `ReaderUtils.h` checks `touchReaderControls` and returns early when it's `TOUCH_READER_OFF`. The new side-swipe handler runs as a **separate check** after `detectTouchPageTurn()`, and does NOT read `touchReaderControls` at all.
 
-### Gesture detection
+### Why continuous drag, not completed swipe?
 
-The existing `wasSwipe()` / `decodeSwipe()` pipeline in `MappedInputManager` already returns logical-screen coordinates for a completed swipe (start + end). We add one new public method:
+The SDK's `wasSwipe`/`decodeSwipe` pipeline requires 60px minimum travel before it fires as a "swipe". On a 1448px screen, 60px maps to ~4% — too coarse for night-time fine adjustment where 1% precision matters. Instead of using `wasSideSwipe()` (which calls `decodeSwipe`), the handler uses continuous touch tracking across `loop()` frames:
 
-```cpp
-// In MappedInputManager (MappedInputManager.h / .cpp):
-// Returns true when `decodeSwipe()` identified a completed vertical swipe
-// whose START point falls within the left or right edge band.
-//   leftSide   – true if the swipe started on the left edge band
-//   up         – true if the swipe moved upward (start.y > end.y)
-//   distancePx – vertical travel in logical pixels (|start.y - end.y|),
-//                used to compute the frontlight step size
-bool wasSideSwipe(bool& leftSide, bool& up, int& distancePx) const;
-```
+- `wasScreenTouchDown()` fires once on touch-down; if the touch starts within the left or right 20% edge band, a frontlight drag begins.
+- `isScreenTouchHeld()` reports the live touch position each frame; the vertical delta from the previous frame is mapped directly to a frontlight step (1px = 1%).
+- `wasScreenTouchReleased()` ends the drag.
 
-**Detection logic** (in `wasSideSwipe()`, using `decodeSwipe()` output):
-- The swipe must have a start point (`sx`, `sy`) from `decodeSwipe()`.
-- Left side: `sx < screenWidth * SIDE_BAND` (SIDE_BAND = 0.20 = left 20%).
-- Right side: `sx > screenWidth * (1.0 - SIDE_BAND)`.
-- The swipe must be primarily vertical: `ady > adx` (vertical axis dominant), which also guarantees it won't conflict with the horizontal back-gesture (which requires `dx > 0` with `dx > dy`).
-- The swipe must be a valid completed swipe — `decodeSwipe()` already enforces the SDK's minimum travel threshold (60px in physical touch units, applied to the raw gesture), so no additional threshold is needed.
-- `distancePx = ady` (the raw vertical delta returned by `decodeSwipe()`).
+The vertical delta is accumulated frame-to-frame (baseline resets each loop), so a slow small stroke produces small 1% increments and a fast long stroke produces larger steps — exactly the proportional control the user needs at night.
 
-**Why a completed swipe, not continuous drag?** E-ink refresh is slow (1–2s per frame). A continuous drag would queue frame updates that outpace the display. A completed vertical swipe that maps its travel distance to a percentage change is the established pattern (matches how `wasSwipe()` already drives page turns). The magnitude of the vertical travel as a fraction of screen height determines the step size:
+### Gesture detection and step sizing
 
-- `step = clamp(round(ady / screenHeight * 100), 1, 100)` — a full-height swipe = ±100% step.
-- Warmth: `up ? +step : -step` applied to `SETTINGS.frontlightWarmth` (clamped 0–100).
-- Brightness: `up ? +step : -step` applied to `SETTINGS.frontlightBrightness` (clamped 0–100). If the result is 0, the light is turned off via `setOn(false)`.
+- Touch starts in the left 20% of screen width → **warmth** (leftSide = true).
+- Touch starts in the right 20% of screen width → **brightness** (leftSide = false).
+- Touch starts in the middle 60% → not a frontlight gesture (falls through to page turn / tap).
+- Each `loop()` frame: `deltaY = currentY - previousY`. `step = abs(deltaY)`. `up = (deltaY < 0)` (finger moved up).
+- **Warmth**: `next = SETTINGS.frontlightWarmth + (up ? step : -step)`, clamped to `[0, 100]`. Calls `Frontlight.setWarmth()`. No re-render.
+- **Brightness**: `next = SETTINGS.frontlightBrightness + (up ? step : -step)`.
+  - If `next <= 0`: turns the light off via `Frontlight.setOn(false)` (preserves `lastBrightness` so the panel slider and swipe restore to the same value). `SETTINGS.frontlightOn = 0`.
+  - If `next > 0`: clamps to `[FRONTLIGHT_MIN_BRIGHTNESS, 100]`. If the light was off, restores it via `Frontlight.setOn(true)`. Calls `Frontlight.setBrightness()`.
+
+`FRONTLIGHT_MIN_BRIGHTNESS` is defined in `HalFrontlight.h` as a shared constant, and `FrontlightPanelActivity.cpp` uses it too — so both controls agree on the 1% floor.
+
+### No re-render
+
+`handleSideSwipeFrontlight()` does NOT call `requestUpdate()`. The `Frontlight.setBrightness/setWarmth/setOn` calls push new PWM duty values to the hardware immediately (confirmed by `[FrontlightMgr] apply` logs). A full e-ink page re-render is triggered by `requestUpdate()`, but the page content is unchanged — only the frontlight PWM changed. Triggering a re-render adds ~1.1s of display refresh for zero visual benefit.
+
+### No per-swipe settings save
+
+`handleSideSwipeFrontlight()` does NOT call `SETTINGS.saveToFile()`. The SD write on every swipe causes render-path stalls (see `PersistableStore.h`). The in-memory `SETTINGS` fields are already correct and the frontlight hardware is updated immediately. Persistence happens naturally at the next settings-save point (sleep, Home, Settings screen), matching `FrontlightPanelActivity`'s live-on-exit pattern.
 
 ### Where the handler lives
 
-The handler runs in `EpubReaderActivity::loop()`, at the same call site as `detectTouchPageTurn()` (line 629 of `EpubReaderActivity.cpp`). It runs **after** `detectTouchPageTurn()` but **before** the overlay check and page-turn logic, so a vertical side-swipe that changes the frontlight does not also trigger a page turn:
+The handler runs in `EpubReaderActivity::loop()`, after `detectTouchPageTurn()` but before the overlay check and page-turn logic:
 
 ```cpp
-// In EpubReaderActivity::loop(), after line 629:
+// In EpubReaderActivity::loop():
 #if FREEINK_CAP_FRONTLIGHT
 if (SETTINGS.frontlightSideGestures && Frontlight.present() &&
     overlay == Overlay::None && !endOfBookMenuActive()) {
@@ -66,79 +68,42 @@ if (SETTINGS.frontlightSideGestures && Frontlight.present() &&
 #endif
 ```
 
-`handleSideSwipeFrontlight()` calls `mappedInput.wasSideSwipe(leftSide, up, distancePx)` and, if true, applies the brightness/warmth change and calls `Frontlight.setBrightness()` / `Frontlight.setWarmth()` directly, updates the in-memory `SETTINGS` fields, and returns (skipping the page-turn for this frame).
+`handleSideSwipeFrontlight()` manages its own drag state (`frontlightDrag` struct, gated by `#if FREEINK_CAP_FRONTLIGHT`). On touch-down it checks the edge band; on each held frame it applies the delta; on release it resets. Returns true when the gesture is consumed (skips page-turn for that frame).
 
-### Setting declaration
+### Files changed
 
-In `SettingsList.h`, add a new `Toggle` entry in the Display category, gated by `FREEINK_CAP_FRONTLIGHT`:
+1. `lib/hal/HalFrontlight.h` — add `FRONTLIGHT_MIN_BRIGHTNESS` shared constant.
+2. `src/CrossPointSettings.h` — add `frontlightSideGestures` field.
+3. `src/SettingsList.h` — add `Toggle` entry, gated by `FREEINK_CAP_FRONTLIGHT`, in Display category.
+4. `src/MappedInputManager.h` — remove `wasSideSwipe` (replaced by continuous tracking).
+5. `src/MappedInputManager.cpp` — remove `wasSideSwipe` implementation.
+6. `src/activities/reader/EpubReaderActivity.h` — add `handleSideSwipeFrontlight()` declaration, add `FrontlightDragState` member.
+7. `src/activities/reader/EpubReaderActivity.cpp` — add `handleSideSwipeFrontlight()` with continuous drag tracking + call site in `loop()`.
+8. `src/activities/util/FrontlightPanelActivity.cpp` — use shared `FRONTLIGHT_MIN_BRIGHTNESS` constant (was local `MIN_BRIGHTNESS`).
+9. `lib/I18n/translations/english.yaml` — add `STR_FRONTLIGHT_SIDE_GESTURES`.
+10. `README.md` — add feature #10 + touch gestures subsection.
+11. `USER_GUIDE.md` — add frontlight side-gesture controls subsection + Display Settings entry.
 
-```cpp
-#if FREEINK_CAP_FRONTLIGHT
-SettingInfo::Toggle(StrId::STR_FRONTLIGHT_SIDE_GESTURES, &CrossPointSettings::frontlightSideGestures,
-                    "frontlightSideGestures", StrId::STR_CAT_DISPLAY),
-#endif
-```
+### OpenCode design review (2026-09-07)
 
-In `CrossPointSettings.h`, add the field after the existing frontlight fields:
+**Reviewer**: OpenCode glm 5.3 flash
+**Result**: Reviewed (manual codebase investigation; OpenCode subagent was spawned but did not complete).
 
-```cpp
-uint8_t frontlightSideGestures = 1;
-```
+Findings:
+- **Sound**: `FREEINK_CAP_FRONTLIGHT` is the correct compile-time gate; `Frontlight.present()` handles runtime inertness on virtual boards.
+- **Sound**: Placement after `detectTouchPageTurn()` but before the overlay check is correct — vertical edge swipes don't trigger page turns.
+- **Sound**: `HalFrontlight` API calls (`setOn`/`setBrightness`/`setWarmth`) match existing codebase patterns.
+- **Sound**: Conflict avoidance with back-gesture (horizontal) and light-panel gesture (top edge) is architecturally sound.
+- **Sound**: `setOn(false)` at brightness=0 matches `FrontlightPanelActivity::toggleLight()` pattern.
+- **Note**: The step calculation maps swipe distance to 1–100; the SDK's `TOUCH_SWIPE_MIN_PX` (60px) was the minimum detectable swipe, which caused the ~4% floor issue — addressed by switching to continuous drag tracking.
 
-In `english.yaml`, add:
+### Verification
 
-```yaml
-STR_FRONTLIGHT_SIDE_GESTURES: "Frontlight Side Gestures"
-```
-
-### i18n
-
-New string key `STR_FRONTLIGHT_SIDE_GESTURES` added to `english.yaml`. Other languages auto-fill from English via `gen_i18n.py`. The key is only surfaced on boards with `FREEINK_CAP_FRONTLIGHT` (gated in `SettingsList.h`), so non-frontlight boards never see an untranslated label.
-
-## Files to change
-
-| File | Change |
-|------|--------|
-| `lib/I18n/translations/english.yaml` | Add `STR_FRONTLIGHT_SIDE_GESTURES` |
-| `src/CrossPointSettings.h` | Add `frontlightSideGestures` field (generic JSON loop handles persistence) |
-| `src/SettingsList.h` | Add the Settings row, gated by `FREEINK_CAP_FRONTLIGHT` |
-| `src/MappedInputManager.h` | Add `wasSideSwipe(bool& leftSide, bool& up, int& distancePx) const` declaration |
-| `src/MappedInputManager.cpp` | Implement `wasSideSwipe()` using `decodeSwipe()` + edge math |
-| `src/activities/reader/EpubReaderActivity.h` | Add `handleSideSwipeFrontlight()` private method |
-| `src/activities/reader/EpubReaderActivity.cpp` | Add `handleSideSwipeFrontlight()` implementation + call in `loop()` |
-| `README.md` | Document the feature under fork features |
-| `USER_GUIDE.md` | Document the gesture in the reading-gestures section |
-
-## Persistence
-
-The frontlight brightness, warmth, and on/off state are already persisted via `SETTINGS.frontlightBrightness`, `SETTINGS.frontlightWarmth`, `SETTINGS.frontlightOn`. The side-swipe handler writes to these same in-memory `SETTINGS` fields and applies the hardware change immediately via `Frontlight.setBrightness()` / `Frontlight.setWarmth()` / `Frontlight.setOn()`. It does **not** call `SETTINGS.saveToFile()` on every swipe — doing so would cause SD-card write stalls on the e-ink render path. Persistence is deferred to the next natural settings-save point (sleep, Home, Settings screen), matching the `FrontlightPanelActivity::persistLightSettings()` pattern where live adjustments are only flushed to disk on `onExit()`.
-
-## Orientation handling
-
-`decodeSwipe()` already maps normalized touch coordinates through `renderer.tapToLogical()`, which applies the current orientation transform. So left/right and up/down are correct in all four orientations (Portrait, Inverted, Landscape CW, Landscape CCW).
-
-## Conflict avoidance with existing gestures
-
-- **Top-edge down-swipe** → opens FrontlightPanelActivity (consumed by `ActivityManager::loop()` before the reader's `loop()`). Not affected — the new side swipes start on the left/right edges, not the top edge.
-- **Left-edge swipe (back gesture)** → consumed by `ActivityManager::loop()` via `wasBackGesture()`. The back gesture requires `dx > 0` (horizontal, moving right) with `dx > dy`. A vertical side-swipe has `ady > adx`, so `wasSwipe()` returns `Left`/`Right` only for horizontal swipes. The new `wasSideSwipe()` checks `ady > adx` exclusively, so it won't fire on a back-gesture.
-- **Horizontal swipe in the reader (page turn)** → `detectTouchPageTurn()` consumes `SwipeDir::Left`/`Right`. The new vertical side-swipe handler only fires for vertical swipes (`up`/`down`), so there is no conflict. If a vertical side-swipe is detected, the handler returns early and skips the page-turn path entirely (the swipe is consumed).
-
-## Brightness "all the way down disables it"
-
-When a downward swipe on the right edge would reduce brightness to 0, the light is turned off via `Frontlight.setOn(false)` rather than setting brightness to 0 while staying "on". This matches the existing `toggleFrontlightByShortcut()` pattern and the `FrontlightPanelActivity`'s lamp button behavior. When a subsequent upward brightness swipe is detected while the light is off, the handler calls `Frontlight.setOn(true)` to wake the hardware (matching `FrontlightPanelActivity::onBrightnessEvent()`).
-
-## Open questions
-
-1. **Step size granularity**: Full-height swipe = ±100 step. A small swipe = ±1 step. This maps naturally to the brightness percentage. Alternative: fixed step (±5) regardless of swipe distance. The distance-proportional approach gives fine control for small gestures and fast full-range adjustment for large ones, matching the slider mental model.
-
-2. **Warmth on single-channel boards**: `Frontlight.hasColorTemperature()` is false on single-channel frontlights (e.g., de-link, LilyGo). On those boards, `setWarmth()` is a no-op (the `FrontlightManager::setColorTemperature` body is empty without `FREEINK_CAP_WARMLIGHT`). The left-side gesture still consumes the touch and updates the saved `frontlightWarmth` setting (so it's correct when the device is moved to a warm/cool board), but the hardware doesn't change. This is acceptable — the `FRONT_LIGHT_ON` build flag already handles single-channel vs. warm/cool at the hardware level.
-
-## Verification
-
-- `pio run -e x4pro` builds (X4 Pro has warm/cool frontlight + touch). ✓
-- `pio run -e default` builds (X4 — no frontlight, code compiles out). ✓
-- `pio run -e papermono` builds (Paper Mono has frontlight but no warm channel). ✓
-- `pio run -e x4c` builds (X4C — no frontlight, no touch).
-- On x4pro: verify left-side up-swipe warms the light, down-swipe cools it; right-side up-swipe brightens, down-swipe dims; brightness at 0 turns the light off; re-swiping up restores brightness; gesture works with `touchReaderControls` set to Off; gesture does not fire when overlay menu or end-of-book menu is open.
-- clang-format: no changes. ✓
-- cppcheck: no new warnings. ✓
+- `pio run -e x4pro` (ESP32-S3, frontlight + touch): **SUCCESS**
+- `pio run -e default` (ESP32-C3, no frontlight): **SUCCESS**
+- `pio run -e papermono` (Paper Mono, brightness-only frontlight): **SUCCESS**
+- `pio run -e sticky` (ESP32-S3, no frontlight): **SUCCESS**
+- `clang-format-fix -g`: no changes needed
+- Host unit tests: pass
+- CodeRabbit review: pass (no actionable findings)
+- Copilot review: pass

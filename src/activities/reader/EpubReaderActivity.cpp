@@ -3171,55 +3171,80 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
 }
 
 bool EpubReaderActivity::handleSideSwipeFrontlight() {
-  bool leftSide = false;
-  bool up = false;
-  int distancePx = 0;
-  if (!mappedInput.wasSideSwipe(leftSide, up, distancePx)) return false;
+  // Continuous drag tracking for pixel-precision frontlight control.
+  // The SDK's wasSwipe/decodeSwipe requires 60px minimum travel, which
+  // maps to ~4% on a 1448px screen — too coarse for night-time fine tuning.
+  // Instead we track the touch live: wasScreenTouchDown starts a drag on a
+  // side edge, isScreenTouchHeld reports incremental Y deltas each frame
+  // (1px = 1% change), and wasScreenTouchReleased ends the drag.
 
-  // Map swipe distance to a 1–100 step (full screen height = 100).
-  const int screenH = renderer.getScreenHeight();
-  int step = screenH > 0 ? static_cast<int>(static_cast<float>(distancePx) / screenH * 100.0f + 0.5f) : 1;
-  if (step < 1) step = 1;
-  if (step > 100) step = 100;
+  const int screenW = renderer.getScreenWidth();
+  static constexpr float SIDE_BAND = 0.20f;  // 20% of width from each side
+  const int leftBand = static_cast<int>(screenW * SIDE_BAND);
+  const int rightBand = screenW - static_cast<int>(screenW * SIDE_BAND);
 
-  if (leftSide) {
-    // Left edge: adjust color temperature (warmth). Up = warmer.
-    if (!Frontlight.hasColorTemperature()) {
-      // No warm/cool channel — still consume the gesture so it doesn't
-      // trigger a page turn, but don't change a setting that has no effect.
-      return true;
+  // --- Touch-down: start a frontlight drag on a side edge -------------------
+  if (!frontlightDrag.active) {
+    int tx = 0;
+    int ty = 0;
+    if (!mappedInput.wasScreenTouchDown(tx, ty)) return false;
+    if (tx < leftBand) {
+      frontlightDrag.active = true;
+      frontlightDrag.leftSide = true;
+      frontlightDrag.touchStartY = ty;
+    } else if (tx >= rightBand) {
+      frontlightDrag.active = true;
+      frontlightDrag.leftSide = false;
+      frontlightDrag.touchStartY = ty;
     }
-    SETTINGS.frontlightWarmth = up ? static_cast<uint8_t>(std::min(100, SETTINGS.frontlightWarmth + step))
-                                   : static_cast<uint8_t>(std::max(0, SETTINGS.frontlightWarmth - step));
-    Frontlight.setWarmth(SETTINGS.frontlightWarmth);
-  } else {
-    // Right edge: adjust brightness. Up = brighter.
-    const int delta = up ? step : -step;
-    int newBrightness = static_cast<int>(SETTINGS.frontlightBrightness) + delta;
-    if (newBrightness <= 0) {
-      // Sliding all the way down turns the light off.
-      SETTINGS.frontlightOn = 0;
-      SETTINGS.frontlightBrightness = 0;
-      Frontlight.setOn(false);
-    } else {
-      if (newBrightness > 100) newBrightness = 100;
-      SETTINGS.frontlightBrightness = static_cast<uint8_t>(newBrightness);
-      // If the light was off, turning it back on via a brightness swipe
-      // restores the on state — matches FrontlightPanelActivity's behavior.
-      if (!SETTINGS.frontlightOn) {
-        SETTINGS.frontlightOn = 1;
-        Frontlight.setOn(true);
-      }
-      Frontlight.setBrightness(SETTINGS.frontlightBrightness);
-    }
+    return frontlightDrag.active;  // true if we started a drag, false otherwise
   }
 
-  // Do NOT call SETTINGS.saveToFile() here — the SD write on every swipe
-  // causes render-path stalls (see PersistableStore.h). The in-memory SETTINGS
-  // values are already correct and the hardware is updated immediately.
-  // Persistence happens naturally at the next settings-save point (sleep,
-  // Home, Settings screen), matching FrontlightPanelActivity's live-on-exit
-  // pattern.
-  requestUpdate();
+  // --- Drag in progress: apply incremental Y delta ---------------------------
+  int cx = 0;
+  int cy = 0;
+  if (mappedInput.isScreenTouchHeld(cx, cy)) {
+    // 1px of vertical travel = 1% frontlight change. Full screen = 100%.
+    const int deltaY = cy - frontlightDrag.touchStartY;
+    const int up = deltaY < 0;  // dy < 0 = finger moved up
+    const int step = std::abs(deltaY);
+    frontlightDrag.touchStartY = cy;  // reset baseline for next frame
+
+    if (step == 0) return true;  // no movement this frame
+
+    if (frontlightDrag.leftSide) {
+      // Left edge: color temperature. Up = warmer.
+      if (!Frontlight.hasColorTemperature()) return true;  // consumed, no change
+      int next = static_cast<int>(SETTINGS.frontlightWarmth) + (up ? step : -step);
+      SETTINGS.frontlightWarmth = static_cast<uint8_t>(std::clamp(next, 0, 100));
+      Frontlight.setWarmth(SETTINGS.frontlightWarmth);
+    } else {
+      // Right edge: brightness. Up = brighter, down = dimmer.
+      // Sliding all the way down (to 0) turns the light off.
+      int next = static_cast<int>(SETTINGS.frontlightBrightness) + (up ? step : -step);
+      if (next <= 0) {
+        // Turn the light off. Do NOT reset lastBrightness (keep the pre-off
+        // value) — mirrors FrontlightPanelActivity::toggleLight, which calls
+        // only setOn(false) so the panel slider and swipe both restore to the
+        // same brightness when the light is turned back on.
+        SETTINGS.frontlightOn = 0;
+        Frontlight.setOn(false);
+      } else {
+        SETTINGS.frontlightBrightness =
+            static_cast<uint8_t>(std::clamp(next, static_cast<int>(FRONTLIGHT_MIN_BRIGHTNESS), 100));
+        if (!SETTINGS.frontlightOn) {
+          SETTINGS.frontlightOn = 1;
+          Frontlight.setOn(true);
+        }
+        Frontlight.setBrightness(SETTINGS.frontlightBrightness);
+      }
+    }
+    return true;  // consumed — prevents page turn on the same frame
+  }
+
+  // --- Release: end the drag (no re-render needed; hardware already updated)
+  if (mappedInput.wasScreenTouchReleased()) {
+    frontlightDrag.active = false;
+  }
   return true;
 }

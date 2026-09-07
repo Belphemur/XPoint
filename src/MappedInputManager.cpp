@@ -255,43 +255,6 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
   }
 }
 
-bool MappedInputManager::wasSideSwipe(bool& leftSide, bool& up, int& distancePx) const {
-  int sx = 0;
-  int sy = 0;
-  int ex = 0;
-  int ey = 0;
-  if (!decodeSwipe(sx, sy, ex, ey)) return false;
-
-  // Vertical-dominant swipe (ties go to horizontal per swipeDirection, so we
-  // require strict vertical dominance to avoid clashing with the reader's
-  // horizontal page-turn swipes and the system back-gesture).
-  const int dx = ex - sx;
-  const int dy = ey - sy;
-  const int adx = dx < 0 ? -dx : dx;
-  const int ady = dy < 0 ? -dy : dy;
-  if (ady <= adx) return false;
-
-  // The swipe must START on the left or right edge band. Using the start point
-  // (not midpoint) keeps it distinct from mid-screen vertical gestures.
-  const int screenW = renderer.getScreenWidth();
-  static constexpr float SIDE_BAND = 0.20f;  // 20% of width from each side edge
-  const int leftBand = static_cast<int>(screenW * SIDE_BAND);
-  const int rightBand = screenW - static_cast<int>(screenW * SIDE_BAND);
-
-  if (sx < leftBand) {
-    leftSide = true;
-  } else if (sx >= rightBand) {
-    leftSide = false;
-  } else {
-    return false;  // Started in the middle — not an edge swipe
-  }
-
-  // dy < 0 means the finger moved up the screen (start was lower). In e-ink
-  // screen coordinates, y increases downward, so an upward swipe has dy < 0.
-  up = (dy < 0);
-  distancePx = ady;
-  return true;
-}
 
 // Edge classification (which swipe counts as an edge gesture) lives in the
 // SDK; only the MEANING of each edge — back, menu, home, light panel, and the
