@@ -405,6 +405,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Restore the saved on/off state after a normal boot or wake. Brightness and
   // warmth are always remembered even when this is disabled.
   uint8_t frontlightRestoreOnWake = 1;
+  // Touch side-swipe gestures for frontlight control: left edge adjusts color
+  // temperature, right edge adjusts brightness. Gated at compile time to
+  // boards with FREEINK_CAP_FRONTLIGHT. Disableable per-device.
+  uint8_t frontlightSideGestures = 1;
   // Language setting (Language enum index, default 0 = EN)
   uint8_t language = 0;
   // Keyboard layouts the user can reach, using keyboard_layouts::ALL table bits.
