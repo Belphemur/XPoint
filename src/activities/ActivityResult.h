@@ -17,6 +17,10 @@ struct KeyboardResult {
   std::string text;
 };
 
+struct DictionarySearchResult {
+  std::string text;
+};
+
 struct MenuResult {
   int action = -1;
   uint8_t orientation = 0;
@@ -71,9 +75,9 @@ struct FilePathResult {
 // the reader (owner of the authoritative per-book record) applies the clear.
 struct ClearPaceResult {};
 
-using ResultVariant =
-    std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, IntervalResult,
-                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult, ClearPaceResult>;
+using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, DictionarySearchResult, MenuResult,
+                                   ChapterResult, PercentResult, IntervalResult, PageResult, ProgressChangeResult,
+                                   NetworkModeResult, FootnoteResult, FilePathResult, ClearPaceResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

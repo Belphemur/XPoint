@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/DictHtmlPages.h"
@@ -22,6 +23,9 @@ constexpr size_t MAX_LINE_BYTES = 191;
 
 // Body text left/right inset, matching the reader's default feel.
 constexpr int SIDE_PADDING = 20;
+constexpr int OVERLAY_MARGIN = 12;
+constexpr int OVERLAY_RADIUS = 18;
+constexpr int SEARCH_BUTTON_HEIGHT = 40;
 
 // Styled-path ceiling: the laid-out Pages keep the whole definition resident
 // (TextBlock arenas ≈ text + ~7 bytes/word plus per-line objects), roughly
@@ -57,11 +61,74 @@ DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() 
   const bool isLandscape = orientation == GfxRenderer::Orientation::LandscapeClockwise ||
                            orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
   const bool isInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterWidth = isLandscape ? metrics.sideButtonHintsWidth : 0;
-  const int topArea = (isInverted ? metrics.buttonHintsHeight : 0) + metrics.topPadding + metrics.headerHeight;
-  const int bottomArea = metrics.buttonHintsHeight + metrics.verticalSpacing;
-  return {renderer.getScreenWidth() - hintGutterWidth - 2 * SIDE_PADDING,
-          renderer.getScreenHeight() - topArea - bottomArea};
+  (void)isLandscape;
+  (void)isInverted;
+  int overlayX = 0;
+  int overlayY = 0;
+  int overlayWidth = 0;
+  int overlayHeight = 0;
+  overlayBounds(overlayX, overlayY, overlayWidth, overlayHeight);
+  const int headwordHeight = renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
+  const int topArea = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + headwordHeight;
+  const int bottomArea =
+      metrics.buttonHintsHeight + metrics.verticalSpacing + SEARCH_BUTTON_HEIGHT + metrics.verticalSpacing;
+  return {overlayWidth - 2 * SIDE_PADDING, overlayHeight - topArea - bottomArea};
+}
+
+void DictionaryDefinitionActivity::overlayBounds(int& x, int& y, int& width, int& height) const {
+  x = OVERLAY_MARGIN;
+  y = OVERLAY_MARGIN;
+  width = std::max(1, renderer.getScreenWidth() - 2 * OVERLAY_MARGIN);
+  height = std::max(1, renderer.getScreenHeight() - 2 * OVERLAY_MARGIN);
+}
+
+void DictionaryDefinitionActivity::searchButtonBounds(int& x, int& y, int& width, int& height) const {
+  int overlayX = 0;
+  int overlayY = 0;
+  int overlayWidth = 0;
+  int overlayHeight = 0;
+  overlayBounds(overlayX, overlayY, overlayWidth, overlayHeight);
+  width = std::min(180, overlayWidth - 2 * SIDE_PADDING);
+  height = SEARCH_BUTTON_HEIGHT;
+  x = overlayX + (overlayWidth - width) / 2;
+  y = overlayY + overlayHeight - UITheme::getInstance().getMetrics().buttonHintsHeight -
+      UITheme::getInstance().getMetrics().verticalSpacing - height;
+}
+
+bool DictionaryDefinitionActivity::searchButtonContains(const int x, const int y) const {
+  int buttonX = 0;
+  int buttonY = 0;
+  int buttonWidth = 0;
+  int buttonHeight = 0;
+  searchButtonBounds(buttonX, buttonY, buttonWidth, buttonHeight);
+  return x >= buttonX && x < buttonX + buttonWidth && y >= buttonY && y < buttonY + buttonHeight;
+}
+
+bool DictionaryDefinitionActivity::closeButtonContains(const int x, const int y) const {
+  int overlayX = 0;
+  int overlayY = 0;
+  int overlayWidth = 0;
+  int overlayHeight = 0;
+  overlayBounds(overlayX, overlayY, overlayWidth, overlayHeight);
+  constexpr int CLOSE_BUTTON_SIZE = 84;
+  return x >= overlayX + overlayWidth - CLOSE_BUTTON_SIZE && x < overlayX + overlayWidth && y >= overlayY &&
+         y < overlayY + CLOSE_BUTTON_SIZE;
+}
+
+void DictionaryDefinitionActivity::openSearch() {
+  startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), headword),
+                         [this](const ActivityResult& result) {
+                           if (!result.isCancelled && std::holds_alternative<KeyboardResult>(result.data)) {
+                             const auto& keyboard = std::get<KeyboardResult>(result.data);
+                             if (!keyboard.text.empty()) {
+                               setResult(ActivityResult(DictionarySearchResult{keyboard.text}));
+                               finish();
+                               return;
+                             }
+                           }
+                           clearBeforeNextRender = true;
+                           requestUpdate();
+                         });
 }
 
 // Styled path: lay the HTML definition out through the EPUB chapter parser
@@ -203,12 +270,22 @@ void DictionaryDefinitionActivity::loop() {
     return;
   }
 
+  if (openSearchOnEnter) {
+    openSearchOnEnter = false;
+    openSearch();
+    return;
+  }
+
   // Same tap zones as the reader page turns: left third = previous page,
   // the rest = next. Back is the usual left-edge swipe.
   int tx = 0;
   int ty = 0;
   if (mappedInput.wasScreenTapped(tx, ty)) {
-    if (tx < renderer.getScreenWidth() / 3) {
+    if (closeButtonContains(tx, ty)) {
+      finish();
+    } else if (searchButtonContains(tx, ty)) {
+      openSearch();
+    } else if (tx < renderer.getScreenWidth() / 3) {
       if (currentPage > 0) {
         currentPage--;
         requestUpdate();
@@ -258,38 +335,62 @@ void DictionaryDefinitionActivity::drawBody(const int fontId, const int x, const
 }
 
 void DictionaryDefinitionActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const auto orientation = renderer.getOrientation();
-  const bool isLandscapeCw = orientation == GfxRenderer::Orientation::LandscapeClockwise;
-  const bool isLandscapeCcw = orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-  const bool isInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
-  const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? metrics.sideButtonHintsWidth : 0;
-  const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-  const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
-  const int contentY = isInverted ? metrics.buttonHintsHeight : 0;
+  int contentX = 0;
+  int contentY = 0;
+  int contentWidth = 0;
+  int contentHeight = 0;
+  overlayBounds(contentX, contentY, contentWidth, contentHeight);
+  if (clearBeforeNextRender) {
+    renderer.clearScreen();
+    clearBeforeNextRender = false;
+  }
+  renderer.fillRoundedRect(contentX, contentY, contentWidth, contentHeight, OVERLAY_RADIUS, Color::White);
+  renderer.drawRoundedRect(contentX, contentY, contentWidth, contentHeight, 1, OVERLAY_RADIUS, true);
 
-  // Header: matched headword left, page counter right.
+  // Header: dictionary name left, close action right. The matched headword is
+  // shown as the definition title below so both remain visible.
   const int headerY = contentY + metrics.topPadding + 10;
-  renderer.drawText(UI_12_FONT_ID, contentX + SIDE_PADDING, headerY, headword.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, contentX + SIDE_PADDING, headerY, dictionaryName.c_str(), true, EpdFontFamily::BOLD);
+  constexpr int CLOSE_BUTTON_SIZE = 84;
+  constexpr int CLOSE_ICON_HALF_SIZE = 9;
+  const int closeCenterX = contentX + contentWidth - CLOSE_BUTTON_SIZE / 2;
+  const int closeCenterY = contentY + metrics.topPadding + metrics.headerHeight / 2;
+  renderer.drawLine(closeCenterX - CLOSE_ICON_HALF_SIZE, closeCenterY - CLOSE_ICON_HALF_SIZE,
+                    closeCenterX + CLOSE_ICON_HALF_SIZE, closeCenterY + CLOSE_ICON_HALF_SIZE, 2, true);
+  renderer.drawLine(closeCenterX - CLOSE_ICON_HALF_SIZE, closeCenterY + CLOSE_ICON_HALF_SIZE,
+                    closeCenterX + CLOSE_ICON_HALF_SIZE, closeCenterY - CLOSE_ICON_HALF_SIZE, 2, true);
   if (totalPages > 1) {
     char counter[16];
     snprintf(counter, sizeof(counter), "%d/%d", currentPage + 1, totalPages);
     const int counterWidth = renderer.getTextWidth(UI_10_FONT_ID, counter);
-    renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - SIDE_PADDING - counterWidth, headerY, counter);
+    renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - CLOSE_BUTTON_SIZE - counterWidth - 8, headerY, counter);
   }
 
-  // Body: two-pass draw inside a prewarm scope (same pattern as the reader's
+  // Body: headword followed by a two-pass definition draw inside a prewarm scope (same pattern as the reader's
   // renderContents) so SD-card font glyphs load from SD in one batch instead
   // of one on-demand overflow read per character on every page turn.
   const int fontId = SETTINGS.getReaderFontId();
-  const int bodyStartY = contentY + metrics.topPadding + metrics.headerHeight;
+  const int bodyStartY = contentY + metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  renderer.drawText(UI_12_FONT_ID, contentX + SIDE_PADDING, bodyStartY, headword.c_str(), true, EpdFontFamily::BOLD);
+  const int definitionStartY = bodyStartY + renderer.getLineHeight(UI_12_FONT_ID) + metrics.verticalSpacing;
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
+  drawBody(fontId, contentX + SIDE_PADDING, definitionStartY);  // scan pass: records codepoints only
   scope.endScanAndPrewarm();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);
+  drawBody(fontId, contentX + SIDE_PADDING, definitionStartY);
+
+  int searchX = 0;
+  int searchY = 0;
+  int searchWidth = 0;
+  int searchHeight = 0;
+  searchButtonBounds(searchX, searchY, searchWidth, searchHeight);
+  const int searchRadius = searchHeight / 2;
+  renderer.fillRoundedRect(searchX, searchY, searchWidth, searchHeight, searchRadius, Color::Black);
+  const int searchTextWidth = renderer.getTextWidth(UI_10_FONT_ID, tr(STR_SEARCH));
+  renderer.drawText(UI_10_FONT_ID, searchX + (searchWidth - searchTextWidth) / 2,
+                    searchY + (searchHeight - renderer.getLineHeight(UI_10_FONT_ID)) / 2, tr(STR_SEARCH), false,
+                    EpdFontFamily::BOLD);
 
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? "<" : ""), (currentPage + 1 < totalPages ? ">" : ""));

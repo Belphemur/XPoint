@@ -11,8 +11,10 @@
 #include "../../../../src/fontIds.h"
 
 size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const uint16_t textBytes) {
-  // Layout documented in TextBlock.h: 16-bit arrays first, then 8-bit arrays, then text.
-  size_t size = static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
+  // Layout documented in TextBlock.h: aligned scalar arrays, optional focus
+  // arrays, synthetic-hyphen flags, then text.
+  size_t size = static_cast<size_t>(wordCount) *
+                (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint8_t));
   if (hasFocus) {
     size += static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(uint8_t));
   }
@@ -24,7 +26,8 @@ void TextBlock::bindArenaPointers() {
   const size_t wc = numWords;
   textOffArr = reinterpret_cast<const uint16_t*>(base);
   xposArr = reinterpret_cast<const int16_t*>(base + wc * 2);
-  size_t off = wc * 4;
+  selectionGroupArr = reinterpret_cast<const uint32_t*>(base + wc * 4);
+  size_t off = wc * 8;
   if (focusPresent) {
     focusSuffixXArr = reinterpret_cast<const uint16_t*>(base + off);
     off += wc * 2;
@@ -35,12 +38,15 @@ void TextBlock::bindArenaPointers() {
     focusBoundaryArr = base + off;
     off += wc;
   }
+  syntheticHyphenArr = base + off;
+  off += wc;
   textArr = reinterpret_cast<const char*>(base + off);
 }
 
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
-                     const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle,
+                     const std::vector<uint16_t>& focusSuffixX, const std::vector<uint32_t>& selectionGroups,
+                     const std::vector<uint8_t>& syntheticHyphens, const BlockStyle& blockStyle,
                      std::vector<std::string> rubyTexts, std::vector<LinkSpan> linkSpans)
     : blockStyle(blockStyle), rubyTexts(std::move(rubyTexts)), linkSpans(std::move(linkSpans)) {
   // Same invariant as deserialize(): a block never holds an all-empty rubyTexts, so a
@@ -55,6 +61,7 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !focusBoundary.empty();
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() > 10000 ||
+      words.size() != selectionGroups.size() || words.size() != syntheticHyphens.size() ||
       (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size()))) {
     LOG_ERR("TXB", "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u)",
             static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
@@ -98,13 +105,17 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // Pass 2: fill. Mutable aliases of the const views bound above.
   auto* textOff = const_cast<uint16_t*>(textOffArr);
   auto* xpos = const_cast<int16_t*>(xposArr);
+  auto* selectionGroup = const_cast<uint32_t*>(selectionGroupArr);
   auto* styles = const_cast<uint8_t*>(stylesArr);
+  auto* syntheticHyphen = const_cast<uint8_t*>(syntheticHyphenArr);
   auto* text = const_cast<char*>(textArr);
   uint16_t off = 0;
   for (uint16_t i = 0; i < numWords; i++) {
     textOff[i] = off;
     xpos[i] = wordXpos[i];
+    selectionGroup[i] = selectionGroups[i];
     styles[i] = static_cast<uint8_t>(wordStyles[i]);
+    syntheticHyphen[i] = syntheticHyphens[i];
     memcpy(text + off, words[i].data(), words[i].size());
     off += static_cast<uint16_t>(words[i].size());
     text[off++] = '\0';

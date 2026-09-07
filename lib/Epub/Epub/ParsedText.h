@@ -41,6 +41,12 @@ class ParsedText {
   // token and discarded after layout, never added to the page-cache TextBlock.
   std::vector<uint8_t> wordLinkIds;
   std::vector<std::string> linkTargets;
+  // Source visible-text offset identifying the logical word. Layout-generated
+  // pieces (for example a word split across two lines) retain the same group.
+  std::vector<uint32_t> wordSelectionGroups;
+  // True only when pagination appended a visible '-' to this token at a
+  // synthetic line-break opportunity; source hyphens remain part of lookup text.
+  std::vector<uint8_t> wordSyntheticHyphens;
   // Zero-based visible Unicode-codepoint offsets in the spine body, stored as
   // uint16_t deltas from a shared base to keep this layout-only metadata small.
   // Pathological spans wider than uint16_t use sparse rebases; rendered
@@ -65,6 +71,8 @@ class ParsedText {
   std::vector<bool> reorderedContinuesScratch;
   std::vector<bool> reorderedNoSpaceBeforeScratch;
   std::vector<uint8_t> reorderedFocusBoundaryScratch;
+  std::vector<uint32_t> reorderedSelectionGroupsScratch;
+  std::vector<uint8_t> reorderedSyntheticHyphensScratch;
   std::vector<uint16_t> visualOrderScratch;
 
   uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
@@ -86,6 +94,7 @@ class ParsedText {
                             std::vector<uint16_t>& wordWidths, bool allowFallbackBreaks);
   void extractLine(size_t breakIndex, int pageWidth, const std::vector<uint16_t>& wordWidths,
                    const std::vector<bool>& continuesVec, const std::vector<bool>& noSpaceBeforeVec,
+                   const std::vector<uint32_t>& selectionGroupsVec, const std::vector<uint8_t>& syntheticHyphensVec,
                    const std::vector<size_t>& lineBreakIndices,
                    const std::function<void(std::shared_ptr<TextBlock>, uint32_t)>& processLine,
                    const GfxRenderer& renderer, int fontId);
