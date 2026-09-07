@@ -255,7 +255,6 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
   }
 }
 
-
 // Edge classification (which swipe counts as an edge gesture) lives in the
 // SDK; only the MEANING of each edge — back, menu, home, light panel, and the
 // home-key remap — is decided here.
