@@ -5,6 +5,10 @@
 #include <Memory.h>
 #include <Serialization.h>
 #include <esp_system.h>
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+#include <new>
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
@@ -281,6 +285,33 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
   return buildComplete_;
 }
 
+void Section::freeBuildPtr(BuildContext* b) {
+  if (!b) return;
+  b->~BuildContext();
+#ifdef BOARD_HAS_PSRAM
+  heap_caps_free(b);
+#else
+  // The PSRAM path allocates via heap_caps_malloc; the DRAM path via operator new(std::nothrow).
+  // freeBuildPtr runs on the same heap the allocation came from, selected at
+  // compile time by BOARD_HAS_PSRAM.
+  ::operator delete(b);
+#endif
+}
+
+Section::BuildPtr Section::makeBuild() {
+#ifdef BOARD_HAS_PSRAM
+  // Allocate in PSRAM, keeping DRAM free for the active render path.
+  // BuildContext contains a unique_ptr<ChapterHtmlSlimParser> (forward-declared
+  // in Section.h), so the full type is only visible here; we use raw
+  // heap_caps_malloc + placement new rather than makeUniqueNoThrowPsram.
+  void* mem = heap_caps_malloc(sizeof(BuildContext), MALLOC_CAP_SPIRAM);
+  if (!mem) return BuildPtr(nullptr, freeBuildPtr);
+  return BuildPtr(new (mem) BuildContext(), freeBuildPtr);
+#else
+  return BuildPtr(new (std::nothrow) BuildContext(), freeBuildPtr);
+#endif
+}
+
 bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
   if (build_) {
     LOG_ERR("SCT", "startBuild called while a build is already active");
@@ -381,16 +412,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it.
   writeSectionFileHeader(spec);
 
-#ifdef BOARD_HAS_PSRAM
-  // Place the active section's BuildContext (LUT + parser + working set) in
-  // DRAM. Originally proposed for PSRAM (~16 KB freed), but the static_assert
-  // on unique_ptr<ChapterHtmlSlimParser> in BuildContext's nested type
-  // conflicts with a non-default deleter on PSRAM boards. Accepted on DRAM
-  // (see Section.h:build_ comment).
-  build_ = makeUniqueNoThrow<BuildContext>();
-#else
-  build_ = makeUniqueNoThrow<BuildContext>();
-#endif
+  build_ = makeBuild();
   if (!build_) {
     LOG_ERR("SCT", "OOM: BuildContext");
     file.close();
