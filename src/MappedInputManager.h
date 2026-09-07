@@ -81,6 +81,12 @@ class MappedInputManager {
   RowTouch colTouch(int& col, int left, int colStep, int colCount, int yStart, int yEnd, int colWidth = 0) const;
 
   SwipeDir wasSwipe() const;
+  // Vertical swipe that STARTED on the left or right edge of the screen.
+  // leftSide=true for a left-edge start, false for right-edge start.
+  // up=true when the swipe moved upward (dy < 0 in screen coords).
+  // distancePx receives the vertical travel in logical px (for step sizing).
+  // Returns false for non-vertical swipes or mid-screen swipes.
+  bool wasSideSwipe(bool& leftSide, bool& up, int& distancePx) const;
   // Back = left-to-right swipe anchored at the left edge. Public so swipe-mode
   // page turns (reader) can exclude it from a plain SwipeDir::Right.
   bool wasBackGesture() const;

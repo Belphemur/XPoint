@@ -7,6 +7,7 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
     - [Button Layout](#button-layout)
     - [Taking a Screenshot](#taking-a-screenshot)
     - [Frontlight (X4 Pro only)](#frontlight-x4-pro-only)
+    - [Frontlight Side-Swipe Gestures](#frontlight-side-swipe-gestures)
   - [2. Power \& Startup](#2-power--startup)
     - [Power On / Off](#power-on--off)
     - [First Launch](#first-launch)
@@ -82,6 +83,16 @@ The X4 Pro has a built-in frontlight with adjustable brightness and warmth. It i
 > Frontlight brightness and warmth are intentionally not listed in **[Display Settings](#361-display)** — the swipe panel is the only place to adjust them. The on/off state can also be toggled with the Power-button double-click above.
 
 If the frontlight doesn't come back on after the device wakes from sleep, check **Restore Light on Wake** in **[Display Settings](#361-display)** (on by default). Turning it off is intentional if you'd rather have the light stay off on wake and switch it on yourself each time — but it's easy to forget you changed it.
+
+---
+
+### Frontlight Side-Swipe Gestures
+
+Available on frontlight-equipped devices (X4 Pro and Paper Mono). While reading, swipe vertically on the **left edge** of the screen to adjust the frontlight color temperature (up = warmer, down = cooler). Swipe vertically on the **right edge** to adjust brightness (up = brighter, down = dimmer). Sliding all the way down on the right edge turns the light off, and swiping up again restores it.
+
+> [!NOTE]
+> This feature is independent of the "Touch Reader Controls" setting and can be toggled in **Settings → Display → Frontlight Side Gestures** (on by default).
+> The left-edge warmth gesture only has a visible effect on devices with a warm/cool dual-channel frontlight (X4 Pro). On single-channel boards (Paper Mono), the gesture is consumed but the color temperature does not change.
 
 ---
 
@@ -246,6 +257,8 @@ The Settings screen allows you to configure the device's behavior. There are a f
   
   - "OFF" (default) - Disable the fix
   - "ON" - Enable the fix
+
+- **Frontlight Side Gestures**: Toggle the frontlight side-swipe gestures on or off (frontlight-equipped devices only, on by default). While reading, swipe vertically on the left edge to adjust color temperature and the right edge to adjust brightness — see [Frontlight Side-Swipe Gestures](#frontlight-side-swipe-gestures) for details.
 
 > [!NOTE]
 > A battery charging indicator is shown on the battery icon whenever the device is actively charging.

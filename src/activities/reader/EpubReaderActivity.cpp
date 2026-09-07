@@ -638,6 +638,20 @@ void EpubReaderActivity::loop() {
     requestUpdate();
   }
 
+#if FREEINK_CAP_FRONTLIGHT
+  // Frontlight side-swipe gestures (left edge: warmth, right edge: brightness).
+  // Runs after detectTouchPageTurn() so the swipe state is available, and before
+  // the overlay + page-turn path so a handled side-swipe consumes the touch
+  // without also turning a page. Independent of SETTINGS.touchReaderControls.
+  // Gated on no overlay/end-of-book menu so the gesture can't fire while those
+  // surfaces own input.
+  if (SETTINGS.frontlightSideGestures && Frontlight.present() && overlay == Overlay::None && !endOfBookMenuActive()) {
+    if (handleSideSwipeFrontlight()) {
+      return;
+    }
+  }
+#endif
+
   // The toolbar reader menu owns all input while shown, ahead of the automatic page turn
   // below: the More panel's rate popup switches automatic turning on and leaves the panel
   // open, so the timer must neither flip the page under it nor eat the panel's next
@@ -3154,4 +3168,58 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
     localPos.hasParagraphIndex = true;
   }
   return localPos;
+}
+
+bool EpubReaderActivity::handleSideSwipeFrontlight() {
+  bool leftSide = false;
+  bool up = false;
+  int distancePx = 0;
+  if (!mappedInput.wasSideSwipe(leftSide, up, distancePx)) return false;
+
+  // Map swipe distance to a 1–100 step (full screen height = 100).
+  const int screenH = renderer.getScreenHeight();
+  int step = screenH > 0 ? static_cast<int>(static_cast<float>(distancePx) / screenH * 100.0f + 0.5f) : 1;
+  if (step < 1) step = 1;
+  if (step > 100) step = 100;
+
+  if (leftSide) {
+    // Left edge: adjust color temperature (warmth). Up = warmer.
+    if (!Frontlight.hasColorTemperature()) {
+      // No warm/cool channel — still consume the gesture so it doesn't
+      // trigger a page turn, but don't change a setting that has no effect.
+      return true;
+    }
+    SETTINGS.frontlightWarmth = up ? static_cast<uint8_t>(std::min(100, SETTINGS.frontlightWarmth + step))
+                                   : static_cast<uint8_t>(std::max(0, SETTINGS.frontlightWarmth - step));
+    Frontlight.setWarmth(SETTINGS.frontlightWarmth);
+  } else {
+    // Right edge: adjust brightness. Up = brighter.
+    const int delta = up ? step : -step;
+    int newBrightness = static_cast<int>(SETTINGS.frontlightBrightness) + delta;
+    if (newBrightness <= 0) {
+      // Sliding all the way down turns the light off.
+      SETTINGS.frontlightOn = 0;
+      SETTINGS.frontlightBrightness = 0;
+      Frontlight.setOn(false);
+    } else {
+      if (newBrightness > 100) newBrightness = 100;
+      SETTINGS.frontlightBrightness = static_cast<uint8_t>(newBrightness);
+      // If the light was off, turning it back on via a brightness swipe
+      // restores the on state — matches FrontlightPanelActivity's behavior.
+      if (!SETTINGS.frontlightOn) {
+        SETTINGS.frontlightOn = 1;
+        Frontlight.setOn(true);
+      }
+      Frontlight.setBrightness(SETTINGS.frontlightBrightness);
+    }
+  }
+
+  // Do NOT call SETTINGS.saveToFile() here — the SD write on every swipe
+  // causes render-path stalls (see PersistableStore.h). The in-memory SETTINGS
+  // values are already correct and the hardware is updated immediately.
+  // Persistence happens naturally at the next settings-save point (sleep,
+  // Home, Settings screen), matching FrontlightPanelActivity's live-on-exit
+  // pattern.
+  requestUpdate();
+  return true;
 }

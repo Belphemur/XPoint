@@ -53,6 +53,15 @@ exist upstream, and stay out of your way until you want them.
 9. **Power button: short press sleeps, long press shuts down.** 400 ms hold =
   proper shutdown with cover screen + rail cut. Short press keeps its own
   binding and defaults to Sleep.
+10. **Frontlight side-swipe gestures.** While reading on a frontlight-equipped
+  device, swipe vertically on the **left edge** to adjust the frontlight color
+  temperature (up = warmer, down = cooler), and swipe vertically on the **right
+  edge** to adjust brightness (up = brighter, down = dimmer). Sliding all the way
+  down on the right edge turns the light off, and swiping up again restores it. These gestures work
+  independently of the "Touch Reader Controls" setting and can be disabled in *Settings →
+  Display → Frontlight Side Gestures*. Available on all frontlight-equipped boards (X4 Pro has a
+  warm/cool dual-channel light; Paper Mono has brightness-only, so the left-edge warmth gesture is
+  accepted but has no visual effect).
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
@@ -75,6 +84,8 @@ Check [our Devices page](https://crosspointreader.com/devices) for the full list
 - **Various formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt`, and `.bmp`.
 
 - **Touch reading**: follow EPUB links and look up words in the dictionary on touch-enabled devices.
+
+- **Frontlight side-swipe gestures** (frontlight-equipped devices only): while reading, swipe vertically on the screen edges to control the frontlight — left edge adjusts color temperature (up = warmer, down = cooler), right edge adjusts brightness (up = brighter, down = dimmer). Sliding all the way down on the right edge turns the light off. Works independently of the "Touch Reader Controls" setting and can be toggled in *Settings → Display → Frontlight Side Gestures*.
 
 - **Screenshots.**
 
