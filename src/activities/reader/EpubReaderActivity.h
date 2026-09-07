@@ -211,7 +211,10 @@ class EpubReaderActivity final : public ReaderActivity {
   // it fires, which maps to ~4% on a 1448px screen — too coarse for night-time
   // fine adjustment. Instead, drag state is tracked across loop() calls via
   // wasScreenTouchDown + isScreenTouchHeld + wasScreenTouchReleased.
+  // Returns true when a side-swipe was consumed (skips page-turn for this frame).
+#if FREEINK_CAP_FRONTLIGHT
   bool handleSideSwipeFrontlight();
+#endif
   bool launchKOReaderSync();
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
@@ -244,7 +247,6 @@ class EpubReaderActivity final : public ReaderActivity {
   };
   FrontlightDragState frontlightDrag;
 #endif
-
 
   bool loadBook() override;
   std::string getBookTitle() const override { return epub ? epub->getTitle() : ""; }

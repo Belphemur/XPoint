@@ -3170,6 +3170,7 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   return localPos;
 }
 
+#if FREEINK_CAP_FRONTLIGHT
 bool EpubReaderActivity::handleSideSwipeFrontlight() {
   // Continuous drag tracking for pixel-precision frontlight control.
   // The SDK's wasSwipe/decodeSwipe requires 60px minimum travel, which
@@ -3248,3 +3249,4 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
   }
   return true;
 }
+#endif
