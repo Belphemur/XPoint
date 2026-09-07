@@ -43,6 +43,11 @@ class DictionaryWordSelectActivity final : public Activity {
     const char* text;
     uint16_t textOffset;
     uint16_t textLength;
+    // The token's full raw span in `text` (pre-trim): footnote resolution must
+    // see the parentheses the trim strips, since the parser stores footnote
+    // numbers with them ([1] and (1) must not compare equal). rawLength starts
+    // at offset 0 of `text`.
+    uint16_t rawLength;
     EpdFontFamily::Style style;
     uint32_t selectionGroup;
     bool syntheticHyphen;
@@ -60,13 +65,22 @@ class DictionaryWordSelectActivity final : public Activity {
   enum class Popup : uint8_t { None, Busy, NotFound, Error };
 
   void extractWords();
-  int closestInRow(uint16_t row, int centerX) const;
+  int closestInRow(uint16_t row, int centerX, int excludeSelection = -1) const;
   int wordAt(int x, int y) const;
   std::string selectionText(int selectionIndex) const;
+  // The selection's raw token text (pre-trim): for a multi-segment word the
+  // segments are joined directly, so punctuation between segments survives.
+  // Footnote resolution needs the parentheses the trimmed text loses.
+  std::string selectionRawText(int selectionIndex) const;
   std::string resolveFootnoteHref(const char* word) const;
+  // Footnote attempt shared by both lookup entry points. Returns true when the
+  // selection was consumed (footnote resolved or bare numeric marker) and the
+  // activity finished — the caller must then not run a dictionary lookup.
+  bool resolveFootnoteOrFinish(const char* raw, const char* trimmed);
   void moveVertical(int direction);
   void performLookup();
   void performLookup(const std::string& query);
+  void performLookup(const std::string& raw, const std::string& trimmed);
   void drawHighlightRange() const;
   bool drawHighlightWithSnapshot();
   void drawHints() const;

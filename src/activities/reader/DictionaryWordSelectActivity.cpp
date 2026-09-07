@@ -165,6 +165,8 @@ void DictionaryWordSelectActivity::extractWords() {
       box.text = text;
       box.textOffset = static_cast<uint16_t>(span.start);
       box.textLength = static_cast<uint16_t>(span.length);
+      // Raw span kept for footnote resolution (see WordBox::rawLength).
+      box.rawLength = static_cast<uint16_t>(block->wordTextLen(i));
       box.selectionGroup = block->selectionGroup(i);
       box.syntheticHyphen = block->hasSyntheticHyphen(i);
       words.push_back(box);
@@ -244,6 +246,24 @@ std::string DictionaryWordSelectActivity::selectionText(const int selectionIndex
   return text;
 }
 
+std::string DictionaryWordSelectActivity::selectionRawText(const int selectionIndex) const {
+  std::string text;
+  if (selectionIndex < 0 || selectionIndex >= static_cast<int>(selections.size())) return text;
+
+  const auto& group = selections[selectionIndex];
+  size_t totalBytes = 0;
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    totalBytes += word.rawLength;
+  }
+  text.reserve(totalBytes);
+  for (uint16_t i = 0; i < group.segmentCount; i++) {
+    const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+    text.append(word.text, word.rawLength);
+  }
+  return text;
+}
+
 std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) const {
   char normalized[MARKER_BUF_SIZE];
   normalizeMarker(word, normalized, sizeof(normalized));
@@ -259,12 +279,43 @@ std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) 
   return {};
 }
 
+bool DictionaryWordSelectActivity::resolveFootnoteOrFinish(const char* raw, const char* trimmed) {
+  // Try both views for the href: the raw token keeps parentheses ("(1)" must
+  // match the parser-stored "(1)" and never "[1]"), the trimmed token handles
+  // markers the raw form carries attached punctuation on ("[1]." -> "1").
+  if (isFootnoteMarker(raw)) {
+    if (const std::string href = resolveFootnoteHref(raw); !href.empty()) {
+      setResult(ActivityResult(FootnoteResult{href}));
+      finish();
+      return true;
+    }
+  }
+  if (trimmed != raw && isFootnoteMarker(trimmed)) {
+    if (const std::string href = resolveFootnoteHref(trimmed); !href.empty()) {
+      setResult(ActivityResult(FootnoteResult{href}));
+      finish();
+      return true;
+    }
+  }
+  if (!isFootnoteMarker(raw) && !(trimmed != raw && isFootnoteMarker(trimmed))) return false;
+  // A bare numeric marker that matches no footnote closes the lookup instead
+  // of searching the dictionary for a year. Accept either form: the raw text
+  // keeps parentheses ("(2024)"), the trimmed text loses them ("2024").
+  if (isNumericMarker(raw) || isNumericMarker(trimmed)) {
+    finish();
+    return true;
+  }
+  return false;
+}
+
 // Index of the word in `row` whose horizontal center is closest to centerX;
-// -1 when the row has no words.
-int DictionaryWordSelectActivity::closestInRow(const uint16_t row, const int centerX) const {
+// -1 when the row has no words (or only `excludeSelection`'s own segments).
+int DictionaryWordSelectActivity::closestInRow(const uint16_t row, const int centerX,
+                                               const int excludeSelection) const {
   int best = -1;
   int bestDistance = INT_MAX;
   for (int selection = 0; selection < static_cast<int>(selections.size()); selection++) {
+    if (selection == excludeSelection) continue;
     const auto& group = selections[selection];
     for (uint16_t i = 0; i < group.segmentCount; i++) {
       const WordBox& word = words[selectionSegments[group.segmentStart + i]];
@@ -283,33 +334,46 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
   if (selected < 0 || selected >= static_cast<int>(selections.size())) return;
   const auto& currentGroup = selections[selected];
   if (currentGroup.segmentCount == 0) return;
-  const WordBox& current = words[selectionSegments[currentGroup.segmentStart]];
-  const int targetRow = static_cast<int>(current.row) + direction;
-  if (targetRow < 0 || targetRow >= static_cast<int>(rowCount)) return;
+  // A logical word can wrap across rows. When moving down, its own second
+  // segment sits in the next row, so anchor on the LAST segment (first when
+  // moving up) — otherwise the target row is the row we're already on.
+  const uint16_t anchorIdx =
+      selectionSegments[currentGroup.segmentStart + (direction > 0 ? currentGroup.segmentCount - 1 : 0)];
+  const WordBox& current = words[anchorIdx];
+  int targetRow = static_cast<int>(current.row) + direction;
 
-  const int best = closestInRow(static_cast<uint16_t>(targetRow), current.x + current.width / 2);
-  if (best >= 0 && best != selected) {
-    selected = best;
-    requestUpdate();
+  while (targetRow >= 0 && targetRow < static_cast<int>(rowCount)) {
+    const int best = closestInRow(static_cast<uint16_t>(targetRow), current.x + current.width / 2, selected);
+    if (best >= 0 && best != selected) {
+      selected = best;
+      requestUpdate();
+      return;
+    }
+    // The row only contained this selection's own wrapped segment(s): keep
+    // scanning in the movement direction.
+    targetRow += direction;
   }
 }
 
-void DictionaryWordSelectActivity::performLookup() { performLookup(selectionText(selected)); }
+void DictionaryWordSelectActivity::performLookup() {
+  if (mode != TouchLongPressMode::Footnote) {
+    performLookup(selectionText(selected));
+    return;
+  }
+  // Footnote resolution uses the RAW token text: the parser stores footnote
+  // numbers with their parentheses preserved, and trimTokenEdges strips them,
+  // so a trimmed "(1)" could never match. The dictionary query keeps the
+  // TRIMMED text.
+  performLookup(selectionRawText(selected), selectionText(selected));
+}
 
 void DictionaryWordSelectActivity::performLookup(const std::string& query) {
-  if (mode == TouchLongPressMode::Footnote) {
-    if (isFootnoteMarker(query.c_str())) {
-      const std::string href = resolveFootnoteHref(query.c_str());
-      if (!href.empty()) {
-        setResult(ActivityResult(FootnoteResult{href}));
-        finish();
-        return;
-      }
-      if (isNumericMarker(query.c_str())) {
-        finish();
-        return;
-      }
-    }
+  performLookup(selectionRawText(selected), query);
+}
+
+void DictionaryWordSelectActivity::performLookup(const std::string& raw, const std::string& trimmed) {
+  if (mode == TouchLongPressMode::Footnote && resolveFootnoteOrFinish(raw.c_str(), trimmed.c_str())) {
+    return;
   }
   popup = Popup::Busy;
   if (!dictOpenAttempted) {
@@ -333,7 +397,7 @@ void DictionaryWordSelectActivity::performLookup(const std::string& query) {
   std::string definition;
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  const bool found = ok && dict.lookup(query.c_str(), definition, headword, &result);
+  const bool found = ok && dict.lookup(trimmed.c_str(), definition, headword, &result);
 
   if (found) {
     popup = Popup::None;
@@ -399,7 +463,7 @@ void DictionaryWordSelectActivity::performLookup(const std::string& query) {
   if (initialX >= 0 && initialY >= 0 && ok && result == Dictionary::LookupResult::NotFound) {
     popup = Popup::None;
     startActivityForResult(
-        std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, query, tr(STR_DICT_NOT_FOUND),
+        std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, trimmed, tr(STR_DICT_NOT_FOUND),
                                                        SETTINGS.dictionaryName, false, true),
         [this](const ActivityResult& result) {
           if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
