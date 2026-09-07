@@ -17,7 +17,7 @@
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
 
-enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, FILE_TRANSFER, SETTINGS_MENU };
+enum class HomeMenuItem { NONE, FILE_BROWSER, RECENTS, OPDS_BROWSER, READING_STATS, FILE_TRANSFER, SETTINGS_MENU };
 
 /**
  * ActivityManager
@@ -92,6 +92,9 @@ class ActivityManager {
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();
+#ifdef READING_STATS_ENABLED
+  void goToGlobalStats();
+#endif
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE, bool cleanInitialRefresh = false);
 
   // True when the top of the stack is the device home screen. Input arbiters
@@ -103,6 +106,10 @@ class ActivityManager {
   // False when no activity is up, a transition is pending, or the screen has
   // no menu (see Activity::openShortcutMenu).
   bool openShortcutMenuOnCurrent();
+
+  // Give the current activity first claim on a back-style gesture (the reader
+  // closes its open chrome with it). False lets the caller pop as usual.
+  bool handleBackOnCurrent();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);

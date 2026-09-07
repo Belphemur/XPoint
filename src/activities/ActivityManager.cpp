@@ -13,6 +13,9 @@
 
 #include "CrossPointSettings.h"
 #include "OpdsServerStore.h"
+#ifdef READING_STATS_ENABLED
+#include "settings/GlobalStatsActivity.h"
+#endif
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
@@ -35,6 +38,10 @@ bool ActivityManager::isOnHomeScreen() const { return currentActivity && current
 
 bool ActivityManager::openShortcutMenuOnCurrent() {
   return currentActivity && pendingAction == PendingAction::None && currentActivity->openShortcutMenu();
+}
+
+bool ActivityManager::handleBackOnCurrent() {
+  return currentActivity && pendingAction == PendingAction::None && currentActivity->handleHomeGesture();
 }
 
 void ActivityManager::begin() {
@@ -153,6 +160,17 @@ void ActivityManager::loop() {
 
       ActivityResult pendingResult = std::move(currentActivity->result);
 
+      // An activity popped without calling setResult() leaves its result in
+      // the default-constructed state (isCancelled=false, data=monostate).
+      // A parent handler that reads a typed alternative via std::get<T>(data)
+      // would throw std::bad_variant_access and abort; treat that case as
+      // cancelled so the handler takes its safe branch.
+      if (!pendingResult.isCancelled && std::holds_alternative<std::monostate>(pendingResult.data)) {
+        LOG_DBG("ACT", "Popped activity '%s' returned default-constructed result; treating as cancelled",
+                currentActivity->name.c_str());
+        pendingResult.isCancelled = true;
+      }
+
       // Destroy the current activity
       exitActivity(lock);
       pendingAction = PendingAction::None;
@@ -264,6 +282,17 @@ void ActivityManager::goToUsbDrive() {
 }
 
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
+
+#ifdef READING_STATS_ENABLED
+void ActivityManager::goToGlobalStats() {
+  auto activity = makeUniqueNoThrow<GlobalStatsActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: GlobalStatsActivity");
+    return;
+  }
+  pushActivity(std::move(activity));
+}
+#endif
 
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));

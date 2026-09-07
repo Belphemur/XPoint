@@ -92,3 +92,13 @@ class MySerialImpl : public Print {
 #undef Serial
 #endif
 #define Serial MySerialImpl::instance
+
+extern size_t g_psram_free_at_boot;
+
+inline void logMemAt(const char* stage) {
+  size_t heap_free = ESP.getFreeHeap();
+  size_t psram_free = ESP.getFreePsram();
+  LOG_INF("MEM", "Stage=%s HeapFree=%uKB PSRAMFree=%uKB PSRAMUsed=%uKB Core=%d", stage,
+          static_cast<unsigned>(heap_free / 1024), static_cast<unsigned>(psram_free / 1024),
+          static_cast<unsigned>((g_psram_free_at_boot - psram_free) / 1024), xPortGetCoreID());
+}

@@ -213,7 +213,8 @@ def get_color_for_line(line: str) -> str:
 def parse_memory_line(line: str) -> tuple[int | None, int | None, int | None]:
     """
     Extracts memory stats from MEM log lines.
-    Format: Free: N bytes, Total: N bytes, Min Free: N bytes, MaxAlloc: N bytes
+    Format on PSRAM boards: Free: N bytes, Total: N bytes, Min Free: N bytes, MaxAlloc: N bytes, PSRAMFree: NKB, PSRAMUsed: NKB
+    Format on non-PSRAM boards: Free: N bytes, Total: N bytes, Min Free: N bytes, MaxAlloc: N bytes
     Returns: (free_bytes, total_bytes, max_alloc_bytes)
     """
     def _find(pattern: str) -> int | None:

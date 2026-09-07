@@ -10,6 +10,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <SdCardFont.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -27,6 +28,7 @@
 #include "activities/ActivityResult.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
+#include "activities/settings/GlobalStatsActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #endif
 #include "EpubReaderBookmarksActivity.h"
@@ -189,6 +191,9 @@ EpubReaderActivity::~EpubReaderActivity() {
   }
 
   section.reset();
+  nextSectionPrefetch.reset();
+  nextSectionSpineIndex = -1;
+
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -312,10 +317,24 @@ bool EpubReaderActivity::loadBook() {
 
   bool loaded;
   {
+#ifdef BOOK_PROFILE
+    uint32_t load_start_ms = millis();
+    uint8_t core = xPortGetCoreID();
+    uint32_t psram_free_before = ESP.getFreePsram();
+    uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
     std::optional<GfxRenderer::FrameBufferLoan> loan;
     if (uncached) loan.emplace(renderer);
     loaded = loadedEpub->load(true, SETTINGS.embeddedStyle == 0);
+#ifdef BOOK_PROFILE
+    uint32_t load_end_ms = millis();
+    uint32_t psram_free_after = ESP.getFreePsram();
+    uint32_t heap_free_after = ESP.getFreeHeap();
+    LOG_INF("PROF", "phase=loadBook core=%d load_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
+            load_end_ms - load_start_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
   }
+  logMemAt("book_open");
   if (!loaded) {
     LOG_ERR("ERS", "Failed to load EPUB");
     return false;
@@ -371,6 +390,28 @@ bool EpubReaderActivity::openShortcutMenu() const {
   return true;
 }
 
+// Any reader chrome (toolbar sheet / panel / popup / open footnote) closes with
+// the global back gesture instead of the gesture leaving the book; with no
+// chrome the gesture falls through (caller pops / goes home as before).
+bool EpubReaderActivity::handleHomeGesture() {
+  if (!isChromeOpen()) return false;
+  // Close only the topmost layer per gesture, matching the Back button's
+  // stepped behavior: a sheet over an open footnote restores the sheet first
+  // and leaves the footnote jump for the next gesture.
+  if (overlay != Overlay::None) {
+    closeOverlayToPage();
+    return true;
+  }
+  if (footnoteDepth > 0) {
+    restoreSavedPosition();
+  }
+  return true;
+}
+
+bool EpubReaderActivity::isChromeOpen() const {
+  return overlay != Overlay::None || overlayPopup.isActive() || footnoteDepth > 0;
+}
+
 void EpubReaderActivity::openReaderMenu() {
   pendingManualTurn = 0;
   if (usesToolbarMenu()) {
@@ -416,6 +457,51 @@ bool EpubReaderActivity::buildTickHeapGate() {
   const size_t maxBlock = ESP.getMaxAllocHeap();
   buildHeapPaused = freeHeap < BACKGROUND_BUILD_MIN_FREE_HEAP || maxBlock < BACKGROUND_BUILD_MIN_MAX_ALLOC;
   return !buildHeapPaused;
+}
+
+void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
+#if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+#ifdef BOOK_PROFILE
+  const auto prefetchStart = millis();
+#endif
+  if (!epub) return;
+  if (buildHeapPaused) return;
+  const int nextSpine = currentSpineIndex + 1;
+  if (nextSpine >= epub->getSpineItemsCount()) return;
+
+  // Only prefetch if the next chapter hasn't been cached yet
+  if (nextSectionPrefetch && nextSectionSpineIndex == nextSpine) {
+    // Continue the existing prefetch build
+    if (nextSectionPrefetch->isBuilding() && !nextSectionPrefetch->isBuildComplete()) {
+      nextSectionPrefetch->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
+#ifdef BOOK_PROFILE
+      LOG_DBG("PROF", "phase=prefetch_continue spine=%d pages_built=%d dur=%lums core=%d", nextSpine,
+              nextSectionPrefetch->pageCount, millis() - prefetchStart, xPortGetCoreID());
+#endif
+    }
+    return;
+  }
+
+  // Start a new prefetch for the next chapter
+  const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
+  nextSectionPrefetch = std::make_unique<Section>(epub, nextSpine, renderer);
+  nextSectionSpineIndex = nextSpine;
+
+  // Try loading existing cache first; if missing, start a build
+  if (nextSectionPrefetch->loadSectionFile(renderSpec)) {
+#ifdef BOOK_PROFILE
+    LOG_DBG("PROF", "phase=prefetch_cache_hit spine=%d dur=%lums core=%d", nextSpine, millis() - prefetchStart,
+            xPortGetCoreID());
+#endif
+  } else {
+    nextSectionPrefetch->startBuild(renderSpec);
+    nextSectionPrefetch->buildSomeMore(BUILD_PAGES_PER_CHUNK);
+#ifdef BOOK_PROFILE
+    LOG_DBG("PROF", "phase=prefetch_cold_build spine=%d pages_built=%d dur=%lums core=%d", nextSpine,
+            nextSectionPrefetch->pageCount, millis() - prefetchStart, xPortGetCoreID());
+#endif
+  }
+#endif
 }
 
 void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFullRefresh) {
@@ -1196,7 +1282,13 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
-      section.reset();
+      // Promote a prefetched next-section if it matches the new chapter
+      if (nextSectionPrefetch && nextSectionSpineIndex == currentSpineIndex) {
+        section = std::move(nextSectionPrefetch);
+        nextSectionSpineIndex = -1;
+      } else {
+        section.reset();
+      }
       lastPageTurnTime = millis();
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
@@ -1212,6 +1304,11 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       pendingPageJump = std::numeric_limits<uint16_t>::max();
       currentSpineIndex--;
       section.reset();
+      // Clear prefetch if it doesn't match the new current chapter
+      if (nextSectionSpineIndex != currentSpineIndex) {
+        nextSectionPrefetch.reset();
+        nextSectionSpineIndex = -1;
+      }
       lastPageTurnTime = millis();
     } else {
       return false;
@@ -1221,6 +1318,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 #ifdef READING_STATS_ENABLED
   pageShownAtMs = millis();
 #endif
+  logMemAt("page_turn");
   return true;
 }
 
@@ -1230,6 +1328,14 @@ bool EpubReaderActivity::skipPages(int amount) {
     RenderLock lock;
     nextPageNumber = 0;
     currentSpineIndex++;
+    // Promote prefetched section if it matches, otherwise discard stale prefetch
+    if (nextSectionPrefetch && nextSectionSpineIndex == currentSpineIndex) {
+      section = std::move(nextSectionPrefetch);
+      nextSectionSpineIndex = -1;
+    } else {
+      nextSectionPrefetch.reset();
+      nextSectionSpineIndex = -1;
+    }
     section.reset();
     return true;
   } else {
@@ -1241,6 +1347,11 @@ bool EpubReaderActivity::skipPages(int amount) {
       nextPageNumber = 0;
       currentSpineIndex--;
       section.reset();
+      // Clear prefetch if it doesn't match the new current chapter
+      if (nextSectionSpineIndex != currentSpineIndex) {
+        nextSectionPrefetch.reset();
+        nextSectionSpineIndex = -1;
+      }
       return true;
     }
   }
@@ -1263,6 +1374,12 @@ bool EpubReaderActivity::skipLoopDelay() {
 }
 
 void EpubReaderActivity::renderBook() {
+#ifdef BOOK_PROFILE
+  uint32_t render_book_start_ms = millis();
+  uint8_t core = xPortGetCoreID();
+  uint32_t psram_free_before = ESP.getFreePsram();
+  uint32_t heap_free_before = ESP.getFreeHeap();
+#endif
   if (!epub) return;
 
   const auto showPendingSyncSaveError = [this]() {
@@ -1281,6 +1398,9 @@ void EpubReaderActivity::renderBook() {
   if (currentSpineIndex > epub->getSpineItemsCount()) currentSpineIndex = epub->getSpineItemsCount();
 
   if (currentSpineIndex == epub->getSpineItemsCount()) {
+#ifdef BOOK_PROFILE
+    LOG_INF("PROF", "phase=renderBook exit: no more spines core=%d", core);
+#endif
     return;
   }
 
@@ -1310,12 +1430,21 @@ void EpubReaderActivity::renderBook() {
   const ReaderRenderSpec renderSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
 
   if (!section) {
+    // Chapter changed or first load — clear stale prefetch
+    nextSectionPrefetch.reset();
+    nextSectionSpineIndex = -1;
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
     partialRebuildStartFailed = false;
 
     const bool cacheLoaded = section->loadSectionFile(renderSpec);
+#ifdef BOOK_PROFILE
+    uint32_t psram_free_after = ESP.getFreePsram();
+    uint32_t heap_free_after = ESP.getFreeHeap();
+    LOG_INF("PROF", "phase=renderBook_cacheLoad core=%d cache_loaded=%s psram_free=%uB->%uB heap=%uB->%uB", core,
+            cacheLoaded ? "yes" : "no", psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
     if (cacheLoaded) {
       cachedChapterTotalPageCount = 0;
       cachedVisibleTextOffset.reset();
@@ -1349,6 +1478,12 @@ void EpubReaderActivity::renderBook() {
           showBuildError();
           return;
         }
+#ifdef BOOK_PROFILE
+        uint32_t psram_free_after = ESP.getFreePsram();
+        uint32_t heap_free_after = ESP.getFreeHeap();
+        LOG_INF("PROF", "phase=renderBook_createSection core=%d create_psram_free=%uB->%uB heap_free=%uB->%uB", core,
+                psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+#endif
         loan.end();
       } else {
         const int target = pendingPageJump.has_value() ? *pendingPageJump : (nextPageNumber < 0 ? 0 : nextPageNumber);
@@ -1544,9 +1679,24 @@ void EpubReaderActivity::renderBook() {
     // needs that slot, then snapshot the newly rendered page below.
     discardOverlayPage();
 
+#ifdef BOOK_PROFILE
+    uint8_t render_core = xPortGetCoreID();
+    uint32_t render_start_ms = millis();
+    uint32_t psram_free_before_r = ESP.getFreePsram();
+    uint32_t heap_free_before_r = ESP.getFreeHeap();
+    renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
+    uint32_t psram_free_after_r = ESP.getFreePsram();
+    uint32_t heap_free_after_r = ESP.getFreeHeap();
+    uint32_t render_end_ms = millis();
+    LOG_INF("PROF", "phase=renderContents core=%d render_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", render_core,
+            render_end_ms - render_start_ms, psram_free_before_r, psram_free_after_r, heap_free_before_r,
+            heap_free_after_r);
+    LOG_DBG("ERS", "Rendered page in %dms", render_end_ms - render_start_ms);
+#else
     const auto start = millis();
     renderContents(std::move(p), orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
     LOG_DBG("ERS", "Rendered page in %dms", millis() - start);
+#endif
     lastRenderCompleteMs = millis();
 #ifdef READING_STATS_ENABLED
     pageShownAtMs = millis();
@@ -1666,6 +1816,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   } pxcSlotGuard;
 
   auto* fcm = renderer.getFontCacheManager();
+  // BOOK_PROFILE: reset SD font overflow stats for this page turn.
+  // The summary is logged at the end of the async display overlap block
+  // below (phase=font_overflow).
+#ifdef BOOK_PROFILE
+  for (auto& [sdFontId, sdFont] : renderer.getSdCardFonts()) {
+    sdFont->resetStats();
+  }
+#endif
   auto scope = fcm->createPrewarmScope();
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
   // Scan the status bar too: a CJK book/chapter title redirected to the SD
@@ -1689,6 +1847,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // flash on every AA page.
   const bool combinedGrayscaleBase = tiledGrayscale && !pageHasImages && renderer.combinesGrayscaleBase();
   const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
+  // GRAYSCALE_DUAL: one render walk flags both plane buffers. Gated to text
+  // pages — image pages keep the two-pass walk until preserveImagePolarity
+  // learns a dual target (design doc §8). Each path (tiled/nontiled) checks
+  // its own buffer prerequisites before engaging.
+  const bool dualPlane = !pageHasImages;
   auto renderGrayscalePass = [&]() {
     if (needsTextGrayscale) {
       page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
@@ -1719,15 +1882,69 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // base + grays as one waveform.
     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh);
   } else {
-    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, overlapRefresh);
+    // Non-grayscale path: use async display when supported so we can overlap
+    // the e-ink refresh (569-648ms) with background section builds and
+    // next-chapter prefetch on the same core.
+    const bool canAsyncDisplay = renderer.supportsAsyncRefresh() && !pageHasImages;
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, canAsyncDisplay);
+    if (canAsyncDisplay) {
+      // E-ink refresh is running. While it completes, run background work.
+#ifdef BOOK_PROFILE
+      const uint32_t overlapStartMs = millis();
+      const uint8_t overlapCore = xPortGetCoreID();
+#endif
+      prefetchNextChapterDuringDisplay();
+      if (section && section->isBuilding() && !section->isBuildComplete() && buildTickHeapGate()) {
+        section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
+      }
+      renderer.waitRefreshComplete();
+#ifdef BOOK_PROFILE
+      LOG_DBG("PROF", "phase=async_display_overlap dur=%lums core=%d prefetch_active=%d build_active=%d",
+              millis() - overlapStartMs, overlapCore, nextSectionPrefetch ? 1 : 0,
+              section && section->isBuilding() ? 1 : 0);
+#endif
+    }
   }
+  // BOOK_PROFILE: define a summary lambda for SD font overflow misses.
+  // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
+  // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
+  // Called at the end of renderContents() (after all gray paths) and before
+  // the early return on storeBwBuffer() failure.
+#ifdef BOOK_PROFILE
+  auto logOverflowSummary = [&] {
+    const auto& sdFonts = renderer.getSdCardFonts();
+    uint32_t totalOverflowMisses = 0;
+    uint32_t maxOverflowFill = 0;
+    for (const auto& [sdFontId, sdFont] : sdFonts) {
+      const auto& stats = sdFont->getStats();
+      totalOverflowMisses += stats.overflowMisses;
+      if (stats.overflowCountAtLog > maxOverflowFill) maxOverflowFill = stats.overflowCountAtLog;
+    }
+    LOG_DBG("PROF", "phase=font_overflow misses=%u max_fill=%u/%u", totalOverflowMisses, maxOverflowFill,
+            SdCardFont::getOverflowCapacity());
+  };
+#endif
   const auto tDisplay = millis();
+  // Path selection trace: which gray route this page takes and why.
+  LOG_DBG("ERS", "Gray path: tiled=%d dual=%d textAA=%d images=%d overlap=%d", tiledGrayscale, dualPlane,
+          needsTextGrayscale, pageHasImages, overlapRefresh);
+  // Full-frame gray plane size for both dual paths (tiled async buffers and
+  // nontiled dual): panel-stride bytes × full display height.
+  const int dualHeight = renderer.getDisplayHeight();
+  const size_t planeBytes = static_cast<size_t>(renderer.getDisplayWidthBytes()) * dualHeight;
+  // Heap gate shared by every dual allocation (async overlap buffers, the
+  // 8KB dual scratch, and the nontiled 2x48KB planes).
+  constexpr size_t PLANE_BUF_HEADROOM = 60000;
+  constexpr size_t PLANE_BUF_MAX_ALLOC_RESERVE = 16 * 1024;
+  const auto planeBufFits = [planeBytes] {
+    return ESP.getFreeHeap() >= planeBytes + PLANE_BUF_HEADROOM &&
+           ESP.getMaxAllocHeap() >= planeBytes + PLANE_BUF_MAX_ALLOC_RESERVE;
+  };
 
   if (tiledGrayscale) {
     constexpr int STRIP_ROWS = 80;
-    const int gh = renderer.getDisplayHeight();
+    const int gh = dualHeight;
     const int gwBytes = renderer.getDisplayWidthBytes();
-    const size_t planeBytes = static_cast<size_t>(gwBytes) * gh;
 
     auto renderPlaneToBuffer = [&](const bool lsbPlane, uint8_t* buf) {
       renderer.setRenderMode(lsbPlane ? GfxRenderer::GRAYSCALE_LSB : GfxRenderer::GRAYSCALE_MSB);
@@ -1740,18 +1957,26 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
     };
 
-    constexpr size_t PLANE_BUF_HEADROOM = 60000;
-    constexpr size_t PLANE_BUF_MAX_ALLOC_RESERVE = 16 * 1024;
-    const auto planeBufFits = [planeBytes] {
-      return ESP.getFreeHeap() >= planeBytes + PLANE_BUF_HEADROOM &&
-             ESP.getMaxAllocHeap() >= planeBytes + PLANE_BUF_MAX_ALLOC_RESERVE;
-    };
     auto lsbPlaneBuf = (overlapRefresh && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
     auto msbPlaneBuf = (lsbPlaneBuf && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
 
     if (lsbPlaneBuf) {
-      renderPlaneToBuffer(true, lsbPlaneBuf.get());
-      if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf.get());
+      if (msbPlaneBuf && dualPlane) {
+        // Async overlap, both buffers live: one DUAL walk fills both planes
+        // while the BW refresh is in flight.
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+        for (int y = 0; y < gh; y += STRIP_ROWS) {
+          const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+          renderer.beginStripTarget(lsbPlaneBuf.get() + static_cast<size_t>(y) * gwBytes, y, rows,
+                                    msbPlaneBuf.get() + static_cast<size_t>(y) * gwBytes);
+          renderer.clearScreen(0x00);
+          renderGrayscalePass();
+          renderer.endStripTarget();
+        }
+      } else {
+        renderPlaneToBuffer(true, lsbPlaneBuf.get());
+        if (msbPlaneBuf) renderPlaneToBuffer(false, msbPlaneBuf.get());
+      }
       const auto tGrayRender = millis();
 
       renderer.waitRefreshComplete();
@@ -1779,7 +2004,14 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
               tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayRender - tDisplay, tWait - tGrayRender,
               tGrayWrite - tWait, tGrayDisplay - tGrayWrite, tEnd - tGrayDisplay, tEnd - t0, msbPlaneBuf ? 2 : 1);
     } else {
+      // Dual needs both plane bands live for the whole walk; a shared 8 KB
+      // scratch cannot hold two bands. Allocate the required scratch FIRST,
+      // then attempt the optional MSB scratch — if memory only fits one band,
+      // the two-pass fallback still runs instead of skipping AA.
       auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
+      auto msbScratch = (dualPlane && scratch && planeBufFits())
+                            ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS)
+                            : nullptr;
       renderer.waitRefreshComplete();
       if (!scratch) {
         LOG_ERR("ERS", "OOM: grayscale strip scratch (%d bytes); skipping AA this page", gwBytes * STRIP_ROWS);
@@ -1792,6 +2024,33 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
           // page reaches the panel even without its grays.
           renderer.cleanupGrayscaleWithFrameBuffer();
         }
+      } else if (msbScratch) {
+        // One DUAL walk per band: LSB bits land in `scratch`, MSB in `msbScratch`.
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+        for (int y = 0; y < gh; y += STRIP_ROWS) {
+          const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+          renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
+          renderer.clearScreen(0x00);
+          renderGrayscalePass();
+          renderer.endStripTarget();
+          renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+          renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
+        }
+        const auto tGrayBoth = millis();
+
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.displayGrayBuffer();
+        const auto tGrayDisplay = millis();
+
+        renderer.cleanupGrayscaleWithFrameBuffer();
+        const auto tCleanup = millis();
+
+        const auto tEnd = millis();
+        LOG_DBG("ERS",
+                "Page render (tiled dual): prewarm=%lums bw_render=%lums display=%lums gray_both=%lums "
+                "gray_display=%lums cleanup=%lums total=%lums",
+                tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tGrayBoth - tDisplay,
+                tGrayDisplay - tGrayBoth, tCleanup - tGrayDisplay, tEnd - t0);
       } else {
         renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
         for (int y = 0; y < gh; y += STRIP_ROWS) {
@@ -1832,42 +2091,93 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     }
   } else {
     if (needsAnyGrayscale) {
+      // Nontiled dual: the gray planes are rendered into two private
+      // full-frame buffers and copied to the driver explicitly, so the BW
+      // base can stay in the framebuffer for displayGrayBuffer(). Costs
+      // 2x 48KB transient heap — gated by planeBufFits() like the async
+      // overlap buffers; OOM falls back to the classic framebuffer passes.
+      const bool nontiledDual = dualPlane && planeBufFits();
+      auto lsbPlane = nontiledDual ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+      auto msbPlane = (lsbPlane && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+      if (!msbPlane) {
+        lsbPlane = nullptr;
+      }
+      if (!nontiledDual || !msbPlane) {
+        LOG_DBG("ERS", "Nontiled dual unavailable (heap); using framebuffer gray passes");
+      }
+
       if (!renderer.storeBwBuffer()) {
         LOG_ERR("ERS", "Failed to store BW buffer for grayscale render; skipping grayscale this page");
+#ifdef BOOK_PROFILE
+        logOverflowSummary();
+#endif
         return;
       }
       const auto tBwStore = millis();
 
-      renderer.clearScreen(0x00);
-      renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-      renderGrayscalePass();
-      renderer.copyGrayscaleLsbBuffers();
-      const auto tGrayLsb = millis();
+      if (lsbPlane && msbPlane) {
+        // One DUAL walk over a "full-frame strip" (origin 0, panelHeight rows):
+        // drawGrayDualPixel's rotate+clip then lands each tone's plane bits in
+        // the two private buffers. The BW base stays in the framebuffer so
+        // displayGrayBuffer() can stream it as usual.
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+        renderer.beginStripTarget(lsbPlane.get(), 0, dualHeight, msbPlane.get());
+        renderer.clearScreen(0x00);
+        renderGrayscalePass();
+        renderer.endStripTarget();
+        const auto tGrayBoth = millis();
 
-      renderer.clearScreen(0x00);
-      renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-      renderGrayscalePass();
-      renderer.copyGrayscaleMsbBuffers();
-      const auto tGrayMsb = millis();
+        renderer.copyGrayscaleLsbBuffers(lsbPlane.get());
+        renderer.copyGrayscaleMsbBuffers(msbPlane.get());
+        const auto tGrayCopy = millis();
 
-      renderer.displayGrayBuffer();
-      const auto tGrayDisplay = millis();
-      renderer.setRenderMode(GfxRenderer::BW);
-      renderer.restoreBwBuffer();
-      const auto tBwRestore = millis();
+        renderer.displayGrayBuffer();
+        const auto tGrayDisplay = millis();
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.restoreBwBuffer();
+        const auto tBwRestore = millis();
 
-      const auto tEnd = millis();
-      LOG_DBG("ERS",
-              "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
-              "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
-              tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
-              tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+        const auto tEnd = millis();
+        LOG_DBG("ERS",
+                "Page render (nontiled dual): prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
+                "gray_both=%lums gray_copy=%lums gray_display=%lums bw_restore=%lums total=%lums",
+                tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayBoth - tBwStore,
+                tGrayCopy - tGrayBoth, tGrayDisplay - tGrayCopy, tBwRestore - tGrayDisplay, tEnd - t0);
+      } else {
+        renderer.clearScreen(0x00);
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+        renderGrayscalePass();
+        renderer.copyGrayscaleLsbBuffers();
+        const auto tGrayLsb = millis();
+
+        renderer.clearScreen(0x00);
+        renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+        renderGrayscalePass();
+        renderer.copyGrayscaleMsbBuffers();
+        const auto tGrayMsb = millis();
+
+        renderer.displayGrayBuffer();
+        const auto tGrayDisplay = millis();
+        renderer.setRenderMode(GfxRenderer::BW);
+        renderer.restoreBwBuffer();
+        const auto tBwRestore = millis();
+
+        const auto tEnd = millis();
+        LOG_DBG("ERS",
+                "Page render: prewarm=%lums bw_render=%lums display=%lums bw_store=%lums "
+                "gray_lsb=%lums gray_msb=%lums gray_display=%lums bw_restore=%lums total=%lums",
+                tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
+                tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
+      }
     } else {
       const auto tEnd = millis();
       LOG_DBG("ERS", "Page render: prewarm=%lums bw_render=%lums display=%lums total=%lums", tPrewarm - t0,
               tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
     }
   }
+#ifdef BOOK_PROFILE
+  logOverflowSummary();
+#endif
 }
 
 void EpubReaderActivity::renderStatusBar() const {
@@ -1964,7 +2274,7 @@ std::string EpubReaderActivity::textRowName(int row) const {
 }
 
 std::string EpubReaderActivity::textRowValue(int row) const {
-  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
+  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN};
   switch (row) {
     case 0:
       if (SETTINGS.sdFontFamilyName[0] != '\0') return SETTINGS.sdFontFamilyName;
@@ -2175,6 +2485,12 @@ void EpubReaderActivity::renderOverlay() {
     model.itemCount = kTextRowCount;
     model.rowText = [this](int i) { return textRowName(i); };
     model.rowValue = [this](int i) { return textRowValue(i); };
+  } else if (overlay == Overlay::Stats) {
+    model.panelTitle = tr(STR_READING_STATS);
+    model.itemCount = 2;
+    model.rowText = [](int row) {
+      return std::string(I18N.get(row == 0 ? StrId::STR_STATS_SHOW_BOOK_STATS : StrId::STR_STATS_ALL_TIME));
+    };
   } else {
     model.panelTitle = tr(STR_TOOL_MORE);
     model.itemCount = static_cast<int>(moreItems.size());
@@ -2235,7 +2551,15 @@ void EpubReaderActivity::handleOverlayInput() {
     requestUpdate();
   };
   const auto toolOverlay = [](int tool) {
-    return tool == 0 ? Overlay::Contents : (tool == 1 ? Overlay::Text : Overlay::More);
+    if (tool == EpubReaderActivity::kToolContents) return Overlay::Contents;
+    if (tool == EpubReaderActivity::kToolText) return Overlay::Text;
+#ifdef READING_STATS_ENABLED
+    // Tracking-off builds keep the tile visible but gated, like the classic
+    // menu's dimmed row: opening the panel is refused, so BookStatsActivity
+    // can never launch from the toolbar.
+    if (tool == EpubReaderActivity::kToolStats && SETTINGS.shouldTrackReadingStats()) return Overlay::Stats;
+#endif
+    return Overlay::More;
   };
 
   // Touch first: FreeInkUI routes the frame against the tap targets the last
@@ -2273,13 +2597,13 @@ void EpubReaderActivity::handleOverlayInput() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      focusedTool = (focusedTool + 2) % 3;
+      focusedTool = (focusedTool + EpubReaderActivity::kToolTileCount - 1) % EpubReaderActivity::kToolTileCount;
       panelCursorShown = true;
       fastRedraw();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      focusedTool = (focusedTool + 1) % 3;
+      focusedTool = (focusedTool + 1) % EpubReaderActivity::kToolTileCount;
       panelCursorShown = true;
       fastRedraw();
       return;
@@ -2299,6 +2623,7 @@ void EpubReaderActivity::handleOverlayInput() {
   // --- Panels (Contents / Text / More) ---
   const int count = overlay == Overlay::Contents ? epub->getTocItemsCount()
                     : overlay == Overlay::Text   ? kTextRowCount
+                    : overlay == Overlay::Stats  ? 2
                                                  : static_cast<int>(moreItems.size());
   const int pageRows = std::max(1, toolbarUi->visibleRows());
 
@@ -2343,6 +2668,49 @@ void EpubReaderActivity::handleOverlayInput() {
       overlay = Overlay::None;
       discardOverlayPage();
       requestUpdate();
+    } else if (overlay == Overlay::Stats) {
+#ifdef READING_STATS_ENABLED
+      if (panelIndex == 0) {
+        recordCurrentPageReadingTime();
+        BookReadingStats displayStats = stats;
+        if (SETTINGS.shouldTrackReadingStats()) {
+          displayStats.totalReadingSeconds += sessionReadingSeconds;
+        }
+        // Full-screen per-book stats; Back returns to the page (not the panel).
+        // Nothrow allocation: on OOM keep the panel open instead of aborting.
+        auto statsActivity =
+            makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), displayStats);
+        if (!statsActivity) {
+          LOG_ERR("ERS", "OOM: BookStatsActivity");
+          return;
+        }
+        overlay = Overlay::None;
+        overlayPopup.dismiss();
+        discardOverlayPage();
+        startActivityForResult(std::move(statsActivity), [this](const ActivityResult& result) {
+          if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
+            stats.clearWpmStats();
+            stats.save(epub->getCachePath());
+          }
+          requestUpdate();
+        });
+      } else {
+        // Global (all-books) stats; the reader pushes it so Back returns to
+        // the page (not the panel) — same teardown as the per-book branch.
+        auto globalStatsActivity = makeUniqueNoThrow<GlobalStatsActivity>(renderer, mappedInput);
+        if (!globalStatsActivity) {
+          LOG_ERR("ERS", "OOM: GlobalStatsActivity");
+          return;
+        }
+        overlay = Overlay::None;
+        overlayPopup.dismiss();
+        discardOverlayPage();
+        startActivityForResult(std::move(globalStatsActivity), [this](const ActivityResult& result) {
+          (void)result;
+          requestUpdate();
+        });
+      }
+#endif
     } else if (overlay == Overlay::More) {
       activateMoreRow(panelIndex);
     }
@@ -2493,15 +2861,20 @@ void EpubReaderActivity::applyReaderTextSettings() {
 }
 
 // The More panel carries everything the classic list menu offers except the
-// two entries that have their own tool (chapters -> Contents, text -> Text).
+// entries with their own surface: chapters -> Contents tool, text -> Text
+// tool, per-book stats -> its own tool tile (stats build only).
 void EpubReaderActivity::buildMoreActions() {
   using MA = EpubReaderMenuActivity::MenuAction;
+#ifdef READING_STATS_ENABLED
+  EpubReaderMenuActivity::buildToolbarMoreItems(moreItems, !currentPageFootnotes.empty(), !cachedBookmarks.empty());
+#else
   EpubReaderMenuActivity::buildMenuItems(moreItems, !currentPageFootnotes.empty(), !cachedBookmarks.empty());
   moreItems.erase(std::remove_if(moreItems.begin(), moreItems.end(),
                                  [](const auto& item) {
                                    return item.action == MA::SELECT_CHAPTER || item.action == MA::TEXT_SETTINGS;
                                  }),
                   moreItems.end());
+#endif
 }
 
 std::string EpubReaderActivity::moreRowName(int row) const {

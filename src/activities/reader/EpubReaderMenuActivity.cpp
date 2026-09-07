@@ -75,6 +75,25 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, bool h
 #endif
 }
 
+// The toolbar's More panel carries everything above except the entries with
+// their own surface: chapters -> the Contents tool, text -> the Text tool, and
+// (since it got its own tool tile) per-book stats. The classic full-screen list
+// menu (button boards) still shows the stats row; only the toolbar build
+// drops it, so the filter is applied by EpubReaderActivity::buildMoreActions.
+void EpubReaderMenuActivity::buildToolbarMoreItems(std::vector<MenuItem>& items, bool hasFootnotes, bool hasBookmarks) {
+  buildMenuItems(items, hasFootnotes, hasBookmarks);
+  items.erase(std::remove_if(items.begin(), items.end(),
+                             [](const MenuItem& item) {
+                               return item.action == MenuAction::SELECT_CHAPTER ||
+                                      item.action == MenuAction::TEXT_SETTINGS
+#ifdef READING_STATS_ENABLED
+                                      || item.action == MenuAction::READING_STATS
+#endif
+                                   ;
+                             }),
+              items.end());
+}
+
 void EpubReaderMenuActivity::closeCancelled() {
   ActivityResult result;
   result.isCancelled = true;

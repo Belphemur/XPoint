@@ -16,6 +16,7 @@
 #include "components/UITheme.h"
 #include "components/icons/book.h"
 #include "components/icons/bookmark.h"
+#include "components/icons/chartbar.h"
 #include "components/icons/cover.h"
 #include "components/icons/folder.h"
 #include "components/icons/hotspot.h"
@@ -56,6 +57,8 @@ const uint8_t* iconForName(UIIcon icon) {
       return HotspotIcon;
     case UIIcon::Bookmark:
       return BookmarkIcon;
+    case UIIcon::Chart:
+      return ChartBarIcon;
     default:
       return nullptr;
   }

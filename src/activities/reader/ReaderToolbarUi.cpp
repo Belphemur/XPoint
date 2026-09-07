@@ -32,7 +32,11 @@ constexpr int16_t kScrubGap = 12;     // air between the buttons and the track
 // pill. The whole slot is the tap target; the row height sets its size.
 constexpr int16_t kToolRowH = 80;
 constexpr int16_t kToolPillInset = 10;
+#ifdef READING_STATS_ENABLED
+constexpr int kToolCount = 4;
+#else
 constexpr int kToolCount = 3;
+#endif
 // Bottom sheet height for the panels. ListNav fits whole rows in the remaining
 // list area; any spare pixels stay between the list and the switcher.
 constexpr int kPanelHeightPercent = 62;
@@ -101,9 +105,14 @@ void ReaderToolbarUi::screenFn(UiScreen& screen, void* user) {
 // tiles, no labels -- the glyphs carry the meaning).
 void ReaderToolbarUi::buildToolRow(UiScreen& screen, const fui::LayoutAnchor anchor, const int16_t sideInset) {
   const auto& tokens = screen.theme();
-  const fui::BitmapRef icons[kToolCount] = {fui::bitmapFromIcon(icon_reader_contents_24),
-                                            fui::bitmapFromIcon(icon_reader_text_24),
-                                            fui::bitmapFromIcon(icon_reader_more_24)};
+  const fui::BitmapRef icons[kToolCount] = {
+      fui::bitmapFromIcon(icon_reader_contents_24), fui::bitmapFromIcon(icon_reader_text_24),
+#ifdef READING_STATS_ENABLED
+      fui::bitmapFromIcon(icon_reader_stats_24), fui::bitmapFromIcon(icon_reader_more_24)
+#else
+      fui::bitmapFromIcon(icon_reader_more_24)
+#endif
+  };
   // sideInset absorbs the difference between the two hosts' content bands
   // (the toolbar's is spaceLg-inset, the panel's is full width): the slots
   // must land on the same x either way, or the icons jump when a tap swaps

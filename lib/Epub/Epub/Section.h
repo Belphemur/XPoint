@@ -53,6 +53,14 @@ class Section {
     float smoothedEstimate = 0;
     uint32_t smoothedAtConsumed = 0;
   };
+  // build_ holds the active section's BuildContext (LUT + parser + working set).
+  // Originally proposed for PSRAM placement (~16 KB freed for the slim parser
+  // working buffer), but the static_assert on std::unique_ptr<ChapterHtmlSlimParser>
+  // requires the full parser type visible at the deleter-instantiation point,
+  // which conflicts with the private-nested-type declaration of BuildContext.
+  // Reverted to plain DRAM allocation + makeUniqueNoThrow (the AGENTS.md-compliant
+  // pattern). The other Phase 2 PSRAM optimizations (PixelCache, decoders via
+  // heap_caps_malloc, ZipFileCache) still apply.
   std::unique_ptr<BuildContext> build_;
   bool buildComplete_ = false;
   // Pages laid out by the active build (== build_->lut.size()). Distinct from pageCount,
@@ -69,6 +77,10 @@ class Section {
   // Write the LUTs/anchor map (and, for a partial, the watermark trailer), patch the
   // header, stamp the version byte, and swap the tmp .bin over filePath.
   bool commitBuildFile(uint8_t version, uint32_t bytesConsumed, uint32_t totalBytes);
+  // Returns true if a valid on-disk partial or finalized section already exists
+  // whose stored bytesConsumed covers currentBytesConsumed, making a new
+  // partial commit redundant.
+  bool hasValidOnDiskPartial(uint32_t currentBytesConsumed);
   // Builds write here and are swapped over filePath only on commit, so a prior
   // partial/finalized file stays readable while a rebuild is in progress.
   std::string binTmpPath() const { return filePath + ".part"; }

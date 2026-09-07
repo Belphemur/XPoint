@@ -8,3 +8,4 @@ reader-text = type
 reader-more = ellipsis
 reader-back = chevron-left
 reader-next = chevron-right
+reader-stats = chart-bar

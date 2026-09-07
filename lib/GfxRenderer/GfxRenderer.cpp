@@ -12,6 +12,7 @@
 #include <algorithm>
 
 #include "FontCacheManager.h"
+#include "GrayPlanes.h"
 
 namespace {
 
@@ -413,8 +414,20 @@ static void renderCharScaled(const GfxRenderer& renderer, GfxRenderer::RenderMod
             if (raw > maxRaw) maxRaw = raw;
           }
         }
-        if (maxRaw >= 2 || coverage >= 2) {
-          renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+        const grayplanes::BlockPlan plan = grayplanes::planBlock(renderMode == GfxRenderer::BW, maxRaw, coverage);
+        if (plan.plot || (renderMode != GfxRenderer::BW && (plan.msb || plan.lsb))) {
+          // Grayscale passes: solid-black blocks skip (the B/W base carries
+          // them); dark-flagged blocks set both planes, light-only blocks MSB.
+          if (plan.plot) {
+            renderer.drawPixel(baseX + dstX, baseY + dstY, pixelState);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && plan.msb) {
+            renderer.drawPixel(baseX + dstX, baseY + dstY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && plan.lsb) {
+            renderer.drawPixel(baseX + dstX, baseY + dstY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_DUAL && (plan.msb || plan.lsb)) {
+            // Dark blocks flag both planes, light-only blocks MSB.
+            renderer.drawGrayDualPixel(baseX + dstX, baseY + dstY, plan.msb, plan.lsb);
+          }
         }
       }
     }
@@ -507,22 +520,29 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
 
           const uint8_t byte = bitmap[pixelPosition >> 2];
           const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
-          // the direct bit from the font is 0 -> white, 1 -> light gray, 2 -> dark gray, 3 -> black
-          // we swap this to better match the way images and screen think about colors:
-          // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
-          const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
+          // Raw font tone: 0 = white, 1 = light gray, 2 = dark gray, 3 = black
+          // (the screen-convention value is 3 - rawTone: 0 -> black, 3 -> white).
+          const uint8_t rawTone = (byte >> bit_index) & 0x3;
 
-          if (renderMode == GfxRenderer::BW && bmpVal < 3) {
-            // Black (also paints over the grays in BW mode)
-            renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
+          if (renderMode == GfxRenderer::BW) {
+            // Any ink paints over as solid black in BW mode.
+            if (rawTone != 0) {
+              renderer.drawPixel(screenX, screenY, pixelState);
+            }
+          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && grayplanes::setMsb(rawTone)) {
             // Light gray (also mark the MSB if it's going to be a dark gray too)
             // Dedicated X3 gray LUTs now provide proper 4-level gray on both devices
             // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
             renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
+          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && grayplanes::setLsb(rawTone)) {
             // Dark gray
             renderer.drawPixel(screenX, screenY, false);
+          } else if (renderMode == GfxRenderer::GRAYSCALE_DUAL) {
+            // One walk flags both planes independently: dark → LSB+MSB,
+            // light → MSB only (matching the LSB/MSB arms above).
+            if (grayplanes::setMsb(rawTone)) {
+              renderer.drawGrayDualPixel(screenX, screenY, true, grayplanes::setLsb(rawTone));
+            }
           }
         }
       }
@@ -1467,6 +1487,11 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
         drawPixel(screenX, screenY, false);
       } else if (renderMode == GRAYSCALE_LSB && val == 1) {
         drawPixel(screenX, screenY, false);
+      } else if (renderMode == GRAYSCALE_DUAL && (val == 1 || val == 2)) {
+        // Match the two-pass arms exactly: MSB for 1|2, LSB for 1. (Bitmap
+        // value 1 is dark on the panel, value 2 light — the BMP packs its
+        // 2-bit samples white-first, unlike the font tone encoding.)
+        drawGrayDualPixel(screenX, screenY, val == 1 || val == 2, val == 1);
       }
     }
   }
@@ -1657,17 +1682,21 @@ void GfxRenderer::clearScreen(const uint8_t color) const {
   if (_stripActive) {
     // Clear only the active band's scratch, not the shared framebuffer.
     memset(_stripBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
+    if (_dualBuf != nullptr) {
+      memset(_dualBuf, color, static_cast<size_t>(panelWidthBytes) * _stripRows);
+    }
     return;
   }
   display.clearScreen(color);
 }
 
-void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows) const {
+void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows, uint8_t* msbScratch) const {
   // Band is caller-guaranteed in-bounds (the reader's grayscale loop computes
   // it); assert catches future misuse in debug before it mis-renders or wraps
   // the downstream uint16_t cast in writeGrayscalePlaneStrip.
   assert(scratch != nullptr && stripRows > 0 && stripY0 >= 0 && stripY0 <= static_cast<int>(panelHeight) - stripRows);
   _stripBuf = scratch;
+  _dualBuf = msbScratch;
   _stripY0 = stripY0;
   _stripRows = stripRows;
   _stripActive = true;
@@ -1676,8 +1705,35 @@ void GfxRenderer::beginStripTarget(uint8_t* scratch, int stripY0, int stripRows)
 void GfxRenderer::endStripTarget() const {
   _stripActive = false;
   _stripBuf = nullptr;
+  _dualBuf = nullptr;
   _stripY0 = 0;
   _stripRows = 0;
+}
+
+// GRAYSCALE_DUAL per-plane flag write. Mirrors drawPixel's band clip and bit
+// addressing; the two planes get independent bits so light tones stay MSB-only.
+void GfxRenderer::drawGrayDualPixel(const int x, const int y, const bool msb, const bool lsb) const {
+  if ((!msb && !lsb) || _dualBuf == nullptr) {
+    return;
+  }
+  int phyX = 0;
+  int phyY = 0;
+  rotateCoordinates(orientation, x, y, &phyX, &phyY, panelWidth, panelHeight);
+  if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) {
+    return;
+  }
+  if (phyY < _stripY0 || phyY >= _stripY0 + _stripRows) {
+    return;  // outside the active band
+  }
+  const uint32_t rowY = static_cast<uint32_t>(phyY - _stripY0);
+  const uint32_t byteIndex = rowY * panelWidthBytes + (phyX / 8);
+  const uint8_t mask = static_cast<uint8_t>(0x80 >> (phyX & 7));
+  if (lsb) {
+    _stripBuf[byteIndex] |= mask;
+  }
+  if (msb) {
+    _dualBuf[byteIndex] |= mask;
+  }
 }
 
 bool GfxRenderer::glyphIntersectsStrip(int x0, int y0, int x1, int y1) const {
@@ -2417,7 +2473,11 @@ void GfxRenderer::preconditionGrayscale(int x, int y, int w, int h) const {
 
 void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuffers(frameBuffer); }
 
+void GfxRenderer::copyGrayscaleLsbBuffers(const uint8_t* plane) const { display.copyGrayscaleLsbBuffers(plane); }
+
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
+
+void GfxRenderer::copyGrayscaleMsbBuffers(const uint8_t* plane) const { display.copyGrayscaleMsbBuffers(plane); }
 
 void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFix); }
 

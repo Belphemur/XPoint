@@ -132,10 +132,17 @@ class SdCardFont {
     uint32_t seekCount = 0;
     uint32_t uniqueGlyphs = 0;
     uint32_t bitmapBytes = 0;
+    // BOOK_PROFILE: overflow misses tracked per SdCardFont for per-page profiling.
+    // Reset with resetStats(); logged via the BOOK_PROFILE phase log in EpubReaderActivity.
+    uint32_t overflowMisses = 0;
+    // Last-seen overflow count (overflowCount_) at time of log — for capacity sizing.
+    uint32_t overflowCountAtLog = 0;
   };
   void logStats(const char* label = "SDCF");
   void resetStats();
   const Stats& getStats() const { return stats_; }
+  // BOOK_PROFILE: expose overflow ring capacity for per-page profiling logs.
+  static constexpr uint32_t getOverflowCapacity() { return OVERFLOW_CAPACITY; }
 
   // Content hash of the file header + style TOC entries (computed during load).
   // Used to generate deterministic font IDs for section cache invalidation.

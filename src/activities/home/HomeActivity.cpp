@@ -7,6 +7,7 @@
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <Memory.h>
 #include <Utf8.h>
 #include <Xtc.h>
 
@@ -26,6 +27,9 @@
 
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Recents, File transfer, Settings
+#ifdef READING_STATS_ENABLED
+  count++;  // Reading Stats
+#endif
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -163,16 +167,24 @@ bool HomeActivity::storeCoverBuffer() {
   freeCoverBuffer();
   const size_t needed = renderer.getRegionByteSize(coverRectX, coverRectY, coverRectW, coverRectH);
   if (needed == 0) return false;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM: cover buffer is a transient working set used only during the cover
+  // animation window. PSRAM placement frees DRAM (which is tighter on X4 Pro
+  // due to second framebuffer headroom) without affecting performance.
+  coverBuffer = static_cast<uint8_t*>(heap_caps_malloc(needed, MALLOC_CAP_SPIRAM));
+#else
   coverBuffer = static_cast<uint8_t*>(malloc(needed));
+#endif
   if (!coverBuffer) {
     LOG_ERR("HOME", "OOM: cover buffer (%u bytes)", (unsigned)needed);
     return false;
   }
   coverBufferSize = needed;
   if (!renderer.copyRegionToBuffer(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize)) {
-    free(coverBuffer);
-    coverBuffer = nullptr;
-    coverBufferSize = 0;
+    // Route through freeCoverBuffer() so the PSRAM-vs-DRAM cap-matching free
+    // (heap_caps_free on PSRAM, plain free otherwise) is in one place. Direct
+    // free() here would corrupt the heap on PSRAM boards (CodeRabbit IPWH).
+    freeCoverBuffer();
     return false;
   }
   return true;
@@ -185,7 +197,11 @@ bool HomeActivity::restoreCoverBuffer() {
 
 void HomeActivity::freeCoverBuffer() {
   if (coverBuffer) {
+#ifdef BOARD_HAS_PSRAM
+    heap_caps_free(coverBuffer);
+#else
     free(coverBuffer);
+#endif
     coverBuffer = nullptr;
   }
   coverBufferSize = 0;
@@ -212,6 +228,11 @@ void HomeActivity::loop() {
       case HomeMenuItem::OPDS_BROWSER:
         onOpdsBrowserOpen();
         break;
+#ifdef READING_STATS_ENABLED
+      case HomeMenuItem::READING_STATS:
+        onReadingStatsOpen();
+        break;
+#endif
       case HomeMenuItem::FILE_TRANSFER:
         onFileTransferOpen();
         break;
@@ -274,8 +295,6 @@ void HomeActivity::loop() {
   }
 
   const int menuTop = metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset;
-  const int renderedMenuSelection =
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
   const int renderedMenuCount =
       menuCount - (metrics.homeContinueReadingInMenu ? 0 : static_cast<int>(recentBooks.size()));
   int menuRow = -1;
@@ -331,9 +350,16 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this), recentBookProgressLines);
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS),
+#ifdef READING_STATS_ENABLED
+                                        tr(STR_READING_STATS),
+#endif
+                                        tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
+  std::vector<UIIcon> menuIcons = {Folder, Recent,
+#ifdef READING_STATS_ENABLED
+                                   Chart,
+#endif
+                                   Transfer, Settings};
 
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
@@ -383,3 +409,9 @@ void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
+
+void HomeActivity::onReadingStatsOpen() {
+#ifdef READING_STATS_ENABLED
+  activityManager.goToGlobalStats();
+#endif
+}

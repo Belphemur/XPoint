@@ -88,7 +88,15 @@ struct PixelCache {
     bandRows = wantRows;
 
     const size_t bufSize = (size_t)(bandRows + 1) * bytesPerRow;  // +1 spare zero row
+#ifdef BOARD_HAS_PSRAM
+    // PSRAM: the band buffer is the working set for the MCU's streaming JPEG/PNG
+    // decoder (decoded rows land here, are re-packed to framebuffer, then released).
+    // On X4 Pro with 8 MB of PSRAM this is free; on C3 the #else path keeps it in
+    // DRAM where the heap is tighter but the band is small enough.
+    buffer = (uint8_t*)heap_caps_malloc(bufSize, MALLOC_CAP_SPIRAM);
+#else
     buffer = (uint8_t*)malloc(bufSize);
+#endif
     if (!buffer) {
       LOG_ERR("IMG", "OOM cache band: %u bytes", (unsigned)bufSize);
       return false;
@@ -98,7 +106,11 @@ struct PixelCache {
 
     if (!Storage.openFileForWrite("IMG", cachePath, file)) {
       LOG_ERR("IMG", "Failed to open cache file for writing: %s", cachePath.c_str());
+#ifdef BOARD_HAS_PSRAM
+      heap_caps_free(buffer);
+#else
       free(buffer);
+#endif
       buffer = nullptr;
       return false;
     }
@@ -180,7 +192,11 @@ struct PixelCache {
       abort();
     }
     if (buffer) {
+#ifdef BOARD_HAS_PSRAM
+      heap_caps_free(buffer);
+#else
       free(buffer);
+#endif
       buffer = nullptr;
     }
   }

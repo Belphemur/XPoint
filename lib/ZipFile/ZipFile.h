@@ -62,6 +62,11 @@ class ZipFile {
   bool close();
   bool loadAllFileStatSlims();
   bool getInflatedFileSize(const char* filename, size_t* size);
+  // Access the full fileStatSlimCache populated by loadAllFileStatSlims().
+  const std::unordered_map<std::string, FileStatSlim>& getFileStatSlimCache() const { return fileStatSlimCache; }
+  // Move the cache out of this ZipFile (caller takes ownership). After this call
+  // the local cache is empty; the next loadAllFileStatSlims() rebuilds it.
+  std::unordered_map<std::string, FileStatSlim> takeFileStatSlimCache() { return std::move(fileStatSlimCache); }
   // Batch lookup: scan ZIP central dir once and fill sizes for matching targets.
   // targets must be sorted by (hash, len). sizes[target.index] receives uncompressedSize.
   // Returns number of targets matched.
@@ -73,6 +78,10 @@ class ZipFile {
   // stop (returns true) instead of a write failure — used by header probes
   // that only need the first bytes of an entry.
   bool readFileToStream(const char* filename, Print& out, size_t chunkSize, bool allowEarlyStop = false);
+  // Same as readFileToStream but skips the central-directory scan: the caller
+  // provides the FileStatSlim from a pre-populated cache (e.g. Epub::zipCache_).
+  // Falls back to loadFileStatSlim if the entry can't be located from `fileStat`.
+  bool readFileToStream(const FileStatSlim& fileStat, Print& out, size_t chunkSize, bool allowEarlyStop = false);
 
   template <typename F>
   bool enumerateFilePaths(F&& callback) {
@@ -115,8 +124,8 @@ class ZipFile {
       }
 
       file.seekCur(12);
-      uint32_t crc32, compressedSize;
-      file.read(&crc32, 4);
+      uint32_t crc32_val, compressedSize;
+      file.read(&crc32_val, 4);
       file.read(&compressedSize, 4);
       file.seekCur(4);
       uint16_t nameLen, m, k;
@@ -128,7 +137,7 @@ class ZipFile {
       if (nameLen < sizeof(itemName)) {
         file.read(itemName, nameLen);
         itemName[nameLen] = '\0';
-        callback(std::string_view{itemName, nameLen}, crc32, compressedSize);
+        callback(std::string_view{itemName, nameLen}, crc32_val, compressedSize);
       } else {
         file.seekCur(nameLen);
       }

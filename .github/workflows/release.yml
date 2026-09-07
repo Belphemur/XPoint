@@ -188,6 +188,27 @@ jobs:
           print("manifest signed for", len(boards), "boards")
           PY
 
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          # Previous tag = closest tag reachable from the release tag's parent
+          # commit. `git describe --abbrev=0 <ref>^` only walks REACHABLE tags,
+          # so the stray ancient pre-OTA tags (e.g. 1.6.0rc, not ancestors of
+          # develop) can never be picked as the changelog base.
+          prev_tag=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          notes=dist/NOTES.md
+          {
+            echo "Personal fork release. See README fork notice. OTA is signed (Ed25519); verify before flashing."
+          } > "$notes"
+          if [ -n "$prev_tag" ]; then
+            echo "" >> "$notes"
+            python3 scripts/generate_changelog.py "${prev_tag}..${GITHUB_REF_NAME}" --pr-links >> "$notes"
+            echo "notes range: ${prev_tag}..${GITHUB_REF_NAME}"
+          else
+            echo "notes: no previous tag reachable; keeping static notice only"
+          fi
+          cat "$notes"
+
       - name: Create GitHub Release (draft)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -197,6 +218,6 @@ jobs:
           gh release create "${{ steps.collect.outputs.tag }}" \
             --draft \
             --title "XPoint ${{ steps.collect.outputs.tag }}" \
-            --notes "Personal fork release. See README fork notice. OTA is signed (Ed25519); verify before flashing." \
+            --notes-file dist/NOTES.md \
             dist/firmware.bin dist/firmware-sticky.bin dist/firmware-x4pro.bin \
             dist/firmware-papermono.bin dist/manifest.json dist/manifest.json.sig

@@ -31,6 +31,8 @@ void BookStatsActivity::onEnter() {
   } else {
     titleX = -1;  // sentinel: render() falls back to tr(STR_READING_STATS) which is centered by the renderer
   }
+  // First paint is ours to request (see GlobalStatsActivity::onEnter).
+  requestUpdate();
 }
 
 void BookStatsActivity::onExit() {

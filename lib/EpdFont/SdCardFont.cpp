@@ -1545,9 +1545,20 @@ int SdCardFont::buildAdvanceTable(const std::deque<std::string>& words, bool inc
 void SdCardFont::logStats(const char* label) {
   LOG_DBG("SDCF", "[%s] total=%ums sd_read=%ums seeks=%u glyphs=%u bitmap=%u bytes", label, stats_.prewarmTotalMs,
           stats_.sdReadTimeMs, stats_.seekCount, stats_.uniqueGlyphs, stats_.bitmapBytes);
+#ifdef BOOK_PROFILE
+  if (stats_.overflowMisses > 0 || stats_.overflowCountAtLog > 0) {
+    LOG_DBG("PROF", "[%s] overflow_misses=%u overflow_fill=%u/%u (capacity=%u)", label, stats_.overflowMisses,
+            stats_.overflowCountAtLog, OVERFLOW_CAPACITY, OVERFLOW_CAPACITY);
+  }
+#endif
 }
 
-void SdCardFont::resetStats() { stats_ = Stats{}; }
+void SdCardFont::resetStats() {
+  stats_ = Stats{};
+  // Seed the fill snapshot with the live ring count so a page that only
+  // reuses pre-filled slots still reports the true fill level.
+  stats_.overflowCountAtLog = overflowCount_;
+}
 
 // --- Public accessors ---
 
@@ -1610,6 +1621,9 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   int32_t globalIdx = self->findGlobalGlyphIndex(s, codepoint);
   if (globalIdx < 0) return nullptr;
 
+  // BOOK_PROFILE: count the overflow miss (cache miss → SD read required)
+  self->stats_.overflowMisses++;
+
   // Pick overflow slot (ring buffer). Read into temporaries first so the
   // existing slot stays valid if SD I/O fails. Bookkeeping (count/next)
   // is deferred until after all I/O succeeds to avoid inconsistent state.
@@ -1662,6 +1676,9 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   } else {
     self->overflowCount_++;
   }
+  // BOOK_PROFILE: capture fill level after the successful increment so the
+  // summary reports the post-insert count (not pre-insert).
+  self->stats_.overflowCountAtLog = self->overflowCount_;
   self->overflowNext_ = (slot + 1) % OVERFLOW_CAPACITY;
   self->overflow_[slot].glyph = tempGlyph;
   self->overflow_[slot].bitmap = tempBitmap;

@@ -24,9 +24,6 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   TextSettings,
-#ifdef READING_STATS_ENABLED
-  ReadingStats,
-#endif
 };
 
 struct SettingInfo {
@@ -112,7 +109,7 @@ struct SettingInfo {
     return s;
   }
 
-  static SettingInfo String(StrId nameId, char* ptr, size_t maxLen, const char* key = nullptr,
+  static SettingInfo String(StrId nameId, const char* ptr, size_t maxLen, const char* key = nullptr,
                             StrId category = StrId::STR_NONE_OPT) {
     SettingInfo s;
     s.nameId = nameId;

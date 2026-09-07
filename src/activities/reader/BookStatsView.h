@@ -20,7 +20,7 @@ void renderPerBookStatsPage(GfxRenderer& renderer, const MappedInputManager* map
 void renderGlobalStatsPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const char* screenTitle,
                            const GlobalReadingStats& stats, bool showButtonHints);
 
-void renderNoRtcCombinedStatsPage(GfxRenderer& renderer, const MappedInputManager* mappedInput,
+void renderNoRtcCombinedStatsPage(const GfxRenderer& renderer, const MappedInputManager* mappedInput,
                                   const std::string& bookTitle, const BookReadingStats& bookStats,
                                   float progressPercent, bool hasEstimatedTimeLeft, uint32_t estimatedTimeLeftSeconds,
                                   const GlobalReadingStats& deviceStats, const GlobalReadingStats* allDevicesStats,

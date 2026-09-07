@@ -3,7 +3,9 @@
 #include <HalClock.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <numeric>
 
 #include "BookReadingStats.h"
 #include "CrossPointSettings.h"
@@ -359,9 +361,7 @@ uint16_t WpmWindow::trimmedMean() const {
   uint32_t sum = 0;
   // Not enough samples to trim both ends: plain mean.
   if (count <= WPM_TRIM_COUNT * 2) {
-    for (uint8_t i = 0; i < count; i++) {
-      sum += samples[i];
-    }
+    sum = std::accumulate(samples.begin(), samples.begin() + count, 0u);
     return static_cast<uint16_t>(sum / count);
   }
   uint16_t sorted[WPM_WINDOW_SIZE];

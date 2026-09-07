@@ -32,14 +32,26 @@ constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_FOCUS_READING, StrId::STR_HYP
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName, uint8_t fontFamily) {
   if (sdFontFamilyName[0] != '\0' && registry) {
     const auto& families = registry->getFamilies();
-    for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      if (families[i].name == sdFontFamilyName) {
-        return CrossPointSettings::BUILTIN_FONT_COUNT + i;
-      }
+    // UI list has VISIBLE_BUILTIN_FONT_COUNT built-in entries + SD entries.
+    // SD font UI index = VISIBLE_BUILTIN_FONT_COUNT + i (not BUILTIN_FONT_COUNT).
+    constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
+    const auto family = std::find_if(families.begin(), families.end(), [sdFontFamilyName](const auto& candidate) {
+      return candidate.name == sdFontFamilyName;
+    });
+    if (family != families.end()) {
+      return VISIBLE_BUILTIN_FONT_COUNT + static_cast<int>(family - families.begin());
     }
   }
 
-  return fontFamily < CrossPointSettings::BUILTIN_FONT_COUNT ? fontFamily : 0;
+  // Map built-in font family enum values to UI list positions.
+  // The UI shows 2 entries: NOTOSERIF (0) and ATKINSON_HN (2).
+  // NOTOSANS (1) is deprecated and hidden, but old settings may still hold it;
+  // treat it as ATKINSON_HN (same font) → UI index 1.
+  if (fontFamily == CrossPointSettings::NOTOSANS || fontFamily == CrossPointSettings::ATKINSON_HN) {
+    return 1;
+  }
+  // NOTOSERIF (0) maps to UI index 0; NOTOSANS (1) is already handled above.
+  return 0;
 }
 
 constexpr StrId LINE_SPACING_IDS[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
@@ -66,9 +78,13 @@ void TextSettingsActivity::onEnter() {
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
 
   fonts_.clear();
-  fonts_.reserve(CrossPointSettings::BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
+  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
+  fonts_.reserve(VISIBLE_BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
+  // Built-in fonts: NOTOSERIF (0) + ATKINSON_HN (2). NOTOSANS (1) is deprecated
+  // — migrated to ATKINSON_HN on settings load — and is NOT shown as a separate
+  // menu entry to avoid a duplicate "Atkinson Hyperlegible Next" row.
   fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, static_cast<uint8_t>(CrossPointSettings::NOTOSERIF)});
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SANS), true, static_cast<uint8_t>(CrossPointSettings::NOTOSANS)});
+  fonts_.push_back({I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::ATKINSON_HN)});
   if (registry_) {
     const auto& families = registry_->getFamilies();
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
