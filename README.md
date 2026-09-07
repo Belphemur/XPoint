@@ -56,11 +56,14 @@ exist upstream, and stay out of your way until you want them.
 10. **Frontlight side-swipe gestures.** While reading on a frontlight-equipped
   device, swipe vertically on the **left edge** to adjust the frontlight color
   temperature (up = warmer, down = cooler), and swipe vertically on the **right
-  edge** to adjust brightness (up = brighter, down = dimmer). Sliding all the way
-  down on the right edge turns the light off, and swiping up again restores it. These gestures work
-  independently of the "Touch Reader Controls" setting and can be disabled in *Settings →
-  Display → Frontlight Side Gestures*. Available on all frontlight-equipped boards (X4 Pro has a
-  warm/cool dual-channel light; Paper Mono has brightness-only, so the left-edge warmth gesture is
+  edge** to adjust brightness (up = brighter, down = dimmer). The brightness
+  swipe behaves identically to the panel's slider: it clamps to 1% minimum (it
+  does not turn the light off — use the Power-button double-click or panel toggle
+  to turn it off). The swipe distance maps proportionally to the step (full screen
+  = 100%). These gestures work independently of the "Touch Reader Controls"
+  setting and can be disabled in *Settings → Display → Frontlight Side Gestures*.
+  Available on all frontlight-equipped boards (X4 Pro has a warm/cool dual-channel
+  light; Paper Mono has brightness-only, so the left-edge warmth gesture is
   accepted but has no visual effect).
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)

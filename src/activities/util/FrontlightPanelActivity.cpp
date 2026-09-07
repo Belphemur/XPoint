@@ -43,7 +43,6 @@ constexpr int BRIGHTNESS_STEP = 1;
 // The dimmest setting is 1%, not 0: turning the light off is what the lamp
 // button next to the slider is for, so a 0% "on" level would only be a second,
 // worse way to reach the same place.
-constexpr uint8_t MIN_BRIGHTNESS = 1;
 
 uint8_t percentFromPermille(const int16_t permille) {
   int value = (static_cast<int>(permille) * 100 + 500) / 1000;
@@ -59,10 +58,12 @@ FrontlightPanelActivity::FrontlightPanelActivity(GfxRenderer& renderer, MappedIn
 void FrontlightPanelActivity::onEnter() {
   Activity::onEnter();
 
-  // A stored 0% predates the 1% floor (or came from the web settings): show it
-  // as the floor rather than a level the slider can no longer produce. onExit
-  // persists that, which is the intent — 0 is not a brightness any more.
-  brightness = std::max(MIN_BRIGHTNESS, Frontlight.brightness());
+  // frontlightOn reflects the on/off state separately from brightness, so the
+  // slider always shows the last non-zero brightness level even when the light
+  // is off (toggle restores that level). FRONTLIGHT_MIN_BRIGHTNESS (1%) is the
+  // floor — dragging the slider below it turns the light off via the toggle,
+  // not by setting an invisible 0% level.
+  brightness = std::max(FRONTLIGHT_MIN_BRIGHTNESS, Frontlight.brightness());
   warmth = Frontlight.warmth();
   lightOn = Frontlight.isOn();
   lightOnChanged = false;
@@ -108,7 +109,7 @@ void FrontlightPanelActivity::onExit() {
 void FrontlightPanelActivity::onBrightnessEvent(const fui::ActionEvent& event, void* user) {
   auto* self = static_cast<FrontlightPanelActivity*>(user);
   if (event.dragPermille < 0) return;
-  self->brightness = std::max(MIN_BRIGHTNESS, percentFromPermille(event.dragPermille));
+  self->brightness = std::max(FRONTLIGHT_MIN_BRIGHTNESS, percentFromPermille(event.dragPermille));
   Frontlight.setBrightness(self->brightness);
   if (!self->lightOn) {
     self->lightOn = true;
@@ -186,7 +187,7 @@ void FrontlightPanelActivity::runTile(const int idx) {
 
 void FrontlightPanelActivity::adjustBrightness(const int delta) {
   int next = static_cast<int>(brightness) + delta;
-  if (next < MIN_BRIGHTNESS) next = MIN_BRIGHTNESS;
+  if (next < FRONTLIGHT_MIN_BRIGHTNESS) next = FRONTLIGHT_MIN_BRIGHTNESS;
   if (next > 100) next = 100;
   if (next == brightness) return;
   brightness = static_cast<uint8_t>(next);

@@ -88,7 +88,7 @@ If the frontlight doesn't come back on after the device wakes from sleep, check 
 
 ### Frontlight Side-Swipe Gestures
 
-Available on frontlight-equipped devices (X4 Pro and Paper Mono). While reading, swipe vertically on the **left edge** of the screen to adjust the frontlight color temperature (up = warmer, down = cooler). Swipe vertically on the **right edge** to adjust brightness (up = brighter, down = dimmer). Sliding all the way down on the right edge turns the light off, and swiping up again restores it.
+Available on frontlight-equipped devices (X4 Pro and Paper Mono). While reading, swipe vertically on the **left edge** of the screen to adjust the frontlight color temperature (up = warmer, down = cooler). Swipe vertically on the **right edge** to adjust brightness (up = brighter, down = dimmer). The brightness swipe behaves identically to the frontlight panel's slider: it clamps to 1% minimum (it does not turn the light off — use the Power-button double-click or the panel's toggle tile to turn it off completely). The swipe distance maps proportionally to the adjustment step (full screen = 100%).
 
 > [!NOTE]
 > This feature is independent of the "Touch Reader Controls" setting and can be toggled in **Settings → Display → Frontlight Side Gestures** (on by default).
