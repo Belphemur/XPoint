@@ -3217,8 +3217,11 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
       // Left edge: color temperature. Up = warmer.
       if (!Frontlight.hasColorTemperature()) return true;  // consumed, no change
       int next = static_cast<int>(SETTINGS.frontlightWarmth) + (up ? step : -step);
-      SETTINGS.frontlightWarmth = static_cast<uint8_t>(std::clamp(next, 0, 100));
-      Frontlight.setWarmth(SETTINGS.frontlightWarmth);
+      next = std::clamp(next, 0, 100);
+      if (next != static_cast<int>(SETTINGS.frontlightWarmth)) {
+        SETTINGS.frontlightWarmth = static_cast<uint8_t>(next);
+        Frontlight.setWarmth(SETTINGS.frontlightWarmth);
+      }
     } else {
       // Right edge: brightness. Up = brighter, down = dimmer.
       // Sliding all the way down (to 0) turns the light off.
@@ -3231,13 +3234,15 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
         SETTINGS.frontlightOn = 0;
         Frontlight.setOn(false);
       } else {
-        SETTINGS.frontlightBrightness =
-            static_cast<uint8_t>(std::clamp(next, static_cast<int>(FRONTLIGHT_MIN_BRIGHTNESS), 100));
-        if (!SETTINGS.frontlightOn) {
-          SETTINGS.frontlightOn = 1;
-          Frontlight.setOn(true);
+        int clamped = std::clamp(next, static_cast<int>(FRONTLIGHT_MIN_BRIGHTNESS), 100);
+        if (static_cast<int>(SETTINGS.frontlightBrightness) != clamped) {
+          SETTINGS.frontlightBrightness = static_cast<uint8_t>(clamped);
+          if (!SETTINGS.frontlightOn) {
+            SETTINGS.frontlightOn = 1;
+            Frontlight.setOn(true);
+          }
+          Frontlight.setBrightness(SETTINGS.frontlightBrightness);
         }
-        Frontlight.setBrightness(SETTINGS.frontlightBrightness);
       }
     }
     return true;  // consumed — prevents page turn on the same frame
