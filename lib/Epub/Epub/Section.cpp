@@ -5,6 +5,10 @@
 #include <Memory.h>
 #include <Serialization.h>
 #include <esp_system.h>
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+#include <new>
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
@@ -281,6 +285,31 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
   return buildComplete_;
 }
 
+void Section::BuildDeleter::operator()(BuildContext* b) const {
+  if (!b) return;
+  b->~BuildContext();
+#ifdef BOARD_HAS_PSRAM
+  heap_caps_free(b);
+#else
+  ::operator delete(b);
+#endif
+}
+
+Section::BuildPtr Section::makeBuild() {
+#ifdef BOARD_HAS_PSRAM
+  // Allocate in PSRAM, keeping DRAM free for the active render path.
+  // BuildContext contains a unique_ptr<ChapterHtmlSlimParser> (complete type
+  // only visible in this .cpp), so we use raw heap_caps_malloc + placement new.
+  // BuildDeleter (the unique_ptr's deleter) is stateless — EBO means it
+  // adds zero bytes overhead vs unique_ptr<BuildContext> with default_delete.
+  void* mem = heap_caps_malloc(sizeof(BuildContext), MALLOC_CAP_SPIRAM);
+  if (!mem) return nullptr;
+  return BuildPtr(new (mem) BuildContext());
+#else
+  return BuildPtr(new (std::nothrow) BuildContext());
+#endif
+}
+
 bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void()>& popupFn) {
   if (build_) {
     LOG_ERR("SCT", "startBuild called while a build is already active");
@@ -381,16 +410,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // Header is written with the incomplete-version sentinel; finalizeBuild() commits it.
   writeSectionFileHeader(spec);
 
-#ifdef BOARD_HAS_PSRAM
-  // Place the active section's BuildContext (LUT + parser + working set) in
-  // DRAM. Originally proposed for PSRAM (~16 KB freed), but the static_assert
-  // on unique_ptr<ChapterHtmlSlimParser> in BuildContext's nested type
-  // conflicts with a non-default deleter on PSRAM boards. Accepted on DRAM
-  // (see Section.h:build_ comment).
-  build_ = makeUniqueNoThrow<BuildContext>();
-#else
-  build_ = makeUniqueNoThrow<BuildContext>();
-#endif
+  build_ = makeBuild();
   if (!build_) {
     LOG_ERR("SCT", "OOM: BuildContext");
     file.close();

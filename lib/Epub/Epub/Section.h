@@ -54,14 +54,20 @@ class Section {
     uint32_t smoothedAtConsumed = 0;
   };
   // build_ holds the active section's BuildContext (LUT + parser + working set).
-  // Originally proposed for PSRAM placement (~16 KB freed for the slim parser
-  // working buffer), but the static_assert on std::unique_ptr<ChapterHtmlSlimParser>
-  // requires the full parser type visible at the deleter-instantiation point,
-  // which conflicts with the private-nested-type declaration of BuildContext.
-  // Reverted to plain DRAM allocation + makeUniqueNoThrow (the AGENTS.md-compliant
-  // pattern). The other Phase 2 PSRAM optimizations (PixelCache, decoders via
-  // heap_caps_malloc, ZipFileCache) still apply.
-  std::unique_ptr<BuildContext> build_;
+  // On PSRAM boards this is allocated from PSRAM; on non-PSRAM boards from DRAM.
+  // Allocation/deallocation is pool-agnostic via makeBuild() (Section.cpp),
+  // which selects the heap at compile time based on BOARD_HAS_PSRAM.
+  // The deleter is a stateless struct (empty — EBO applies, zero bytes
+  // overhead vs unique_ptr<BuildContext> with default_delete): it dispatches
+  // to heap_caps_free for PSRAM or operator delete for DRAM. The deleter body
+  // is defined in Section.cpp where ChapterHtmlSlimParser (a member of
+  // BuildContext) is complete. See: references/psram-section-build-context.md
+  struct BuildDeleter {
+    void operator()(BuildContext* b) const;
+  };
+  using BuildPtr = std::unique_ptr<BuildContext, BuildDeleter>;
+  static BuildPtr makeBuild();
+  BuildPtr build_;
   bool buildComplete_ = false;
   // Pages laid out by the active build (== build_->lut.size()). Distinct from pageCount,
   // which is the pages *available to read* and also counts a loaded partial file's pages.
