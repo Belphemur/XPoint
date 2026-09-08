@@ -132,6 +132,26 @@ TEST(ChunkCoalescerTest, BufferFlushFailurePropagates) {
   EXPECT_FALSE(coalescer.write(data, 4, failFlush, nullptr));
 }
 
+TEST(ChunkCoalescerTest, FinalFlushFailureWithPendingBytesPropagates) {
+  constexpr size_t CAP = 4;
+  download::ChunkCoalescer coalescer(poolMakeBytes(CAP), CAP);
+  const uint8_t data[] = {1, 2, 3};
+
+  // Buffer a partial block, then the final flush fails
+  auto failFlush = [](const uint8_t*, size_t, void*) -> bool { return false; };
+  EXPECT_TRUE(coalescer.write(data, sizeof(data), failFlush, nullptr));
+  EXPECT_EQ(coalescer.pending(), 3u);
+  EXPECT_FALSE(coalescer.flush(failFlush, nullptr));
+}
+
+TEST(ChunkCoalescerTest, PassthroughWriteFailurePropagates) {
+  download::ChunkCoalescer coalescer(nullptr, 0);
+
+  auto failFlush = [](const uint8_t*, size_t, void*) -> bool { return false; };
+  const uint8_t data[] = {1, 2, 3};
+  EXPECT_FALSE(coalescer.write(data, sizeof(data), failFlush, nullptr));
+}
+
 TEST(ChunkCoalescerTest, NullBufferWithCapacityPassesThrough) {
   // OOM fallback on firmware: null buffer with a nonzero capacity must
   // degrade to passthrough, never dereference the null buffer.
