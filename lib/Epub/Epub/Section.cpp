@@ -285,15 +285,12 @@ bool Section::createSectionFile(const ReaderRenderSpec& spec, const std::functio
   return buildComplete_;
 }
 
-void Section::freeBuildPtr(BuildContext* b) {
+void Section::BuildDeleter::operator()(BuildContext* b) const {
   if (!b) return;
   b->~BuildContext();
 #ifdef BOARD_HAS_PSRAM
   heap_caps_free(b);
 #else
-  // The PSRAM path allocates via heap_caps_malloc; the DRAM path via operator new(std::nothrow).
-  // freeBuildPtr runs on the same heap the allocation came from, selected at
-  // compile time by BOARD_HAS_PSRAM.
   ::operator delete(b);
 #endif
 }
@@ -301,14 +298,15 @@ void Section::freeBuildPtr(BuildContext* b) {
 Section::BuildPtr Section::makeBuild() {
 #ifdef BOARD_HAS_PSRAM
   // Allocate in PSRAM, keeping DRAM free for the active render path.
-  // BuildContext contains a unique_ptr<ChapterHtmlSlimParser> (forward-declared
-  // in Section.h), so the full type is only visible here; we use raw
-  // heap_caps_malloc + placement new rather than makeUniqueNoThrowPsram.
+  // BuildContext contains a unique_ptr<ChapterHtmlSlimParser> (complete type
+  // only visible in this .cpp), so we use raw heap_caps_malloc + placement new.
+  // BuildDeleter (the unique_ptr's deleter) is stateless — EBO means it
+  // adds zero bytes overhead vs unique_ptr<BuildContext> with default_delete.
   void* mem = heap_caps_malloc(sizeof(BuildContext), MALLOC_CAP_SPIRAM);
-  if (!mem) return BuildPtr(nullptr, freeBuildPtr);
-  return BuildPtr(new (mem) BuildContext(), freeBuildPtr);
+  if (!mem) return nullptr;
+  return BuildPtr(new (mem) BuildContext());
 #else
-  return BuildPtr(new (std::nothrow) BuildContext(), freeBuildPtr);
+  return BuildPtr(new (std::nothrow) BuildContext());
 #endif
 }
 

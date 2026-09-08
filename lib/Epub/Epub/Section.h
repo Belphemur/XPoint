@@ -5,10 +5,6 @@
 #include <string>
 #include <vector>
 
-#ifdef ESP_PLATFORM
-#include <esp_heap_caps.h>
-#endif
-
 #include "Epub.h"
 #include "ReaderRenderSpec.h"
 
@@ -59,16 +55,19 @@ class Section {
   };
   // build_ holds the active section's BuildContext (LUT + parser + working set).
   // On PSRAM boards this is allocated from PSRAM; on non-PSRAM boards from DRAM.
-  // Allocation/deallocation is pool-agnostic via makeBuild()/freeBuild()
-  // (Section.cpp), which select the heap at compile time based on
-  // BOARD_HAS_PSRAM. Uses unique_ptr with a custom void(*)(BuildContext*)
-  // deleter so the same type works for both pools — the deleter dispatches
-  // to the correct deallocator (heap_caps_free for PSRAM, operator delete for DRAM).
-  // See: references/psram-section-build-context.md
-  using BuildPtr = std::unique_ptr<BuildContext, void (*)(BuildContext*)>;
-  static void freeBuildPtr(BuildContext* b);
+  // Allocation/deallocation is pool-agnostic via makeBuild() (Section.cpp),
+  // which selects the heap at compile time based on BOARD_HAS_PSRAM.
+  // The deleter is a stateless struct (empty — EBO applies, zero bytes
+  // overhead vs unique_ptr<BuildContext> with default_delete): it dispatches
+  // to heap_caps_free for PSRAM or operator delete for DRAM. The deleter body
+  // is defined in Section.cpp where ChapterHtmlSlimParser (a member of
+  // BuildContext) is complete. See: references/psram-section-build-context.md
+  struct BuildDeleter {
+    void operator()(BuildContext* b) const;
+  };
+  using BuildPtr = std::unique_ptr<BuildContext, BuildDeleter>;
   static BuildPtr makeBuild();
-  BuildPtr build_{nullptr, freeBuildPtr};
+  BuildPtr build_;
   bool buildComplete_ = false;
   // Pages laid out by the active build (== build_->lut.size()). Distinct from pageCount,
   // which is the pages *available to read* and also counts a loaded partial file's pages.
