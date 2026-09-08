@@ -428,9 +428,6 @@ void enterDeepSleep(bool fromTimeout = false) {
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
       (fromTimeout &&
        SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT);
-  // Dev-only: stage which trigger is sleeping the device for the SD sleep-trace
-  // CSV (0=timeout, 1=button, 2=quick-resume). The row is written at wake.
-  HalPowerManager::setSleepReason(isQuickResumeSleep ? 2 : (fromTimeout ? 0 : 1));
   // Every sleep mode leaves a complete retained frame on the e-ink panel. Keep
   // it visible until the first useful reader or home paint replaces it.
   APP_STATE.showBootScreen = false;
@@ -616,8 +613,7 @@ void setup() {
 
   // Stock-parity shutdown marker (ghidra_poweroff_report.md): if the previous
   // session ended in a power off (manual or auto), RTC slow RAM carries the
-  // magic + reason byte. Read + clear exactly once per boot and log it. The
-  // raw code is also persisted into the sleep-trace CSV via flushSleepTrace().
+  // magic + reason byte. Read + clear exactly once per boot and log it.
   const auto lastShutdown = HalPowerManager::takeLastShutdownKind();
   if (lastShutdown != HalPowerManager::ShutdownKind::None) {
     LOG_INF("MAIN", "Previous session ended in a clean power off (%s)",
@@ -701,19 +697,11 @@ void setup() {
   SETTINGS.loadFromFile();
 
   // Auto power off: when the dwell timer woke us, THIS sleep cycle ends in a
-  // power off. Stage the stock-parity marker + trace code BEFORE the
-  // sleep-trace flush so the elapsed-dwell row carries shutdown_reason instead
-  // of 0 (CodeRabbit round-2 finding). The RTC marker for the next boot is
-  // written here too; the downstream timer-wake intercept then only has to
-  // render + sink.
+  // power off. Stage the stock-parity marker for the next boot; the downstream
+  // timer-wake intercept then only has to render + sink.
   if (gpio.getWakeupReason() == HalGPIO::WakeupReason::Timer && SETTINGS.getAutoPowerOffMs() > 0) {
     powerManager.stageAutoPowerOff();
   }
-
-  // Dev-only: the SD card is mounted and settings are loaded, so append the
-  // sleep-trace CSV row computed by logSleepBattery() at wake (it ran from
-  // powerManager.begin() before the card was up, so the write was deferred).
-  powerManager.flushSleepTrace();
 
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
@@ -790,9 +778,8 @@ void setup() {
     // Park the panel before the sink cuts its rail (same ordering rule as
     // enterDeepSleep(); CodeRabbit finding).
     display.deepSleep();
-    // The stock-parity marker was already staged + flushed with the sleep-trace
-    // row earlier in setup() (stageAutoPowerOff before flushSleepTrace), so only
-    // the sink remains.
+    // The stock-parity marker was already staged earlier in setup()
+    // (stageAutoPowerOff), so only the sink remains.
     powerManager.enterPowerOffSleep(gpio);
   }
 

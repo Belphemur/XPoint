@@ -215,7 +215,7 @@ YAML sources only (AGENTS.md, "Generated Files").
 handling (`:625-652`) and activity routing (`:661-688`). At that point everything the
 shutdown screen needs already exists and nothing stale has been drawn:
 
-- `Storage.begin()` done (`:534`), `powerManager.flushSleepTrace()` done (`:544`)
+- `Storage.begin()` done (`:534`)
 - `APP_STATE.loadFromFile()` (`:548`) and `SETTINGS.loadFromFile()` (`:564`) done —
   so the persisted cover path (§7) and the setting are available
 - `Frontlight.begin(...)` (`:575-576`) done — its `releaseOnWake()` has already
@@ -245,7 +245,7 @@ if (esp_reset_reason() == ESP_RST_DEEPSLEEP &&
 - `esp_reset_reason() == ESP_RST_DEEPSLEEP` is the deep-sleep-survival test already
   used at `lib/hal/HalPowerManager.cpp:283`; `esp_sleep_get_wakeup_cause()` is already
   read at `lib/hal/HalPowerManager.cpp:307` and `lib/hal/HalGPIO.cpp:272` (idempotent
-  register read; `logSleepBattery()` in `powerManager.begin()` at `main.cpp:508` only
+  register read; `powerManager.begin()` at `main.cpp:508` only
   logs it).
 - Distinguishing: `ESP_SLEEP_WAKEUP_TIMER` = dwell deadline elapsed (shutdown path);
   `ESP_SLEEP_WAKEUP_EXT1` = power button (`HalGPIO.cpp:277-280` → normal boot/resume,
@@ -400,7 +400,7 @@ if (autoPowerOffTimerUs > 0) {
 **Gating at the call site** — `main.cpp::enterDeepSleep()` (`:408-454`), the funnel
 for *all* user-facing sleep triggers (auto-timeout `:884-890`, short-press SLEEP
 `:916-921` via `SETTINGS.shortPwrBtn`, and HOME_ACT_SLEEP `:248-249`, plus
-quick-resume variants via `setSleepReason` `:418`):
+quick-resume variants via the sleep-mode routing (`:418`):
 
 ```cpp
 // main.cpp:450-454 (modified)
@@ -628,13 +628,9 @@ Design points:
    if the intercept (§3) were placed after the resume routing, a timer wake would boot
    to Home and silently defeat the feature, and worse, the device would then sit
    awake. The intercept's position after `:618` / before `:625` is load-bearing.
-3. **`flushSleepTrace()` will log the timer wake as "spurious".** The CSV row computes
-   `spurious = (wakeCause != ESP_SLEEP_WAKEUP_EXT1)` (`lib/hal/HalPowerManager.cpp:375`)
-   and runs at `main.cpp:544`, before the intercept. A timer wake writes a spurious
-   row. Optional minimal follow-up (firmware-side, allowed): treat
-   `ESP_SLEEP_WAKEUP_TIMER` as non-spurious when the last sleep armed the timer
-   (add an `RTC_DATA_ATTR` bool set in `startDeepSleep`, version-bump
-   `SLEEP_TRACE_VERSION` per `:47-77`). Not required for correctness.
+3. **Timer wake is handled by the shutdown intercept** (§3). A timer wake runs
+   the shutdown screen instead of booting to Home, so the device does not sit
+   awake. The intercept's position after `:618` / before `:625` is load-bearing.
 4. **Rail-drop is not power-off.** GPIO1 LOW kills the panel/SD/touch rails
    (`BoardConfig.h:1595-1601` — the panel rail *and* the SD slot depend on it), but
    the S3 RTC domain + EXT1 detector stay powered. Expect OEM-parity sleep current,

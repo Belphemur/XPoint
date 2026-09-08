@@ -62,16 +62,6 @@ class HalPowerManager {
   BatteryHealthState getBatteryHealthState() const;
   bool isBatteryHealthStale() const;  // true only when state == STALE
 
-  // Dev-only: log battery drain across deep sleep (sleep-entry mV is stashed in
-  // RTC memory; on wake we compare against the new reading and the sleep
-  // duration). Compiled out unless LOG_LEVEL >= 2 (dev/x4pro builds).
-  void logSleepBattery() const;
-
-  // Dev-only: append the last computed sleep-drain row to /.crosspoint/sleep_trace.csv.
-  // MUST be called AFTER Storage.begin() (the SD card is mounted by then); logSleepBattery()
-  // runs from begin() before the card is up, so the actual SD write is deferred here.
-  void flushSleepTrace() const;
-
   // HAL-routed stock-parity shutdown marker (the freeink::PowerManager calls
   // stay inside the HAL; main.cpp must not touch SDK classes directly). See
   // docs/design/shutdown-reason-marker.md.
@@ -81,43 +71,12 @@ class HalPowerManager {
   //   takeLastShutdownKind()   read + clear the RTC marker once per boot
   //   stageAutoPowerOff()      record that THIS sleep ends in an automatic
   //                            power off: writes the RTC marker for the next
-  //                            boot AND stages the trace code so the current
-  //                            boot's sleep-trace row carries it (flush
-  //                            happens later in setup, before the sink)
+  //                            boot
   //   stageUserPowerOff()      same, for the manual power-button power off
   enum class ShutdownKind : uint8_t { None = 0, User = 1, AutoOff = 2 };
   static ShutdownKind takeLastShutdownKind();
   static void stageAutoPowerOff();
   static void stageUserPowerOff();
-
-  // Dev-only: stage which trigger is putting the device to sleep (0 = auto-timeout,
-  // 1 = power-button, 2 = quick-resume) so the SD sleep-trace CSV can record it.
-  // Called from enterDeepSleep() before startDeepSleep(); the actual SD row is
-  // written at wake by logSleepBattery(). Compiled out unless LOG_LEVEL >= 2.
-  static void setSleepReason(uint8_t reason);
-
-  // Dev-only: the last computed sleep-drain result, persisted in RTC memory so
-  // the UI can show it after wake (when the serial port is back up). Invalid
-  // until the device has slept at least once. Compiled out unless
-  // LOG_LEVEL >= 2.
-  struct SleepDrain {
-    bool valid = false;    // false on cold boot / before first sleep
-    uint16_t entryMv = 0;  // battery mV captured just before sleep (for CSV)
-    uint16_t wakeMv = 0;   // battery mV at wake (for CSV)
-    uint32_t sleptSeconds = 0;
-    int deltaMv = 0;         // + = gained charge (was on charger), - = discharged
-    double mvPerHour = 0.0;  // signed net rate, mV/h (kept for logging)
-    double milliamps = 0.0;  // signed net current, mA (+ = charging, - = discharging)
-    bool rateValid = false;  // false when the sleep was too short for a trustworthy rate (rate shown as n/a)
-    // Diagnostics: how this sleep segment ended. A wake cause other than the
-    // power button (or a non-deep-sleep reset reason) means the device was NOT
-    // asleep for the whole interval — it woke spuriously and the reported drain
-    // is an average that mixes awake time in. Persisted so the UI/serial can
-    // show it. esp_sleep_wakeup_cause_t / esp_reset_reason_t are stable enums.
-    uint8_t wakeCause = 0;    // esp_sleep_get_wakeup_cause() at wake
-    uint8_t resetReason = 0;  // esp_reset_reason() at wake
-  };
-  SleepDrain getLastSleepDrain() const;
 
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
