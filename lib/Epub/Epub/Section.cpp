@@ -537,6 +537,12 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 
 #ifdef BOARD_HAS_PSRAM
   if (htmlMem) {
+    // Decompressed HTML resides entirely in PSRAM — no SD temp file was
+    // written, so mark reusedHtml=true so finalizeBuild()/abandonBuild()
+    // skip the rename/remove of a non-existent tmpHtmlPath. The cache file
+    // is not written (next open re-decompresses from ZIP); this trades one
+    // extra inflate for zero SD writes on the PSRAM path.
+    htmlCached = true;
     // Hand the decompressed HTML to the parser; the buffer moves into the
     // BuildContext so it outlives every incremental parseStep().
     build_->htmlBuffer = std::move(htmlMem);
