@@ -24,6 +24,9 @@ void BootActivity::onEnter() {
       invertedLogo[i] = static_cast<uint8_t>(Logo120[i] ^ 0xFF);
     }
     renderer.drawImageTransparent(invertedLogo.get(), (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  } else {
+    LOG_ERR("BOOT", "OOM (%d bytes) — drawing original logo", LOGO120_BYTES);
+    renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
   }
   // Fork brand text — hardcoded on purpose (not translated).
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "XPOINT", true, EpdFontFamily::BOLD);

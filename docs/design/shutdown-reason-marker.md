@@ -27,10 +27,12 @@ Add to `freeink::PowerManager`:
 ## Firmware consumer (crosspoint-x-reader)
 - `enterPowerOff()` (manual long-press) -> `setShutdownReason(ShutdownReason::User)`
   before the sink.
-- Timer-wake shutdown intercept (setup()) and the dwell arming in
-  `enterDeepSleep()` -> `setShutdownReason(ShutdownReason::AutoOff)` when
-  `getAutoPowerOffMs() > 0` — written at SLEEP ENTRY so the marker survives even
-  if the timer wake itself crashes before re-writing (stock semantics).
+- `enterDeepSleep()` with `autoPowerOffMs > 0` -> `stageAutoPowerOff()` BEFORE
+  `startDeepSleep()` arms the RTC timer — written at sleep entry so the marker
+  survives even if the timer wake itself crashes before re-writing (stock
+  semantics). A non-timer wake (button press interrupting the dwell) suppresses
+  the marker via `clearShutdownMarker()` before `takeLastShutdownKind()` consumes
+  it.
 - `setup()` early: `const uint16_t sr = takeShutdownReason(); if (sr) LOG_INF`
   + stash into the RTC_DATA block for the current boot's reporting.
 - No board-profile change needed: RTC slow RAM offsets 0/4 are board-agnostic.

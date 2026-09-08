@@ -235,7 +235,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
   // only when external power leaves; on USB/pogo it can drift back up).
   // hold_en pins the OFF level through the isolation, so the master rail is
   // deterministically dead for the whole sleep.
-  // Stock-parity note (ghdri_poweroff_report.md, FINAL CONCLUSION): stock's
+  // Stock-parity note (ghidra_poweroff_report.md, FINAL CONCLUSION): stock's
   // power-off is a deep-sleep transaction — wake-config arm (16-byte 0x101
   // CRC32'd record, mask 0x0101010101010101), "SRCX" marker + reason byte to
   // RTC slow RAM (0x50000004/0x50000000), ownership quiesce poll, then commit
@@ -294,6 +294,15 @@ void HalPowerManager::stageAutoPowerOff() {
 
 void HalPowerManager::stageUserPowerOff() {
   stageShutdownMarkerImpl(freeink::PowerManager::ShutdownReason::ShutdownUser);
+}
+
+void HalPowerManager::clearShutdownMarker() {
+  // Consume + drop any marker staged for the current boot. The freeink SDK
+  // cells are consume-once, so takeShutdownReason() is the read-clear path.
+  // We discard the result: the caller already knows what wake it got and is
+  // suppressing the auto-off marker staged at sleep entry.
+  (void)freeink::PowerManager::takeShutdownReason();
+  _lastShutdownReasonCode = 0;
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {

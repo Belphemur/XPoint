@@ -77,6 +77,10 @@ class HalPowerManager {
   static ShutdownKind takeLastShutdownKind();
   static void stageAutoPowerOff();
   static void stageUserPowerOff();
+  // Clear any staged shutdown marker. Used to suppress a marker staged at
+  // sleep entry when the wake was NOT the expected timer wake (e.g. user
+  // interrupted auto-power-off dwell with a button press).
+  static void clearShutdownMarker();
 
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
