@@ -158,9 +158,12 @@ bool FontDownloadActivity::internString(const char* text, StrRef& outRef) {
 }
 
 bool FontDownloadActivity::fetchAndParseManifest() {
-  // Download manifest to a temp file on SD card to avoid holding both
-  // TLS buffers and the full JSON string in RAM simultaneously.
-  static constexpr const char* MANIFEST_TMP = "/fonts_manifest.tmp";
+  // Fetch the manifest into a PSRAM buffer (or DRAM on C3) and parse from
+  // memory, avoiding the download-to-SD-then-read-back round-trip that
+  // wastes I/O and risks leaving temp files on failure. The manifest JSON is
+  // bounded (tens of KB of font metadata) so a 64 KB cap is generous while
+  // protecting against hostile responses.
+  constexpr size_t MAX_MANIFEST_BYTES = 65536;
 
   if (auto* fcm = renderer.getFontCacheManager()) {
     fcm->releaseSdFontCaches();
@@ -173,23 +176,37 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   // No downgradeRedirectsToHttp here, unlike the font transfers below: this
   // response carries the crc32 values that are the only integrity anchor for
   // those plain-HTTP downloads.
-  auto result = HttpDownloader::downloadToFile(FONT_MANIFEST_URL, MANIFEST_TMP, nullptr);
-  if (result != HttpDownloader::OK) {
+  //
+  // Accumulate into a growable PoolBytes buffer so the fetch does not depend
+  // on guessing the exact manifest size — poolMalloc draws from PSRAM on
+  // PSRAM boards (free) and DRAM on C3 (still within the 40 KB TLS floor).
+  auto manifestBuf = poolMakeBytes(MAX_MANIFEST_BYTES);
+  if (!manifestBuf) {
+    LOG_ERR("FONT", "OOM: %zu byte manifest buffer", MAX_MANIFEST_BYTES);
+    errorMessage_ = tr(STR_MEMORY_ERROR);
+    return false;
+  }
+  size_t manifestLen = 0;
+  const auto dataOk = HttpDownloader::fetchUrl(
+      FONT_MANIFEST_URL,
+      [&manifestBuf, &manifestLen](const uint8_t* data, size_t len) {
+        if (manifestLen + len > MAX_MANIFEST_BYTES) {
+          LOG_ERR("FONT", "Manifest exceeds %zu bytes; aborting", MAX_MANIFEST_BYTES);
+          return false;
+        }
+        std::memcpy(manifestBuf.get() + manifestLen, data, len);
+        manifestLen += len;
+        return true;
+      },
+      /*username=*/"", /*password=*/"");
+  if (!dataOk || manifestLen == 0) {
     LOG_ERR("FONT", "Failed to fetch manifest from %s", FONT_MANIFEST_URL);
     errorMessage_ = "Failed to fetch font list";
-    Storage.remove(MANIFEST_TMP);
     return false;
   }
 
-  // HTTP client is now closed — TLS buffers freed. Parse JSON from file.
-  HalFile manifestFile;
-  if (!Storage.openFileForRead("FONT", MANIFEST_TMP, manifestFile)) {
-    LOG_ERR("FONT", "Failed to open temp manifest");
-    Storage.remove(MANIFEST_TMP);
-    errorMessage_ = "Failed to read font list";
-    return false;
-  }
-
+  // HTTP client is now closed — TLS buffers freed. Parse JSON from the
+  // in-memory buffer.
   JsonDocument doc;
   DeserializationError err;
   {
@@ -206,10 +223,9 @@ bool FontDownloadActivity::fetchAndParseManifest() {
     filter["families"][0]["files"][0]["name"] = true;
     filter["families"][0]["files"][0]["size"] = true;
     filter["families"][0]["files"][0]["crc32"] = true;
-    err = deserializeJson(doc, manifestFile, DeserializationOption::Filter(filter));
+    err = deserializeJson(doc, manifestBuf.get(), manifestLen, DeserializationOption::Filter(filter));
   }
-  manifestFile.close();
-  Storage.remove(MANIFEST_TMP);
+  // manifestBuf is a PoolBytes — freed automatically on scope exit
 
   if (err) {
     LOG_ERR("FONT", "Manifest parse error: %s", err.c_str());
