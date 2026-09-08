@@ -15,6 +15,7 @@ add_executable(SectionIncrementalTest
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/Memory/BuildScratch.cpp
+  ${REPO_ROOT}/lib/hal/HalMemory.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/miniz/src/InflateStream.cpp
   ${REPO_ROOT}/lib/miniz/src/miniz_impl.c
@@ -39,6 +40,7 @@ add_executable(SectionIncrementalReproTest
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
   ${REPO_ROOT}/lib/Memory/BuildScratch.cpp
+  ${REPO_ROOT}/lib/hal/HalMemory.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/miniz/src/InflateStream.cpp
   ${REPO_ROOT}/lib/miniz/src/miniz_impl.c
@@ -48,6 +50,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}
   ${REPO_ROOT}/lib
+  ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers
@@ -68,6 +71,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${REPO_ROOT}
   ${REPO_ROOT}/lib
+  ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers

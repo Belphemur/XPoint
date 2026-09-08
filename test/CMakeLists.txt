@@ -64,3 +64,8 @@ add_subdirectory(section_incremental)
 add_subdirectory(home_tap_tracker)
 add_subdirectory(dictionary_selection)
 add_subdirectory(gray_planes)
+add_subdirectory(chapter_html_slim_parser)
+add_subdirectory(ligature_guard)
+add_subdirectory(page_link)
+
+add_subdirectory(inflate_stream)
