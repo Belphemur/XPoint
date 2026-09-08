@@ -359,8 +359,14 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     Storage.mkdir(htmlDir.c_str());
 
     bool htmlFromMemory = false;
-#ifdef BOARD_HAS_PSRAM
-    // Inflate straight into PSRAM, write the persistent HTML cache in one
+# ifdef BOARD_HAS_PSRAM
+    // Query the uncompressed size first; skip PSRAM allocation for chapters
+    // that could exhaust available memory (CWE-400 protection). This mirrors
+    // the CSS path's getItemSize + MAX_CSS_FILE_SIZE guard.
+    constexpr size_t MAX_HTML_FILE_SIZE = 128 * 1024;  // 128 KB
+    size_t htmlFileSize = 0;
+    if (epub->getItemSize(localPath, &htmlFileSize) && htmlFileSize <= MAX_HTML_FILE_SIZE) {
+      // Inflate straight into PSRAM, write the persistent HTML cache in one
     // write() call, and parse from the resident buffer. Falls back to the
     // streaming path when PSRAM is unavailable.
     uint8_t* htmlMemRaw = epub->readItemContentsToBytes(localPath, &htmlMemSize);
@@ -390,6 +396,10 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     } else {
       LOG_DBG("SCT", "PSRAM buffer unavailable; streaming HTML to cache");
     }
+  } else {
+    LOG_DBG("SCT", "HTML too large for PSRAM (%zu bytes > %zu max); streaming to cache",
+            htmlFileSize, MAX_HTML_FILE_SIZE);
+  }
 #endif
     if (!htmlFromMemory) {
       // Retry logic for SD card timing issues
