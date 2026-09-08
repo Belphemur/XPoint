@@ -1000,9 +1000,10 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
       }
 
       // Calculate extraStartOffset for the first word on the line (i) (protect left margin)
-      const int extraStartOffset = (j == i) ? calculateRubyExtraStartOffset(i, totalWordCount, renderer, fontId) : 0;
+      const int extraStartOffset =
+          (j == static_cast<size_t>(i)) ? calculateRubyExtraStartOffset(i, totalWordCount, renderer, fontId) : 0;
 
-      currlen += wordWidths[j] + gap + (j == i ? extraStartOffset : 0);
+      currlen += wordWidths[j] + gap + (j == static_cast<size_t>(i) ? extraStartOffset : 0);
 
       if (currlen > effectivePageWidth) {
         break;

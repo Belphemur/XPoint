@@ -14,9 +14,9 @@ namespace {
 constexpr size_t WINDOW_SIZE = TINFL_LZ_DICT_SIZE;
 // tinfl_decompressor holds mz_uint32 arrays; 8 keeps the window aligned too.
 constexpr size_t STATE_ALIGNED = (sizeof(tinfl_decompressor) + 7) & ~size_t{7};
-void logAllocationFailure(const char* allocation, size_t bytes) {
-  const auto heap = HalMemory::getDefaultHeap();
-  const auto psram = HalMemory::getPsramHeap();
+void logAllocationFailure([[maybe_unused]] const char* allocation, [[maybe_unused]] size_t bytes) {
+  [[maybe_unused]] const auto heap = HalMemory::getDefaultHeap();
+  [[maybe_unused]] const auto psram = HalMemory::getPsramHeap();
   LOG_ERR("ZIP", "Inflate %s OOM (%zu bytes): heap %zu free/%zu max, PSRAM %zu free/%zu total", allocation, bytes,
           heap.freeBytes, heap.largestBlockBytes, psram.freeBytes, psram.totalBytes);
 }

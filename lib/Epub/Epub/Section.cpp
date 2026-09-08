@@ -404,7 +404,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     if (!htmlFromMemory) {
       // Retry logic for SD card timing issues
       bool streamed = false;
-      uint32_t fileSize = 0;
+      [[maybe_unused]] uint32_t fileSize = 0;
       for (int attempt = 0; attempt < 3 && !streamed; attempt++) {
         if (attempt > 0) {
           LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);

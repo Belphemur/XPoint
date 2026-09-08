@@ -5,6 +5,10 @@ add_executable(MiniBidiArabicTest
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
 )
 
+# Vendored upstream C source emits -Wsign-compare under the test build's
+# -Wall/-Wextra; leave the vendored code untouched and silence it here.
+set_source_files_properties(${REPO_ROOT}/lib/MiniBidi/minibidi.c PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare")
+
 target_include_directories(MiniBidiArabicTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs  # no-op Logging.h (real one needs Arduino)
   ${REPO_ROOT}/lib/MiniBidi
