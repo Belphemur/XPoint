@@ -332,3 +332,13 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   LOG_DBG("HTTP", "Downloaded %zu bytes", sink.downloaded);
   return OK;
 }
+
+bool HttpDownloader::heapAvailableForTransfer() {
+  const uint32_t free = ESP.getFreeHeap();
+  const uint32_t maxBlock = ESP.getMaxAllocHeap();
+  if (free < MIN_TLS_FREE_HEAP || maxBlock < MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("HTTP", "Low heap for download (%u free, %u max block)", free, maxBlock);
+    return false;
+  }
+  return true;
+}

@@ -165,9 +165,7 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   if (auto* fcm = renderer.getFontCacheManager()) {
     fcm->releaseSdFontCaches();
   }
-  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
-    LOG_ERR("FONT", "Low heap for manifest (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  if (!HttpDownloader::heapAvailableForTransfer()) {
     errorMessage_ = tr(STR_MEMORY_ERROR);
     return false;
   }
@@ -541,9 +539,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
 
   // Check before touching the family directory so a failed update leaves the
   // installed family unchanged.
-  if (ESP.getFreeHeap() < HttpDownloader::MIN_TLS_FREE_HEAP ||
-      ESP.getMaxAllocHeap() < HttpDownloader::MIN_TLS_MAX_ALLOC) {
-    LOG_ERR("FONT", "Low heap for download (%u free, %u max block)", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+  if (!HttpDownloader::heapAvailableForTransfer()) {
     RenderLock lock(*this);
     state_ = ERROR;
     errorMessage_ = tr(STR_MEMORY_ERROR);
