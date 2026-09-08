@@ -6,6 +6,7 @@
 #include <base64.h>
 #include <esp_wifi.h>
 
+#include <cstring>
 #include <functional>
 #include <string>
 
@@ -35,6 +36,74 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+
+// On PSRAM boards, coalesce small transport chunks into larger SD writes to
+// reduce I/O syscall count. 8 KB = 4 transport chunks at 2 KB each. On C3
+// (no PSRAM) the buffer is unallocated and writes flush through directly,
+// so no DRAM overhead and no extra memcpy.
+#if defined(BOARD_HAS_PSRAM)
+constexpr size_t COALESCE_BUF_SIZE = 8192;
+#else
+constexpr size_t COALESCE_BUF_SIZE = 0;
+#endif
+
+}  // namespace
+
+namespace {
+
+// Write-coalescing wrapper for HalFile. Accumulates small transport chunks
+// into a PSRAM buffer and flushes to SD in larger blocks, cutting the number
+// of SD write syscalls. On non-PSRAM boards the buffer is empty (size 0)
+// and every write flushes through directly — zero overhead.
+class CoalescingWriter {
+ public:
+  explicit CoalescingWriter(HalFile& file)
+      : file_(file),
+        buf_(COALESCE_BUF_SIZE > 0 ? poolMakeBytes(COALESCE_BUF_SIZE) : PoolBytes()),
+        cap_(COALESCE_BUF_SIZE > 0 ? COALESCE_BUF_SIZE : 0),
+        len_(0) {}
+
+  // Returns true on success, false if the underlying write failed.
+  bool write(const uint8_t* data, size_t len) {
+    if (cap_ == 0) {
+      // Non-PSRAM / passthrough: write directly, no buffering.
+      return file_.write(data, len) == len;
+    }
+    size_t off = 0;
+    while (off < len) {
+      const size_t space = cap_ - len_;
+      const size_t take = space < (len - off) ? space : (len - off);
+      if (take > 0) {
+        std::memcpy(buf_.get() + len_, data + off, take);
+        len_ += take;
+        off += take;
+      }
+      if (len_ == cap_) {
+        if (file_.write(buf_.get(), cap_) != cap_) return false;
+        len_ = 0;
+      }
+    }
+    return true;
+  }
+
+  // Flush any remaining buffered data.
+  bool flush() {
+    if (len_ == 0) return true;
+    if (file_.write(buf_.get(), len_) != len_) return false;
+    len_ = 0;
+    return true;
+  }
+
+ private:
+  HalFile& file_;
+  PoolBytes buf_;
+  const size_t cap_;
+  size_t len_;
+};
+
+}  // namespace
+
+namespace {
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -310,12 +379,24 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     return FILE_ERROR;
   }
 
+  CoalescingWriter writer(file);
+
   Sink sink;
   sink.progress = std::move(progress);
   sink.cancelFlag = cancelFlag;
-  sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
+  sink.write = [&writer](const uint8_t* data, size_t len) {
+    if (!writer.write(data, len)) {
+      LOG_ERR("HTTP", "SD write failed");
+      return false;
+    }
+    return true;
+  };
 
   const DownloadError result = runGetSecure(url, username, password, sink, downgradeRedirectsToHttp);
+  // Flush any remaining buffered data before closing.
+  if (!writer.flush()) {
+    LOG_ERR("HTTP", "Final flush failed");
+  }
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
   file.close();
