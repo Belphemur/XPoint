@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 #include <InflateStream.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <atomic>
@@ -392,7 +393,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
   const auto dataSize = trailingNullByte ? inflatedDataSize + 1 : inflatedDataSize;
-  const auto data = static_cast<uint8_t*>(malloc(dataSize));
+  const auto data = static_cast<uint8_t*>(poolMalloc(dataSize));
   if (data == nullptr) {
     LOG_ERR("ZIP", "Failed to allocate memory for output buffer (%zu bytes)", dataSize);
     return nullptr;
@@ -404,7 +405,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
     if (dataRead != inflatedDataSize) {
       LOG_ERR("ZIP", "Failed to read data");
-      free(data);
+      poolFree(data);
       return nullptr;
     }
 
@@ -413,7 +414,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
     auto* fileReadBuffer = static_cast<uint8_t*>(malloc(1024));
     if (!fileReadBuffer) {
       LOG_ERR("ZIP", "Failed to allocate memory for zip file read buffer");
-      free(data);
+      poolFree(data);
       return nullptr;
     }
 
@@ -429,7 +430,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
     if (!inflate.init(false)) {
       LOG_ERR("ZIP", "Failed to init inflate stream for %s", filename);
       free(fileReadBuffer);
-      free(data);
+      poolFree(data);
       return nullptr;
     }
     inflate.setFill(zipFillCallback, &ctx);
@@ -437,7 +438,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
     if (!inflate.read(data, inflatedDataSize)) {
       LOG_ERR("ZIP", "Failed to inflate file");
       free(fileReadBuffer);
-      free(data);
+      poolFree(data);
       return nullptr;
     }
     free(fileReadBuffer);
@@ -445,7 +446,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
     // Continue out of block with data set
   } else {
     LOG_ERR("ZIP", "Unsupported compression method");
-    free(data);
+    poolFree(data);
     return nullptr;
   }
 

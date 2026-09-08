@@ -1,4 +1,6 @@
 #pragma once
+#include <Memory.h>
+
 #include <functional>
 #include <memory>
 #include <optional>
@@ -35,7 +37,12 @@ class Section {
   // live parser plus the strings it references (the parser stores them by reference)
   // and the in-RAM page-offset table.
   struct BuildContext {
-    std::unique_ptr<ChapterHtmlSlimParser> parser;
+    // Buffers/strings declared first so they are destroyed AFTER the parser
+    // (C++ destroys members in reverse declaration order). This ensures the
+    // parser's destructor — which holds pointers into htmlBuffer and references
+    // into the strings — runs while those allocations are still alive.
+    PoolBytes htmlBuffer{nullptr};
+    size_t htmlBufferSize = 0;
     std::vector<PageLutEntry> lut;
     std::string parsePath;
     std::string contentBase;
@@ -52,6 +59,10 @@ class Section {
     // the EMA is stepped once per build advance (not per redraw) to damp that wobble.
     float smoothedEstimate = 0;
     uint32_t smoothedAtConsumed = 0;
+
+    // Parser declared last so it is destroyed first — before the buffers and
+    // strings it references. Safe ordering for all teardown paths.
+    std::unique_ptr<ChapterHtmlSlimParser> parser;
   };
   // build_ holds the active section's BuildContext (LUT + parser + working set).
   // On PSRAM boards this is allocated from PSRAM; on non-PSRAM boards from DRAM.

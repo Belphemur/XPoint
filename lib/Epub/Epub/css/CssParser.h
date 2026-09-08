@@ -68,6 +68,15 @@ class CssParser {
   ParseResult loadFromStream(HalFile& source);
 
   /**
+   * Load and parse CSS from an in-memory buffer.
+   * Can be called multiple times to accumulate rules from multiple stylesheets.
+   * @param data CSS text (not copied; must stay valid for the duration of the call)
+   * @param len Length of the CSS text in bytes
+   * @return Complete unless bounded storage stopped rule growth or the source was invalid
+   */
+  ParseResult loadFromMemory(const char* data, size_t len);
+
+  /**
    * Look up the style for an HTML element, considering tag name and class attributes.
    * Applies CSS cascade: element style < class style < element.class style
    *
@@ -147,6 +156,47 @@ class CssParser {
     OutOfMemory,
   };
 
+  // Stack-allocated string buffer to avoid heap reallocations during parsing
+  // Provides string-like interface with fixed capacity
+  struct StackBuffer {
+    static constexpr size_t CAPACITY = 1024;
+    char data[CAPACITY];
+    size_t len = 0;
+
+    bool push_back(char c) {
+      if (len >= CAPACITY) return false;
+      data[len++] = c;
+      return true;
+    }
+
+    void clear() { len = 0; }
+    bool empty() const { return len == 0; }
+    size_t size() const { return len; }
+
+    // Get string view of current content (zero-copy)
+    std::string_view view() const { return std::string_view(data, len); }
+    operator std::string_view() const noexcept { return view(); }
+  };
+
+  // Loop-carried state for the CSS character state machine, shared by
+  // loadFromStream() and loadFromMemory().
+  struct CssParseState {
+    StackBuffer selector;
+    StackBuffer declBuffer;
+    bool inComment = false;
+    bool maybeSlash = false;
+    bool prevStar = false;
+    bool inAtRule = false;
+    int atDepth = 0;
+    int bodyDepth = 0;
+    bool skippingRule = false;
+    bool selectorTruncated = false;
+    bool declarationTruncated = false;
+    bool inputTruncated = false;
+    CssStyle currentStyle;
+    size_t totalRead = 0;
+  };
+
   struct SelectorEntry {
     uint32_t offset;
     uint16_t styleIndex;
@@ -172,6 +222,10 @@ class CssParser {
   // Internal parsing helpers
   bool restoreCacheBackupIfNeeded() const;
   void processRuleBlockWithStyle(std::string_view selectorGroup, const CssStyle& style);
+  // Character state machine shared by both load entry points
+  void handleCssChar(char c, CssParseState& st);
+  void processCssChars(const char* data, size_t len, CssParseState& st);
+  ParseResult finishCssParse(CssParseState& st);
   [[nodiscard]] int compareEntryToPieces(const SelectorEntry& entry, std::string_view p0, std::string_view p1,
                                          std::string_view p2) const;
   [[nodiscard]] size_t lowerBound(std::string_view p0, std::string_view p1, std::string_view p2, bool& exact) const;

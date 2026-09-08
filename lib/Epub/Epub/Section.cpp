@@ -333,6 +333,11 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   const auto htmlDir = epub->getCachePath() + "/html";
   const auto htmlPath = htmlDir + "/" + std::to_string(spineIndex) + ".html";
   const auto tmpHtmlPath = htmlDir + "/.tmp_" + std::to_string(spineIndex) + ".html";
+#ifdef BOARD_HAS_PSRAM
+  // Decompressed chapter HTML held for the whole parse when it can live in PSRAM.
+  PoolBytes htmlMem{nullptr};
+  size_t htmlMemSize = 0;
+#endif
 
   // Create cache directory if it doesn't exist
   {
@@ -353,53 +358,98 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   } else {
     Storage.mkdir(htmlDir.c_str());
 
-    // Retry logic for SD card timing issues
-    bool streamed = false;
-    uint32_t fileSize = 0;
-    for (int attempt = 0; attempt < 3 && !streamed; attempt++) {
-      if (attempt > 0) {
-        LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
-        delay(50);  // Brief delay before retry
+    bool htmlFromMemory = false;
+#ifdef BOARD_HAS_PSRAM
+    // Query the uncompressed size first; skip PSRAM allocation for chapters
+    // that could exhaust available memory (CWE-400). Mirrors the CSS path.
+    constexpr size_t MAX_HTML_FILE_SIZE = 3 * 1024 * 1024;  // 3 MB
+    size_t htmlFileSize = 0;
+    if (epub->getItemSize(localPath, &htmlFileSize) && htmlFileSize <= MAX_HTML_FILE_SIZE) {
+      // Inflate straight into PSRAM and parse from the resident buffer,
+      // using RAII to manage the allocation. Falls back to the streaming
+      // path when PSRAM allocation fails.
+      size_t inflSize = 0;
+      PoolBytes htmlBuf{epub->readItemContentsToBytes(localPath, &inflSize)};
+      htmlMemSize = inflSize;
+      if (htmlBuf) {
+        HalFile tmpHtml;
+        if (Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
+          const bool wrote = tmpHtml.write(htmlBuf.get(), htmlMemSize) == htmlMemSize;
+          // Explicitly close() file before remove/rename
+          tmpHtml.close();
+          if (wrote) {
+            if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
+              htmlCached = true;
+            } else {
+              LOG_DBG("SCT", "Failed to promote HTML cache; parsing from memory");
+            }
+          } else if (Storage.exists(tmpHtmlPath.c_str())) {
+            Storage.remove(tmpHtmlPath.c_str());
+            LOG_DBG("SCT", "Removed incomplete temp file after failed write");
+          }
+        } else {
+          LOG_DBG("SCT", "Could not open HTML cache for writing; parsing from memory");
+        }
+        htmlMem = std::move(htmlBuf);
+        htmlFromMemory = true;
+        LOG_DBG("SCT", "Inflated HTML into PSRAM (%zu bytes)", htmlMemSize);
+      } else {
+        LOG_DBG("SCT", "PSRAM buffer unavailable; streaming HTML to cache");
       }
-
-      // Remove any incomplete file from previous attempt before retrying
-      if (Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-      }
-
-      HalFile tmpHtml;
-      if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
-        continue;
-      }
-      // Larger chunks mean far fewer SD writes inflating the HTML; a 1KB chunk turned a 584KB
-      // single-spine novel into ~570 tiny writes (multi-second). 8KB keeps the transient buffers
-      // small while cutting the write count 8x.
-      streamed = epub->readItemContentsToStream(localPath, tmpHtml, 8192);
-      fileSize = tmpHtml.size();
-      // Explicitly close() file before calling Storage.remove()
-      tmpHtml.close();
-
-      // If streaming failed, remove the incomplete file immediately
-      if (!streamed && Storage.exists(tmpHtmlPath.c_str())) {
-        Storage.remove(tmpHtmlPath.c_str());
-        LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
-      }
-    }
-
-    if (!streamed) {
-      LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
-      return false;
-    }
-
-    LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
-
-    // Promote to the persistent HTML cache immediately -- the inflate is complete and the bytes are
-    // valid regardless of whether the layout build finishes, so reopening (even a window-only spine
-    // that never finalizes its .bin) skips re-inflation. If the rename fails we just parse the temp.
-    if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
-      htmlCached = true;
     } else {
-      LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
+      LOG_DBG("SCT", "HTML too large for PSRAM (%zu bytes > %zu max); streaming to cache", htmlFileSize,
+              MAX_HTML_FILE_SIZE);
+    }
+#endif
+    if (!htmlFromMemory) {
+      // Retry logic for SD card timing issues
+      bool streamed = false;
+      uint32_t fileSize = 0;
+      for (int attempt = 0; attempt < 3 && !streamed; attempt++) {
+        if (attempt > 0) {
+          LOG_DBG("SCT", "Retrying stream (attempt %d)...", attempt + 1);
+          delay(50);  // Brief delay before retry
+        }
+
+        // Remove any incomplete file from previous attempt before retrying
+        if (Storage.exists(tmpHtmlPath.c_str())) {
+          Storage.remove(tmpHtmlPath.c_str());
+        }
+
+        HalFile tmpHtml;
+        if (!Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
+          continue;
+        }
+        // Larger chunks mean far fewer SD writes inflating the HTML; a 1KB chunk turned a 584KB
+        // single-spine novel into ~570 tiny writes (multi-second). 8KB keeps the transient buffers
+        // small while cutting the write count 8x.
+        streamed = epub->readItemContentsToStream(localPath, tmpHtml, 8192);
+        fileSize = tmpHtml.size();
+        // Explicitly close() file before calling Storage.remove()
+        tmpHtml.close();
+
+        // If streaming failed, remove the incomplete file immediately
+        if (!streamed && Storage.exists(tmpHtmlPath.c_str())) {
+          Storage.remove(tmpHtmlPath.c_str());
+          LOG_DBG("SCT", "Removed incomplete temp file after failed attempt");
+        }
+      }
+
+      if (!streamed) {
+        LOG_ERR("SCT", "Failed to stream item contents to temp file after retries");
+        return false;
+      }
+
+      LOG_DBG("SCT", "Streamed temp HTML to %s (%d bytes)", tmpHtmlPath.c_str(), fileSize);
+
+      // Promote to the persistent HTML cache immediately -- the inflate is complete and the bytes are
+      // valid regardless of whether the layout build finishes, so reopening (even a window-only spine
+      // that never finalizes its .bin) skips re-inflation. If the rename fails we just parse the temp.
+      if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
+        htmlCached = true;
+      } else {
+        LOG_DBG("SCT", "Failed to promote HTML cache; parsing from temp");
+      }
     }
   }
 
@@ -484,6 +534,16 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     if (!reusedHtml) Storage.remove(tmpHtmlPath.c_str());
     return false;
   }
+
+#ifdef BOARD_HAS_PSRAM
+  if (htmlMem) {
+    // Hand the decompressed HTML to the parser; the buffer moves into the
+    // BuildContext so it outlives every incremental parseStep().
+    build_->htmlBuffer = std::move(htmlMem);
+    build_->htmlBufferSize = htmlMemSize;
+    build_->parser->parseFromMemory(build_->htmlBuffer.get(), build_->htmlBufferSize);
+  }
+#endif
 
   Hyphenator::setPreferredLanguage(epub->getLanguage());
 

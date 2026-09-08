@@ -9,6 +9,7 @@
 #endif
 
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -83,6 +84,45 @@ auto makeUniqueNoThrowPsram(size_t count) {
   return std::unique_ptr<T, Deleter>(arr, [](T* t) noexcept { heap_caps_free(t); });
 }
 #endif  // ESP_PLATFORM
+
+// Raw pool allocation pair: PSRAM heap on PSRAM builds, DRAM heap otherwise.
+// A block returned by poolMalloc() MUST be released with poolFree() — under
+// BOARD_HAS_PSRAM it comes from heap_caps_malloc and must be released with
+// heap_caps_free, never free().
+inline void* poolMalloc(size_t size) {
+#if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+  return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+#else
+  return malloc(size);
+#endif
+}
+
+inline void poolFree(void* p) {
+#if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
+// RAII wrapper for a byte buffer allocated via poolMalloc / released via poolFree.
+// Eliminates per-call-site #ifdef BOARD_HAS_PSRAM and the error-prone
+// std::unique_ptr<uint8_t[], void(*)(void*)> boilerplate. PoolDeleter is
+// stateless (zero bytes via EBO), so PoolBytes is the same footprint as a raw
+// pointer — no extra cost on constrained cores.
+//
+// Usage:
+//   PoolBytes buf = poolMakeBytes(size);
+//   if (!buf) { LOG_ERR(TAG, "OOM"); return false; }
+//   uint8_t* data = buf.get();     // valid for the scope
+
+struct PoolDeleter {
+  void operator()(void* p) const noexcept { poolFree(p); }
+};
+
+using PoolBytes = std::unique_ptr<uint8_t[], PoolDeleter>;
+
+inline PoolBytes poolMakeBytes(size_t size) { return PoolBytes{static_cast<uint8_t*>(poolMalloc(size))}; }
 
 // Helper struct to call a cleanup function on exit from any scope.
 // Use with a lambda to avoid unnecessary allocations from std::function/std::bind:
