@@ -9,6 +9,7 @@
 #endif
 
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -83,6 +84,26 @@ auto makeUniqueNoThrowPsram(size_t count) {
   return std::unique_ptr<T, Deleter>(arr, [](T* t) noexcept { heap_caps_free(t); });
 }
 #endif  // ESP_PLATFORM
+
+// Raw pool allocation pair: PSRAM heap on PSRAM builds, DRAM heap otherwise.
+// A block returned by poolMalloc() MUST be released with poolFree() — under
+// BOARD_HAS_PSRAM it comes from heap_caps_malloc and must be released with
+// heap_caps_free, never free().
+inline void* poolMalloc(size_t size) {
+#if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+  return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+#else
+  return malloc(size);
+#endif
+}
+
+inline void poolFree(void* p) {
+#if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
 
 // Helper struct to call a cleanup function on exit from any scope.
 // Use with a lambda to avoid unnecessary allocations from std::function/std::bind:

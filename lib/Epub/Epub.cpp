@@ -100,7 +100,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
     uint8_t* coverPageData = readItemContentsToBytes(opfParser.guideCoverPageHref, &coverPageSize, true);
     if (coverPageData) {
       const std::string coverPageHtml(reinterpret_cast<char*>(coverPageData), coverPageSize);
-      free(coverPageData);
+      poolFree(coverPageData);
 
       // Determine base path of the cover page for resolving relative image references
       std::string coverPageBase;
@@ -373,39 +373,57 @@ CssParser::ParseResult Epub::parseCssFiles(const CssParser::CacheStatus existing
       }
     }
 
-    // Extract CSS file to temp location
-    const auto tmpCssPath = getCachePath() + "/.tmp.css";
-    HalFile tempCssFile;
-    if (!Storage.openFileForWrite("EBP", tmpCssPath, tempCssFile)) {
-      LOG_ERR("EBP", "Could not create temp CSS file");
-      parseResult = CssParser::ParseResult::Error;
-      continue;
+    CssParser::ParseResult cssResult = CssParser::ParseResult::Error;
+    bool cssFromMemory = false;
+#ifdef BOARD_HAS_PSRAM
+    // Decompress straight into PSRAM and parse from there; no temp file needed.
+    size_t cssMemSize = 0;
+    uint8_t* cssMem = readItemContentsToBytes(cssPath, &cssMemSize);
+    if (cssMem) {
+      std::unique_ptr<uint8_t[], void (*)(void*)> cssBuf{cssMem, &poolFree};
+      cssResult = cssParser->loadFromMemory(reinterpret_cast<const char*>(cssBuf.get()), cssMemSize);
+      cssFromMemory = true;
+    } else {
+      LOG_DBG("EBP", "PSRAM buffer unavailable for CSS; streaming to temp file: %s", cssPath.c_str());
     }
-    if (!readItemContentsToStream(cssPath, tempCssFile, kStreamChunkSize)) {
-      LOG_ERR("EBP", "Could not read CSS file: %s", cssPath.c_str());
+#endif
+    if (!cssFromMemory) {
+      // Extract CSS file to temp location
+      const auto tmpCssPath = getCachePath() + "/.tmp.css";
+      HalFile tempCssFile;
+      if (!Storage.openFileForWrite("EBP", tmpCssPath, tempCssFile)) {
+        LOG_ERR("EBP", "Could not create temp CSS file");
+        parseResult = CssParser::ParseResult::Error;
+        continue;
+      }
+      if (!readItemContentsToStream(cssPath, tempCssFile, kStreamChunkSize)) {
+        LOG_ERR("EBP", "Could not read CSS file: %s", cssPath.c_str());
+        // Explicitly close() file before calling Storage.remove()
+        tempCssFile.close();
+        Storage.remove(tmpCssPath.c_str());
+        parseResult = CssParser::ParseResult::Error;
+        continue;
+      }
+      // Explicitly close() file before reopening for reading
+      tempCssFile.close();
+
+      // Parse the CSS file
+      if (!Storage.openFileForRead("EBP", tmpCssPath, tempCssFile)) {
+        LOG_ERR("EBP", "Could not open temp CSS file for reading");
+        Storage.remove(tmpCssPath.c_str());
+        parseResult = CssParser::ParseResult::Error;
+        continue;
+      }
+      const CssParser::ParseResult streamResult = cssParser->loadFromStream(tempCssFile);
       // Explicitly close() file before calling Storage.remove()
       tempCssFile.close();
       Storage.remove(tmpCssPath.c_str());
-      parseResult = CssParser::ParseResult::Error;
-      continue;
+      cssResult = streamResult;
     }
-    // Explicitly close() file before reopening for reading
-    tempCssFile.close();
 
-    // Parse the CSS file
-    if (!Storage.openFileForRead("EBP", tmpCssPath, tempCssFile)) {
-      LOG_ERR("EBP", "Could not open temp CSS file for reading");
-      Storage.remove(tmpCssPath.c_str());
+    if (cssResult == CssParser::ParseResult::Error) {
       parseResult = CssParser::ParseResult::Error;
-      continue;
-    }
-    const CssParser::ParseResult streamResult = cssParser->loadFromStream(tempCssFile);
-    // Explicitly close() file before calling Storage.remove()
-    tempCssFile.close();
-    Storage.remove(tmpCssPath.c_str());
-    if (streamResult == CssParser::ParseResult::Error) {
-      parseResult = CssParser::ParseResult::Error;
-    } else if (streamResult == CssParser::ParseResult::Partial && parseResult == CssParser::ParseResult::Complete) {
+    } else if (cssResult == CssParser::ParseResult::Partial && parseResult == CssParser::ParseResult::Complete) {
       parseResult = CssParser::ParseResult::Partial;
     }
   }

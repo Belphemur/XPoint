@@ -2004,15 +2004,22 @@ bool ChapterHtmlSlimParser::beginParse() {
   // Using DefaultHandlerExpand preserves normal entity expansion from DOCTYPE
   XML_SetDefaultHandlerExpand(xmlParser_, defaultHandlerExpand);
 
-  if (!Storage.openFileForRead("EHP", filepath, parseFile_)) {
-    destroyXmlParser(xmlParser_);
-    xmlParser_ = nullptr;
-    return false;
-  }
+  if (memData_) {
+    // In-memory source: no file to open; the popup decision uses the buffer size.
+    if (popupFn && memLen_ >= MIN_SIZE_FOR_POPUP) {
+      popupFn();
+    }
+  } else {
+    if (!Storage.openFileForRead("EHP", filepath, parseFile_)) {
+      destroyXmlParser(xmlParser_);
+      xmlParser_ = nullptr;
+      return false;
+    }
 
-  // Get file size to decide whether to show indexing popup.
-  if (popupFn && parseFile_.size() >= MIN_SIZE_FOR_POPUP) {
-    popupFn();
+    // Get file size to decide whether to show indexing popup.
+    if (popupFn && parseFile_.size() >= MIN_SIZE_FOR_POPUP) {
+      popupFn();
+    }
   }
 
   XML_SetUserData(xmlParser_, this);
@@ -2024,22 +2031,37 @@ bool ChapterHtmlSlimParser::beginParse() {
 }
 
 ChapterHtmlSlimParser::ParseStatus ChapterHtmlSlimParser::parseStep() {
-  void* const buf = XML_GetBuffer(xmlParser_, PARSE_BUFFER_SIZE);
-  if (!buf) {
-    LOG_ERR("EHP", "Couldn't allocate memory for buffer");
-    return ParseStatus::Error;
+  bool parseOk = false;
+  int done = 0;
+
+  if (memData_) {
+    // Feed the next chunk of the caller-held buffer; expat resolves internal
+    // references inside the buffer, so no staging window is needed.
+    const size_t remaining = memLen_ - memOffset_;
+    const size_t chunk = remaining < PARSE_BUFFER_SIZE ? remaining : PARSE_BUFFER_SIZE;
+    done = (memOffset_ + chunk) == memLen_;
+    parseOk = XML_Parse(xmlParser_, reinterpret_cast<const char*>(memData_ + memOffset_), static_cast<int>(chunk),
+                        done) != XML_STATUS_ERROR;
+    memOffset_ += chunk;
+  } else {
+    void* const buf = XML_GetBuffer(xmlParser_, PARSE_BUFFER_SIZE);
+    if (!buf) {
+      LOG_ERR("EHP", "Couldn't allocate memory for buffer");
+      return ParseStatus::Error;
+    }
+
+    const size_t len = parseFile_.read(buf, PARSE_BUFFER_SIZE);
+
+    if (len == 0 && parseFile_.available() > 0) {
+      LOG_ERR("EHP", "File read error");
+      return ParseStatus::Error;
+    }
+
+    done = parseFile_.available() == 0;
+    parseOk = XML_ParseBuffer(xmlParser_, static_cast<int>(len), done) != XML_STATUS_ERROR;
   }
 
-  const size_t len = parseFile_.read(buf, PARSE_BUFFER_SIZE);
-
-  if (len == 0 && parseFile_.available() > 0) {
-    LOG_ERR("EHP", "File read error");
-    return ParseStatus::Error;
-  }
-
-  const int done = parseFile_.available() == 0;
-
-  if (XML_ParseBuffer(xmlParser_, static_cast<int>(len), done) == XML_STATUS_ERROR) {
+  if (!parseOk) {
     if (htmlEnded_) {
       LOG_DBG("EHP", "Ignoring trailing data after </html>: %s", XML_ErrorString(XML_GetErrorCode(xmlParser_)));
       return ParseStatus::Done;

@@ -14,28 +14,6 @@
 
 namespace {
 
-// Stack-allocated string buffer to avoid heap reallocations during parsing
-// Provides string-like interface with fixed capacity
-struct StackBuffer {
-  static constexpr size_t CAPACITY = 1024;
-  char data[CAPACITY];
-  size_t len = 0;
-
-  bool push_back(char c) {
-    if (len >= CAPACITY) return false;
-    data[len++] = c;
-    return true;
-  }
-
-  void clear() { len = 0; }
-  bool empty() const { return len == 0; }
-  size_t size() const { return len; }
-
-  // Get string view of current content (zero-copy)
-  std::string_view view() const { return std::string_view(data, len); }
-  operator std::string_view() const noexcept { return view(); }
-};
-
 // Buffer size for reading CSS files
 constexpr size_t READ_BUFFER_SIZE = 512;
 
@@ -698,7 +676,139 @@ void CssParser::processRuleBlockWithStyle(std::string_view selectorGroup, const 
       });
 }
 
-// Main parsing entry point
+// Main parsing entry points
+
+void CssParser::handleCssChar(const char c, CssParseState& st) {
+  auto& selector = st.selector;
+  auto& declBuffer = st.declBuffer;
+  auto& currentStyle = st.currentStyle;
+
+  if (st.inAtRule) {
+    if (c == '{') {
+      ++st.atDepth;
+    } else if (c == '}') {
+      if (st.atDepth > 0) --st.atDepth;
+      if (st.atDepth == 0) st.inAtRule = false;
+    } else if (c == ';' && st.atDepth == 0) {
+      st.inAtRule = false;
+    }
+    return;
+  }
+
+  if (st.bodyDepth == 0) {
+    if (selector.empty() && isCssWhitespace(c)) {
+      return;
+    }
+    if (c == '@' && selector.empty()) {
+      st.inAtRule = true;
+      st.atDepth = 0;
+      return;
+    }
+    if (c == '{') {
+      st.bodyDepth = 1;
+      currentStyle = CssStyle{};
+      declBuffer.clear();
+      st.skippingRule = st.selectorTruncated || selector.size() > MAX_SELECTOR_LENGTH * 4;
+      return;
+    }
+    if (!selector.push_back(c)) {
+      st.selectorTruncated = true;
+      st.inputTruncated = true;
+    }
+    return;
+  }
+
+  // bodyDepth > 0
+  if (c == '{') {
+    ++st.bodyDepth;
+    return;
+  }
+  if (c == '}') {
+    --st.bodyDepth;
+    if (st.bodyDepth == 0) {
+      if (!st.skippingRule && !st.declarationTruncated && !declBuffer.empty()) {
+        parseDeclarationIntoStyle(declBuffer, currentStyle);
+      }
+      if (!st.skippingRule) {
+        processRuleBlockWithStyle(selector, currentStyle);
+      }
+      selector.clear();
+      declBuffer.clear();
+      st.skippingRule = false;
+      st.selectorTruncated = false;
+      st.declarationTruncated = false;
+      return;
+    }
+    return;
+  }
+  if (st.bodyDepth > 1) {
+    return;
+  }
+  if (!st.skippingRule) {
+    if (c == ';') {
+      if (!st.declarationTruncated && !declBuffer.empty()) {
+        parseDeclarationIntoStyle(declBuffer, currentStyle);
+      }
+      declBuffer.clear();
+      st.declarationTruncated = false;
+    } else {
+      if (!declBuffer.push_back(c)) {
+        st.declarationTruncated = true;
+        st.inputTruncated = true;
+      }
+    }
+  }
+}
+
+void CssParser::processCssChars(const char* data, const size_t len, CssParseState& st) {
+  st.totalRead += len;
+
+  for (size_t i = 0; i < len; ++i) {
+    const char c = data[i];
+
+    if (st.inComment) {
+      if (st.prevStar && c == '/') {
+        st.inComment = false;
+        st.prevStar = false;
+        continue;
+      }
+      st.prevStar = c == '*';
+      continue;
+    }
+
+    if (st.maybeSlash) {
+      if (c == '*') {
+        st.inComment = true;
+        st.maybeSlash = false;
+        st.prevStar = false;
+        continue;
+      }
+      handleCssChar('/', st);
+      st.maybeSlash = false;
+      // fall through to process current char
+    }
+
+    if (c == '/') {
+      st.maybeSlash = true;
+      continue;
+    }
+
+    handleCssChar(c, st);
+  }
+}
+
+CssParser::ParseResult CssParser::finishCssParse(CssParseState& st) {
+  if (st.maybeSlash) {
+    handleCssChar('/', st);
+  }
+
+  if (st.inputTruncated) {
+    LOG_ERR("CSS", "CSS input exceeded parser buffer; cache will remain partial");
+  }
+  const bool incompleteInput = st.bodyDepth > 0 || st.inAtRule || st.inComment || !st.selector.empty();
+  LOG_DBG("CSS", "Parsed %zu rules from %zu bytes", ruleCount(), st.totalRead);
+  return ruleGrowthStopped_ || st.inputTruncated || incompleteInput ? ParseResult::Partial : ParseResult::Complete;
+}
 
 CssParser::ParseResult CssParser::loadFromStream(HalFile& source) {
   if (!source) {
@@ -706,155 +816,26 @@ CssParser::ParseResult CssParser::loadFromStream(HalFile& source) {
     return ParseResult::Error;
   }
 
-  size_t totalRead = 0;
-
-  // Use stack-allocated buffers for parsing to avoid heap reallocations
-  StackBuffer selector;
-  StackBuffer declBuffer;
-
-  bool inComment = false;
-  bool maybeSlash = false;
-  bool prevStar = false;
-
-  bool inAtRule = false;
-  int atDepth = 0;
-
-  int bodyDepth = 0;
-  bool skippingRule = false;
-  bool selectorTruncated = false;
-  bool declarationTruncated = false;
-  bool inputTruncated = false;
-  CssStyle currentStyle;
-
-  auto handleChar = [&](const char c) {
-    if (inAtRule) {
-      if (c == '{') {
-        ++atDepth;
-      } else if (c == '}') {
-        if (atDepth > 0) --atDepth;
-        if (atDepth == 0) inAtRule = false;
-      } else if (c == ';' && atDepth == 0) {
-        inAtRule = false;
-      }
-      return;
-    }
-
-    if (bodyDepth == 0) {
-      if (selector.empty() && isCssWhitespace(c)) {
-        return;
-      }
-      if (c == '@' && selector.empty()) {
-        inAtRule = true;
-        atDepth = 0;
-        return;
-      }
-      if (c == '{') {
-        bodyDepth = 1;
-        currentStyle = CssStyle{};
-        declBuffer.clear();
-        skippingRule = selectorTruncated || selector.size() > MAX_SELECTOR_LENGTH * 4;
-        return;
-      }
-      if (!selector.push_back(c)) {
-        selectorTruncated = true;
-        inputTruncated = true;
-      }
-      return;
-    }
-
-    // bodyDepth > 0
-    if (c == '{') {
-      ++bodyDepth;
-      return;
-    }
-    if (c == '}') {
-      --bodyDepth;
-      if (bodyDepth == 0) {
-        if (!skippingRule && !declarationTruncated && !declBuffer.empty()) {
-          parseDeclarationIntoStyle(declBuffer, currentStyle);
-        }
-        if (!skippingRule) {
-          processRuleBlockWithStyle(selector, currentStyle);
-        }
-        selector.clear();
-        declBuffer.clear();
-        skippingRule = false;
-        selectorTruncated = false;
-        declarationTruncated = false;
-        return;
-      }
-      return;
-    }
-    if (bodyDepth > 1) {
-      return;
-    }
-    if (!skippingRule) {
-      if (c == ';') {
-        if (!declarationTruncated && !declBuffer.empty()) {
-          parseDeclarationIntoStyle(declBuffer, currentStyle);
-        }
-        declBuffer.clear();
-        declarationTruncated = false;
-      } else {
-        if (!declBuffer.push_back(c)) {
-          declarationTruncated = true;
-          inputTruncated = true;
-        }
-      }
-    }
-  };
-
+  CssParseState st;
   char buffer[READ_BUFFER_SIZE];
   while (source.available()) {
-    int bytesRead = source.read(buffer, sizeof(buffer));
+    const int bytesRead = source.read(buffer, sizeof(buffer));
     if (bytesRead <= 0) break;
-
-    totalRead += static_cast<size_t>(bytesRead);
-
-    for (int i = 0; i < bytesRead; ++i) {
-      const char c = buffer[i];
-
-      if (inComment) {
-        if (prevStar && c == '/') {
-          inComment = false;
-          prevStar = false;
-          continue;
-        }
-        prevStar = c == '*';
-        continue;
-      }
-
-      if (maybeSlash) {
-        if (c == '*') {
-          inComment = true;
-          maybeSlash = false;
-          prevStar = false;
-          continue;
-        }
-        handleChar('/');
-        maybeSlash = false;
-        // fall through to process current char
-      }
-
-      if (c == '/') {
-        maybeSlash = true;
-        continue;
-      }
-
-      handleChar(c);
-    }
+    processCssChars(buffer, static_cast<size_t>(bytesRead), st);
   }
 
-  if (maybeSlash) {
-    handleChar('/');
+  return finishCssParse(st);
+}
+
+CssParser::ParseResult CssParser::loadFromMemory(const char* data, const size_t len) {
+  if (!data) {
+    LOG_ERR("CSS", "Cannot parse from null buffer");
+    return ParseResult::Error;
   }
 
-  if (inputTruncated) {
-    LOG_ERR("CSS", "CSS input exceeded parser buffer; cache will remain partial");
-  }
-  const bool incompleteInput = bodyDepth > 0 || inAtRule || inComment || !selector.empty();
-  LOG_DBG("CSS", "Parsed %zu rules from %zu bytes", ruleCount(), totalRead);
-  return ruleGrowthStopped_ || inputTruncated || incompleteInput ? ParseResult::Partial : ParseResult::Complete;
+  CssParseState st;
+  processCssChars(data, len, st);
+  return finishCssParse(st);
 }
 
 // Style resolution

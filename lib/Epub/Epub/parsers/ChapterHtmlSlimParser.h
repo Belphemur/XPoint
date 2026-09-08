@@ -141,6 +141,13 @@ class ChapterHtmlSlimParser {
   HalFile parseFile_;
   uint32_t parseStartTime_ = 0;
 
+  // In-memory source. When set (via parseFromMemory), the source is the buffer
+  // instead of parseFile_; the buffer must outlive the parse (the parser does
+  // not copy it).
+  const uint8_t* memData_ = nullptr;
+  size_t memLen_ = 0;
+  size_t memOffset_ = 0;
+
   void updateEffectiveInlineStyle();
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPendingAnchor();
@@ -200,6 +207,16 @@ class ChapterHtmlSlimParser {
   // One-shot parse: builds every page before returning (begin + step* + finish).
   bool parseAndBuildPages();
 
+  // Parse from a caller-held buffer instead of the filepath source. Call before
+  // beginParse(). The buffer must outlive the parse — the parser keeps the
+  // pointer and does not copy; it is fed to expat incrementally so the resumable
+  // parseStep() protocol is unchanged. Passing nullptr reverts to file parsing.
+  void parseFromMemory(const uint8_t* data, size_t len) {
+    memData_ = data;
+    memLen_ = data ? len : 0;
+    memOffset_ = 0;
+  }
+
   // Resumable parse, for the incremental section builder. Drive as:
   //   if (!beginParse()) fail;
   //   loop: switch (parseStep()) { More: keep going / yield; Done: finishParse(); Error: abortParse(); }
@@ -217,6 +234,6 @@ class ChapterHtmlSlimParser {
   // Byte progress of the in-flight parse, used to estimate a still-building section's total page
   // count (a giant single-spine book never fully lays out, so its real count is unknown). Valid
   // between beginParse() and finishParse()/abortParse().
-  size_t parseBytesConsumed() { return parseFile_ ? parseFile_.position() : 0; }
-  size_t parseTotalBytes() { return parseFile_ ? parseFile_.size() : 0; }
+  size_t parseBytesConsumed() { return memData_ ? memOffset_ : (parseFile_ ? parseFile_.position() : 0); }
+  size_t parseTotalBytes() { return memData_ ? memLen_ : (parseFile_ ? parseFile_.size() : 0); }
 };
