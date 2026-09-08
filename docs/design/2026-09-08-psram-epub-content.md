@@ -74,7 +74,7 @@ On `BOARD_HAS_PSRAM` boards, replace the temp-file streaming path with `readItem
 #endif
 ```
 
-The parser reads from PSRAM buffer instead of SD file. This eliminates all SD writes/reads for the HTML itself.
+The parser reads from PSRAM buffer instead of SD file. This eliminates the SD read-back (open + N reads + close) — the cache file is still written for persistence (see "Cache strategy" below), but the write is consolidated into a single contiguous write.
 
 **Key question**: Can `ChapterHtmlSlimParser` parse from a memory buffer? Expat supports `XML_Parse(xmlParser, buf, len, done)` — a direct memory-parse call that doesn't need `XML_GetBuffer` + `XML_ParseBuffer`. The parser would need a new code path.
 
@@ -120,7 +120,7 @@ From the serial log:
 [52174] [DBG] [SCT] Streamed temp HTML to .tmp_11.html (770 bytes)
 ```
 
-The 770-byte HTML file: 2 SD writes + 1 rename + 1 open + ~1 read + 1 close = **5 SD operations** for 770 bytes of data. On PSRAM boards, this becomes 0 SD operations (read into PSRAM buffer, parse from memory).
+The 770-byte HTML file: 2 writes + 1 rename + 1 open + ~1 read + 1 close = **5 SD operations** for 770 bytes of data. On PSRAM boards, the read-back is eliminated — the parser reads from the PSRAM buffer instead of re-opening the file from SD. The cache file is still written (1 write) for persistence, so the count drops to **1 SD operation** (1 write for cache persistence). The write is also a single contiguous write (vs N/8192 chunked writes), which is faster on SD.
 
 For a full novel (e.g., the 584 KB spine mentioned in the 8KB-chunk comment), the savings are larger. The current streaming uses 2 × 8KB DRAM buffers + writes to SD in 8KB chunks. With PSRAM, the entire decompressed HTML sits in a single PSRAM buffer, and the parser reads it sequentially with no SD I/O.
 
@@ -173,7 +173,7 @@ All freed after the build completes. With 8 MB PSRAM and 115 KB used at idle, ev
 ### Verification (performed)
 - `pio run -e default` — DRAM path unchanged ✅
 - `pio run -e x4pro` — PSRAM path active ✅
-- Host ctest (full suite) — 200/200 passed ✅
+- Host ctest (full suite) — 202/202 passed ✅
 - `./bin/clang-format-fix -g` — clean/idempotent ✅
 - `pio check` (cppcheck) — no defects ✅
 - Device: serial log should show `Inflated HTML into PSRAM (N bytes)` with no `Streamed temp HTML` line; CSS path logs no `PSRAM buffer unavailable` message on PSRAM boards
