@@ -105,6 +105,25 @@ inline void poolFree(void* p) {
 #endif
 }
 
+// RAII wrapper for a byte buffer allocated via poolMalloc / released via poolFree.
+// Eliminates per-call-site #ifdef BOARD_HAS_PSRAM and the error-prone
+// std::unique_ptr<uint8_t[], void(*)(void*)> boilerplate. PoolDeleter is
+// stateless (zero bytes via EBO), so PoolBytes is the same footprint as a raw
+// pointer — no extra cost on constrained cores.
+//
+// Usage:
+//   PoolBytes buf = poolMakeBytes(size);
+//   if (!buf) { LOG_ERR(TAG, "OOM"); return false; }
+//   uint8_t* data = buf.get();     // valid for the scope
+
+struct PoolDeleter {
+  void operator()(void* p) const noexcept { poolFree(p); }
+};
+
+using PoolBytes = std::unique_ptr<uint8_t[], PoolDeleter>;
+
+inline PoolBytes poolMakeBytes(size_t size) { return PoolBytes{static_cast<uint8_t*>(poolMalloc(size))}; }
+
 // Helper struct to call a cleanup function on exit from any scope.
 // Use with a lambda to avoid unnecessary allocations from std::function/std::bind:
 // Example:

@@ -40,10 +40,10 @@ class Section {
     std::unique_ptr<ChapterHtmlSlimParser> parser;
     // Decompressed HTML kept resident for the whole parse on PSRAM boards
     // (null when parsing from the cached file). Declared after parser so it is
-    // destroyed before it. This is safe because the parser's destructor
-    // (abortParse) only destroys the expat parser handle and closes any open
-    // file — it never dereferences memData_.
-    std::unique_ptr<uint8_t[], void (*)(void*)> htmlBuffer{nullptr, &poolFree};
+    // destroyed before the parser — safe because the parser's destructor
+    // (abortParse) only destroys the expat handle and closes any open file,
+    // never dereferences its memData_ pointer.
+    PoolBytes htmlBuffer{nullptr};
     size_t htmlBufferSize = 0;
     std::vector<PageLutEntry> lut;
     std::string parsePath;

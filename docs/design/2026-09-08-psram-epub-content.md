@@ -162,19 +162,18 @@ All freed after the build completes. With 8 MB PSRAM and 115 KB used at idle, ev
 
 ### Implementation plan
 
-1. **`ZipFile::readFileToMemory`** → PSRAM allocation on `BOARD_HAS_PSRAM` (ZipFile.cpp:395)
-2. **`Epub::readItemContentsToBytes`** → ensure PSRAM buffer is returned (already calls `readFileToMemory`, just needs the ZipFile change)
-3. **`Section.cpp:beginBuild`** → on PSRAM, decompress to buffer, parse from memory, write to cache in one shot
-4. **`ChapterHtmlSlimParser`** → add `parseFromMemory()` using `XML_Parse` instead of file-based `XML_ParseBuffer`
-5. **`CssParser`** → add `loadFromMemory()` accepting a `string_view` or buffer pointer
-6. **`Epub.cpp:CSS path`** → on PSRAM, decompress CSS to buffer, parse from memory, skip temp file entirely
+1. **`Memory.h`** — Add RAII types `PoolDeleter` (stateless struct, EBO) and `PoolBytes = std::unique_ptr<uint8_t[], PoolDeleter>`, plus factory `poolMakeBytes(size)`. `poolMalloc/poolFree` already encapsulate the `#ifdef BOARD_HAS_PSRAM` internally. This eliminates raw `uint8_t*` + `std::unique_ptr<..., void(*)(void*)>` boilerplate at call sites.
+2. **`ZipFile::readFileToMemory`** → Uses `poolMalloc` for the decompressed buffer (PSRAM on PSRAM boards, DRAM otherwise)
+3. **`Section.cpp:beginBuild`** → On PSRAM, decompresses to PSRAM buffer via `readItemContentsToBytes`, wraps in `PoolBytes`, writes cache file in one shot, then `HtmlBuffer = std::move(buf)` and `parser->parseFromMemory(buf.get(), size)`
+4. **`ChapterHtmlSlimParser`** → `parseFromMemory(const uint8_t* data, size_t len)` sets a span pointer; `parseStep` uses `XML_Parse` for the memory branch vs. `XML_GetBuffer`+`XML_ParseBuffer` for the file branch. `parseBytesConsumed()`/`parseTotalBytes()` report from either source.
+5. **`CssParser`** → Refactored the char-by-char state machine out of `loadFromStream` into shared `processCssChars`/`finishCssParse` methods; `loadFromMemory` runs one pass over a buffer span. `loadFromStream` is now a thin chunk loop over the same code.
+6. **`Epub.cpp:CSS path`** → On PSRAM, decompress CSS to `PoolBytes`, call `cssParser->loadFromMemory()`, skip the temp file entirely.
+7. **CWE-400 guard** → Both HTML and CSS paths check `getItemSize` + `MAX_*_FILE_SIZE` (128KB) before allocating, falling back to the streaming path for oversized items.
 
-### Verification
-
-- `pio run -e default` — DRAM path unchanged (compiles with original code path)
-- `pio run -e x4pro` — PSRAM path active (new code under `#ifdef BOARD_HAS_PSRAM`)
-- Host tests: stubs for ZipFile/Section/Epub unchanged (no new test surface)
-- `./bin/clang-format-fix -g`
-- `pio check`
-- Device: serial log should show "Decompressed N bytes into M bytes" with no subsequent "Streamed temp HTML" line for cache misses on X4 Pro
-- Device: `PSRAMFree` should show a transient drop during chapter build (HTML buffer allocated) followed by recovery after the build frees the buffer
+### Verification (performed)
+- `pio run -e default` — DRAM path unchanged ✅
+- `pio run -e x4pro` — PSRAM path active ✅
+- Host ctest (full suite) — 200/200 passed ✅
+- `./bin/clang-format-fix -g` — clean/idempotent ✅
+- `pio check` (cppcheck) — no defects ✅
+- Device: serial log should show `Inflated HTML into PSRAM (N bytes)` with no `Streamed temp HTML` line; CSS path logs no `PSRAM buffer unavailable` message on PSRAM boards

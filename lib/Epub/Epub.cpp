@@ -93,6 +93,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
   bookMetadata.coverItemHref = opfParser.coverItemHref;
 
   // Guide-based cover fallback: if no cover found via metadata/properties,
+  // Guide-based cover fallback: if no cover found via metadata/properties,
   // try extracting the image reference from the guide's cover page XHTML
   if (bookMetadata.coverItemHref.empty() && !opfParser.guideCoverPageHref.empty()) {
     LOG_DBG("EBP", "No cover from metadata, trying guide cover page: %s", opfParser.guideCoverPageHref.c_str());
@@ -377,14 +378,15 @@ CssParser::ParseResult Epub::parseCssFiles(const CssParser::CacheStatus existing
     bool cssFromMemory = false;
 #ifdef BOARD_HAS_PSRAM
     // Decompress straight into PSRAM and parse from there; no temp file needed.
-    size_t cssMemSize = 0;
-    uint8_t* cssMem = readItemContentsToBytes(cssPath, &cssMemSize);
-    if (cssMem) {
-      std::unique_ptr<uint8_t[], void (*)(void*)> cssBuf{cssMem, &poolFree};
-      cssResult = cssParser->loadFromMemory(reinterpret_cast<const char*>(cssBuf.get()), cssMemSize);
-      cssFromMemory = true;
-    } else {
-      LOG_DBG("EBP", "PSRAM buffer unavailable for CSS; streaming to temp file: %s", cssPath.c_str());
+    {
+      size_t cssMemSize = 0;
+      PoolBytes cssBuf{readItemContentsToBytes(cssPath, &cssMemSize)};
+      if (cssBuf) {
+        cssResult = cssParser->loadFromMemory(reinterpret_cast<const char*>(cssBuf.get()), cssMemSize);
+        cssFromMemory = true;
+      } else {
+        LOG_DBG("EBP", "PSRAM buffer unavailable for CSS; streaming to temp file: %s", cssPath.c_str());
+      }
     }
 #endif
     if (!cssFromMemory) {

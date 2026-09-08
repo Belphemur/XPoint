@@ -335,7 +335,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   const auto tmpHtmlPath = htmlDir + "/.tmp_" + std::to_string(spineIndex) + ".html";
 #ifdef BOARD_HAS_PSRAM
   // Decompressed chapter HTML held for the whole parse when it can live in PSRAM.
-  std::unique_ptr<uint8_t[], void (*)(void*)> htmlMem{nullptr, &poolFree};
+  PoolBytes htmlMem{nullptr};
   size_t htmlMemSize = 0;
 #endif
 
@@ -359,47 +359,47 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
     Storage.mkdir(htmlDir.c_str());
 
     bool htmlFromMemory = false;
-# ifdef BOARD_HAS_PSRAM
+#ifdef BOARD_HAS_PSRAM
     // Query the uncompressed size first; skip PSRAM allocation for chapters
-    // that could exhaust available memory (CWE-400 protection). This mirrors
-    // the CSS path's getItemSize + MAX_CSS_FILE_SIZE guard.
+    // that could exhaust available memory (CWE-400). Mirrors the CSS path.
     constexpr size_t MAX_HTML_FILE_SIZE = 128 * 1024;  // 128 KB
     size_t htmlFileSize = 0;
     if (epub->getItemSize(localPath, &htmlFileSize) && htmlFileSize <= MAX_HTML_FILE_SIZE) {
-      // Inflate straight into PSRAM, write the persistent HTML cache in one
-    // write() call, and parse from the resident buffer. Falls back to the
-    // streaming path when PSRAM is unavailable.
-    uint8_t* htmlMemRaw = epub->readItemContentsToBytes(localPath, &htmlMemSize);
-    if (htmlMemRaw) {
-      std::unique_ptr<uint8_t[], void (*)(void*)> htmlBuf{htmlMemRaw, &poolFree};
-      HalFile tmpHtml;
-      if (Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
-        const bool wrote = tmpHtml.write(htmlBuf.get(), htmlMemSize) == htmlMemSize;
-        // Explicitly close() file before remove/rename
-        tmpHtml.close();
-        if (wrote) {
-          if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
-            htmlCached = true;
-          } else {
-            LOG_DBG("SCT", "Failed to promote HTML cache; parsing from memory");
+      // Inflate straight into PSRAM and parse from the resident buffer,
+      // using RAII to manage the allocation. Falls back to the streaming
+      // path when PSRAM allocation fails.
+      size_t inflSize = 0;
+      PoolBytes htmlBuf{epub->readItemContentsToBytes(localPath, &inflSize)};
+      htmlMemSize = inflSize;
+      if (htmlBuf) {
+        HalFile tmpHtml;
+        if (Storage.openFileForWrite("SCT", tmpHtmlPath, tmpHtml)) {
+          const bool wrote = tmpHtml.write(htmlBuf.get(), htmlMemSize) == htmlMemSize;
+          // Explicitly close() file before remove/rename
+          tmpHtml.close();
+          if (wrote) {
+            if (Storage.rename(tmpHtmlPath.c_str(), htmlPath.c_str())) {
+              htmlCached = true;
+            } else {
+              LOG_DBG("SCT", "Failed to promote HTML cache; parsing from memory");
+            }
+          } else if (Storage.exists(tmpHtmlPath.c_str())) {
+            Storage.remove(tmpHtmlPath.c_str());
+            LOG_DBG("SCT", "Removed incomplete temp file after failed write");
           }
-        } else if (Storage.exists(tmpHtmlPath.c_str())) {
-          Storage.remove(tmpHtmlPath.c_str());
-          LOG_DBG("SCT", "Removed incomplete temp file after failed write");
+        } else {
+          LOG_DBG("SCT", "Could not open HTML cache for writing; parsing from memory");
         }
+        htmlMem = std::move(htmlBuf);
+        htmlFromMemory = true;
+        LOG_DBG("SCT", "Inflated HTML into PSRAM (%zu bytes)", htmlMemSize);
       } else {
-        LOG_DBG("SCT", "Could not open HTML cache for writing; parsing from memory");
+        LOG_DBG("SCT", "PSRAM buffer unavailable; streaming HTML to cache");
       }
-      htmlMem = std::move(htmlBuf);
-      htmlFromMemory = true;
-      LOG_DBG("SCT", "Inflated HTML into PSRAM (%zu bytes)", htmlMemSize);
     } else {
-      LOG_DBG("SCT", "PSRAM buffer unavailable; streaming HTML to cache");
+      LOG_DBG("SCT", "HTML too large for PSRAM (%zu bytes > %zu max); streaming to cache", htmlFileSize,
+              MAX_HTML_FILE_SIZE);
     }
-  } else {
-    LOG_DBG("SCT", "HTML too large for PSRAM (%zu bytes > %zu max); streaming to cache",
-            htmlFileSize, MAX_HTML_FILE_SIZE);
-  }
 #endif
     if (!htmlFromMemory) {
       // Retry logic for SD card timing issues
