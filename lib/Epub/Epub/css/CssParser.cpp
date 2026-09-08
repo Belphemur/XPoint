@@ -943,7 +943,7 @@ CssParser::CacheStatus CssParser::inspectCache() const {
     return CacheStatus::Invalid;
   }
 
-  const bool partial = (flags & CSS_CACHE_FLAG_PARTIAL) != 0;
+  [[maybe_unused]] const bool partial = (flags & CSS_CACHE_FLAG_PARTIAL) != 0;
   if (!partial) {
     // Complete caches are fully validated while hydrating, avoiding a second
     // payload scan on every EPUB open.
@@ -1166,7 +1166,7 @@ CssParser::CacheLoadResult CssParser::loadFromCache() {
     return CacheLoadResult::Invalid;
   }
 
-  const bool partial = (flags & CSS_CACHE_FLAG_PARTIAL) != 0;
+  [[maybe_unused]] const bool partial = (flags & CSS_CACHE_FLAG_PARTIAL) != 0;
   LOG_DBG("CSS", "Loaded %u rules from %s cache", ruleCount, partial ? "partial" : "complete");
   return CacheLoadResult::Complete;
 }

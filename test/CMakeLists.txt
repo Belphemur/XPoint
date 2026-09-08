@@ -70,3 +70,4 @@ add_subdirectory(page_link)
 add_subdirectory(chapter_position)
 
 add_subdirectory(inflate_stream)
+add_subdirectory(chunk_coalescer)

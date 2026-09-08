@@ -568,7 +568,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
   setupCacheDir();
 
-  const uint32_t indexingStart = millis();
+  [[maybe_unused]] const uint32_t indexingStart = millis();
 
   // Begin building cache - stream entries to disk immediately
   if (!bookMetadataCache->beginWrite()) {
@@ -577,7 +577,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   // OPF Pass
-  const uint32_t opfStart = millis();
+  [[maybe_unused]] const uint32_t opfStart = millis();
   BookMetadataCache::BookMetadata bookMetadata;
   if (!bookMetadataCache->beginContentOpfPass()) {
     LOG_ERR("EBP", "Could not begin writing content.opf pass");
@@ -595,7 +595,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "OPF pass completed in %lu ms", millis() - opfStart);
 
   // TOC Pass - try EPUB 3 nav first, fall back to NCX
-  const uint32_t tocStart = millis();
+  [[maybe_unused]] const uint32_t tocStart = millis();
   if (!bookMetadataCache->beginTocPass()) {
     LOG_ERR("EBP", "Could not begin writing toc pass");
     return false;
@@ -633,7 +633,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   // Build final book.bin
-  const uint32_t buildStart = millis();
+  [[maybe_unused]] const uint32_t buildStart = millis();
   if (!bookMetadataCache->buildBookBin(filepath, bookMetadata)) {
     LOG_ERR("EBP", "Could not update mappings and sizes");
     return false;
@@ -1090,7 +1090,7 @@ int Epub::getSpineIndexForTextReference() const {
   }
 
   // loop through spine items to get the correct index matching the text href
-  for (size_t i = 0; i < getSpineItemsCount(); i++) {
+  for (size_t i = 0; i < static_cast<size_t>(getSpineItemsCount()); i++) {
     if (getSpineItem(i).href == bookMetadataCache->coreMetadata.textReferenceHref) {
       LOG_DBG("EBP", "Text reference %s found at index %d", bookMetadataCache->coreMetadata.textReferenceHref.c_str(),
               i);

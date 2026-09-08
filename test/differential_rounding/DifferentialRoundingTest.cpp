@@ -66,7 +66,14 @@ const EpdFontData kTestFontData = {
   .glyphToGroup      = nullptr,
   .kernLeftClasses   = kKernLeft,
   .kernRightClasses  = kKernRight,
+  .kernLeftCodepoints = nullptr,
+  .kernLeftClassIds   = nullptr,
+  .kernRightCodepoints = nullptr,
+  .kernRightClassIds   = nullptr,
   .kernMatrix        = kKernMatrix,
+  .kernRowOffsets    = nullptr,
+  .kernSparseCols    = nullptr,
+  .kernSparseValues  = nullptr,
   .kernLeftEntryCount  = 2,
   .kernRightEntryCount = 2,
   .kernLeftClassCount  = 2,
@@ -75,6 +82,7 @@ const EpdFontData kTestFontData = {
   .ligaturePairCount = 0,
   .glyphMissHandler  = nullptr,
   .glyphMissCtx      = nullptr,
+  .coverageHandler   = nullptr,
 };
 // clang-format on
 

@@ -30,6 +30,11 @@ class HttpDownloader {
   static constexpr uint32_t MIN_TLS_FREE_HEAP = 40000;
   static constexpr uint32_t MIN_TLS_MAX_ALLOC = 20000;
 
+  // True when the heap is large enough to start a TLS transfer. Checks the
+  // same MIN_TLS_FREE_HEAP / MIN_TLS_MAX_ALLOC floor in one place so the
+  // three download activities don't each re-evaluate it.
+  static bool heapAvailableForTransfer();
+
   /**
    * Fetch text content from a URL with optional credentials. If maxBytes > 0,
    * the fetch aborts once the body would exceed that size (used to cap

@@ -42,19 +42,6 @@ ReadingStatsDateTime makeDateTime(uint16_t year, uint8_t month, uint8_t day, uin
   return dt;
 }
 
-void seedBookRecordV5(const std::string& path, uint16_t sessions, uint32_t seconds) {
-  std::vector<uint8_t> data(73, 0);
-  data[0] = 5;
-  data[1] = sessions & 0xFF;
-  data[2] = (sessions >> 8) & 0xFF;
-  data[3] = seconds & 0xFF;
-  data[4] = (seconds >> 8) & 0xFF;
-  data[5] = (seconds >> 16) & 0xFF;
-  data[6] = (seconds >> 24) & 0xFF;
-  HalFile f;
-  ASSERT_TRUE(Storage.openFileForWrite("TEST", path, f));
-  f.write(data.data(), data.size());
-}
 }  // namespace
 
 class ReadingStatsBinaryStoreTest : public ::testing::Test {

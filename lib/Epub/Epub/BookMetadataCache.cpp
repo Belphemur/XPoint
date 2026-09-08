@@ -289,7 +289,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     });
 
     spineSizes.resize(spineCount, 0);
-    int matched = zip.fillUncompressedSizes(targets, spineSizes);
+    [[maybe_unused]] const int matched = zip.fillUncompressedSizes(targets, spineSizes);
     LOG_DBG("BMC", "Batch lookup matched %d/%d spine items", matched, spineCount);
 
     targets.clear();

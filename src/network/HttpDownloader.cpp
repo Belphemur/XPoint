@@ -1,11 +1,13 @@
 #include "HttpDownloader.h"
 
 #include <Arduino.h>
+#include <ChunkCoalescer.h>
 #include <Logging.h>
 #include <Memory.h>
 #include <base64.h>
 #include <esp_wifi.h>
 
+#include <cstring>
 #include <functional>
 #include <string>
 
@@ -35,6 +37,57 @@ constexpr int HTTP_TX_BUF = 512;
 constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
+
+// On PSRAM boards, coalesce small transport chunks into larger SD writes to
+// reduce I/O syscall count. On C3 (no PSRAM) no buffer exists and writes
+// flush through directly, so no DRAM overhead and no extra memcpy.
+#if defined(BOARD_HAS_PSRAM)
+constexpr size_t COALESCE_BUF_SIZE = 8192;
+#endif
+
+}  // namespace
+
+namespace {
+
+// Write-coalescing wrapper for HalFile. Delegates buffer management to
+// download::ChunkCoalescer (which is host-testable) and translates its
+// callback into HalFile writes. On non-PSRAM boards the coalescer operates
+// in passthrough mode with zero overhead.
+class CoalescingWriter {
+ public:
+  explicit CoalescingWriter(HalFile& file) : file_(file), coalescer_(makeCoalescer()) {}
+
+  bool write(const uint8_t* data, size_t len) { return coalescer_.write(data, len, &HalFileWriteThunk, &file_); }
+
+  bool flush() { return coalescer_.flush(&HalFileWriteThunk, &file_); }
+
+ private:
+  static bool HalFileWriteThunk(const uint8_t* data, size_t len, void* ctx) {
+    HalFile* f = static_cast<HalFile*>(ctx);
+    return f->write(data, len) == len;
+  }
+
+  // Pool-backed buffer on PSRAM boards; on C3 the null buffer puts the
+  // coalescer in passthrough mode with zero overhead.
+  static download::ChunkCoalescer makeCoalescer() {
+#if defined(BOARD_HAS_PSRAM)
+    PoolBytes buf = poolMakeBytes(COALESCE_BUF_SIZE);
+    if (!buf) {
+      LOG_ERR("HTTP", "OOM: %zu byte coalesce buffer", COALESCE_BUF_SIZE);
+    }
+    return download::ChunkCoalescer(std::move(buf), COALESCE_BUF_SIZE);
+#else
+    return download::ChunkCoalescer(PoolBytes{}, 0);
+#endif
+  }
+
+  HalFile& file_;
+  download::ChunkCoalescer coalescer_;
+};
+
+}  // namespace
+
+namespace {
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -310,12 +363,27 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     return FILE_ERROR;
   }
 
+  CoalescingWriter writer(file);
+
   Sink sink;
   sink.progress = std::move(progress);
   sink.cancelFlag = cancelFlag;
-  sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
+  sink.write = [&writer](const uint8_t* data, size_t len) {
+    if (!writer.write(data, len)) {
+      LOG_ERR("HTTP", "SD write failed");
+      return false;
+    }
+    return true;
+  };
 
   const DownloadError result = runGetSecure(url, username, password, sink, downgradeRedirectsToHttp);
+  // Flush any remaining buffered data before closing.
+  if (!writer.flush()) {
+    LOG_ERR("HTTP", "Final flush failed");
+    file.close();
+    Storage.remove(destPath.c_str());
+    return FILE_ERROR;
+  }
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
   file.close();
@@ -331,4 +399,14 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   }
   LOG_DBG("HTTP", "Downloaded %zu bytes", sink.downloaded);
   return OK;
+}
+
+bool HttpDownloader::heapAvailableForTransfer() {
+  const uint32_t free = ESP.getFreeHeap();
+  const uint32_t maxBlock = ESP.getMaxAllocHeap();
+  if (free < MIN_TLS_FREE_HEAP || maxBlock < MIN_TLS_MAX_ALLOC) {
+    LOG_ERR("HTTP", "Low heap for download (%u free, %u max block)", free, maxBlock);
+    return false;
+  }
+  return true;
 }
