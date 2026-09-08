@@ -153,7 +153,7 @@ For CSS: the temp file is NOT persistent (it's always removed after parsing). So
 
 | Item | Typical size | PSRAM cost (1 chapter) |
 |------|-------------|----------------------|
-| HTML buffer (PSRAM) | 50–500 KB | 50–500 KB (freed after build) |
+| HTML buffer (PSRAM) | 50–500 KB typical, up to 3 MB | Transient (freed after build) |
 | ZIP fileReadBuffer (8KB) | 8 KB | 8 KB (reused across items) |
 | ZipOutputBuffer (8KB) | 8 KB | 8 KB (reused across items) |
 | CSS buffer (PSRAM) | 5–50 KB | 5–50 KB (freed after parse) |
@@ -168,7 +168,7 @@ All freed after the build completes. With 8 MB PSRAM and 115 KB used at idle, ev
 4. **`ChapterHtmlSlimParser`** → `parseFromMemory(const uint8_t* data, size_t len)` sets a span pointer; `parseStep` uses `XML_Parse` for the memory branch vs. `XML_GetBuffer`+`XML_ParseBuffer` for the file branch. `parseBytesConsumed()`/`parseTotalBytes()` report from either source.
 5. **`CssParser`** → Refactored the char-by-char state machine out of `loadFromStream` into shared `processCssChars`/`finishCssParse` methods; `loadFromMemory` runs one pass over a buffer span. `loadFromStream` is now a thin chunk loop over the same code.
 6. **`Epub.cpp:CSS path`** → On PSRAM, decompress CSS to `PoolBytes`, call `cssParser->loadFromMemory()`, skip the temp file entirely.
-7. **CWE-400 guard** → Both HTML and CSS paths check `getItemSize` + `MAX_*_FILE_SIZE` (128KB) before allocating, falling back to the streaming path for oversized items.
+7. **CWE-400 guard** → Both HTML and CSS paths check `getItemSize` + `MAX_*_FILE_SIZE` before allocating, falling back to the streaming path for oversized items. HTML limit: 3 MB (well within the 8 MB X4 Pro PSRAM even at ~115 KB idle usage). CSS limit: 128 KB (CSS files are typically much smaller).
 
 ### Verification (performed)
 - `pio run -e default` — DRAM path unchanged ✅

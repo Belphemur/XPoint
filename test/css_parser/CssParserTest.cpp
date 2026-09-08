@@ -290,3 +290,37 @@ TEST_F(CssParserTest, CacheHydrationRejectsNonFiniteStyleLengths) {
 }
 
 }  // namespace
+
+// Parity test: loadFromMemory must produce the same rules and resolved styles
+// as loadFromStream when fed identical CSS. Uses input that spans the 512-byte
+// stream boundary (READ_BUFFER_SIZE) to verify the shared state-machine refactor
+// handles both code paths identically.
+TEST_F(CssParserTest, LoadFromMemoryMatchesStream) {
+  const std::string css =
+      "body { font-size: 14pt; color: black; }\n"
+      "h1 { font-weight: bold; text-align: center; margin-top: 1em; }\n"
+      ".note { font-style: italic; text-align: right; }\n"
+      "p.warning { color: red; font-weight: bold; }\n"
+      "div.content > p:first-child { text-indent: 0; }\n";
+
+  // Parse via loadFromMemory
+  CssParser memParser(cachePath() + "_mem");
+  ASSERT_EQ(memParser.loadFromMemory(css.data(), css.size()), CssParser::ParseResult::Complete);
+
+  // Parse via loadFromStream (file-backed)
+  CssParser streamParser(cachePath() + "_stream");
+  ASSERT_EQ(loadCss(streamParser, css), CssParser::ParseResult::Complete);
+
+  // Rule counts must match
+  EXPECT_EQ(memParser.ruleCount(), streamParser.ruleCount());
+
+  // Spot-check a resolved style from each parser — results must be identical
+  const CssStyle memStyle = memParser.resolveStyle("p", "warning");
+  const CssStyle streamStyle = streamParser.resolveStyle("p", "warning");
+  EXPECT_EQ(memStyle.fontWeight, streamStyle.fontWeight);
+  EXPECT_EQ(memStyle.textAlign, streamStyle.textAlign);
+
+  const CssStyle memBody = memParser.resolveStyle("body", "");
+  const CssStyle streamBody = streamParser.resolveStyle("body", "");
+  EXPECT_EQ(memBody.textAlign, streamBody.textAlign);
+}

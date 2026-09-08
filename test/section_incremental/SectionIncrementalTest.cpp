@@ -234,10 +234,21 @@ TEST_F(SectionIncrementalTest, ResumeSuspendedPartialBuild) {
 
 // ChapterHtmlSlimParser::parseFromMemory: a caller-held buffer drives the same
 // resumable parseStep() protocol as the file source (the device PSRAM HTML
-// cache path feeds the parser this way).
+// cache path feeds the parser this way). Payload is intentionally > 1 KB
+// (PARSE_BUFFER_SIZE) to force parseStep() through multiple More iterations,
+// exercising the chunk boundary in the memory branch.
 TEST(ChapterHtmlSlimParserMemoryParse, ParsesFromCallerHeldBuffer) {
-  const char* html = "<html><body><p>Hello from a caller-held buffer</p><p>Second paragraph</p></body></html>";
-  const size_t htmlLen = std::strlen(html);
+  // 5 paragraphs × ~300 bytes each → ~1500 bytes (> PARSE_BUFFER_SIZE)
+  std::string html = "<html><body>";
+  for (int i = 0; i < 5; i++) {
+    html += "<p>Paragraph " + std::to_string(i) +
+            ": this is a longer text block that pushes the total well past the "
+            "1 KB parse buffer size, so parseStep must iterate through multiple "
+            "chunks before returning Done. Each paragraph adds roughly 150 chars.</p>";
+  }
+  html += "</body></html>";
+  const size_t htmlLen = html.size();
+  ASSERT_GT(htmlLen, 1024u) << "test payload must exceed PARSE_BUFFER_SIZE to exercise More path";
 
   GfxRenderer renderer;
   const std::string filepath = "unused.xhtml";
@@ -247,19 +258,22 @@ TEST(ChapterHtmlSlimParserMemoryParse, ParsesFromCallerHeldBuffer) {
       [&completedPages](std::unique_ptr<Page>, uint16_t, uint16_t, uint32_t) { completedPages++; },
       /*embeddedStyle=*/false, "", "", 0, {}, nullptr, nullptr);
 
-  parser.parseFromMemory(reinterpret_cast<const uint8_t*>(html), htmlLen);
+  parser.parseFromMemory(reinterpret_cast<const uint8_t*>(html.data()), htmlLen);
   ASSERT_TRUE(parser.beginParse());
   EXPECT_EQ(parser.parseTotalBytes(), htmlLen);
   EXPECT_EQ(parser.parseBytesConsumed(), 0u);
 
   int steps = 0;
+  int moreSteps = 0;
   ChapterHtmlSlimParser::ParseStatus status;
   do {
     status = parser.parseStep();
     ASSERT_NE(status, ChapterHtmlSlimParser::ParseStatus::Error);
     ASSERT_LT(++steps, 1000) << "parseStep did not converge";
+    if (status == ChapterHtmlSlimParser::ParseStatus::More) moreSteps++;
   } while (status == ChapterHtmlSlimParser::ParseStatus::More);
   ASSERT_EQ(status, ChapterHtmlSlimParser::ParseStatus::Done);
+  EXPECT_GT(moreSteps, 0) << "payload must be >1KB so parseStep returns More at least once";
   EXPECT_EQ(parser.parseBytesConsumed(), htmlLen);
 
   ASSERT_TRUE(parser.finishParse());

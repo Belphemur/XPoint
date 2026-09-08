@@ -37,12 +37,10 @@ class Section {
   // live parser plus the strings it references (the parser stores them by reference)
   // and the in-RAM page-offset table.
   struct BuildContext {
-    std::unique_ptr<ChapterHtmlSlimParser> parser;
-    // Decompressed HTML kept resident for the whole parse on PSRAM boards
-    // (null when parsing from the cached file). Declared after parser so it is
-    // destroyed before the parser — safe because the parser's destructor
-    // (abortParse) only destroys the expat handle and closes any open file,
-    // never dereferences its memData_ pointer.
+    // Buffers/strings declared first so they are destroyed AFTER the parser
+    // (C++ destroys members in reverse declaration order). This ensures the
+    // parser's destructor — which holds pointers into htmlBuffer and references
+    // into the strings — runs while those allocations are still alive.
     PoolBytes htmlBuffer{nullptr};
     size_t htmlBufferSize = 0;
     std::vector<PageLutEntry> lut;
@@ -61,6 +59,10 @@ class Section {
     // the EMA is stepped once per build advance (not per redraw) to damp that wobble.
     float smoothedEstimate = 0;
     uint32_t smoothedAtConsumed = 0;
+
+    // Parser declared last so it is destroyed first — before the buffers and
+    // strings it references. Safe ordering for all teardown paths.
+    std::unique_ptr<ChapterHtmlSlimParser> parser;
   };
   // build_ holds the active section's BuildContext (LUT + parser + working set).
   // On PSRAM boards this is allocated from PSRAM; on non-PSRAM boards from DRAM.

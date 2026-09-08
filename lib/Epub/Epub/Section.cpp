@@ -362,7 +362,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
 #ifdef BOARD_HAS_PSRAM
     // Query the uncompressed size first; skip PSRAM allocation for chapters
     // that could exhaust available memory (CWE-400). Mirrors the CSS path.
-    constexpr size_t MAX_HTML_FILE_SIZE = 128 * 1024;  // 128 KB
+    constexpr size_t MAX_HTML_FILE_SIZE = 3 * 1024 * 1024;  // 3 MB
     size_t htmlFileSize = 0;
     if (epub->getItemSize(localPath, &htmlFileSize) && htmlFileSize <= MAX_HTML_FILE_SIZE) {
       // Inflate straight into PSRAM and parse from the resident buffer,
