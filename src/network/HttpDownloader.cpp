@@ -1,8 +1,8 @@
 #include "HttpDownloader.h"
 
 #include <Arduino.h>
+#include <ChunkCoalescer.h>
 #include <Logging.h>
-#include <Memory.h>
 #include <base64.h>
 #include <esp_wifi.h>
 
@@ -51,54 +51,26 @@ constexpr size_t COALESCE_BUF_SIZE = 0;
 
 namespace {
 
-// Write-coalescing wrapper for HalFile. Accumulates small transport chunks
-// into a PSRAM buffer and flushes to SD in larger blocks, cutting the number
-// of SD write syscalls. On non-PSRAM boards the buffer is empty (size 0)
-// and every write flushes through directly — zero overhead.
+// Write-coalescing wrapper for HalFile. Delegates buffer management to
+// download::ChunkCoalescer (which is host-testable) and translates its
+// callback into HalFile writes. On non-PSRAM boards COALESCE_BUF_SIZE is 0,
+// so the coalescer operates in passthrough mode with zero overhead.
 class CoalescingWriter {
  public:
-  explicit CoalescingWriter(HalFile& file)
-      : file_(file),
-        buf_(COALESCE_BUF_SIZE > 0 ? poolMakeBytes(COALESCE_BUF_SIZE) : PoolBytes()),
-        cap_(COALESCE_BUF_SIZE > 0 ? COALESCE_BUF_SIZE : 0),
-        len_(0) {}
+  explicit CoalescingWriter(HalFile& file) : file_(file), coalescer_(COALESCE_BUF_SIZE) {}
 
-  // Returns true on success, false if the underlying write failed.
-  bool write(const uint8_t* data, size_t len) {
-    if (cap_ == 0) {
-      // Non-PSRAM / passthrough: write directly, no buffering.
-      return file_.write(data, len) == len;
-    }
-    size_t off = 0;
-    while (off < len) {
-      const size_t space = cap_ - len_;
-      const size_t take = space < (len - off) ? space : (len - off);
-      if (take > 0) {
-        std::memcpy(buf_.get() + len_, data + off, take);
-        len_ += take;
-        off += take;
-      }
-      if (len_ == cap_) {
-        if (file_.write(buf_.get(), cap_) != cap_) return false;
-        len_ = 0;
-      }
-    }
-    return true;
-  }
+  bool write(const uint8_t* data, size_t len) { return coalescer_.write(data, len, &HalFileWriteThunk, &file_); }
 
-  // Flush any remaining buffered data.
-  bool flush() {
-    if (len_ == 0) return true;
-    if (file_.write(buf_.get(), len_) != len_) return false;
-    len_ = 0;
-    return true;
-  }
+  bool flush() { return coalescer_.flush(&HalFileWriteThunk, &file_); }
 
  private:
+  static bool HalFileWriteThunk(const uint8_t* data, size_t len, void* ctx) {
+    HalFile* f = static_cast<HalFile*>(ctx);
+    return f->write(data, len) == len;
+  }
+
   HalFile& file_;
-  PoolBytes buf_;
-  const size_t cap_;
-  size_t len_;
+  download::ChunkCoalescer coalescer_;
 };
 
 }  // namespace
