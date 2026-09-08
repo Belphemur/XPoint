@@ -27,24 +27,18 @@ Add to `freeink::PowerManager`:
 ## Firmware consumer (crosspoint-x-reader)
 - `enterPowerOff()` (manual long-press) -> `setShutdownReason(ShutdownReason::User)`
   before the sink.
-- Timer-wake shutdown intercept (setup()) and the dwell arming in
-  `enterDeepSleep()` -> `setShutdownReason(ShutdownReason::AutoOff)` when
-  `getAutoPowerOffMs() > 0` — written at SLEEP ENTRY so the marker survives even
-  if the timer wake itself crashes before re-writing (stock semantics).
+- `enterDeepSleep()` with `autoPowerOffMs > 0` -> `stageAutoPowerOff()` BEFORE
+  `startDeepSleep()` arms the RTC timer — written at sleep entry so the marker
+  survives even if the timer wake itself crashes before re-writing (stock
+  semantics). A non-timer wake (button press interrupting the dwell) suppresses
+  the marker via `clearShutdownMarker()` before `takeLastShutdownKind()` consumes
+  it.
 - `setup()` early: `const uint16_t sr = takeShutdownReason(); if (sr) LOG_INF`
-  + stash into the dev sleep-trace (a `reason` column already exists; add the
-  value to the existing CSV row rather than a new column to keep the schema stable —
-  actually add as new column `shutdown_reason` at the END to avoid breaking parsers).
+  + stash into the RTC_DATA block for the current boot's reporting.
 - No board-profile change needed: RTC slow RAM offsets 0/4 are board-agnostic.
 
 ## Version bump
-SLEEP_TRACE_VERSION 6 → 7: `_lastShutdownReasonCode` joins the versioned RTC
+RTC_DATA_VERSION 1: `_lastShutdownReasonCode` joins the versioned RTC
 block (CodeRabbit round-2 finding — an unversioned layout change could let an
-older build's RTC data pass validation after an OTA). logSleepBattery() clears
+older build's RTC data pass validation after an OTA). `begin()` clears
 stale-layout data on the mismatch.
-
-## Sleep-trace CSV migration
-A pre-marker `sleep_trace.csv` has an 11-column header; rows now carry 12
-columns. flushSleepTrace() rotates a legacy file (no `shutdown_reason` in the
-header) to `/.crosspoint/sleep_trace_v1.csv` before appending, so schemas never
-mix within one file. One generation is kept.
