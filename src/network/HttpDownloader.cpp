@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ChunkCoalescer.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <base64.h>
 #include <esp_wifi.h>
 
@@ -38,13 +39,10 @@ constexpr size_t READ_CHUNK = 1024;
 constexpr int MAX_REDIRECTS = 5;
 
 // On PSRAM boards, coalesce small transport chunks into larger SD writes to
-// reduce I/O syscall count. 8 KB = 4 transport chunks at 2 KB each. On C3
-// (no PSRAM) the buffer is unallocated and writes flush through directly,
-// so no DRAM overhead and no extra memcpy.
+// reduce I/O syscall count. On C3 (no PSRAM) no buffer exists and writes
+// flush through directly, so no DRAM overhead and no extra memcpy.
 #if defined(BOARD_HAS_PSRAM)
 constexpr size_t COALESCE_BUF_SIZE = 8192;
-#else
-constexpr size_t COALESCE_BUF_SIZE = 0;
 #endif
 
 }  // namespace
@@ -53,11 +51,11 @@ namespace {
 
 // Write-coalescing wrapper for HalFile. Delegates buffer management to
 // download::ChunkCoalescer (which is host-testable) and translates its
-// callback into HalFile writes. On non-PSRAM boards COALESCE_BUF_SIZE is 0,
-// so the coalescer operates in passthrough mode with zero overhead.
+// callback into HalFile writes. On non-PSRAM boards the coalescer operates
+// in passthrough mode with zero overhead.
 class CoalescingWriter {
  public:
-  explicit CoalescingWriter(HalFile& file) : file_(file), coalescer_(COALESCE_BUF_SIZE) {}
+  explicit CoalescingWriter(HalFile& file) : file_(file), coalescer_(makeCoalescer()) {}
 
   bool write(const uint8_t* data, size_t len) { return coalescer_.write(data, len, &HalFileWriteThunk, &file_); }
 
@@ -67,6 +65,20 @@ class CoalescingWriter {
   static bool HalFileWriteThunk(const uint8_t* data, size_t len, void* ctx) {
     HalFile* f = static_cast<HalFile*>(ctx);
     return f->write(data, len) == len;
+  }
+
+  // Pool-backed buffer on PSRAM boards; on C3 the null buffer puts the
+  // coalescer in passthrough mode with zero overhead.
+  static download::ChunkCoalescer makeCoalescer() {
+#if defined(BOARD_HAS_PSRAM)
+    PoolBytes buf = poolMakeBytes(COALESCE_BUF_SIZE);
+    if (!buf) {
+      LOG_ERR("HTTP", "OOM: %zu byte coalesce buffer", COALESCE_BUF_SIZE);
+    }
+    return download::ChunkCoalescer(std::move(buf), COALESCE_BUF_SIZE);
+#else
+    return download::ChunkCoalescer(PoolBytes{}, 0);
+#endif
   }
 
   HalFile& file_;
@@ -368,6 +380,9 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   // Flush any remaining buffered data before closing.
   if (!writer.flush()) {
     LOG_ERR("HTTP", "Final flush failed");
+    file.close();
+    Storage.remove(destPath.c_str());
+    return FILE_ERROR;
   }
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.

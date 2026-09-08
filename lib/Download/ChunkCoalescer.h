@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Memory.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,16 +14,21 @@ namespace download {
 // caller-supplied write callback. Designed so that HttpDownloader's
 // write-coalescing can be unit-tested without any ESP32 dependencies.
 //
+// The buffer is supplied by the caller as a PoolBytes (poolMalloc-backed, so
+// firmware can place it in PSRAM while the host build uses plain malloc).
+// Pass a null buffer or capacity 0 for passthrough mode: every write is
+// forwarded to the callback immediately.
+//
 // Usage:
-//   ChunkCoalescer coalescer(8192);
-//   coalescer.write(data, len, [](const uint8_t* buf, size_t n) { ... });
-//   coalescer.flush([](const uint8_t* buf, size_t n) { ... });
+//   PoolBytes buf = poolMakeBytes(8192);
+//   ChunkCoalescer coalescer(std::move(buf), 8192);
+//   coalescer.write(data, len, [](const uint8_t* buf, size_t n, void* ctx) { ... }, ctx);
+//   coalescer.flush([](const uint8_t* buf, size_t n, void* ctx) { ... }, ctx);
 class ChunkCoalescer {
  public:
-  // `capacity` is the coalescing buffer size. Pass 0 for passthrough mode:
-  // every write is forwarded to the callback immediately, no buffering.
-  explicit ChunkCoalescer(size_t capacity)
-      : cap_(capacity), len_(0), buf_(cap_ > 0 ? std::make_unique<uint8_t[]>(cap_) : nullptr) {}
+  // `buf` is taken by value (moved). If `cap` is 0 or `buf` is null, the
+  // coalescer operates in passthrough mode and forwards every write directly.
+  ChunkCoalescer(PoolBytes buf, size_t cap) : cap_(cap), len_(0), buf_(std::move(buf)) {}
 
   ChunkCoalescer(const ChunkCoalescer&) = delete;
   ChunkCoalescer& operator=(const ChunkCoalescer&) = delete;
@@ -37,7 +44,7 @@ class ChunkCoalescer {
   // buffer fills. The callback must consume the buffer contents before
   // returning — the data is not retained after the call.
   bool write(const uint8_t* data, size_t len, bool (*onFlush)(const uint8_t*, size_t, void*), void* ctx) {
-    if (cap_ == 0) {
+    if (cap_ == 0 || !buf_) {
       // Passthrough: forward directly, no buffering.
       return onFlush(data, len, ctx);
     }
@@ -74,7 +81,7 @@ class ChunkCoalescer {
  private:
   const size_t cap_;
   size_t len_;
-  std::unique_ptr<uint8_t[]> buf_;
+  PoolBytes buf_;
 };
 
 }  // namespace download

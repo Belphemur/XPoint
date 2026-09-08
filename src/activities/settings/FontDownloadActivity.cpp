@@ -168,10 +168,6 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   if (auto* fcm = renderer.getFontCacheManager()) {
     fcm->releaseSdFontCaches();
   }
-  if (!HttpDownloader::heapAvailableForTransfer()) {
-    errorMessage_ = tr(STR_MEMORY_ERROR);
-    return false;
-  }
 
   // No downgradeRedirectsToHttp here, unlike the font transfers below: this
   // response carries the crc32 values that are the only integrity anchor for
@@ -186,6 +182,17 @@ bool FontDownloadActivity::fetchAndParseManifest() {
     errorMessage_ = tr(STR_MEMORY_ERROR);
     return false;
   }
+
+  // Heap check after the manifest buffer is allocated: on C3 the 64 KB
+  // buffer comes from DRAM, and the TLS transfer inside fetchUrl() still
+  // needs its MIN_TLS_FREE_HEAP headroom on top. Checking here (after the
+  // allocation) ensures both fit together, whereas checking before would
+  // only validate the TLS side.
+  if (!HttpDownloader::heapAvailableForTransfer()) {
+    errorMessage_ = tr(STR_MEMORY_ERROR);
+    return false;
+  }
+
   size_t manifestLen = 0;
   const auto dataOk = HttpDownloader::fetchUrl(
       FONT_MANIFEST_URL,
@@ -201,7 +208,7 @@ bool FontDownloadActivity::fetchAndParseManifest() {
       /*username=*/"", /*password=*/"");
   if (!dataOk || manifestLen == 0) {
     LOG_ERR("FONT", "Failed to fetch manifest from %s", FONT_MANIFEST_URL);
-    errorMessage_ = "Failed to fetch font list";
+    errorMessage_ = tr(STR_FETCH_FEED_FAILED);
     return false;
   }
 

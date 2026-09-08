@@ -1,14 +1,14 @@
 # Unified Downloader with PSRAM Support
 
 ## Status
-**Draft design — not yet implemented.**
+**Implemented (5 commits):** R3 (heap pre-flight), R4 (manifest in-memory), R1a (write coalescing), R6 (ChunkCoalescer + host tests), R2 (doc corrections).
 
 ## Problem Statement
 
 Currently, the firmware has three distinct download patterns that each manage memory, HTTP, and progress independently:
 
 1. **`HttpDownloader::downloadToFile`** — used by FontDownloadActivity for fonts, downloading to SD then verifying with CRC32. Always streams to SD; never uses PSRAM as an intermediate buffer.
-2. **`HttpDownloader::fetchUrl` (callback variant)** — used by OtaUpdater for firmware streaming. Writes directly to flash partitions via `esp_ota_write(); never buffers the full image in memory.
+2. **`HttpDownloader::fetchUrl` (callback variant)** — used by OtaUpdater for firmware streaming. Writes directly to flash partitions via `esp_ota_write()`; never buffers the full image in memory.
 3. **`HttpDownloader::fetchUrl` (string variant)** — used for small JSON (OTA manifest). Always loads the entire response body into a `std::string` in DRAM.
 
 The font manifest no longer follows pattern 1: `FontDownloadActivity::fetchAndParseManifest` fetches via the callback variant into an in-memory `PoolBytes` buffer (PSRAM on S3 boards, DRAM on C3), capped at 64 KB, and parses the JSON from that buffer — no SD round-trip.

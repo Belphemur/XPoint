@@ -1,4 +1,5 @@
 #include <ChunkCoalescer.h>
+#include <Memory.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -30,7 +31,7 @@ struct FlushRecorder {
 }  // namespace
 
 TEST(ChunkCoalescerTest, PassthroughModeForwardsEachWriteImmediately) {
-  download::ChunkCoalescer coalescer(0);
+  download::ChunkCoalescer coalescer(nullptr, 0);
   FlushRecorder rec;
   const uint8_t data[] = {1, 2, 3, 4, 5};
   EXPECT_TRUE(coalescer.write(data, sizeof(data), FlushRecorder::onFlush, &rec));
@@ -43,7 +44,7 @@ TEST(ChunkCoalescerTest, PassthroughModeForwardsEachWriteImmediately) {
 
 TEST(ChunkCoalescerTest, SmallWritesAreBufferedAndFlushedWhenFull) {
   constexpr size_t CAP = 8;
-  download::ChunkCoalescer coalescer(CAP);
+  download::ChunkCoalescer coalescer(poolMakeBytes(CAP), CAP);
   FlushRecorder rec;
   const uint8_t data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
 
@@ -61,7 +62,7 @@ TEST(ChunkCoalescerTest, SmallWritesAreBufferedAndFlushedWhenFull) {
 
 TEST(ChunkCoalescerTest, LargeWriteSpansMultipleBufferFills) {
   constexpr size_t CAP = 4;
-  download::ChunkCoalescer coalescer(CAP);
+  download::ChunkCoalescer coalescer(poolMakeBytes(CAP), CAP);
   FlushRecorder rec;
   const uint8_t data[] = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
 
@@ -80,7 +81,7 @@ TEST(ChunkCoalescerTest, LargeWriteSpansMultipleBufferFills) {
 }
 
 TEST(ChunkCoalescerTest, EmptyWriteIsNoOp) {
-  download::ChunkCoalescer coalescer(8);
+  download::ChunkCoalescer coalescer(poolMakeBytes(8), 8);
   FlushRecorder rec;
   EXPECT_TRUE(coalescer.write(nullptr, 0, FlushRecorder::onFlush, &rec));
   EXPECT_EQ(rec.chunks.size(), 0u);
@@ -89,7 +90,7 @@ TEST(ChunkCoalescerTest, EmptyWriteIsNoOp) {
 
 TEST(ChunkCoalescerTest, ExactMultipleProducesFullFlushesOnly) {
   constexpr size_t CAP = 4;
-  download::ChunkCoalescer coalescer(CAP);
+  download::ChunkCoalescer coalescer(poolMakeBytes(CAP), CAP);
   FlushRecorder rec;
   const uint8_t data[] = {1, 2, 3, 4, 5, 6, 7, 8};
 
@@ -102,7 +103,7 @@ TEST(ChunkCoalescerTest, ExactMultipleProducesFullFlushesOnly) {
 
 TEST(ChunkCoalescerTest, ConcatenatedOutputPreservesInputOrder) {
   constexpr size_t CAP = 8;
-  download::ChunkCoalescer coalescer(CAP);
+  download::ChunkCoalescer coalescer(poolMakeBytes(CAP), CAP);
   FlushRecorder rec;
   const uint8_t data[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17};
 
@@ -114,7 +115,7 @@ TEST(ChunkCoalescerTest, ConcatenatedOutputPreservesInputOrder) {
 }
 
 TEST(ChunkCoalescerTest, PassthroughEmptyFlushIsNoOp) {
-  download::ChunkCoalescer coalescer(0);
+  download::ChunkCoalescer coalescer(nullptr, 0);
   FlushRecorder rec;
   EXPECT_TRUE(coalescer.flush(FlushRecorder::onFlush, &rec));
   EXPECT_EQ(rec.chunks.size(), 0u);
@@ -122,11 +123,24 @@ TEST(ChunkCoalescerTest, PassthroughEmptyFlushIsNoOp) {
 
 TEST(ChunkCoalescerTest, BufferFlushFailurePropagates) {
   constexpr size_t CAP = 4;
-  download::ChunkCoalescer coalescer(CAP);
+  download::ChunkCoalescer coalescer(poolMakeBytes(CAP), CAP);
 
   auto failFlush = [](const uint8_t*, size_t, void*) -> bool { return false; };
 
   // Fill the buffer — onFlush returns false, write should abort
   const uint8_t data[] = {1, 2, 3, 4};
   EXPECT_FALSE(coalescer.write(data, 4, failFlush, nullptr));
+}
+
+TEST(ChunkCoalescerTest, NullBufferWithCapacityPassesThrough) {
+  // OOM fallback on firmware: null buffer with a nonzero capacity must
+  // degrade to passthrough, never dereference the null buffer.
+  download::ChunkCoalescer coalescer(PoolBytes{}, 8);
+  FlushRecorder rec;
+  const uint8_t data[] = {1, 2, 3, 4, 5};
+  EXPECT_TRUE(coalescer.write(data, sizeof(data), FlushRecorder::onFlush, &rec));
+  EXPECT_TRUE(coalescer.flush(FlushRecorder::onFlush, &rec));
+  ASSERT_EQ(rec.chunks.size(), 1u);
+  EXPECT_EQ(rec.chunks[0], (std::vector<uint8_t>{1, 2, 3, 4, 5}));
+  EXPECT_EQ(coalescer.pending(), 0u);
 }
