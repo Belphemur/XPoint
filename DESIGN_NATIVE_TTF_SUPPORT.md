@@ -44,7 +44,7 @@ src/main.cpp
 
 src/activities/reader/ReaderActivity.cpp:58 → sdFontSystem.ensureLoaded(renderer) on reader entry
 
-EpubReaderActivity::renderBook()                                             [EpubReaderActivity.cpp:1443-1516]
+EpubReaderActivity::renderBook()                                             [EpubReaderActivity.cpp:1412-1781]
   ├─ renderer.getOrientedViewableTRBL() + SETTINGS.screenMargin + status bar → viewport
   ├─ SETTINGS.readerRenderSpec(viewportW, viewportH) → ReaderRenderSpec       [CrossPointSettings.cpp:307-321]
   ├─ Section::loadSectionFile(renderSpec)      ← cache hit  (lib/Epub/Epub/Section.cpp)
@@ -53,7 +53,7 @@ EpubReaderActivity::renderBook()                                             [Ep
   │           ├─ measureWordWidth → renderer.getTextAdvanceX / getSpaceWidth / getKerning
   │           ├─ computeLineBreaks / hyphenation / focus-reading splits
   │           └─ TextBlock lines (flat arena: textOff/xpos/styles/focus arrays + text)
-  └─ Page::render(renderer, fontId, x, y)                                     [Page.h:28]
+  └─ Page::render(renderer, fontId, x, y)                                     [Page.h:119]
         └─ TextBlock::render(renderer, fontId, x, y)                          [TextBlock.h:117]
               └─ GfxRenderer::drawText / drawCharDither → EpdFontFamily → EpdFont / SdCardFont
 ```
@@ -176,21 +176,34 @@ class BookFontLoader {
 
   void begin();                  // scan /fonts/, load manifest, probe PSRAM
   void ensureLoaded();           // (re)load the active family if settings changed or registry dirty
+                              // MUST be called before getReaderFont() or layoutGenerationHash()
   // The live reader chain (regular/bold/italic/bold-italic faces registered as available).
   // Never null: falls back to the built-in BitmapBookFont chain.
   book::FontChain* getReaderFont();
   uint32_t fontFingerprint() const;   // file mtimes+sizes ⊕ chain->styleCoverage() — §3.4
-  const std::vector<FamilyInfo>& families() const;  // for the settings Font tab
+  const FamilyInfo* families() const { return families_; }  // for the settings Font tab (bounded, see §7)
+  uint8_t familyCount() const { return familyCount_; }      // capped at kMaxDiscoveredFamilies
   void markDirty();              // web upload / SD change (thread-safe, atomic flag)
   // Scrub arenas + unload file bytes when leaving the reader with low heap pressure
   void releaseResidentCaches();
  private:
-  // heap_caps_malloc(MALLOC_CAP_SPIRAM) with DRAM fallback + size gate (§3.3)
+  // Bounded storage for discovered families (no std::vector — bare new aborts
+  // under -fno-exceptions; see FontFaceInfo for the 4-byte filename key).
+  static constexpr uint8_t kMaxDiscoveredFamilies = 32;
+  StaticArray<FamilyInfo, kMaxDiscoveredFamilies> families_;
+  uint8_t familyCount_ = 0;
+  // Per-face byte ownership: TtfFont::init borrows the complete font buffer,
+  // which must remain resident while FontChain uses the face. faces_ owns
+  // TtfFont instances; faceBytes_ owns the raw file buffers; release
+  // destroys TtfFont before freeing its buffer.
   bool loadFaceBytes(const FontFaceInfo&);
-  book::TtfFont* faces_[4];      // only active faces constructed
+  uint8_t faceBytesOwner_[4];   // 1 = BookFontLoader owns the buffer, 0 = borrowed
+  UniqueNoThrow<uint8_t[]> faceBytes_[4];
+  book::TtfFont* faces_[4];     // only active faces constructed; destroyed in onExit
   book::FontChain chain_;
   uint32_t fingerprint_ = 0;
   std::atomic<bool> dirty_{false};
+};
 };
 extern BookFontLoader fontLoader;   // defined in main.cpp, beside sdFontSystem (main.cpp:55)
 ```
@@ -202,8 +215,12 @@ Built-in fallback: a static `book::FontChain` wrapping static `BitmapBookFont` i
 **The critical correction:** C3 builds have no PSRAM (§2.4), so `MALLOC_CAP_SPIRAM` is a *PSRAM-present tier*, not a universal strategy. Tier selection at `begin()`:
 
 ```cpp
-const size_t psramFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);  // 0 on C3/X4/Sticky
-tier_ = (psramFree >= 4u * 1024 * 1024) ? Tier::PsramS3 : Tier::DramC3;
+// Presence (total capacity, not free) is the tier discriminator.
+// heap_caps_get_free_size(MALLOC_CAP_SPIRAM) returns currently free bytes —
+// an S3 with low free PSRAM would wrongly select DramC3. Use esp_psram_size()
+// (0 when no PSRAM) or heap_caps_get_total_size(MALLOC_CAP_SPIRAM).
+const size_t psramTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);  // 0 on C3/X4/Sticky
+tier_ = (psramTotal >= 4u * 1024 * 1024) ? Tier::PsramS3 : Tier::DramC3;
 ```
 
 Arena allocation always via `heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` when tier is PsramS3 (explicit capability — plain `malloc()` does not reliably place large blocks in PSRAM, and on the C3 there is no PSRAM to place into), else `makeUniqueNoThrow<uint8_t[]>(cap)` into DRAM (`lib/Memory/Memory.h`; bare `new` aborts under `-fno-exceptions`).
@@ -215,7 +232,7 @@ Arena allocation always via `heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CA
 | Font file bytes | whole-file residency required by `TtfFont::init` | **gate: file ≤ 256KB** (see below); rejected otherwise | resident per loaded face; target ≤ 1MB/Latin face; CJK gate per §8 |
 | `bookArena` | `Book::open` container data (catalog, toc, manifest) | 32KB | 512KB |
 | `scratch` (layout) | `ChapterLayoutSession` block flow, line breaking, `Page` emission | 40KB | 256KB |
-| `parseScratch` | inflate window + decompressor + XML (~46KB transient; drops to ~8KB resident when `chapterSource` extraction is used) | loaned during build ticks (below) | 64KB |
+| `parseScratch` | inflate window + decompressor + XML (~46KB transient; drops to ~8KB resident when `chapterSource` extraction is used) | **4KB peak** during build ticks (loaned from framebuffer via `FrameBufferLoan`, not resident) | 64KB |
 | `glyphArena` (per active chain) | `TtfFont` direct-mapped advance+glyph cache | 24KB | 64KB |
 | FIBP writer index arena | `PageCacheWriter::begin` index chunks (~1KB per 128 pages) | 8KB | 8KB |
 | framebuffer | existing `GfxRenderer` 48KB single buffer | unchanged | unchanged |
@@ -246,7 +263,9 @@ const uint32_t generation = book::layoutGenerationHash(p, fontLoader.fontFingerp
 book::pageCacheName(spineIndex, generation, name, sizeof(name));   // "s3-1a2b3c4d.fibp"
 ```
 
-`fontFingerprint()` = FNV-1a over each active face's (mtime, fileSize, styleFlags) ⊕ `chain_.styleCoverage()`. Adding a real bold file to a family that previously rendered synthetic-regular changes the fingerprint → stale caches rebuild — correct, because `FontChain`'s style selection changes line breaks.
+Cache note: FIBP stores `PageTextRun` layout records, not rendered glyph bitmaps. Cache hits skip layout (`ChapterLayoutSession`) but **still call `PageRenderer::renderText`** to rasterize glyphs into the framebuffer. Glyph-cache eviction within the 24KB (C3) / 64KB (PSRAM) `glyphArena` can cause re-rasterization of evicted glyphs on cache-hit page display — the same economics as today's bitmap `FontCacheManager`. Phase 2 telemetry logs `Arena::highWater()` / `failedAllocSize()` per page to measure cache-hit rendering cost and glyph-cache flush frequency.
+
+`fontFingerprint()` = FNV-1a over each active face's **(familyName, facePath, mtime, fileSize, styleFlags)** ⊕ `chain_.styleCoverage()`. The family display name and the on-disk path are explicit inputs, not derivable from (mtime, fileSize) alone — replacement files with identical metadata but different content would otherwise reuse stale caches. Adding a real bold file to a family that previously rendered synthetic-regular changes `styleCoverage()` → new fingerprint → stale caches rebuild.
 
 Mapping of the current `ReaderRenderSpec` fields into `LayoutParams`:
 
@@ -270,7 +289,7 @@ Because the hash mixes the full `LayoutParams` plus the engine's layout version 
 `EpubReaderActivity` (navigation, progress, prefetch, toolbar, footnotes, dictionary, stats) is kept; only the *page source* is replaced. Concretely:
 
 1. **New member state**: `book::Book book_`, arenas as members (allocated in `onEnter()`, freed in `onExit()` — activity-lifecycle rule), `book::PageCacheReader cacheReader_`, `book::ChapterLayoutSession session_` (optional, active during background builds), `book::PageCacheWriter writer_`.
-2. **`renderBook()`** (EpubReaderActivity.cpp:1425-1529 today) keeps its viewport computation, then:
+2. **`renderBook()`** (EpubReaderActivity.cpp:1412-1781 today) keeps its viewport computation, then:
    - `loadSectionFile(renderSpec)` → `cacheReader_.open(StorageCache, name, generation, bookArena)`; `Stale` → rebuild path.
    - Cold path: `ChapterLayoutSession::begin(...)` + first `step()` to emit page 1 immediately (matches today's "build shows first page, indexes in background" UX), `PageCacheWriter` attached as the sink so pages persist as they are emitted; `writer_.suspend(bytesConsumed, bytesTotal)` on `onExit`/chunk end produces the partial file the reader accepts on reopen (`isPartial()`, `buildBytesConsumed()/buildBytesTotal()`).
 3. **Rendering**: after the (already) oriented `FrameTarget` is filled, page pixel output happens once per page via `PageRenderer::renderText(page, *fontLoader.getReaderFont(), target)` (+ `renderImages` when the page has images and `imageRendering == IMAGES_DISPLAY`). Then existing chrome draws over it: `renderStatusBar()`, toolbar overlays, popups — all through `GfxRenderer` in logical coordinates as today. Framebuffer is single-buffer (`EINK_DISPLAY_SINGLE_BUFFER_MODE=1`), and `PageRenderer` writes the same physical buffer `GfxRenderer` draws to; ordering (page first, chrome second) is preserved.
@@ -278,7 +297,7 @@ Because the hash mixes the full `LayoutParams` plus the engine's layout version 
 
    | CrossPointSettings::ORIENTATION | GfxRenderer::Orientation | FrameTarget.rotation |
    |---|---|---|
-   | PORTRAIT (0) | Portrait (480×800 logical) | `FrameRotation::Portrait` (90°CW) |
+   | PORTRAIT (0) | Portrait (480×800 logical) | `FrameRotation::Portrait` (90° CW) |
    | LANDSCAPE_CW (1) | LandscapeClockwise | `FrameRotation::UpsideDown` |
    | INVERTED (2) | PortraitInverted | `FrameRotation::PortraitInverted` |
    | LANDSCAPE_CCW (3) | LandscapeCounterClockwise (native) | `FrameRotation::None` |
@@ -312,11 +331,14 @@ uint8_t ttfFontPointSize = 14;                        // continuous 8..72 pt
 book::FontChain* getReaderFontChain() const {
   if (readerFontEngine == READER_ENGINE_TTF && ttfFontFamilyName[0] != '\0' &&
       fontLoader.isFamilyAvailable(ttfFontFamilyName)) {
+    fontLoader.ensureLoaded();   // reload the active family before returning the chain
     return fontLoader.getReaderFont();          // active TTF chain
   }
   return fontLoader.builtinChain();             // BitmapBookFont chain, never null
 }
 ```
+
+The `ensureLoaded()` call is critical on the **live-settings path**: when the user selects family B while family A is still the loaded active chain, `fontFingerprint()` and `PageRenderer::renderText()` must use family B. Without `ensureLoaded()` the chain stays stale at family A, producing stale rendering and a matching-but-wrong FIBP generation hash (cache hit on stale content).
 
 The `sdFontIdResolver` indirection (CrossPointSettings.h:429-431) remains for the legacy bitmap path only; the TTF path deliberately does **not** reintroduce an id-resolution callback — it returns the chain directly, and cache keys never need it (`fontFingerprint()` does the identification).
 
@@ -325,6 +347,8 @@ Migration: `fromJson()` (CrossPointSettings.cpp has the NOTOSANS→ATKINSON_HN p
 Size handling: `readerFontPointSizes()` (ReaderFontSizes.h:21) gains a TTF branch — continuous 8..72 for TTF families (UI renders a slider/list, §12), `BUILTIN_READER_POINT_SIZES` for the fallback chain; `snapToNearestPointSize` unchanged for bitmap.
 
 Point→pixel conversion (the one place the two unit systems meet): `baseSizePx = roundf(pointSize * 150.0f / 72.0f)` — 150 DPI is the existing convention of the SD-font converter and the built-in UI sizes (`kUiFontSizes` SMALL=8pt / UI_10=10pt / UI_12=12pt, SdCardFontSystem.cpp:31-35, comment "at 150 DPI, matching the SD-font converter"). So 14pt → 29px `baseSizePx`. This keeps TTF optical sizes visually consistent with the bitmap families users already know.
+
+**CJK fallback in the TTF chain**: Phase 4 removes `SdCardFontSystem` from the reader path, but retains it for UI CJK. A `BookFont` adapter (`src/adapters/SdCardBookFontAdapter.{h,cpp}`) wraps an `SdCardFont` as a `book::RenderFont` so the TTF chain's `FontChain::fontFor(cp, styleFlags, &faceFlagsOut)` can fall back to the SD font for CJK codepoints at the same point size. The adapter implements `rasterize(cp, sizePx) → const GlyphBitmap*` by calling `SdCardFont::getGlyph(cp, style, sizePx)` and returning its 2-bit bitmap as 8-bit coverage (tone 0→0, tone 3→255). This keeps oversized CJK TTFs (which fail the 256KB C3 gate) readable via the existing SD-card CJK `.cpfont` path.
 
 ### 3.7 Font manifest: scan + optional manifest (decision)
 
@@ -378,7 +402,7 @@ Phased, each ending in a verifiable gate. `pio run` (default C3 env) must pass a
 | # | Decision | Rationale (evidence-based) |
 |---|---|---|
 | 1 | **stb_truetype via `TtfFont`, not FreeType.** Whole-file residency accepted; 256KB DRAM gate on C3, ~1MB PSRAM budget on S3. | Zero new dependencies (engine vendors stb); FreeType streaming for multi-MB CJK is the documented upgrade path in `freeink-sdk/docs/freeink-book.md` behind the same `BookFont` interface — swapping later costs no call-site changes. |
-| 2 | **Explicit two-tier memory strategy with runtime PSRAM probe.** | `platformio.ini` proves C3 envs ship PSRAM-less (§2.4); `heap_caps_get_free_size(MALLOC_CAP_SPIRAM)` is the only reliable discriminator. Plain `malloc` is not a PSRAM strategy. `-DFREEINK_BOOK_SMALL=1` on C3 aligns the engine's internal capacities with the same tier. |
+| 2 | **Explicit two-tier memory strategy with runtime PSRAM presence probe.** | `platformio.ini` proves C3 envs ship PSRAM-less (§2.4); `heap_caps_get_total_size(MALLOC_CAP_SPIRAM)` (not `get_free_size`, which returns free bytes not total capacity — see §3.3) is the tier discriminator. Plain `malloc` is not a PSRAM strategy. `-DFREEINK_BOOK_SMALL=1` on C3 aligns the engine's internal capacities with the same tier. |
 | 3 | **FIBP + `layoutGenerationHash(params, fontFingerprint)` replaces the Section `.bin` cache.** | Generalizes the proven `spec`-validation design (Section.cpp:195) to settings the engine owns; partial-file suspend matches the existing partial-`.bin` UX; `pageForChar`/`charForAnchor` cover progress restore without a parallel index. |
 | 4 | **Keep `GfxRenderer` + EpdFont for UI chrome.** | ~80 global font objects and every menu/settings/popup draw path are id-currency; rewriting chrome is high-risk/zero reader value. `BitmapBookFont` bridges the two worlds for the reader's fallback chain. |
 | 5 | **Engine consumed as submodule symlink, unmodified except gated extensions.** | `platformio.ini` already uses this pattern for FreeInkUI (:133). The only engine-side changes proposed are narrow and flagged upstream: (a) letter-spacing field on `LayoutParams` (§5.7), (b) optional synthetic-bold stroking in `PageRenderer::renderText` when `faceFlagsOut` reports a shortfall. |
@@ -500,12 +524,12 @@ All allocations go through `makeUniqueNoThrow`/`heap_caps_malloc` with explicit 
 6. **Exact C3 arena floor**: do real-book measurements (§9.1) confirm the 104KB steady-state figure, or does the `scratch` budget need to drop to 32KB with smaller `ChapterLayoutSession` steps?
 7. **AA format for TTF pages**: v1 ships `Mono1Dithered`/`Mono1Sharp` (§5 D9). **Investigation conclusion (verified against this worktree): the engine already supports AA natively** — `stbtt_MakeGlyphBitmap` produces true 8-bit coverage (TtfFont.cpp:165; `GlyphBitmap.pixels`, BookFont.h:26-27) and `inkPixel` consumes it for all three `FrameFormat`s including Gray8 (PageRenderer.cpp:68-95). The only gap is last-mile plane packing: no `FrameFormat` emits CrossPoint's dual LSB/MSB 1bpp planes. That packing is CrossPoint-side — **no engine change is required**; the upstream dual-plane `FrameFormat` ask is downgraded to optional (it would merely let `PageRenderer::renderText` emit planes directly, saving PagePaint's run-loop replication). Remaining question: does the panel's 4-level AA waveform (UC8279 XTF_AA LUT bank, SSD1677 external AA LUT + dual DTM planes) visibly beat dithered coverage at 12–18 pt reader sizes on X4/X3 panels? If not, `Mono1Dithered` is final and the parity pass is dropped.
 
-**Concrete fix path (no engine change required), corrected mechanics.** CrossPoint's 4-level gray lives in `GfxRenderer`'s `grayplanes` system (`GrayPlanes.h`; `renderCharImpl` GRAYSCALE_DUAL at GfxRenderer.cpp:540-545), driven by 2-bit glyph tones from `EpdFont`, and the reader's tiled gray pass (`beginStripTarget` 80-row bands, EpubReaderActivity.cpp:1982-2012) flags plane bands via `drawGrayDualPixel` (GfxRenderer.cpp:1715-1737). The naive formulation — "call `renderText` with `FrameFormat::Gray8` into a `beginStripTarget` band" — does **not** work as written, for two reasons: (i) `beginStripTarget` bands are 1bpp plane strips (`panelWidthBytes` per row, GfxRenderer.h:74-88), not the 8bpp geometry Gray8 needs (`width` bytes per row, PageRenderer.h:48) — and `PageRenderer` writes through its own `FrameTarget`, never through `GfxRenderer`'s strip state; (ii) `FrameTarget` has no band window — `toPanel` bounds-checks against full logical dims (PageRenderer.cpp:32-58), so `renderText` cannot clip to a band, and pointing it at a band-sized buffer would write runs above the band out of bounds. Two viable CrossPoint-side constructions:
+**Concrete fix path (no engine change required), corrected mechanics.** CrossPoint's 4-level gray lives in `GfxRenderer`'s `grayplanes` system (`GrayPlanes.h`; `renderCharImpl` GRAYSCALE_DUAL at GfxRenderer.cpp:540-545), driven by 2-bit glyph tones from `EpdFont`, and the reader's tiled gray pass (`beginStripTarget` 80-row bands, EpubReaderActivity.cpp:1982-2012) flags plane bands via `drawGrayDualPixel` (GfxRenderer.cpp:1715-1737). The naive formulation — "call `renderText` with `FrameFormat::Gray8` into a `beginStripTarget` band" — does **not** work as written, for two reasons: (i) `beginStripTarget` bands are 1bpp plane strips (`panelWidthBytes` per row — declaration + geometry doc GfxRenderer.h:231-239, strip state members :74-88), not the 8bpp geometry Gray8 needs (`width` bytes per row, PageRenderer.h:48) — and `PageRenderer` writes through its own `FrameTarget`, never through `GfxRenderer`'s strip state; (ii) `FrameTarget` has no band window — `toPanel` bounds-checks against full logical dims (PageRenderer.cpp:32-58), so `renderText` cannot clip to a band, and pointing it at a band-sized buffer would write runs above the band out of bounds. Two viable CrossPoint-side constructions:
 
-   - **(a) Direct coverage walk (recommended).** `PagePaint` replicates `renderText`'s ~45-line glyph loop (PageRenderer.cpp:165-209 — UTF-8 decode → `FontChain::fontFor` → `rasterize` → `advance`/`kerning`, all public engine API), quantizes each coverage sample inline (≥192→3, ≥128→2, ≥64→1, else 0 — uniform quartiles matching the grayplanes tone semantics 0=white..3=black), and flags the existing dual plane bands via `grayplanes::setMsb`/`setLsb` + `renderer.drawGrayDualPixel` inside the reader's existing `beginStripTarget(lsb, y, rows, msb)` walk, with band culling mirroring `glyphIntersectsStrip` (GfxRenderer.cpp:1739). Zero additional large buffers, no Gray8 intermediate, and the reader's downstream pipeline (`writeGrayscalePlaneStrip`, `displayGrayBuffer`, cleanup) is reused unchanged. (`grayplanes::planBlock` is *not* involved — it serves only the 2×2-downsampled super/subscript/ruby path, which TTF text runs don't use.)
-   - **(b) Band-clipped sub-page + Gray8 intermediate.** `PagePaint` shallow-copies the `Page`'s run array, keeps runs intersecting the band, translates `baselineY` by −y0 (`Page`/`PageTextRun` are PODs), and calls stock `renderText` with `FrameFormat::Gray8` into a *separately allocated* 8bpp band buffer (480×80 = 38.4KB portrait / 800×80 = 64KB landscape transient — heap-gated on C3, or 40-row bands at half that), then walks the buffer quantizing to tones and flagging planes as in (a). Costs the extra band buffer; keeps the engine's run loop verbatim (kerning, synthetic-bold double-strike, underline handling included).
+   - **(a) Direct coverage walk (recommended).** `PagePaint` replicates `renderText`'s ~45-line glyph loop (PageRenderer.cpp:165-209 — UTF-8 decode → `FontChain::fontFor` → `rasterize` → `advance`/`kerning`; the font calls are all public engine API — two caveats: the engine's UTF-8 decoder `decodeUtf8` is translation-unit-local (PageRenderer.cpp:97-118), so `PagePaint` carries its own ~20-line len-bounded decoder, and the synthetic-bold double-strike + underline arms at :183-206 must be replicated for visual parity), quantizes each coverage sample inline (≥144→3, ≥96→2, ≥48→1, else 0 — the exact banding the `.cpfont` converters use to produce the bitmap path's 2-bit tones: `bm = coverage >> 4`, then bm≥9→3, bm≥6→2, bm≥3→1, anchored to the engine's `kInkSolid=140`/`kInkFloor=40` contrast curve, fontconvert.py:361-390 / fontconvert_sdcard.py:673-689; these bands are what the `grayplanes` tone semantics 0=white..3=black encode), and flags the existing dual plane bands via `grayplanes::setMsb`/`setLsb` + `renderer.drawGrayDualPixel` inside the reader's existing `beginStripTarget(lsb, y, rows, msb)` walk, with band culling mirroring `glyphIntersectsStrip` (GfxRenderer.cpp:1739). Zero additional large buffers, no Gray8 intermediate, and the reader's downstream pipeline (`writeGrayscalePlaneStrip`, `displayGrayBuffer`, cleanup) is reused unchanged. (`grayplanes::planBlock` is *not* involved — it serves only the 2×2-downsampled super/subscript/ruby path, which TTF text runs don't use.) Because `glyphIntersectsStrip` and `drawGrayDualPixel` rotate logical→physical per glyph/pixel (GfxRenderer.cpp:1721, 1747-1748), (a) is orientation-agnostic, exactly like the bitmap path.
+   - **(b) Band-clipped sub-page + Gray8 intermediate.** `PagePaint` shallow-copies the `Page`'s run array, keeps runs intersecting the band, translates `baselineY` by −y0 (`Page`/`PageTextRun` are PODs), and calls stock `renderText` with `FrameFormat::Gray8` into a *separately allocated* 8bpp band buffer (480×80 = 38.4KB portrait / 800×80 = 64KB landscape transient — heap-gated on C3, or 40-row bands at half that), then walks the buffer quantizing to tones and flagging planes as in (a). Costs the extra band buffer; keeps the engine's run loop verbatim (kerning, synthetic-bold double-strike, underline handling included). **Rotation limitation:** as written, (b) is coherent only for the 0°/180° orientations (`FrameRotation::None`/`UpsideDown` = LANDSCAPE_CCW/LANDSCAPE_CW), where logical-horizontal bands stay physical-horizontal. Under the 90°-rotated orientations (`Portrait`/`PortraitInverted` = PORTRAIT/INVERTED — 2 of 4 modes), a physical row band maps to a logical *x-column* range, so baselineY culling/translation is the wrong axis; x-axis culling needs each run's advance+kerning re-walked (`PageTextRun` stores only the run start x, no width — ChapterLayout.h:56-63), which replicates the very loop (b) exists to avoid, and the band-buffer geometry above no longer matches the physical plane bands. This is what makes (a) the recommended path.
 
-   Either way, the **BW base for AA pages must plot every pixel the planes can flag**: the bitmap base plots any nonzero tone as solid black (GfxRenderer.cpp:527-531). The matching TTF base rule is "coverage ≥ 64 → black" (the tone-1 boundary) — *not* stock `Mono1Sharp` (threshold 120) or `Mono1Dithered` (floor 40 + dithered mid-band), which would leave plane-flagged pixels without black base underneath. Construction (a) gets this for free by emitting base and planes from the same walk; (b) needs a base pass with the 64 threshold (a PagePaint walk, or an engine threshold parameter — the only remaining optional upstream nicety). Tone 3 never sets plane bits (the BW base carries it), matching `GrayPlanes.h`. Trade-off: a second glyph walk per page — the bitmap path also walks glyphs twice (BW pass + gray pass); TTF re-`rasterize()` hits the glyph arena (CPU-only, no SD I/O) unless it flushes mid-page (R4). Phase 2 soak measures whether the extra engine work is acceptable on C3.
+   Either way, the **BW base for AA pages must plot every pixel the planes can flag**: the bitmap base plots any nonzero tone as solid black (GfxRenderer.cpp:527-531). The matching TTF base rule is "coverage ≥ 48 → black" (the tone-1 boundary) — *not* stock `Mono1Sharp` (threshold 120) or `Mono1Dithered` (floor 40 + dithered mid-band), which would leave plane-flagged pixels without black base underneath. Construction (a) gets this for free by emitting base and planes from the same walk; (b) needs a base pass with the 48 threshold (a PagePaint walk, or an engine threshold parameter — the only remaining optional upstream nicety). Tone 3 never sets plane bits (the BW base carries it), matching `GrayPlanes.h`. Trade-off: a second glyph walk per page — the bitmap path also walks glyphs twice (BW pass + gray pass; tiled path: 1 + nBands culled walks, EpubReaderActivity.cpp:1892-1907); TTF re-`rasterize()` hits the glyph arena (CPU-only, no SD I/O) unless it flushes mid-page (R4). Phase 2 soak measures whether the extra engine work is acceptable on C3.
 
 ---
 
@@ -563,3 +587,4 @@ Discrepancies found in the previous draft, all corrected above:
 7. §10 references cited `src/SdCardFontManager.*` / `src/SdCardFontRegistry.*` → actually in `lib/EpdFont/`.
 8. "8 MB PSRAM on ESP32-C3" → C3 build environments ship PSRAM-less (platformio.ini:11, :265-268); PSRAM exists on S3 devices only (§2.4).
 9. Kagi share URL removed from references (non-canonical, rot-prone).
+10. **Submodule init required**: `freeink-sdk` is a git submodule; `git submodule update --init` must be run to inspect the FreeInkBook/FreeInkUI/FreeInkDisplay engine sources referenced throughout this doc (CodeRabbit/Copilot review note, 2026-09-08).
