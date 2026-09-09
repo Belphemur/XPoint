@@ -48,10 +48,15 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
 
 ### Hardware Specs
 
-* MCUs: ESP32-C3 (single-core RISC-V @ 160MHz) and ESP32-S3 (`sticky`, dual-core Xtensa LX7)
+* MCUs: ESP32-C3 (single-core RISC-V @ 160MHz) and ESP32-S3 (`sticky`, `x4pro`, dual-core Xtensa LX7)
 * RAM: ~380KB usable on ESP32-C3 (VERY LIMITED - primary project constraint)
   * **NO PSRAM on C3**.
   * **Single Buffer Mode**: Only ONE 48KB framebuffer (not double-buffered)
+* RAM (X4 Pro / ESP32-S3): ~512KB DRAM + **8MB PSRAM** (`BOARD_HAS_PSRAM`)
+  * PSRAM used for: decompressed EPUB content, font glyph buffers, image decode bands, large caches
+  * DRAM (~178KB free at page-turn time) reserved for hot render path and stack
+  * Use `poolMalloc`/`PoolBytes` from `lib/Memory/Memory.h` to place large buffers in PSRAM
+  * See `psram-optimizer` skill for allocation patterns, size limits, and pitfalls
 * Flash: 16MB (Instruction storage and static data)
 * Display: 800x480 E-Ink (Slow refresh, monochrome, 1-2s full update)
   * Framebuffer: 48,000 bytes (800 × 480 ÷ 8)
@@ -68,6 +73,7 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
 7. `std::vector` Pre-allocation: Always call `.reserve(N)` before any `push_back()` loop. Each growth event allocates a new block (2×), copies all elements, then frees the old one — three heap operations that fragment DRAM. When the final size is unknown, estimate conservatively.
 8. SD Persistence Throttling: Settings, state, credentials, and other `PersistableStore` JSON files live on SD under `/.crosspoint/` through `HalStorage`; SPIFFS is not mounted. Guard redundant writes and debounce progress saves to avoid serialization, SD I/O, and `storageMutex` cost.
 9. `new` is not nothrow on ESP32: With `-fno-exceptions`, bare `new` that fails calls `abort()` — it does NOT return `nullptr`. Always use `new (std::nothrow)` and null-check the result, or use `makeUniqueNoThrow<T>()` from `lib/Memory/Memory.h`. Never write bare `new` for any fallible allocation.
+10. **PSRAM on X4 Pro**: On boards with `BOARD_HAS_PSRAM` (ESP32-S3), use `poolMalloc`/`PoolBytes` from `lib/Memory/Memory.h` to place large transient buffers in PSRAM. Never use `heap_caps_malloc` directly at call sites. Always add a size guard (`getItemSize` + `MAX_*_FILE_SIZE`) before PSRAM allocation to prevent CWE-400 (denial of service via oversized decompression). See `psram-optimizer` skill for patterns and limits.
 
 ---
 
