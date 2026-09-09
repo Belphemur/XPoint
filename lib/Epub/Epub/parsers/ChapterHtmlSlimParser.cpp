@@ -2092,7 +2092,10 @@ bool ChapterHtmlSlimParser::finishParse() {
     destroyXmlParser(xmlParser_);
     xmlParser_ = nullptr;
   }
-  parseFile_.close();
+  // PSRAM HTML-cache path (parseFromMemory) never opens parseFile_, so guard like abortParse().
+  if (parseFile_.isOpen()) {
+    parseFile_.close();
+  }
 
   // Process last page if there is still text
   if (currentTextBlock) {
