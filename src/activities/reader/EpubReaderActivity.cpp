@@ -3196,14 +3196,22 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
 #if FREEINK_CAP_FRONTLIGHT
 bool EpubReaderActivity::handleSideSwipeFrontlight() {
   // Continuous drag tracking for pixel-precision frontlight control.
-  // The SDK's wasSwipe/decodeSwipe requires 60px minimum travel, which
-  // maps to ~4% on a 1448px screen — too coarse for night-time fine tuning.
-  // Instead we track the touch live: wasScreenTouchDown starts a drag on a
-  // side edge, isScreenTouchHeld reports incremental Y deltas each frame
-  // (1px = 1% change), and wasScreenTouchReleased ends the drag.
+  // The SDK's wasSwipe/decodeSwipe requires 60px minimum travel before it
+  // fires, which maps to ~7.5% on an 800px-wide screen (in landscape) —
+  // too coarse for night-time fine tuning. Instead we track the touch live:
+  // wasScreenTouchDown starts a drag on a side edge, isScreenTouchHeld
+  // reports incremental Y deltas each frame, and wasScreenTouchReleased
+  // ends the drag.
+  //
+  // Sensitivity: PIXELS_PER_PERCENT controls how many pixels of vertical
+  // travel equal 1% frontlight change. At 3px/1%, a full 0-100% range
+  // needs ~300px of drag (~63% of a 480px screen in landscape), giving
+  // enough travel to avoid twitchy accidental max-outs while keeping
+  // 1% precision.
+  static constexpr int PIXELS_PER_PERCENT = 3;
 
   const int screenW = renderer.getScreenWidth();
-  static constexpr float SIDE_BAND = 0.20f;  // 20% of width from each side
+  static constexpr float SIDE_BAND = 0.08f;  // 8% of width from each edge
   const int leftBand = static_cast<int>(screenW * SIDE_BAND);
   const int rightBand = screenW - static_cast<int>(screenW * SIDE_BAND);
 
@@ -3228,10 +3236,11 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
   int cx = 0;
   int cy = 0;
   if (mappedInput.isScreenTouchHeld(cx, cy)) {
-    // 1px of vertical travel = 1% frontlight change. Full screen = 100%.
+    // Convert pixel delta to percentage: PIXELS_PER_PERCENT=3 means 3px of
+    // vertical travel = 1% change; ~300px for the full 0→100% range.
     const int deltaY = cy - frontlightDrag.touchStartY;
     const int up = deltaY < 0;  // dy < 0 = finger moved up
-    const int step = std::abs(deltaY);
+    const int step = std::abs(deltaY) / PIXELS_PER_PERCENT;
     frontlightDrag.touchStartY = cy;  // reset baseline for next frame
 
     if (step == 0) return true;  // no movement this frame
