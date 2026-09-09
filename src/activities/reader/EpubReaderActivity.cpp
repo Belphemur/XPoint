@@ -1883,7 +1883,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // separately makes the gray pass re-drive the whole text body — a visible
   // flash on every AA page.
   const bool combinedGrayscaleBase = tiledGrayscale && !pageHasImages && renderer.combinesGrayscaleBase();
-  const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncRefresh() && !pageHasImages;
+  // supportsAsyncGrayscaleBase(): X3 must not use an async B/W refresh as the
+  // grayscale base (upstream #3439); SSD1677-class panels keep the overlap.
+  // The overlap window is also what lets the DUAL render walk fill both plane
+  // buffers while the BW refresh is in flight (fork async-overlap work).
+  const bool overlapRefresh = tiledGrayscale && renderer.supportsAsyncGrayscaleBase() && !pageHasImages;
   // GRAYSCALE_DUAL: one render walk flags both plane buffers. Gated to text
   // pages — image pages keep the two-pass walk until preserveImagePolarity
   // learns a dual target (design doc §8). Each path (tiled/nontiled) checks
@@ -1918,6 +1922,19 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     // Stash the base without activating; displayGrayBuffer() below commits
     // base + grays as one waveform.
     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh);
+  } else if (needsAnyGrayscale) {
+    if (pagesUntilFullRefresh <= 1) {
+      // A cleanup refresh settles X3 correctly only when its grayscale
+      // preconditioning waveform runs before the gray planes are written.
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      renderer.preconditionGrayscale();
+      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    } else if (overlapRefresh) {
+      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, /*async=*/true);
+    } else {
+      renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+      pagesUntilFullRefresh--;
+    }
   } else {
     // Non-grayscale path: use async display when supported so we can overlap
     // the e-ink refresh (569-648ms) with background section builds and
