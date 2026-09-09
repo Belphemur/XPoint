@@ -77,9 +77,10 @@ def get_base_version(project_dir):
 
 
 def inject_version(env):
-    # Only applies to development environments; release envs set the
-    # version via build_flags in platformio.ini and are unaffected.
-    if env['PIOENV'] not in ('default', 'sticky'):
+    # Development environments get the git branch + short SHA so crash
+    # reports identify the exact build. Release envs set the version via
+    # build_flags in platformio.ini and are unaffected.
+    if 'CROSSPOINT_VERSION' in env:
         return
 
     project_dir = env['PROJECT_DIR']
