@@ -70,23 +70,22 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
 }
 
 // Two-tier allocation: PSRAM (S3) vs DRAM (C3).
-// Returns nullptr on OOM; caller must free DRAM-tier via free().
-static uint8_t* allocateFontBytes(uint32_t sz, Tier tier) {
+// Returns nullptr on OOM; DRAM-tier buffer owned by unique_ptr, freed automatically.
+static std::unique_ptr<uint8_t[]> allocateFontBytes(uint32_t sz, Tier tier) {
   if (tier == Tier::PsramS3) {
     uint8_t* buf = static_cast<uint8_t*>(
         heap_caps_malloc(sz, MALLOC_CAP_SPIRAM));
     if (!buf) {
       LOG_ERR("BFNT", "PSRAM OOM for %u bytes", sz);
     }
-    return buf;
+    return std::unique_ptr<uint8_t[]>(buf);  // caller owns; freed via heap_caps_free or just released
   } else {
     // DRAM-tier: use makeUniqueNoThrow from Hermes Memory.h
     auto buf = makeUniqueNoThrow<uint8_t[]>(sz);
     if (!buf) {
       LOG_ERR("BFNT", "DRAM OOM for %u bytes", sz);
-      return nullptr;
     }
-    return buf.release();  // transfer ownership to raw ptr; freed via free()
+    return buf;  // unique_ptr auto-frees on scope exit; no manual free needed
   }
 }
 
@@ -97,13 +96,13 @@ static bool tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
                            book::TtfFont* faces[4],
                            uint8_t* fontBytes[4], uint32_t fontFileSizes[4],
                            uint8_t faceBytesOwner[4]) {
-  // Allocate buffer and read the full font file.
-  uint8_t* buf = allocateFontBytes(fi.fileSize, tier);
-  if (!buf) return false;
+  // Allocate buffer and read the full font file (two-tier, unique_ptr-owned).
+  std::unique_ptr<uint8_t[]> bufOwn = allocateFontBytes(fi.fileSize, tier);
+  if (!bufOwn) return false;
+  uint8_t* buf = bufOwn.get();
 
   if (readFontFile(fi.file, buf, fi.fileSize) != fi.fileSize) {
-    free(buf);
-    return false;
+    return false;  // bufOwn freed automatically on scope exit
   }
 
   // SFNT validation boundary: numTables sanity + table-directory O/L checks.
