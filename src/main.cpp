@@ -1,7 +1,6 @@
-#include <BookTypes.h>
-
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <BookTypes.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -731,8 +730,7 @@ void setup() {
   // TTF Phase 0 wiring proof: the FreeInkBook engine is linked but unused;
   // this log line disappears with the lib_deps entry (design Phase 0 gate).
   LOG_DBG("MAIN", "Book engine linked: bookStatusName(Ok)=%s, vendor=%s",
-          freeink::book::bookStatusName(freeink::book::BookStatus::Ok),
-          freeink::book::vendorVersions());
+          freeink::book::bookStatusName(freeink::book::BookStatus::Ok), freeink::book::vendorVersions());
 
   // Brightness and warmth are always restored. A normal wake starts with the
   // light off unless Restore Light on Wake is enabled; silent maintenance
