@@ -728,10 +728,12 @@ void setup() {
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   // TTF Phase 0 wiring proof: the FreeInkBook engine is linked but unused.
-  // The function pointer is a link-time reference that survives every
-  // LOG_LEVEL (LOG_DBG compiles out below level 2); the log line is the
-  // visible smoke trace on debug builds. Both vanish with the lib_deps
-  // entry (design Phase 0 gate).
+  // The function pointer is a link-time reference that survives every build
+  // variant — it does not depend on logging at all (LOG_DBG compiles out
+  // when ENABLE_SERIAL_LOG is undefined, as in slim builds, or when
+  // LOG_LEVEL < 2); the log line is the visible smoke trace only where
+  // logging is compiled in. Both vanish with the lib_deps entry (design
+  // Phase 0 gate).
   using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
   [[gnu::used, gnu::retain]] static const BookStatusProbe bookStatusProbe = &freeink::book::bookStatusName;
   LOG_DBG("MAIN", "Book engine linked: bookStatusName(Ok)=%s, vendor=%s",
