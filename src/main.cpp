@@ -68,7 +68,11 @@ size_t g_psram_free_at_boot = 0;
 
 // Defined in the book namespace so it matches the header's
 // `extern BookFontLoader fontLoader;` declaration (design §3.2).
-freeink::book::BookFontLoader fontLoader;
+namespace freeink {
+namespace book {
+BookFontLoader fontLoader;
+}  // namespace book
+}  // namespace freeink
 
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;

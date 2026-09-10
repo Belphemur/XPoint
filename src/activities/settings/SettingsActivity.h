@@ -24,6 +24,9 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   TextSettings,
+#ifdef CROSSPOINT_TTF_DEBUG
+  TtfDebugRender,
+#endif
 };
 
 struct SettingInfo {

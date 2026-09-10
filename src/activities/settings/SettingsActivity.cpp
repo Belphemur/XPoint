@@ -25,6 +25,9 @@
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#if defined(CROSSPOINT_TTF_DEBUG)
+#include "activities/debug/TtfRenderDebugActivity.h"
+#endif
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
@@ -92,6 +95,10 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+#if defined(CROSSPOINT_TTF_DEBUG)
+  // Hidden engine bring-up row; compiled out of release builds.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_TTF_DEBUG_RENDER, SettingAction::TtfDebugRender));
+#endif
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.insert(readerSettings.begin() + 1,
@@ -365,6 +372,11 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
         break;
+#if defined(CROSSPOINT_TTF_DEBUG)
+      case SettingAction::TtfDebugRender:
+        startActivityForResult(std::make_unique<TtfRenderDebugActivity>(renderer, mappedInput), resultHandler);
+        break;
+#endif
       case SettingAction::Language:
         // Row labels are translated once in rebuildRowItems() and don't
         // re-run on Pop (see ActivityManager::loop()), so a language switch
