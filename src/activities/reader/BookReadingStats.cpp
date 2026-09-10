@@ -34,18 +34,25 @@ namespace {
 //   [107]    wpm.pos                   uint8_t
 //   [108]    lastBookProgressPercent   uint8_t, 0-100 (0xFF = unknown)
 //
+// v7 (134 bytes) appends the session-duration window (v6 fields unchanged):
+//   [109-110] sessionWindow.avg        uint16_t LE, trimmed mean seconds (0 = none)
+//   [111-112] sessionWindow.count      uint16_t LE, samples in window (0-10)
+//   [113-132] sessionWindow.samples    uint16_t LE each
+//   [133]     sessionWindow.pos        uint8_t
+//
 // The record lives INSIDE the book cache dir, so its lifetime matches the
 // cache dir exactly (created/deleted/moved with the book — no orphan cleanup,
 // no key migration needed; move-to-/read renames the whole dir).
-// On the first save of a loaded v5 record, the writer transparently upgrades
-// it to v6 in place and removes the legacy stats_v5.bin so the next load
-// picks up the new file directly. v4 (69 B) and crossink's unversioned
-// stats.bin are NOT supported in this build: they predate the per-book
-// cache dir convention and have not been seen on shipped devices. A v4 file
-// left on a user's SD is silently treated as missing — the loader finds no
-// candidate and the book starts a fresh stat record on next save.
-constexpr uint8_t STATS_FILE_VERSION = 6;
-constexpr int STATS_FILE_SIZE = 109;
+// On the first save of a loaded v5/v6 record, the writer transparently
+// upgrades it to the current version in place and removes the legacy file so
+// the next load picks up the new file directly. v4 (69 B) and crossink's
+// unversioned stats.bin are NOT supported in this build: they predate the
+// per-book cache dir convention and have not been seen on shipped devices. A
+// v4 file left on a user's SD is silently treated as missing — the loader
+// finds no candidate and the book starts a fresh stat record on next save.
+constexpr uint8_t STATS_FILE_VERSION = 7;
+constexpr int STATS_FILE_SIZE = 134;
+constexpr int STATS_FILE_SIZE_V6 = 109;
 constexpr int STATS_FILE_SIZE_V5 = 73;
 constexpr uint8_t FLAG_START_DATE_MANUAL = 1u << 0;
 constexpr uint8_t FLAG_FINISHED_DATE_MANUAL = 1u << 1;
@@ -63,7 +70,8 @@ std::string statsFileNameForVersion(const uint8_t version) {
 // supported versions and the migration comment for what happens to a v4
 // file if it is still on disk after the upgrade.
 std::vector<std::string> openCandidateNames() {
-  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1)};
+  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
+          statsFileNameForVersion(STATS_FILE_VERSION - 2)};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
@@ -126,7 +134,7 @@ void readV5Fields(const uint8_t* data, BookReadingStats& stats) {
 
 // Decodes a v5 record (73 bytes). Returns false on size/version mismatch.
 bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION - 1) return false;
+  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION - 2) return false;
   readV5Fields(data, stats);
   return true;
 }
@@ -135,7 +143,8 @@ bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
 // or cursor is clamped (samples[pos] must stay in bounds), the average is
 // recomputed from the window rather than trusted, and a progress byte above
 // 100 (legacy records carry 0 here, and torn writes can carry anything) is
-// folded to the unknown sentinel.
+// folded to the unknown sentinel. Version-agnostic: shared by the v6 and v7
+// decoders (the v6 fields sit at the same offsets in both layouts).
 void readWpmWindow(const uint8_t* data, WpmWindow& wpm, uint8_t& lastBookProgressPercent) {
   wpm.avg = readLe16(data, 73);
   wpm.count = static_cast<uint8_t>(readLe16(data, 75));
@@ -148,14 +157,40 @@ void readWpmWindow(const uint8_t* data, WpmWindow& wpm, uint8_t& lastBookProgres
   lastBookProgressPercent = (rawProgress <= 100) ? rawProgress : UNKNOWN_BOOK_PROGRESS_PERCENT;
 }
 
+// Reads the v7-only trailing session window and normalizes it (same
+// untrusted-data rules as the WPM window).
+void readSessionWindow(const uint8_t* data, SessionWindow& sessionWindow) {
+  sessionWindow.avg = readLe16(data, 109);
+  sessionWindow.count = static_cast<uint8_t>(readLe16(data, 111));
+  for (size_t i = 0; i < sessionWindow.samples.size(); ++i) {
+    sessionWindow.samples[i] = readLe16(data, 113 + static_cast<int>(i) * 2);
+  }
+  sessionWindow.pos = data[133];
+  sessionWindow.normalize();
+}
+
 // Decodes a v6 record (109 bytes = v5 plus the WPM window). Returns false on
 // size/version mismatch.
 bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
+  if (n != STATS_FILE_SIZE_V6 || data[0] != STATS_FILE_VERSION - 1) return false;
   // v5 fields are a prefix of the v6 record (same byte offsets 1-72), so the
   // v5 layout can be parsed directly without re-checking the version byte.
   readV5Fields(data, stats);
   readWpmWindow(data, stats.wpm, stats.lastBookProgressPercent);
+  return true;
+}
+
+// Decodes a v7 record (150 bytes = v6 plus the session window). Returns false
+// on size/version mismatch.
+bool decodeV7(const uint8_t* data, const int n, BookReadingStats& stats) {
+  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
+  // The v6 fields are a byte-identical prefix of the v7 record, so the v6
+  // layout is parsed directly without re-checking the version byte. Do NOT
+  // route this through decodeV6 — it re-checks the version byte and would
+  // reject a v7 record.
+  readV5Fields(data, stats);
+  readWpmWindow(data, stats.wpm, stats.lastBookProgressPercent);
+  readSessionWindow(data, stats.sessionWindow);
   return true;
 }
 }  // namespace
@@ -173,7 +208,11 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     f.close();
 
     BookReadingStats candidate;
-    if (decodeV6(data, n, candidate)) return candidate;
+    if (decodeV7(data, n, candidate)) return candidate;
+    if (decodeV6(data, n, candidate)) {
+      LOG_DBG("STATS", "Loaded %s (older version); next save writes v%u", name.c_str(), STATS_FILE_VERSION);
+      return candidate;
+    }
     if (decodeV5(data, n, candidate)) {
       LOG_DBG("STATS", "Loaded %s (older version); next save writes v%u", name.c_str(), STATS_FILE_VERSION);
       return candidate;
@@ -226,6 +265,12 @@ void BookReadingStats::save(const std::string& cachePath) const {
   }
   data[107] = wpm.pos;
   data[108] = lastBookProgressPercent;
+  writeLe16(data, 109, sessionWindow.avg);
+  writeLe16(data, 111, sessionWindow.count);
+  for (size_t i = 0; i < sessionWindow.samples.size(); ++i) {
+    writeLe16(data, 113 + static_cast<int>(i) * 2, sessionWindow.samples[i]);
+  }
+  data[133] = sessionWindow.pos;
   const size_t written = f.write(data, STATS_FILE_SIZE);
   if (written != STATS_FILE_SIZE) {
     // Do NOT delete the legacy file — the v6 write didn't land, and the
@@ -241,27 +286,29 @@ void BookReadingStats::save(const std::string& cachePath) const {
   }
   f.close();
 
-  // One-time v5 → v6 migration: if a legacy stats_v5.bin still sits next to
-  // the new file (the load path that fed us the in-memory v5 record), delete
-  // it now that the upgraded data is safely on disk. The very-old v4 / crossink
-  // unversioned files are not migrated — they are not recognized on load and
-  // are left in place (the user can clear them via "Delete book stats" if
-  // desired).
-  const std::string legacyV5Path = cachePath + "/" + statsFileNameForVersion(STATS_FILE_VERSION - 1);
-  if (Storage.exists(legacyV5Path.c_str())) {
-    Storage.remove(legacyV5Path.c_str());
-    LOG_DBG("STATS", "Migrated %s -> %s", statsFileNameForVersion(STATS_FILE_VERSION - 1), statsFileName.c_str());
+  // One-time v7 migration: delete the immediately-previous record now that
+  // the upgraded data is safely on disk, plus the v5 file when a two-hop
+  // (v5 → v7) upgrade just happened — it is no longer a load candidate and
+  // would otherwise linger in the cache dir forever.
+  for (const int legacyVersion : {STATS_FILE_VERSION - 1, STATS_FILE_VERSION - 2}) {
+    const std::string legacyPath = cachePath + "/" + statsFileNameForVersion(static_cast<uint8_t>(legacyVersion));
+    if (Storage.exists(legacyPath.c_str())) {
+      Storage.remove(legacyPath.c_str());
+      LOG_DBG("STATS", "Migrated %s -> %s", legacyPath.c_str(), statsFileName.c_str());
+    }
   }
 }
 
 bool BookReadingStats::remove(const std::string& cachePath) {
   bool ok = true;
-  // Remove current + the still-recognized v5 fallback so a later load cannot
-  // resurrect old data. Very old v4 / crossink unversioned files, if any, are
-  // not touched here — they are no longer loaded and will simply be left in
-  // the cache dir until the next manual cleanup.
+  // Remove the current record plus both still-recognized legacy versions so
+  // a later load cannot resurrect old data. Very old v4 / crossink
+  // unversioned files, if any, are not touched here — they are no longer
+  // loaded and will simply be left in the cache dir until the next manual
+  // cleanup.
   const std::string names[] = {statsFileNameForVersion(STATS_FILE_VERSION),
-                               statsFileNameForVersion(STATS_FILE_VERSION - 1)};
+                               statsFileNameForVersion(STATS_FILE_VERSION - 1),
+                               statsFileNameForVersion(STATS_FILE_VERSION - 2)};
   for (const std::string& name : names) {
     const std::string path = cachePath + "/" + name;
     if (!Storage.exists(path.c_str())) continue;
@@ -282,11 +329,14 @@ void BookReadingStats::recordForwardPageRead(uint32_t seconds, uint16_t wordsOnP
   wpm.record(seconds, wordsOnPage);
 }
 
+void BookReadingStats::recordSession(uint32_t seconds) { sessionWindow.record(seconds); }
+
 void BookReadingStats::clearWpmStats() {
-  // Zeros the WPM window only. Sessions, totals, dates, and bucket history
-  // are kept — "clear reading speed" should not erase the user's reading
-  // history.
+  // Zeros both windows ("clear reading speed" also resets the session
+  // average). Sessions, totals, dates, and bucket history are kept — the
+  // clear action must not erase the user's reading history.
   wpm.clear();
+  sessionWindow.clear();
 }
 
 void BookReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStart, const uint32_t seconds) {

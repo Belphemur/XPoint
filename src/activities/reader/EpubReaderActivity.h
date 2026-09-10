@@ -126,6 +126,10 @@ class EpubReaderActivity final : public ReaderActivity {
   ReadingStatsDateTime sessionStartLocalDateTime;
   bool hasSessionStartLocalDateTime = false;
   uint32_t sessionReadingSeconds = 0;
+  // Forward page turns completed this session; the Avg Session window only
+  // records sessions with real engagement (SESSION_MIN_PAGE_TURNS), not a
+  // book merely left open.
+  uint16_t sessionPageTurns = 0;
   unsigned long pageShownAtMs = 0UL;
   // Words on the page currently rendered, cached at render time for the pace
   // sample taken on the next forward turn.

@@ -298,8 +298,9 @@ void drawPerBookStatsCard(const GfxRenderer& renderer, const int x, const int y,
   }
   drawStatCell(renderer, x + thirdW * 2, thirdW, y + layout.topCardTitleH, rowH, buf, tr(STR_STATS_PROGRESS_LBL));
 
-  const uint32_t avgSecs = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
-  BookReadingStats::formatDuration(avgSecs, buf, sizeof(buf));
+  const auto avgSecs = avgSessionSeconds(stats.sessionWindow.avg, stats.sessionWindow.count, stats.totalReadingSeconds,
+                                         stats.sessionCount);
+  BookReadingStats::formatDuration(avgSecs.value_or(0), buf, sizeof(buf));
   drawStatCell(renderer, x, thirdW, y + layout.topCardTitleH + rowH, rowH, buf, tr(STR_STATS_AVG_SESSION_LBL));
 
   uint32_t fallbackEstimateSeconds = 0;
@@ -397,8 +398,9 @@ void drawGlobalStatsCard(const GfxRenderer& renderer, const int x, const int y, 
   }
   drawStatCell(renderer, x + thirdW * 2, thirdW, y + layout.topCardTitleH, rowH, buf, tr(STR_STATS_AVG_PAGE_PACE));
 
-  const uint32_t avgSecs = stats.totalSessions > 0 ? stats.totalReadingSeconds / stats.totalSessions : 0;
-  BookReadingStats::formatDuration(avgSecs, buf, sizeof(buf));
+  const auto avgSecs = avgSessionSeconds(stats.sessionWindow.avg, stats.sessionWindow.count, stats.totalReadingSeconds,
+                                         stats.totalSessions);
+  BookReadingStats::formatDuration(avgSecs.value_or(0), buf, sizeof(buf));
   if (showRtcStats) {
     drawStatCell(renderer, x, thirdW, y + layout.topCardTitleH + rowH, rowH, buf, tr(STR_STATS_AVG_SESSION_LBL));
   } else {

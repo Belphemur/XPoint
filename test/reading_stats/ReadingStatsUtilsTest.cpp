@@ -226,6 +226,111 @@ TEST(ReadingStatsUtilsTest, WpmZeroInputIgnored) {
   EXPECT_EQ(w.avg, 0u);
 }
 
+TEST(ReadingStatsUtilsTest, SessionWindowMinSecondsGate) {
+  SessionWindow w;
+  w.record(29);  // below the 30 s gate -> rejected
+  EXPECT_EQ(w.count, 0u);
+  w.record(30);
+  EXPECT_EQ(w.count, 1u);
+  EXPECT_EQ(w.avg, 30u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowOverflowClamp) {
+  SessionWindow w;
+  w.record(70000);  // > UINT16_MAX -> clamped to 65535
+  EXPECT_EQ(w.count, 1u);
+  EXPECT_EQ(w.samples[0], 65535u);
+  EXPECT_EQ(w.avg, 65535u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowTrimmedMeanFullWindow) {
+  SessionWindow w;
+  // Two outliers each side (shuffled), eight ordinary 600 s sessions.
+  w.record(1200);
+  w.record(300);
+  for (int i = 0; i < 8; ++i) {
+    w.record(600);
+  }
+  w.record(300);
+  w.record(1200);
+  ASSERT_EQ(w.count, 10u);
+  // Trim-2 drops both 300s and both 1200s -> the middle 6 are all 600.
+  EXPECT_EQ(w.avg, 600u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowPartialPlainMeanUpToFourSamples) {
+  SessionWindow w;
+  w.record(100);
+  w.record(200);
+  w.record(300);
+  w.record(400);
+  ASSERT_EQ(w.count, 4u);
+  // Not enough samples to trim: plain mean of the 4.
+  EXPECT_EQ(w.avg, 250u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowPartialTrimmedBeyondFourSamples) {
+  SessionWindow w;
+  w.record(100);
+  w.record(200);
+  w.record(300);
+  w.record(400);
+  w.record(500);
+  ASSERT_EQ(w.count, 5u);
+  // Trim-2 drops 100 and 500 -> mean of 200, 300, 400.
+  EXPECT_EQ(w.avg, 300u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowNormalizeRepairsStalePartialPos) {
+  SessionWindow w;
+  w.record(100);
+  w.record(200);
+  w.record(300);
+  ASSERT_EQ(w.count, 3u);
+  w.pos = 0;  // stale in-range pos, as a corrupt record could carry
+  w.normalize();
+  EXPECT_EQ(w.pos, 3u);  // partial-window invariant: pos == count
+  EXPECT_EQ(w.avg, 200u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowNormalizeResetsOutOfRangeFullPos) {
+  SessionWindow w;
+  for (int i = 0; i < 10; ++i) {
+    w.record(600);
+  }
+  ASSERT_EQ(w.count, 10u);
+  w.pos = 200;  // out of range after a (hypothetical) corrupt full window
+  w.normalize();
+  EXPECT_EQ(w.pos, 0u);
+  EXPECT_EQ(w.avg, 600u);
+}
+
+TEST(ReadingStatsUtilsTest, SessionWindowCircularWrapKeepsLastTen) {
+  SessionWindow w;
+  // 13 sequential records: the two 100s and first 600 fall off as the
+  // window wraps; the last 10 are the eleven 600s minus one, all equal.
+  w.record(100);
+  w.record(100);
+  for (int i = 0; i < 11; ++i) {
+    w.record(600);
+  }
+  EXPECT_EQ(w.count, 10u);
+  EXPECT_EQ(w.avg, 600u);
+}
+
+TEST(ReadingStatsUtilsTest, AvgSessionSecondsHelpers) {
+  // Nothing at all -> "-" sentinel.
+  EXPECT_FALSE(avgSessionSeconds(0, 0, 0, 0).has_value());
+  // Empty window + legacy totals -> legacy arithmetic mean.
+  EXPECT_EQ(avgSessionSeconds(0, 0, 3600, 60).value_or(0), 60u);
+  // Window below the display gate (1-3 samples) -> still the legacy mean.
+  EXPECT_EQ(avgSessionSeconds(300, 3, 3600, 60).value_or(0), 60u);
+  // Window at/above the display gate -> the window's running result wins.
+  EXPECT_EQ(avgSessionSeconds(300, 4, 3600, 60).value_or(0), 300u);
+  // 64-bit legacy mean: large global totals must not overflow.
+  EXPECT_EQ(avgSessionSeconds(0, 0, 5000000000ULL, 1000000ULL).value_or(0), 5000u);
+}
+
 TEST(ReadingStatsUtilsTest, ResolvePaceFromWpm) {
   BookReadingStats book;
   for (int i = 0; i < 15; ++i) {
@@ -270,13 +375,21 @@ TEST(ReadingStatsUtilsTest, WpmClearStatsResetsWindow) {
   for (int i = 0; i < 15; ++i) {
     book.recordForwardPageRead(60, 220);
   }
+  book.recordSession(600);
   ASSERT_EQ(book.wpm.count, 15u);
+  ASSERT_EQ(book.sessionWindow.count, 1u);
   book.clearWpmStats();
   EXPECT_EQ(book.wpm.count, 0u);
   EXPECT_EQ(book.wpm.avg, 0u);
   for (const auto sample : book.wpm.samples) {
     EXPECT_EQ(sample, 0u);
   }
+  // "Clear reading speed" also resets the session window (D3): the session
+  // average falls back to the all-time arithmetic mean.
+  EXPECT_EQ(book.sessionWindow.count, 0u);
+  EXPECT_EQ(book.sessionWindow.avg, 0u);
+  // Totals survive the clear.
+  EXPECT_EQ(book.totalReadingSeconds, 0u);  // nothing added in this test
   GlobalReadingStats global;
   EXPECT_FALSE(resolveReadingPaceSecondsPerPage(book, global).has_value());
 }

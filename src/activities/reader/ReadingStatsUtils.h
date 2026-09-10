@@ -21,6 +21,16 @@ constexpr uint16_t WPM_HARD_CAP = 900;  // discard samples above this: not a pla
 constexpr uint16_t WPM_FLOOR = 80;      // clamp slower samples to this
 constexpr uint16_t CALIBRATED_WORDS_PER_PAGE = 220;
 
+constexpr size_t SESSION_WINDOW_SIZE = 10;
+constexpr size_t SESSION_TRIM_COUNT = 2;
+constexpr uint32_t SESSION_MIN_SECONDS = 30;  // shorter sessions are not recorded
+// A session with fewer completed forward page turns than this is treated as
+// "book left open" and never enters the Avg Session window.
+constexpr size_t SESSION_MIN_PAGE_TURNS = 2;
+// The Avg Session cell switches from the all-time arithmetic mean to the
+// window's (partial) result once this many sessions are recorded.
+constexpr size_t SESSION_MIN_DISPLAY_SAMPLES = 4;
+
 enum class ReadingTimeBucket : uint8_t { Morning = 0, Afternoon, Evening, Night };
 
 // Rolling 15-sample reading-speed window (words per minute) with a trimmed
@@ -46,6 +56,30 @@ struct WpmWindow {
     count = 0;
   }
   bool full() const { return count >= WPM_WINDOW_SIZE; }
+};
+
+// Rolling 18-sample session-duration window (seconds) with a trimmed mean:
+// the two longest and two shortest sessions are dropped so a single marathon
+// (or an aborted glance) doesn't skew the average — the Kindle-style session
+// algorithm, mirroring WpmWindow. Samples are contiguous in [0, count); the
+// window wraps only once full.
+struct SessionWindow {
+  std::array<uint16_t, SESSION_WINDOW_SIZE> samples{};
+  uint16_t avg = 0;   // trimmed mean in seconds, 0 until the first sample
+  uint8_t pos = 0;    // next insertion slot
+  uint8_t count = 0;  // valid samples, 0..SESSION_WINDOW_SIZE
+
+  void record(uint32_t seconds);
+  uint16_t trimmedMean() const;
+  // Same post-load invariant as WpmWindow::normalize().
+  void normalize();
+  void clear() {
+    samples.fill(0);
+    avg = 0;
+    pos = 0;
+    count = 0;
+  }
+  bool full() const { return count >= SESSION_WINDOW_SIZE; }
 };
 
 struct ReadingStatsDate {
@@ -97,6 +131,12 @@ std::optional<uint32_t> estimateBookTimeLeftSeconds(const BookReadingStats& book
                                                     const GlobalReadingStats& globalStats,
                                                     uint32_t estimatedRemainingPages);
 void formatChapterTimeLeft(uint32_t seconds, char* buf, size_t len);
+// Avg-session display value with the legacy arithmetic-mean fallback: a
+// non-empty session window wins (trimmed mean); otherwise the all-time
+// totals produce the plain mean; with neither there is no value.
+// Returns nullopt for the "-" sentinel cell.
+std::optional<uint32_t> avgSessionSeconds(uint16_t windowAvg, uint8_t windowCount, uint64_t totalReadingSeconds,
+                                          uint64_t sessionCount);
 // One-line "N% • time-left" summary for the home Continue Reading card:
 // unknown progress renders "-", a zero time-left estimate renders the
 // unavailable marker instead of a duration.
