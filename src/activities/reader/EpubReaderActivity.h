@@ -14,6 +14,7 @@
 #include "ChapterPosition.h"
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
+#include "ProgressSaver.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
 #include "TouchLongPressMode.h"
@@ -166,6 +167,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   // Live section position, or the values cached before a child screen
   // released the section.
+  bool isRecordFresh(const ProgressFlush::Record& record) const;
   ChapterPosition chapterPosition() const;
   int bookPercentFor(const ChapterPosition& position) const;
   void openReaderMenu();

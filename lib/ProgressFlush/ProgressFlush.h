@@ -71,12 +71,16 @@ class FlushState {
     dirty_ = false;
   }
 
-  // Drop any pending record without writing. Only used when the book
-  // context changes (setBook("")); a pending record from book A must never
-  // be written into book B's cache dir. A concurrent failed write can still
-  // re-arm the flag afterwards; the device wrapper treats "no book" as
-  // written, so the retry self-cancels.
-  void clearPending() { dirty_ = false; }
+  // Drop ALL state: used when the book context changes (setBook()). A
+  // pending record OR lastFlushed from book A must never influence book B's
+  // change detection — the first capture for B must always be treated as
+  // fresh.
+  void reset() {
+    dirty_ = false;
+    flushed_ = false;
+    lastFlushed_ = Record{};
+    pending_ = Record{};
+  }
 
   bool shouldFlush() const { return dirty_; }
   bool hasFlushed() const { return flushed_; }

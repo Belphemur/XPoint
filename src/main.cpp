@@ -478,10 +478,13 @@ void enterDeepSleep(bool fromTimeout = false) {
 // boot (same next-boot state as the auto power off shutdown).
 void enterPowerOff() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for shutdown preparation
-  // Design §4.6 (review B2): manual power-off bypasses the activity
-  // lifecycle, so the reader's captured progress would never reach the SD
-  // card. Flush it synchronously here, before the panel park and the rail
-  // cut. No-op when no book is registered or nothing is pending.
+  // Run the outgoing activity's onExit() — enterPowerOff() is reachable from
+  // ANY activity, and this is what commits the reader's session state
+  // (progress flush, stats commit) exactly like goToSleep() does before
+  // replaceActivity() (review B2 / user directive, PR #107). The reader's
+  // own exit path flushes progress via the saver.
+  activityManager.shutdown();
+  // Belt-and-braces: any capture that raced the exit above still lands.
   progressSaver.flushNow();
   // Fresh from-reader context for the COVER_CUSTOM shutdown branch (the
   // timer-wake path reads the value persisted at deep-sleep entry instead).

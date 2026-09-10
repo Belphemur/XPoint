@@ -51,6 +51,15 @@ class ProgressSaver {
   // Periodic flush attempt from the saver task.
   void flushTick();
 
+  // Stale-record gate, called under the saver mutex at WRITE time with the
+  // pending record. Return false to drop the write (position mutated between
+  // capture and flush — e.g. a text-setting re-pagination reset the section,
+  // so the captured offset no longer matches what the reader will restore).
+  // The reader registers a callback that compares against its LIVE position;
+  // may be called from the saver task, so the callback must not touch SD or
+  // block — it runs on the reader's own state, copied plain.
+  void setRevalidator(bool (*fn)(const ProgressFlush::Record&, void*), void* ctx);
+
   bool shouldFlush() const;
 
  private:
@@ -59,6 +68,10 @@ class ProgressSaver {
   SemaphoreHandle_t mutex_ = nullptr;
   ProgressFlush::FlushState state_;
   char cachePath_[160] = {0};
+  // Stale-record gate (see setRevalidator). Raw fn+ctx, not std::function:
+  // hot path, no heap (AGENTS.md callback pattern).
+  bool (*revalidate_)(const ProgressFlush::Record&, void*) = nullptr;
+  void* revalidateCtx_ = nullptr;
 };
 
 // Global instance (created at boot, fed by the EPUB reader activity).

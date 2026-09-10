@@ -69,9 +69,10 @@ ProgressSaver::~ProgressSaver() {
 void ProgressSaver::setBook(const char* cachePath) {
   if (mutex_ == nullptr) return;
   xSemaphoreTake(mutex_, portMAX_DELAY);
-  // A pending record belongs to the PREVIOUS book: drop it, never write it
-  // into the new book's cache dir.
-  state_.clearPending();
+  // Full reset, not just a pending-drop: a pending record or lastFlushed
+  // from the PREVIOUS book must never influence the new book's change
+  // detection (user-reported cross-book hazard, PR #107).
+  state_.reset();
   if (cachePath == nullptr || cachePath[0] == '\0') {
     cachePath_[0] = '\0';
   } else {
@@ -81,7 +82,7 @@ void ProgressSaver::setBook(const char* cachePath) {
       // disable flushing rather than write there (Copilot, PR #107).
       LOG_ERR("PRG", "Cache path too long for progress saver: %s", cachePath);
       cachePath_[0] = '\0';
-      state_.clearPending();
+      state_.reset();
     }
   }
   xSemaphoreGive(mutex_);
@@ -101,6 +102,14 @@ bool ProgressSaver::shouldFlush() const {
   const bool dirty = state_.shouldFlush();
   xSemaphoreGive(mutex_);
   return dirty;
+}
+
+void ProgressSaver::setRevalidator(bool (*fn)(const ProgressFlush::Record&, void*), void* ctx) {
+  if (mutex_ == nullptr) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  revalidate_ = fn;
+  revalidateCtx_ = ctx;
+  xSemaphoreGive(mutex_);
 }
 
 bool ProgressSaver::saveNow(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
@@ -135,8 +144,10 @@ bool ProgressSaver::writePending() {
     xSemaphoreGive(mutex_);
     return true;  // nothing pending
   }
-  if (cachePath_[0] == '\0') {
-    // No book registered (KOReader path released the epub before teardown):
+  if (cachePath_[0] == '\0' || (revalidate_ != nullptr && !revalidate_(record, revalidateCtx_))) {
+    // No book registered (KOReader path released the epub before teardown),
+    // or the reader rejected the record as stale (position mutated during a
+    // re-pagination between capture and flush): drop the write either way —
     // treat as written so the dirty flag does not retry forever.
     state_.endFlush(record, true);
     xSemaphoreGive(mutex_);

@@ -202,7 +202,11 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   // Design §4.4: the last captured position is flushed synchronously BEFORE
   // the epub/section teardown (epub may be released below). No-op when
-  // nothing is pending or no book is registered.
+  // nothing is pending or no book is registered. The revalidator is
+  // unregistered FIRST so the exit flush is not gated by it (the reader
+  // state is still valid here, but after this point `this` is being
+  // destroyed and a background tick must never call into it).
+  progressSaver.setRevalidator(nullptr, nullptr);
   progressSaver.flushNow();
   progressSaver.setBook(nullptr);
 
@@ -384,6 +388,16 @@ bool EpubReaderActivity::loadBook() {
 
   epub->setupCacheDir();
   progressSaver.setBook(epub->getCachePath().c_str());
+  // Stale-record gate: a pending record is re-checked against the LIVE
+  // reader position at write time, so a capture made before a text-setting
+  // re-pagination (section reset, offset invalid) is dropped instead of
+  // persisted (user-reported hazard, PR #107).
+  progressSaver.setRevalidator(
+      [](const ProgressFlush::Record& record, void* ctx) {
+        auto* self = static_cast<EpubReaderActivity*>(ctx);
+        return self->isRecordFresh(record);
+      },
+      this);
 
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
@@ -1891,6 +1905,23 @@ bool EpubReaderActivity::applyDeferredReposition() {
 void EpubReaderActivity::clearDeferredReposition() {
   cachedChapterTotalPageCount = 0;
   cachedVisibleTextOffset.reset();
+}
+
+// Stale-record gate for the saver (design §4.2): a pending record is fresh
+// when it matches the reader's LIVE position — same spine, and either an
+// exact page match, or the page count differs (re-pagination in flight,
+// position will be re-derived from the offset) with a matching offset. Runs
+// on the saver task under the saver mutex; touches only plain reader state.
+bool EpubReaderActivity::isRecordFresh(const ProgressFlush::Record& record) const {
+  if (record.spineIndex != currentSpineIndex) return false;
+  if (section) {
+    if (record.pageNumber == static_cast<uint16_t>(section->currentPage)) return true;
+    return record.hasOffset && currentPageVisibleOffset.has_value() &&
+           record.visibleTextOffset == *currentPageVisibleOffset;
+  }
+  // Section released (child screen up / mid-re-pagination): accept only an
+  // exact match with the cached position, which is what will be restored.
+  return record.pageNumber == static_cast<uint16_t>(nextPageNumber);
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {

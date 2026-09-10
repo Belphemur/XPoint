@@ -89,6 +89,10 @@ class ActivityManager {
   void goToBrowser();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
   void goToSleep(bool fromTimeout = false);
+  // Run the current activity's (and the whole stack's) onExit() WITHOUT
+  // launching a successor — the manual-power-off path. Mirrors the teardown
+  // goToSleep() performs via replaceActivity(SleepActivity).
+  void shutdown();
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

@@ -114,6 +114,23 @@ TEST(ProgressFlushTest, MarkFlushedClearsMatchingPendingOnly) {
   EXPECT_TRUE(s.shouldFlush());
 }
 
+TEST(ProgressFlushTest, ResetClearsEverythingBetweenBooks) {
+  ProgressFlush::FlushState s;
+  s.capture(rec(0, 5, 10, 100, true));
+  ProgressFlush::Record written;
+  EXPECT_TRUE(s.beginFlush(written));
+  s.endFlush(written, true);
+  EXPECT_TRUE(s.hasFlushed());
+
+  // Book switch: full reset. Book B's first capture must be treated as
+  // fresh even if its spine/page coincide with book A's lastFlushed.
+  s.reset();
+  EXPECT_FALSE(s.hasFlushed());
+  EXPECT_FALSE(s.shouldFlush());
+  EXPECT_TRUE(s.capture(rec(0, 5, 10, 100, true)));  // same values, new book
+  EXPECT_TRUE(s.shouldFlush());
+}
+
 TEST(ProgressFlushTest, AfterFlushEqualCaptureIsNoOp) {
   ProgressFlush::FlushState s;
   s.capture(rec(2, 7, 10, 55, true));
