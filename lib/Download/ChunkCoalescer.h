@@ -53,7 +53,7 @@ class ChunkCoalescer {
       const size_t space = cap_ - len_;
       const size_t take = space < (len - off) ? space : (len - off);
       if (take > 0) {
-        std::memcpy(buf_.get() + len_, data + off, take);
+        std::memcpy(static_cast<uint8_t*>(buf_.get()) + len_, data + off, take);
         len_ += take;
         off += take;
       }

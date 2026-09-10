@@ -6,7 +6,7 @@
 #include "ReadingStatsUtils.h"
 
 // Aggregate reading statistics across all books, persisted to
-// /.crosspoint/global_stats.bin (195-byte versioned record; see
+// /.crosspoint/global_stats.bin (225-byte versioned record; see
 // docs/design/reading-stats-binary-files.md).
 struct GlobalReadingStats {
   uint32_t totalSessions = 0;
@@ -20,6 +20,8 @@ struct GlobalReadingStats {
   uint16_t longestReadingStreak = 0;
   // Rolling reading-speed window in words per minute (v4 fields).
   WpmWindow wpm;
+  // Rolling session-duration window in seconds, trimmed mean (v5 fields).
+  SessionWindow sessionWindow;
 
   static GlobalReadingStats load();
   void save() const;
@@ -34,7 +36,9 @@ struct GlobalReadingStats {
  public:
   void recordReadingSpan(const ReadingStatsDateTime& localStart, uint32_t seconds);
   void recordGlobalPageRead(uint32_t seconds, uint16_t wordsOnPage);
-  // Zeros the WPM window only; sessions, totals, buckets and streaks survive.
+  void recordGlobalSession(uint32_t seconds);
+  // Zeros the WPM and session-duration windows; sessions, totals, buckets and
+  // streaks survive.
   void clearWpmStats();
   // Consecutive days with recorded reading ending at today (or the given
   // anchor date in tests).

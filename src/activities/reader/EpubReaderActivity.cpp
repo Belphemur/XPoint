@@ -212,6 +212,7 @@ void EpubReaderActivity::onEnter() {
     stats = BookReadingStats::load(epub->getCachePath());
     globalStats = GlobalReadingStats::load();
     sessionReadingSeconds = 0;
+    sessionPageTurns = 0;
     hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
   }
 #endif
@@ -236,6 +237,13 @@ void EpubReaderActivity::onExit() {
       if (elapsedSecs >= 120 && !stats.startDateManual && !stats.startDate.isValid() && hasSessionStartLocalDateTime) {
         stats.startDate = sessionStartLocalDateTime.date;
       }
+    }
+    if (elapsedSecs >= SESSION_MIN_SECONDS && sessionPageTurns >= SESSION_MIN_PAGE_TURNS) {
+      // The Avg Session window has its own gates (lower time threshold, plus
+      // an engagement check): it accepts sessions the Sessions counter
+      // ignores, and rejects "book left open" sessions that turn no pages.
+      stats.recordSession(elapsedSecs);
+      globalStats.recordGlobalSession(elapsedSecs);
     }
     if (epub) {
       const uint16_t chapterPages = section ? section->estimatedTotalPages() : 0;
@@ -1306,6 +1314,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
       if (stats.totalPagesTurned < UINT32_MAX) stats.totalPagesTurned++;
       if (globalStats.totalPagesTurned < UINT32_MAX) globalStats.totalPagesTurned++;
+      if (sessionPageTurns < UINT16_MAX) sessionPageTurns++;
     }
   }
 #endif

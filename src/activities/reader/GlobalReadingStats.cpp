@@ -27,10 +27,17 @@ namespace {
 //   [163-192] wpm.samples[15]     uint16_t LE each
 //   [193]     wpm.pos             uint8_t
 //   [194]     reserved (0)        uint8_t
-// v3 (159 bytes) is the previous version; v4 (195 bytes) appends the
-// reading-speed window. v1/v2 layouts are not supported here.
-constexpr uint8_t GLOBAL_STATS_VERSION = 4;
-constexpr int GLOBAL_STATS_FILE_SIZE = 195;
+//
+// v5 (225 bytes) appends the session-duration window (v4 fields unchanged):
+//   [195-196] sessionWindow.avg      uint16_t LE, trimmed mean seconds (0 = none)
+//   [197-198] sessionWindow.count    uint16_t LE, samples in window (0-10)
+//   [199-223] sessionWindow.samples  uint16_t LE each
+//   [224]     sessionWindow.pos      uint8_t
+// v4 (195 bytes) is the previous version; v5 (225 bytes) appends the
+// session-duration window. v1/v2 layouts are not supported here.
+constexpr uint8_t GLOBAL_STATS_VERSION = 5;
+constexpr int GLOBAL_STATS_FILE_SIZE = 225;
+constexpr int GLOBAL_STATS_FILE_SIZE_V4 = 195;
 constexpr int GLOBAL_STATS_FILE_SIZE_V3 = 159;
 
 // /.crosspoint/global_stats.bin aggregates every book; a torn write would lose
@@ -73,6 +80,30 @@ void loadCommonFields(const uint8_t* data, GlobalReadingStats& out) {
   out.totalPagesTurned = readLe32(data, 9);
 }
 
+// Parses the v4 field set (common + buckets + history + streak + WPM window),
+// which is a byte-identical prefix of the v5 layout. Shared by the v4 and v5
+// size branches.
+void loadV4Fields(const uint8_t* data, GlobalReadingStats& out) {
+  loadCommonFields(data, out);
+  out.completedBooks = readLe32(data, 13);
+  for (size_t i = 0; i < out.timeOfDaySeconds.size(); ++i) {
+    out.timeOfDaySeconds[i] = readLe32(data, 17 + static_cast<int>(i) * 4);
+  }
+  for (size_t i = 0; i < out.dayOfWeekSeconds.size(); ++i) {
+    out.dayOfWeekSeconds[i] = readLe32(data, 33 + static_cast<int>(i) * 4);
+  }
+  out.readingHistoryAnchorDay = readLe32(data, 61);
+  memcpy(out.readingHistoryBits.data(), data + 65, out.readingHistoryBits.size());
+  out.longestReadingStreak = readLe16(data, 157);
+  out.wpm.avg = readLe16(data, 159);
+  out.wpm.count = static_cast<uint8_t>(readLe16(data, 161));
+  for (size_t i = 0; i < out.wpm.samples.size(); ++i) {
+    out.wpm.samples[i] = readLe16(data, 163 + static_cast<int>(i) * 2);
+  }
+  out.wpm.pos = data[193];
+  out.wpm.normalize();
+}
+
 void serializeStats(const GlobalReadingStats& stats, uint8_t* data) {
   memset(data, 0, GLOBAL_STATS_FILE_SIZE);
   data[0] = GLOBAL_STATS_VERSION;
@@ -96,6 +127,12 @@ void serializeStats(const GlobalReadingStats& stats, uint8_t* data) {
     writeLe16(data, 163 + static_cast<int>(i) * 2, stats.wpm.samples[i]);
   }
   data[193] = stats.wpm.pos;
+  writeLe16(data, 195, stats.sessionWindow.avg);
+  writeLe16(data, 197, stats.sessionWindow.count);
+  for (size_t i = 0; i < stats.sessionWindow.samples.size(); ++i) {
+    writeLe16(data, 199 + static_cast<int>(i) * 2, stats.sessionWindow.samples[i]);
+  }
+  data[224] = stats.sessionWindow.pos;
 }
 
 StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
@@ -125,8 +162,9 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   }
 
   // v1/v2 (13/17 bytes) are not supported by this build: a fresh start is
-  // safer than decoding an outdated layout. v3 (159) and v4 (195) are
-  // recognized; v3 lacks the trailing WPM window and parses with it empty.
+  // safer than decoding an outdated layout. v3 (159), v4 (195) and v5 (225)
+  // are recognized; v3 lacks the trailing WPM window and v4 the trailing
+  // session window — both parse with it empty.
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {
     uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE_V3) != GLOBAL_STATS_FILE_SIZE_V3) return outcome;
@@ -147,6 +185,18 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     outcome.result = StatsLoadResult::Ok;
     return outcome;
   }
+  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V4)) {
+    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
+    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V4) != GLOBAL_STATS_FILE_SIZE_V4) return outcome;
+    outcome.version = data[0];
+    // Same-size record with a different version is either a torn write (older)
+    // or handled by the NewerFormat branch above (forward).
+    if (outcome.version != GLOBAL_STATS_VERSION - 1) return outcome;
+    loadV4Fields(data, out);
+    // v4 has no session window — sessionWindow stays empty.
+    outcome.result = StatsLoadResult::Ok;
+    return outcome;
+  }
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE)) {
     uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE) != GLOBAL_STATS_FILE_SIZE) return outcome;
@@ -154,25 +204,14 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     // Same-size record with a different version is either a torn write (older)
     // or handled by the NewerFormat branch above (forward).
     if (outcome.version != GLOBAL_STATS_VERSION) return outcome;
-
-    loadCommonFields(data, out);
-    out.completedBooks = readLe32(data, 13);
-    for (size_t i = 0; i < out.timeOfDaySeconds.size(); ++i) {
-      out.timeOfDaySeconds[i] = readLe32(data, 17 + static_cast<int>(i) * 4);
+    loadV4Fields(data, out);
+    out.sessionWindow.avg = readLe16(data, 195);
+    out.sessionWindow.count = static_cast<uint8_t>(readLe16(data, 197));
+    for (size_t i = 0; i < out.sessionWindow.samples.size(); ++i) {
+      out.sessionWindow.samples[i] = readLe16(data, 199 + static_cast<int>(i) * 2);
     }
-    for (size_t i = 0; i < out.dayOfWeekSeconds.size(); ++i) {
-      out.dayOfWeekSeconds[i] = readLe32(data, 33 + static_cast<int>(i) * 4);
-    }
-    out.readingHistoryAnchorDay = readLe32(data, 61);
-    memcpy(out.readingHistoryBits.data(), data + 65, out.readingHistoryBits.size());
-    out.longestReadingStreak = readLe16(data, 157);
-    out.wpm.avg = readLe16(data, 159);
-    out.wpm.count = static_cast<uint8_t>(readLe16(data, 161));
-    for (size_t i = 0; i < out.wpm.samples.size(); ++i) {
-      out.wpm.samples[i] = readLe16(data, 163 + static_cast<int>(i) * 2);
-    }
-    out.wpm.pos = data[193];
-    out.wpm.normalize();
+    out.sessionWindow.pos = data[224];
+    out.sessionWindow.normalize();
     outcome.result = StatsLoadResult::Ok;
     return outcome;
   }
@@ -328,7 +367,12 @@ void GlobalReadingStats::recordGlobalPageRead(const uint32_t seconds, const uint
   wpm.record(seconds, wordsOnPage);
 }
 
-void GlobalReadingStats::clearWpmStats() { wpm.clear(); }
+void GlobalReadingStats::recordGlobalSession(const uint32_t seconds) { sessionWindow.record(seconds); }
+
+void GlobalReadingStats::clearWpmStats() {
+  wpm.clear();
+  sessionWindow.clear();
+}
 
 uint16_t GlobalReadingStats::currentReadingStreakDays(const ReadingStatsDate* today) const {
   return computeReadingHistoryCurrentStreak(readingHistoryAnchorDay, readingHistoryBits, today);

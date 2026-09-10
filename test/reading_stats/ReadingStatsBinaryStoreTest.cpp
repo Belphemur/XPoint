@@ -66,11 +66,14 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalRoundTrip) {
   g.readingHistoryBits[10] = 0xAB;
   g.longestReadingStreak = 7;
   g.wpm.record(60, 220);  // 220 words in 60 s -> 220 WPM
+  for (int i = 0; i < 5; ++i) {
+    g.recordGlobalSession(600);
+  }
   g.save();
 
   const auto bytes = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(bytes.size(), 195u);
-  EXPECT_EQ(bytes[0], 4);  // version byte
+  ASSERT_EQ(bytes.size(), 225u);
+  EXPECT_EQ(bytes[0], 5);  // version byte
 
   GlobalReadingStats out = GlobalReadingStats::load();
   EXPECT_EQ(out.totalSessions, 5u);
@@ -84,6 +87,8 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalRoundTrip) {
   EXPECT_EQ(out.longestReadingStreak, 7u);
   EXPECT_EQ(out.wpm.count, 1u);
   EXPECT_EQ(out.wpm.avg, 220u);
+  EXPECT_EQ(out.sessionWindow.count, 5u);
+  EXPECT_EQ(out.sessionWindow.avg, 600u);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
@@ -102,7 +107,7 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   // After second save: old content rotated into .bak.
   EXPECT_TRUE(Storage.exists(GLOBAL_BAK_PATH));
   const auto bak = readFileBytes(GLOBAL_BAK_PATH);
-  ASSERT_EQ(bak.size(), 195u);
+  ASSERT_EQ(bak.size(), 225u);
   EXPECT_EQ(readLe32At(bak, 1), 3u);  // first save's totalSessions
   const auto main = readFileBytes(GLOBAL_PATH);
   EXPECT_EQ(readLe32At(main, 1), 9u);  // second save's totalSessions
@@ -114,7 +119,7 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalBackupRotationAndRecovery) {
   g3.totalSessions = 12;
   g3.save();
   const auto main3 = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(main3.size(), 195u);
+  ASSERT_EQ(main3.size(), 225u);
   EXPECT_EQ(readLe32At(main3, 1), 12u);
   const auto bak3 = readFileBytes(GLOBAL_BAK_PATH);
   EXPECT_EQ(readLe32At(bak3, 1), 9u);
@@ -160,8 +165,8 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalResetLocalBypassesNewerFormatGuard) {
 
   EXPECT_TRUE(GlobalReadingStats::resetLocal());
   const auto after = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(after.size(), 195u);
-  EXPECT_EQ(after[0], 4);
+  ASSERT_EQ(after.size(), 225u);
+  EXPECT_EQ(after[0], 5);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
@@ -178,11 +183,14 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   b.recordReadingSpan(makeDateTime(2026, 8, 26, 8), 600);
   b.recordReadingSpan(makeDateTime(2026, 8, 26, 22), 300);
   b.estimatedTimeLeftSeconds = 5400;
+  for (int i = 0; i < 5; ++i) {
+    b.recordSession(600);
+  }
   b.save(BOOK_DIR);
 
-  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
-  ASSERT_EQ(bytes.size(), 109u);
-  EXPECT_EQ(bytes[0], 6);  // version byte
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 7));
+  ASSERT_EQ(bytes.size(), 134u);
+  EXPECT_EQ(bytes[0], 7);  // version byte
 
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(out.sessionCount, 4u);
@@ -193,6 +201,8 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   // reading speed now comes from the WPM window only.
   EXPECT_EQ(out.wpm.count, 1u);
   EXPECT_EQ(out.wpm.avg, 440u);
+  EXPECT_EQ(out.sessionWindow.count, 5u);
+  EXPECT_EQ(out.sessionWindow.avg, 600u);
   EXPECT_TRUE(out.startDateManual);
   EXPECT_EQ(out.startDate.year, 2026);
   EXPECT_EQ(out.startDate.month, 8);
@@ -206,7 +216,7 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
   EXPECT_EQ(out.estimatedTimeLeftSeconds, 5400u);
 
   EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
-  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6)));
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 7)));
   const BookReadingStats gone = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(gone.sessionCount, 0u);
 }
@@ -214,7 +224,7 @@ TEST_F(ReadingStatsBinaryStoreTest, BookRoundTrip) {
 TEST_F(ReadingStatsBinaryStoreTest, BookTornWriteStartsFresh) {
   // Simulate a battery cut mid-write: short garbage file.
   HalFile f;
-  ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 6), f));
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 7), f));
   const uint8_t garbage[] = {0x05, 0xAA, 0xBB};
   f.write(garbage, sizeof(garbage));
 
@@ -225,10 +235,11 @@ TEST_F(ReadingStatsBinaryStoreTest, BookTornWriteStartsFresh) {
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
-  // v5 record (73 bytes) in stats_v5.bin: accepted on load, then upgraded to
-  // v6 in place on the next save. The legacy file is removed as part of the
-  // migration so a later load goes straight to the v6 file. The v4 layout
-  // (69 B) and crossink's unversioned stats.bin are no longer recognized.
+  // v5 record (73 bytes) in stats_v5.bin: accepted on load, then upgraded
+  // in place on the next save — straight to v7, the current version, with
+  // both legacy files removed so a later load goes straight to the v7 file.
+  // The v4 layout (69 B) and crossink's unversioned stats.bin are no longer
+  // recognized.
   std::vector<uint8_t> v5(73, 0);
   v5[0] = 5;
   v5[1] = 2;    // sessionCount
@@ -244,16 +255,17 @@ TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
   EXPECT_EQ(out.totalReadingSeconds, 111u);
   EXPECT_EQ(out.estimatedTimeLeftSeconds, 0u);
 
-  // Save writes v6, deletes the v5 file.
+  // Save writes v7 (one hop across two format versions), deletes v5.
   out.save(BOOK_DIR);
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5).c_str()));
-  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
-  ASSERT_EQ(bytes.size(), 109u);
-  EXPECT_EQ(bytes[0], 6);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6).c_str()));
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 7));
+  ASSERT_EQ(bytes.size(), 134u);
+  EXPECT_EQ(bytes[0], 7);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
-  for (const char* name : {"stats_v6.bin", "stats_v5.bin"}) {
+  for (const char* name : {"stats_v7.bin", "stats_v6.bin", "stats_v5.bin"}) {
     HalFile f;
     ASSERT_TRUE(Storage.openFileForWrite("TEST", std::string(BOOK_DIR) + "/" + name, f));
     const uint8_t byte = 5;
@@ -261,6 +273,7 @@ TEST_F(ReadingStatsBinaryStoreTest, RemoveCoversAllFallbackNames) {
   }
 
   EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 7)));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6)));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 5)));
 }
@@ -316,9 +329,9 @@ TEST_F(ReadingStatsBinaryStoreTest, BackwardCompatV5) {
   EXPECT_EQ(out.wpm.avg, 220u);
   out.save(BOOK_DIR);
 
-  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
-  ASSERT_EQ(bytes.size(), 109u);
-  EXPECT_EQ(bytes[0], 6);
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 7));
+  ASSERT_EQ(bytes.size(), 134u);
+  EXPECT_EQ(bytes[0], 7);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, BookReadingStatsV6_ProgressPercentRoundTrip) {
@@ -327,10 +340,10 @@ TEST_F(ReadingStatsBinaryStoreTest, BookReadingStatsV6_ProgressPercentRoundTrip)
   b.lastBookProgressPercent = 42;
   b.save(BOOK_DIR);
 
-  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 6));
-  ASSERT_EQ(bytes.size(), 109u);
-  EXPECT_EQ(bytes[0], 6);      // version byte unchanged
-  EXPECT_EQ(bytes[108], 42u);  // progress byte lands at its v6 offset
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 7));
+  ASSERT_EQ(bytes.size(), 134u);
+  EXPECT_EQ(bytes[0], 7);      // version byte
+  EXPECT_EQ(bytes[108], 42u);  // progress byte keeps its v6 offset in v7
 
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
   EXPECT_EQ(out.lastBookProgressPercent, 42u);
@@ -378,11 +391,11 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalLegacyRecordsLoad) {
   EXPECT_EQ(out3.wpm.avg, 0u);
 
   // Saving after loading a legacy record writes the CURRENT format back,
-  // replacing the v3 file with v4 in place.
+  // replacing the v3 file with v5 in place.
   out3.save();
   const auto bytes = readFileBytes(GLOBAL_PATH);
-  ASSERT_EQ(bytes.size(), 195u);
-  EXPECT_EQ(bytes[0], 4);
+  ASSERT_EQ(bytes.size(), 225u);
+  EXPECT_EQ(bytes[0], 5);
 }
 
 // After an explicit reset, saves must resume even if the destructive-save
@@ -412,4 +425,128 @@ TEST_F(ReadingStatsBinaryStoreTest, ResetClearsNewerFormatGuard) {
   resumed.totalSessions = 56;
   resumed.save();
   EXPECT_EQ(readLe32At(readFileBytes(GLOBAL_PATH), 1), 56u);  // saves work again
+}
+
+// Global v4 record (195 bytes — one version behind the current v5) is
+// recognized on load: bookkeeping loads, the trailing session window is
+// empty, and the next save upgrades the record to v5 in place.
+TEST_F(ReadingStatsBinaryStoreTest, GlobalV4MigratesToV5InPlace) {
+  std::vector<uint8_t> v4(195, 0);
+  v4[0] = 4;
+  v4[1] = 9;  // totalSessions = 9
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", GLOBAL_PATH, f));
+    f.write(v4.data(), v4.size());
+  }
+
+  const GlobalReadingStats out = GlobalReadingStats::load();
+  EXPECT_EQ(out.totalSessions, 9u);
+  EXPECT_EQ(out.wpm.count, 0u);
+  EXPECT_EQ(out.sessionWindow.count, 0u);
+  EXPECT_EQ(out.sessionWindow.avg, 0u);
+
+  out.save();
+  const auto bytes = readFileBytes(GLOBAL_PATH);
+  ASSERT_EQ(bytes.size(), 225u);
+  EXPECT_EQ(bytes[0], 5);
+
+  const GlobalReadingStats reloaded = GlobalReadingStats::load();
+  EXPECT_EQ(reloaded.totalSessions, 9u);
+  EXPECT_EQ(reloaded.sessionWindow.count, 0u);
+}
+
+// Book v6 record (109 bytes — one version behind the current v7) loads via
+// the migration path with an empty session window; the next save writes v7
+// and removes the v6 file.
+TEST_F(ReadingStatsBinaryStoreTest, BookV6MigratesToV7InPlace) {
+  std::vector<uint8_t> v6(109, 0);
+  v6[0] = 6;
+  v6[1] = 3;       // sessionCount = 3
+  v6[3] = 55;      // totalReadingSeconds = 55
+  v6[108] = 0xFF;  // progress unknown sentinel
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 6), f));
+    f.write(v6.data(), v6.size());
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 3u);
+  EXPECT_EQ(out.wpm.count, 0u);
+  EXPECT_EQ(out.sessionWindow.count, 0u);
+  EXPECT_EQ(out.sessionWindow.avg, 0u);
+  EXPECT_EQ(out.lastBookProgressPercent, static_cast<uint8_t>(UNKNOWN_BOOK_PROGRESS_PERCENT));
+
+  out.save(BOOK_DIR);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 6)));
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 7));
+  ASSERT_EQ(bytes.size(), 134u);
+  EXPECT_EQ(bytes[0], 7);
+
+  const BookReadingStats reloaded = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(reloaded.sessionCount, 3u);
+  EXPECT_EQ(reloaded.sessionWindow.count, 0u);
+}
+
+// A corrupt v7 record must not shadow a valid v6: the loader falls through
+// to the next candidate instead of starting fresh.
+TEST_F(ReadingStatsBinaryStoreTest, CorruptV7FallsBackToV6) {
+  std::vector<uint8_t> corruptV7(134, 0);
+  corruptV7[0] = 0xEE;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 7), f));
+    f.write(corruptV7.data(), corruptV7.size());
+  }
+  std::vector<uint8_t> v6(109, 0);
+  v6[0] = 6;
+  v6[1] = 4;  // sessionCount = 4
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 6), f));
+    f.write(v6.data(), v6.size());
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 4u);  // from the v6 candidate, not the corrupt v7
+  EXPECT_EQ(out.sessionWindow.count, 0u);
+}
+
+// Wire-offset pins for the v7 session window: a saved record must carry the
+// session window at exactly bytes 109-133, so a layout regression is caught
+// at the file level rather than only via symmetric round-trip.
+TEST_F(ReadingStatsBinaryStoreTest, BookV7SessionWindowWireOffsets) {
+  BookReadingStats b;
+  b.recordSession(600);
+  b.save(BOOK_DIR);
+
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 7));
+  ASSERT_EQ(bytes.size(), 134u);
+  // avg (u16 LE) at 109-110: 600 = 0x0258
+  EXPECT_EQ(bytes[109], 0x58);
+  EXPECT_EQ(bytes[110], 0x02);
+  // count (u16 LE) at 111-112: 1
+  EXPECT_EQ(bytes[111], 0x01);
+  EXPECT_EQ(bytes[112], 0x00);
+  // samples[0] (u16 LE) at 113-114
+  EXPECT_EQ(bytes[113], 0x58);
+  EXPECT_EQ(bytes[114], 0x02);
+  // pos at 133
+  EXPECT_EQ(bytes[133], 1u);
+}
+
+// Same pin for the global v5 session window at bytes 195-224.
+TEST_F(ReadingStatsBinaryStoreTest, GlobalV5SessionWindowWireOffsets) {
+  GlobalReadingStats g;
+  g.recordGlobalSession(600);
+  g.save();
+
+  const auto bytes = readFileBytes(GLOBAL_PATH);
+  ASSERT_EQ(bytes.size(), 225u);
+  EXPECT_EQ(bytes[195], 0x58);  // avg low byte
+  EXPECT_EQ(bytes[196], 0x02);  // avg high byte
+  EXPECT_EQ(bytes[197], 1u);    // count low byte
+  EXPECT_EQ(bytes[198], 0u);    // count high byte
+  EXPECT_EQ(bytes[224], 1u);    // pos
 }

@@ -400,6 +400,79 @@ void WpmWindow::normalize() {
   avg = trimmedMean();
 }
 
+void SessionWindow::record(const uint32_t seconds) {
+  if (seconds < SESSION_MIN_SECONDS) {
+    return;
+  }
+  // Sample unit is uint16_t seconds; anything above ~18.2 h clamps. The
+  // trimmed mean is the outlier defense, so there is no other cap.
+  samples[pos] = static_cast<uint16_t>(seconds > UINT16_MAX ? UINT16_MAX : seconds);
+  pos = static_cast<uint8_t>((pos + 1) % SESSION_WINDOW_SIZE);
+  if (count < SESSION_WINDOW_SIZE) {
+    count++;
+  }
+  avg = trimmedMean();
+}
+
+uint16_t SessionWindow::trimmedMean() const {
+  if (count == 0) {
+    return 0;
+  }
+  uint32_t sum = 0;
+  // Not enough samples to trim both ends: plain mean.
+  if (count <= SESSION_TRIM_COUNT * 2) {
+    sum = std::accumulate(samples.begin(), samples.begin() + count, 0u);
+    return static_cast<uint16_t>(sum / count);
+  }
+  uint16_t sorted[SESSION_WINDOW_SIZE];
+  for (uint8_t i = 0; i < count; i++) {
+    sorted[i] = samples[i];
+  }
+  for (uint8_t i = 1; i < count; i++) {
+    const uint16_t key = sorted[i];
+    uint8_t j = i;
+    while (j > 0 && sorted[j - 1] > key) {
+      sorted[j] = sorted[j - 1];
+      j--;
+    }
+    sorted[j] = key;
+  }
+  const uint8_t last = count - SESSION_TRIM_COUNT;
+  for (uint8_t i = SESSION_TRIM_COUNT; i < last; i++) {
+    sum += sorted[i];
+  }
+  return static_cast<uint16_t>(sum / (last - SESSION_TRIM_COUNT));
+}
+
+void SessionWindow::normalize() {
+  if (count > SESSION_WINDOW_SIZE) {
+    count = SESSION_WINDOW_SIZE;
+  }
+  if (count < SESSION_WINDOW_SIZE) {
+    // Same post-load invariant as WpmWindow: a persisted partial window must
+    // have pos == count so the next record() writes into the next empty slot.
+    pos = count;
+  } else if (pos >= SESSION_WINDOW_SIZE) {
+    pos = 0;
+  }
+  avg = trimmedMean();
+}
+
+std::optional<uint32_t> avgSessionSeconds(const uint16_t windowAvg, const uint8_t windowCount,
+                                          const uint64_t totalReadingSeconds, const uint64_t sessionCount) {
+  // Early display: from the 4th recorded session the window's running result
+  // wins (plain mean up to 4 samples, trimmed beyond), replacing the all-time
+  // arithmetic mean for good.
+  if (windowCount >= SESSION_MIN_DISPLAY_SAMPLES && windowAvg > 0) {
+    return windowAvg;
+  }
+  if (sessionCount > 0) {
+    // 64-bit intermediate: the global record's totals must not overflow.
+    return static_cast<uint32_t>(totalReadingSeconds / sessionCount);
+  }
+  return std::nullopt;
+}
+
 std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
                                                          const GlobalReadingStats& globalStats) {
   // Prefer the book's own WPM estimate once its window is full: 15 trimmed
