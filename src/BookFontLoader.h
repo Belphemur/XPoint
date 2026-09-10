@@ -3,11 +3,16 @@
 
 #include <BookFont.h>
 #include <FreeInkBook.h>
+#include <HalMemory.h>
+#include <HalStorage.h>
+#include <Memory.h>
 #include <render/TtfFont.h>
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace freeink {
 namespace book {
@@ -62,7 +67,7 @@ class BookFontLoader {
   uint32_t computeFingerprint() const;
 
  private:
-  FamilyInfo families_[kMaxDiscoveredFamilies];
+  std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
 
   TtfFont* faces_[4] = {};
@@ -71,9 +76,9 @@ class BookFontLoader {
   std::atomic<bool> dirty_{false};
 
   // Two-tier font-byte storage: each face has its own RAII owner.
-  // PSRAM: PoolBytes (heap_caps_free on reset). DRAM: unique_ptr<uint8_t[]> (delete[]).
-  PoolBytes fontPsramBytes_[4];
-  std::unique_ptr<uint8_t[]> fontDramBytes_[4];
+  // PSRAM: PoolBytes (poolFree on reset). DRAM: unique_ptr<uint8_t[]> (delete[]).
+  PoolBytes fontPsramBytes_[4] = {};
+  std::unique_ptr<uint8_t[]> fontDramBytes_[4] = {};
   void* fontBytes_[4] = {};          // non-owning raw pointer for fingerprinting
   uint8_t faceBytesOwner_[4] = {};   // 0=none, 1=PSRAM, 2=DRAM
   uint32_t fontFileSizes_[4] = {};

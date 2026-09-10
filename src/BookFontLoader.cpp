@@ -31,18 +31,14 @@
 
 #include "BookFontLoader.h"
 
-#include <BookArena.h>
-#include <FreeInkBook.h>
+#include <FreeInkUIBookFont.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
 #include <Logging.h>
-#include <Memory.h>
 
 #include <algorithm>
 #include <cstring>
-
-#include "render/TtfFont.h"
-#include <FreeInkUIBookFont.h>
+#include <memory>
 
 namespace freeink {
 namespace book {
@@ -98,7 +94,7 @@ void BookFontLoader::begin() {
   familyCount_ = 0;
   fingerprint_ = 0;
   dirty_.store(false, std::memory_order_relaxed);
-  for (auto& fam : families_) fam = FamilyInfo{};
+  families_ = {};
   chain_ = FontChain{};
   for (auto& f : faces_) f = nullptr;
   for (auto& a : arenas_) a = Arena{};
@@ -110,6 +106,7 @@ void BookFontLoader::begin() {
     fontFileSizes_[i] = 0;
   }
   remainingBudget_ = 0;
+  initBudget();
 }
 
 void BookFontLoader::ensureLoaded() {
@@ -122,7 +119,7 @@ void BookFontLoader::ensureLoaded() {
       faces_[i] = nullptr;
     }
     if (fontBytes_[i] && faceBytesOwner_[i] == 1u) {
-      heap_caps_free(static_cast<uint8_t*>(fontBytes_[i]));
+      poolFree(fontBytes_[i]);
     }
     fontBytes_[i] = nullptr;
     fontPsramBytes_[i].reset();
@@ -162,7 +159,7 @@ void BookFontLoader::releaseResidentCaches() {
       faces_[i] = nullptr;
     }
     if (fontBytes_[i] && faceBytesOwner_[i] == 1u) {
-      heap_caps_free(static_cast<uint8_t*>(fontBytes_[i]));
+      poolFree(fontBytes_[i]);
     }
     fontBytes_[i] = nullptr;
     fontPsramBytes_[i].reset();
@@ -182,7 +179,7 @@ uint32_t BookFontLoader::computeFingerprint() const {
   for (uint8_t i = 0; i < 4; ++i) {
     if (fontBytes_[i] && fontFileSizes_[i] > 0) {
       h = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]),
-                     fontFileSizes_[i], h);
+                    fontFileSizes_[i], h);
     }
   }
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
@@ -226,7 +223,7 @@ bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
   return false;
 }
 
-// ── tryLoadFace — single face into the live chain ───────────────────────────
+// ── tryLoadFace — single face into the live chain ────────────────────────────
 // Member of BookFontLoader so it can access private members (faces_,
 // fontPsramBytes_, fontDramBytes_, fontBytes_, arenas_, remainingBudget_).
 
@@ -250,7 +247,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
   void* fontBytes = nullptr;
   bool isPsram = false;
 
-  if (HalMemory::getPsramHeap().total > 0) {
+  if (HalMemory::getPsramHeap().totalBytes > 0) {
     PoolBytes psram = poolMakeBytes(fi.fileSize);
     if (psram) {
       fontBytes = psram.get();
@@ -346,7 +343,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
   alignas(4) static uint8_t glyphBufs[4][kGlyphArenaBytes];
   arenas_[faceIdx] = Arena(glyphBufs[faceIdx], kGlyphArenaBytes);
 
-  book::TtfFont* face = new (std::nothrow) book::TtfFont();
+  TtfFont* face = new (std::nothrow) TtfFont();
   if (!face) {
     LOG_ERR("BFNT", "TtfFont OOM for %s", fi.file);
     if (isPsram) {
@@ -368,7 +365,16 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
     return false;
   }
 
-  chain.add(face, fi.styleFlags);
+  if (!chain.add(face, fi.styleFlags)) {
+    LOG_ERR("BFNT", "FontChain::add failed to register %s (duplicate style?)", fi.file);
+    delete face;
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
+    return false;
+  }
 
   // Transfer ownership of the font bytes to the loader.
   // PSRAM: fontPsramBytes_ holds the RAII owner (heap_caps_free on reset).
@@ -392,6 +398,27 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
   }
 
   return true;
+}
+
+void BookFontLoader::initBudget() {
+  // Two-tier allocation budget (design §3.3): derive the DRAM budget from the
+  // current free heap, keeping 32KB/16KB heap-gate floors for the hot render
+  // path and stack respectively. On PSRAM boards (S3) we can be generous;
+  // on C3 (no PSRAM) we must be conservative.
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t maxAlloc = ESP.getMaxAllocHeap();
+  uint32_t usable = std::min(freeHeap, maxAlloc);
+  // Reserve 32KB for other allocator needs, 16KB for stack safety.
+  uint32_t floor = 32 * 1024 + 16 * 1024;
+  if (usable > floor) {
+    remainingBudget_ = usable - floor;
+  } else {
+    remainingBudget_ = kMaxDramFontBytes;
+  }
+  // Cap at the compile-time max to avoid surprises.
+  if (remainingBudget_ > kMaxDramFontBytes) {
+    remainingBudget_ = kMaxDramFontBytes;
+  }
 }
 
 }  // namespace book
