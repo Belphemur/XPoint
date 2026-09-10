@@ -4,6 +4,7 @@
 #include <Epub/PageLink.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <optional>
 #include <vector>
 
@@ -57,12 +58,10 @@ inline const PageLink* linkAtPoint(const std::vector<PageLink>& links, const int
   constexpr int MIN_TOUCH_WIDTH = 28;
   const int pageX = x - marginLeft;
   const int pageY = y - marginTop;
-  for (const auto& link : links) {
-    if (link.contains(pageX, pageY, TOUCH_SLOP, MIN_TOUCH_WIDTH)) {
-      return &link;
-    }
-  }
-  return nullptr;
+  const auto hit = std::find_if(links.begin(), links.end(), [pageX, pageY](const PageLink& link) {
+    return link.contains(pageX, pageY, TOUCH_SLOP, MIN_TOUCH_WIDTH);
+  });
+  return (hit != links.end()) ? &*hit : nullptr;
 }
 
 }  // namespace EpubReaderUtils
