@@ -49,13 +49,10 @@ namespace book {
 static constexpr uint32_t kMaxDramFontBytes = 128 * 1024;
 
 // SFNT minimum: 12-byte header + numTables * 16-byte entries.
-static constexpr uint32_t kMinSfntLen(uint16_t numTables) {
-  return 12u + static_cast<uint32_t>(numTables) * 16u;
-}
+static constexpr uint32_t kMinSfntLen(uint16_t numTables) { return 12u + static_cast<uint32_t>(numTables) * 16u; }
 
 // FNV-1a hash over font data, mixed with style coverage.
-static uint32_t fontFNV1a(const uint8_t* data, size_t len,
-                          uint32_t seed = 0x811c9dc5) {
+static uint32_t fontFNV1a(const uint8_t* data, size_t len, uint32_t seed = 0x811c9dc5) {
   uint32_t h = seed;
   for (size_t i = 0; i < len; ++i) {
     h ^= static_cast<uint32_t>(data[i]);
@@ -148,9 +145,7 @@ FontChain* BookFontLoader::getReaderFont() {
 
 uint32_t BookFontLoader::fontFingerprint() const { return fingerprint_; }
 
-void BookFontLoader::markDirty() {
-  dirty_.store(true, std::memory_order_relaxed);
-}
+void BookFontLoader::markDirty() { dirty_.store(true, std::memory_order_relaxed); }
 
 void BookFontLoader::releaseResidentCaches() {
   for (uint8_t i = 0; i < 4; ++i) {
@@ -178,8 +173,7 @@ uint32_t BookFontLoader::computeFingerprint() const {
   uint32_t h = 0x811c9dc5;
   for (uint8_t i = 0; i < 4; ++i) {
     if (fontBytes_[i] && fontFileSizes_[i] > 0) {
-      h = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]),
-                    fontFileSizes_[i], h);
+      h = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]), fontFileSizes_[i], h);
     }
   }
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
@@ -194,10 +188,10 @@ FontChain* BookFontLoader::builtinFallback() {
   static bool init = false;
   if (!init) {
     init = true;
-    static freeink::ui::BitmapBookFont r(kNotoSansFont);
-    static freeink::ui::BitmapBookFont b(kNotoSansFont);
-    static freeink::ui::BitmapBookFont i(kNotoSansFont);
-    static freeink::ui::BitmapBookFont bi(kNotoSansFont);
+    static freeink::ui::BitmapBookFont r(freeink::ui::kNotoSansFont);
+    static freeink::ui::BitmapBookFont b(freeink::ui::kNotoSansFont);
+    static freeink::ui::BitmapBookFont i(freeink::ui::kNotoSansFont);
+    static freeink::ui::BitmapBookFont bi(freeink::ui::kNotoSansFont);
     fallback.add(&r, StyleNone);
     fallback.add(&b, StyleBold);
     fallback.add(&i, StyleItalic);
@@ -227,18 +221,15 @@ bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
 // Member of BookFontLoader so it can access private members (faces_,
 // fontPsramBytes_, fontDramBytes_, fontBytes_, arenas_, remainingBudget_).
 
-bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
-                                  FontChain& chain) {
+bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain) {
   // DRAM-tier size gate: skip oversized files (design §3.3).
   // Use aggregate budget: check against remainingBudget_ first, then kMaxDramFontBytes.
   if (fi.fileSize > kMaxDramFontBytes) {
-    LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file,
-            fi.fileSize, kMaxDramFontBytes);
+    LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxDramFontBytes);
     return false;
   }
   if (remainingBudget_ > 0 && fi.fileSize > remainingBudget_) {
-    LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file,
-            fi.fileSize, remainingBudget_);
+    LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file, fi.fileSize, remainingBudget_);
     return false;
   }
 
@@ -267,8 +258,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
     isPsram = false;
   }
 
-  if (readFontFile(fi.file, static_cast<uint8_t*>(fontBytes), fi.fileSize) !=
-      fi.fileSize) {
+  if (readFontFile(fi.file, static_cast<uint8_t*>(fontBytes), fi.fileSize) != fi.fileSize) {
     // Cleanup on failure: release whatever we allocated.
     if (isPsram) {
       fontPsramBytes_[faceIdx].reset();
@@ -289,9 +279,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
     }
     return false;
   }
-  uint16_t numTables =
-      static_cast<uint16_t>((static_cast<const uint8_t*>(fontBytes)[4] << 8) |
-                             static_cast<const uint8_t*>(fontBytes)[5]);
+  uint16_t numTables = static_cast<uint16_t>((static_cast<const uint8_t*>(fontBytes)[4] << 8) |
+                                             static_cast<const uint8_t*>(fontBytes)[5]);
   if (numTables == 0 || numTables > 65535) {
     LOG_ERR("BFNT", "Font %s invalid numTables %u", fi.file, numTables);
     if (isPsram) {
@@ -303,8 +292,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
   }
   uint32_t minSz = kMinSfntLen(numTables);
   if (fi.fileSize < minSz) {
-    LOG_ERR("BFNT", "Font %s too small for table directory (%u < %u)", fi.file,
-            fi.fileSize, minSz);
+    LOG_ERR("BFNT", "Font %s too small for table directory (%u < %u)", fi.file, fi.fileSize, minSz);
     if (isPsram) {
       fontPsramBytes_[faceIdx].reset();
     } else {
@@ -313,21 +301,14 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
     return false;
   }
   for (uint16_t i = 0; i < numTables; ++i) {
-    const uint8_t* entry = static_cast<const uint8_t*>(fontBytes) + 12 +
-                           static_cast<size_t>(i) * 16;
+    const uint8_t* entry = static_cast<const uint8_t*>(fontBytes) + 12 + static_cast<size_t>(i) * 16;
     // Guard against overflow in offset+length (uint32_t wraparound).
-    uint32_t offset = static_cast<uint32_t>(entry[8]) << 24 |
-                      static_cast<uint32_t>(entry[9]) << 16 |
-                      static_cast<uint32_t>(entry[10]) << 8 |
-                      static_cast<uint32_t>(entry[11]);
-    uint32_t length = static_cast<uint32_t>(entry[12]) << 24 |
-                      static_cast<uint32_t>(entry[13]) << 16 |
-                      static_cast<uint32_t>(entry[14]) << 8 |
-                      static_cast<uint32_t>(entry[15]);
-    if (length > fi.fileSize || offset > fi.fileSize ||
-        offset + length < offset || offset + length > fi.fileSize) {
-      LOG_ERR("BFNT", "Font %s table %u O/L %u/%u exceeds size", fi.file, i,
-              offset, length);
+    uint32_t offset = static_cast<uint32_t>(entry[8]) << 24 | static_cast<uint32_t>(entry[9]) << 16 |
+                      static_cast<uint32_t>(entry[10]) << 8 | static_cast<uint32_t>(entry[11]);
+    uint32_t length = static_cast<uint32_t>(entry[12]) << 24 | static_cast<uint32_t>(entry[13]) << 16 |
+                      static_cast<uint32_t>(entry[14]) << 8 | static_cast<uint32_t>(entry[15]);
+    if (length > fi.fileSize || offset > fi.fileSize || offset + length < offset || offset + length > fi.fileSize) {
+      LOG_ERR("BFNT", "Font %s table %u O/L %u/%u exceeds size", fi.file, i, offset, length);
       if (isPsram) {
         fontPsramBytes_[faceIdx].reset();
       } else {
@@ -353,8 +334,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
     }
     return false;
   }
-  if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize,
-                  arenas_[faceIdx])) {
+  if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, arenas_[faceIdx])) {
     LOG_ERR("BFNT", "TtfFont::init failed for %s", fi.file);
     delete face;
     if (isPsram) {
