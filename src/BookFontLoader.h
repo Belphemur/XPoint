@@ -8,8 +8,8 @@
 #include <Memory.h>
 #include <render/TtfFont.h>
 
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -20,8 +20,8 @@ namespace book {
 // ── public value types (discovery + settings) ────────────────────────────────
 
 struct FontFaceInfo {
-  char name[48] = {};       // family display name (manifest or filename stem)
-  char file[64] = {};       // path under /fonts/
+  char name[48] = {};      // family display name (manifest or filename stem)
+  char file[64] = {};      // path under /fonts/
   uint8_t styleFlags = 0;  // BookFont::StyleFlags this file provides
   uint32_t fileSize = 0;
   uint32_t mtime = 0;  // for fingerprinting
@@ -79,8 +79,8 @@ class BookFontLoader {
   // PSRAM: PoolBytes (poolFree on reset). DRAM: unique_ptr<uint8_t[]> (delete[]).
   PoolBytes fontPsramBytes_[4] = {};
   std::unique_ptr<uint8_t[]> fontDramBytes_[4] = {};
-  void* fontBytes_[4] = {};          // non-owning raw pointer for fingerprinting
-  uint8_t faceBytesOwner_[4] = {};   // 0=none, 1=PSRAM, 2=DRAM
+  void* fontBytes_[4] = {};         // non-owning raw pointer for fingerprinting
+  uint8_t faceBytesOwner_[4] = {};  // 0=none, 1=PSRAM, 2=DRAM
   uint32_t fontFileSizes_[4] = {};
 
   // Per-face glyph arenas — each has its own persistent backing buffer.

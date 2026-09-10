@@ -8,8 +8,7 @@
 #include "BookFontLoader.h"
 
 void testBookFontLoaderBasics() {
-  std::cout << "Testing BookFontLoader basic functionality..."
-            << std::endl;
+  std::cout << "Testing BookFontLoader basic functionality..." << std::endl;
 
   // Test 1: Instance creation
   freeink::book::BookFontLoader loader;
@@ -35,8 +34,7 @@ void testBookFontLoaderBasics() {
   // fallback with 4 registered styles)
   uint8_t styleCoverage = readerFont->styleCoverage();
   assert(styleCoverage == 0x07);
-  std::cout << "✓ Reader font style coverage is 0x07 (builtin fallback)"
-            << std::endl;
+  std::cout << "✓ Reader font style coverage is 0x07 (builtin fallback)" << std::endl;
 
   std::cout << "All BookFontLoader basic tests passed!" << std::endl;
 }
@@ -50,8 +48,7 @@ void testFontFaceInfoStructure() {
   // Check that string fields are null-terminated initially
   assert(faceInfo.name[0] == '\0');
   assert(faceInfo.file[0] == '\0');
-  std::cout << "✓ FontFaceInfo strings are null-terminated initially"
-            << std::endl;
+  std::cout << "✓ FontFaceInfo strings are null-terminated initially" << std::endl;
 
   // Test 2: StyleFlags enum values
   assert(freeink::book::StyleNone == 0);
@@ -92,8 +89,7 @@ void testStyleFlags() {
   std::cout << "✓ Bold and Italic flags don't overlap" << std::endl;
 
   // Test 2: Combined style flags
-  uint8_t boldItalic =
-      (freeink::book::StyleBold | freeink::book::StyleItalic);
+  uint8_t boldItalic = (freeink::book::StyleBold | freeink::book::StyleItalic);
   assert(boldItalic == (1 | 2));  // Bold (1) + Italic (2) = 3
   std::cout << "✓ Bold + Italic = " << (int)boldItalic << std::endl;
 
@@ -111,9 +107,7 @@ void testConstants() {
   assert(freeink::book::BookFontLoader::kMaxDiscoveredFamilies > 0);
   assert(freeink::book::BookFontLoader::kMaxDiscoveredFamilies <= 100);
   // Reasonable upper bound
-  std::cout << "✓ kMaxDiscoveredFamilies = "
-            << (int)freeink::book::BookFontLoader::kMaxDiscoveredFamilies
-            << std::endl;
+  std::cout << "✓ kMaxDiscoveredFamilies = " << (int)freeink::book::BookFontLoader::kMaxDiscoveredFamilies << std::endl;
 
   std::cout << "All constants tests passed!" << std::endl;
 }
