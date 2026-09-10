@@ -87,7 +87,7 @@ TEST(ProgressFlushTest, NewerCaptureDuringFailedWriteOwnsRetry) {
   s.endFlush(written, false);             // the write failed
   ProgressFlush::Record out;
   EXPECT_TRUE(s.beginFlush(out));
-  EXPECT_EQ(out.pageNumber, 3);           // retry writes the NEWER position
+  EXPECT_EQ(out.pageNumber, 3);  // retry writes the NEWER position
 }
 
 TEST(ProgressFlushTest, SuccessfulWriteBeatsMidWriteCapture) {
@@ -95,10 +95,10 @@ TEST(ProgressFlushTest, SuccessfulWriteBeatsMidWriteCapture) {
   s.capture(rec(1, 2, 10));
   ProgressFlush::Record written;
   EXPECT_TRUE(s.beginFlush(written));
-  s.capture(rec(1, 3, 10));               // newer capture mid-write
-  s.endFlush(written, true);              // the older record did land
+  s.capture(rec(1, 3, 10));   // newer capture mid-write
+  s.endFlush(written, true);  // the older record did land
   EXPECT_EQ(s.lastFlushed().pageNumber, 2);
-  EXPECT_TRUE(s.shouldFlush());           // the newer one still owes a write
+  EXPECT_TRUE(s.shouldFlush());  // the newer one still owes a write
 }
 
 TEST(ProgressFlushTest, MarkFlushedClearsMatchingPendingOnly) {

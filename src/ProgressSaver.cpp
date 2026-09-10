@@ -117,9 +117,9 @@ bool ProgressSaver::writePending() {
     xSemaphoreGive(mutex_);
     return true;
   }
-  const bool ok = EpubReaderUtils::saveProgress(cachePath_, record.spineIndex, record.pageNumber, record.pageCount,
-                                                record.hasOffset ? std::optional<uint32_t>(record.visibleTextOffset)
-                                                                 : std::nullopt);
+  const bool ok = EpubReaderUtils::saveProgress(
+      cachePath_, record.spineIndex, record.pageNumber, record.pageCount,
+      record.hasOffset ? std::optional<uint32_t>(record.visibleTextOffset) : std::nullopt);
   xSemaphoreTake(mutex_, portMAX_DELAY);
   state_.endFlush(record, ok);
   xSemaphoreGive(mutex_);
