@@ -94,7 +94,12 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
 // ── BookFontLoader implementation ────────────────────────────────────────────
 
 BookFontLoader::BookFontLoader() = default;
-BookFontLoader::~BookFontLoader() = default;
+
+BookFontLoader::~BookFontLoader() {
+  // Delete loaded faces and release their byte owners; the static backing
+  // for the glyph arenas needs no release (static storage duration).
+  releaseResidentCaches();
+}
 
 void BookFontLoader::begin() {
   familyCount_ = 0;
@@ -177,13 +182,18 @@ void BookFontLoader::releaseResidentCaches() {
 
 uint32_t BookFontLoader::computeFingerprint() const {
   // FNV-1a over loaded face bytes (only valid ones) xor styleCoverage.
-  // Never uses path or mtime — content-based (design §3.4).
+  // Never uses path or mtime — content-based (design §3.4). Returns 0 when
+  // nothing loaded (sentinel distinct from any real FNV-1a result) so the
+  // layout fingerprint doesn't depend on a failed load.
+  bool anyLoaded = false;
   uint32_t h = 0x811c9dc5;
   for (uint8_t i = 0; i < 4; ++i) {
     if (fontBytes_[i] && fontFileSizes_[i] > 0) {
       h = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]), fontFileSizes_[i], h);
+      anyLoaded = true;
     }
   }
+  if (!anyLoaded) return 0;
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
   return h;
 }
@@ -267,6 +277,10 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   if (!fontBytes) {
     // DRAM fallback (no PSRAM, or PSRAM pool exhausted): the DRAM gates apply
     // to the actual allocation tier, not the detected board capability.
+    // NOTE: poolMalloc cannot serve this fallback — on PSRAM builds it is
+    // PSRAM-only (heap_caps_malloc MALLOC_CAP_SPIRAM, no runtime DRAM
+    // fallback), so an exhausted PSRAM pool needs an explicit plain-DRAM
+    // allocation, which is why the tier stays tracked in faceBytesOwner_.
     if (fi.fileSize > kMaxDramFontBytes) {
       LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxDramFontBytes);
       fontPsramBytes_[faceIdx].reset();

@@ -1,6 +1,4 @@
 // Host-test stub definitions for BookFontLoader's HAL/Arduino dependencies.
-#include <cstddef>
-
 #include "Arduino.h"
 #include "HalMemory.h"
 #include "HalStorage.h"
@@ -28,3 +26,4 @@ HalMemory::HeapStats HalMemory::getInternalHeap() { return fakeInternal; }
 
 void testSetPsramHeap(HalMemory::HeapStats s) { fakePsram = s; }
 void testSetInternalHeap(HalMemory::HeapStats s) { fakeInternal = s; }
+void testSetFreeHeap(uint32_t freeHeap, uint32_t maxAllocHeap) { ESP.setForTest(freeHeap, maxAllocHeap); }

@@ -58,10 +58,26 @@ TEST(BookFontLoaderBasics, GetReaderFontFallsBackToBuiltin) {
 TEST(BookFontLoaderBasics, BudgetClampsToMaxAndFloors) {
   testSetPsramHeap({0, 0, 0, 0});  // no PSRAM → DRAM tier
   freeink::book::BookFontLoader loader;
+
+  // Above the 48KB reserve: budget = min(free - 48KB, 128KB).
+  testSetFreeHeap(320 * 1024, 320 * 1024);
   loader.begin();
-  // With a healthy 320KB heap the budget is min(free-48KB floor, 128KB).
-  EXPECT_GT(loader.dramBudgetForTest(), 0u);
-  EXPECT_LE(loader.dramBudgetForTest(), 128u * 1024u);
+  EXPECT_EQ(loader.dramBudgetForTest(), 128u * 1024u);
+
+  // Above the reserve but under the cap: exact remainder.
+  testSetFreeHeap(64 * 1024, 64 * 1024);
+  loader.begin();
+  EXPECT_EQ(loader.dramBudgetForTest(), 16u * 1024u);
+
+  // Exactly at the reserve: zero (nothing safe to spend).
+  testSetFreeHeap(48 * 1024, 48 * 1024);
+  loader.begin();
+  EXPECT_EQ(loader.dramBudgetForTest(), 0u);
+
+  // Below the reserve: zero (was the pre-review 128KB grant).
+  testSetFreeHeap(32 * 1024, 32 * 1024);
+  loader.begin();
+  EXPECT_EQ(loader.dramBudgetForTest(), 0u);
 }
 
 TEST(BookFontLoaderBasics, MalformedSfntRejected) {
@@ -84,11 +100,17 @@ TEST(BookFontLoaderBasics, MalformedSfntRejected) {
   fam.faces[1].styleFlags = freeink::book::StyleBold;
   fam.faces[1].fileSize = static_cast<uint32_t>(zero.size());
   std::snprintf(fam.faces[1].file, sizeof(fam.faces[1].file), "%s", "/fonts/Bad-ZeroTables.ttf");
+  // Establish the manifest count so ensureLoaded() actually attempts the
+  // load (familyCount_ > 0 gate) and the rejection path really runs.
+  loader.setFamilyCountForTest(1);
 
   // markDirty + reload: both faces must be skipped (no crash, no chain entry).
   loader.markDirty();
   loader.getReaderFont();
-  EXPECT_EQ(loader.fontFingerprint(), 0u);  // nothing loaded → empty fingerprint
+  // Nothing loaded → empty fingerprint (0), NOT the FNV offset basis.
+  EXPECT_EQ(loader.fontFingerprint(), 0u);
+  // The builtin fallback serves the reader because the chain is empty.
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
 }
 
 TEST(BookFontLoaderBasics, FingerprintIsContentBased) {

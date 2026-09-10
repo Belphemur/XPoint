@@ -16,8 +16,11 @@ SCOPE: new src/BookFontLoader.{h,cpp}:
   numTables sanity; on failure LOG_ERR + skip the face. TtfFont::init only
   checks len<12 (TtfFont.cpp:36). Test corpus includes 2 deliberately
   malformed fonts.
-- Face bytes: loaded through the framebuffer loan (loadFaceBytes), NOT kept
-  resident; stb needs bytes addressable only during init().
+- Face bytes: retained for the face's lifetime — stb_truetype borrows the
+  source buffer (TtfFont.h: "data is borrowed and must outlive the font"),
+  so they live in the loader's RAII owners (fontPsramBytes_/fontDramBytes_)
+  and are freed only when the face is deleted. Glyph rasters live in the
+  per-face arenas.
 
 WATCH: single shared glyph arena backs all chain faces — TtfFont::flushGlyphs
   rewinds to the face's init mark (TtfFont.cpp:133) and can invalidate

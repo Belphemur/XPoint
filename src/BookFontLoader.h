@@ -67,7 +67,10 @@ class BookFontLoader {
 
 #if defined(HOST_TEST)
   // Host-test seams: seed the manifest deterministically and read the budget.
+  // setFamilyCount drives ensureLoaded()'s familyCount_ > 0 gate so tests can
+  // exercise the load/reject paths; editFamily alone never touches the count.
   FamilyInfo& editFamily(uint8_t idx) { return families_[idx]; }
+  void setFamilyCountForTest(uint8_t n) { familyCount_ = n; }
   uint32_t dramBudgetForTest() const { return remainingBudget_; }
 #endif
 
