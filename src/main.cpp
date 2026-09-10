@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <BookFontLoader.h>
 #include <BookTypes.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -64,6 +65,10 @@ static unsigned long lastX4ProPowerClickAt = 0;
 // central-directory and file-open counters live in ZipFile.cpp; do not duplicate
 // them as static (internal-linkage) here or they will report 0 forever.
 size_t g_psram_free_at_boot = 0;
+
+// Defined in the book namespace so it matches the header's
+// `extern BookFontLoader fontLoader;` declaration (design §3.2).
+freeink::book::BookFontLoader fontLoader;
 
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
