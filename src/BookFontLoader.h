@@ -3,6 +3,7 @@
 
 #include <BookFont.h>
 #include <FreeInkBook.h>
+#include <render/TtfFont.h>
 
 #include <atomic>
 #include <cstddef>
@@ -91,6 +92,12 @@ class BookFontLoader {
   // Load a single face into the live chain (member so it can access private
   // state: faces_, arenas_, fontBytes_, fontPsramBytes_, fontDramBytes_).
   bool tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain);
+
+  // Initialize the aggregate DRAM budget from current free heap.
+  void initBudget();
+
+  // Max faces to load from one family (4: regular/bold/italic/bold-italic).
+  static constexpr uint8_t kMaxFacesPerFamily = 4;
 };
 
 // Defined in main.cpp beside sdFontSystem (design §3.2).
