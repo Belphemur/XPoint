@@ -93,15 +93,13 @@ void BookFontLoader::begin() {
   dirty_.store(false, std::memory_order_relaxed);
   families_ = {};
   chain_ = FontChain{};
-  for (auto& f : faces_) f = nullptr;
-  for (auto& a : arenas_) a = Arena{};
-  for (uint8_t i = 0; i < 4; ++i) {
-    fontBytes_[i] = nullptr;
-    fontPsramBytes_[i].reset();
-    fontDramBytes_[i].reset();
-    faceBytesOwner_[i] = 0;
-    fontFileSizes_[i] = 0;
-  }
+  std::fill(std::begin(faces_), std::end(faces_), nullptr);
+  std::fill(std::begin(arenas_), std::end(arenas_), Arena{});
+  std::fill(std::begin(fontBytes_), std::end(fontBytes_), nullptr);
+  std::generate(std::begin(fontPsramBytes_), std::end(fontPsramBytes_), []() { return PoolBytes{}; });
+  std::fill(std::begin(fontDramBytes_), std::end(fontDramBytes_), nullptr);
+  std::fill(std::begin(faceBytesOwner_), std::end(faceBytesOwner_), 0);
+  std::fill(std::begin(fontFileSizes_), std::end(fontFileSizes_), 0);
   remainingBudget_ = 0;
   initBudget();
 }
@@ -234,16 +232,17 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
 
   // Allocate a transient buffer for the font file bytes. PSRAM path first on
-  // boards that have it; DRAM fallback otherwise.
+  // boards that have it; DRAM fallback otherwise. The owning handle is stored
+  // in the member arrays immediately; fontBytes points at the member-owned
+  // storage for the rest of the function.
   void* fontBytes = nullptr;
   bool isPsram = false;
 
   if (HalMemory::getPsramHeap().totalBytes > 0) {
-    PoolBytes psram = poolMakeBytes(fi.fileSize);
-    if (psram) {
-      fontBytes = psram.get();
+    fontPsramBytes_[faceIdx] = poolMakeBytes(fi.fileSize);
+    if (fontPsramBytes_[faceIdx]) {
+      fontBytes = fontPsramBytes_[faceIdx].get();
       isPsram = true;
-      fontPsramBytes_[faceIdx] = std::move(psram);
     }
   }
 
