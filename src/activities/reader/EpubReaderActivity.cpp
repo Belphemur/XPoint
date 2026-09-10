@@ -8,6 +8,7 @@
 #include <HalDisplay.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -42,6 +43,7 @@
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
 #include "ProgressMapper.h"
+#include "ProgressSaver.h"
 #include "QrDisplayActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderFontSizes.h"
@@ -62,6 +64,17 @@ namespace {
 // this family runs the grayscale anti-aliasing pass, so chrome painted over a
 // fresh page needs the HALF ghost-cleanup and closing re-renders the page.
 bool xteinkClassPanel() { return gpio.isXteinkDevice() || BoardConfig::isX4Pro() || BoardConfig::isX4Classic(); }
+
+// Design §4.5: below 5% battery — and only when the gauge read is HEALTHY and
+// the battery is NOT charging — every page turn persists synchronously
+// instead of waiting for the saver task (LOW_BATTERY_PERCENT, design §5).
+constexpr uint8_t LOW_BATTERY_PERCENT = 5;
+
+bool isLowBattery() {
+  if (powerManager.isBatteryCharging()) return false;
+  if (powerManager.getBatteryHealthState() != HalPowerManager::BatteryHealthState::HEALTHY) return false;
+  return powerManager.getBatteryPercentage() < LOW_BATTERY_PERCENT;
+}
 
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
@@ -187,6 +200,12 @@ EpubReaderActivity::~EpubReaderActivity() {
   ImageBlock::setExtractor(nullptr, nullptr);
   discardOverlayPage();  // free the overlay's page snapshot if one is held
 
+  // Design §4.4: the last captured position is flushed synchronously BEFORE
+  // the epub/section teardown (epub may be released below). No-op when
+  // nothing is pending or no book is registered.
+  progressSaver.flushNow();
+  progressSaver.setBook(nullptr);
+
   if (footnoteDepth > 0 && epub) {
     const SavedPosition& origin = savedPositions[0];
     saveProgress(origin.spineIndex, origin.pageNumber, 0);
@@ -195,7 +214,6 @@ EpubReaderActivity::~EpubReaderActivity() {
   section.reset();
   nextSectionPrefetch.reset();
   nextSectionSpineIndex = -1;
-
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -357,6 +375,7 @@ bool EpubReaderActivity::loadBook() {
   });
 
   epub->setupCacheDir();
+  progressSaver.setBook(epub->getCachePath().c_str());
 
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
@@ -1112,6 +1131,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           epub->setupCacheDir();
           if (!saveProgress(backupSpine, backupPage, backupPageCount)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
+          } else {
+            progressSaver.markFlushed(backupSpine, backupPage, backupPageCount, false, 0);
           }
         }
       }
@@ -1219,6 +1240,19 @@ bool EpubReaderActivity::launchKOReaderSync() {
     pendingSyncSaveError = true;
     requestUpdate();
     return true;
+  }
+  // The synchronous save above wrote the pending position; keep the saver's
+  // state in sync so its next tick does not rewrite the same record after
+  // the epub has been released (design §4.4 KOReader exception).
+  {
+    std::optional<uint32_t> savedOffset;
+    if (section && currentPage >= 0 && currentPage < section->pageCount) {
+      savedOffset = (currentPage == section->currentPage && currentPageVisibleOffset.has_value())
+                        ? currentPageVisibleOffset
+                        : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
+    }
+    progressSaver.markFlushed(currentSpineIndex, currentPage, totalPages, savedOffset.has_value(),
+                              savedOffset.value_or(0));
   }
 
   LOG_DBG("KOSync", "Releasing epub for sync (heap before: %u)", (unsigned)ESP.getFreeHeap());
@@ -1752,13 +1786,31 @@ void EpubReaderActivity::renderBook() {
 
   if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
       section->pageCount != lastSavedPageCount) {
-    if (saveProgress(currentSpineIndex, section->currentPage, section->estimatedTotalPages())) {
+    const uint16_t pageCount = section->estimatedTotalPages();
+    // currentPageVisibleOffset is the offset of the page just rendered
+    // (currentSpineIndex), same convention saveProgress() uses.
+    const bool hasOffset = currentPageVisibleOffset.has_value();
+    if (isLowBattery()) {
+      // Low battery: persist on every turn (design §4.5). Charging counts as
+      // NOT low battery (decision log 2026-09-10).
+      if (EpubReaderUtils::saveProgress(*epub, currentSpineIndex, section->currentPage, pageCount,
+                                        currentPageVisibleOffset)) {
+        progressSaver.markFlushed(currentSpineIndex, section->currentPage, pageCount, hasOffset,
+                                  currentPageVisibleOffset.value_or(0));
+        lastSavedSpineIndex = currentSpineIndex;
+        lastSavedPage = section->currentPage;
+        lastSavedPageCount = pageCount;
+      }
+    } else {
+      // Normal battery: capture only — the saver task writes it within one
+      // flush interval (design §4.1).
+      progressSaver.capture(currentSpineIndex, section->currentPage, pageCount, hasOffset,
+                            currentPageVisibleOffset.value_or(0));
       lastSavedSpineIndex = currentSpineIndex;
       lastSavedPage = section->currentPage;
-      lastSavedPageCount = section->estimatedTotalPages();
+      lastSavedPageCount = pageCount;
     }
   }
-
   showPendingSyncSaveError();
 
   if (pendingScreenshot) {

@@ -12,7 +12,9 @@
 namespace EpubReaderUtils {
 
 // Persists reader progress for an EPUB to its cache directory. Returns true on success.
-inline bool saveProgress(const Epub& epub, int spineIndex, int pageNumber, int pageCount,
+// The record encodes 6 bytes of spine/page/count (+4 bytes visibleTextOffset when known)
+// and is written through ProgressFile::writeAtomic (tmp+rename, crash-safe).
+inline bool saveProgress(const char* cachePath, int spineIndex, int pageNumber, int pageCount,
                          std::optional<uint32_t> visibleTextOffset = std::nullopt) {
   if (spineIndex < 0 || spineIndex > 0xFFFF || pageNumber < 0 || pageNumber > 0xFFFF || pageCount < 0 ||
       pageCount > 0xFFFF) {
@@ -34,11 +36,16 @@ inline bool saveProgress(const Epub& epub, int spineIndex, int pageNumber, int p
     data[9] = (*visibleTextOffset >> 24) & 0xFF;
     dataSize = sizeof(data);
   }
-  if (!ProgressFile::writeAtomic(epub.getCachePath(), data, dataSize)) {
+  if (!ProgressFile::writeAtomic(cachePath, data, dataSize)) {
     return false;
   }
   LOG_DBG("ERS", "Progress saved: spine=%d offset=%u page=%d", spineIndex, visibleTextOffset.value_or(0), pageNumber);
   return true;
+}
+
+inline bool saveProgress(const Epub& epub, int spineIndex, int pageNumber, int pageCount,
+                         std::optional<uint32_t> visibleTextOffset = std::nullopt) {
+  return saveProgress(epub.getCachePath().c_str(), spineIndex, pageNumber, pageCount, visibleTextOffset);
 }
 
 inline const PageLink* linkAtPoint(const std::vector<PageLink>& links, const int x, const int y, const int marginLeft,
