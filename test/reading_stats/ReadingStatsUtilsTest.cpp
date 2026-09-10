@@ -319,8 +319,10 @@ TEST(ReadingStatsUtilsTest, SessionWindowCircularWrapKeepsLastTen) {
 }
 
 TEST(ReadingStatsUtilsTest, AvgSessionSecondsHelpers) {
-  // Nothing at all -> "-" sentinel.
+  // Nothing at all -> "-" sentinel (the cells render "-", not "< 1 min").
   EXPECT_FALSE(avgSessionSeconds(0, 0, 0, 0).has_value());
+  // Totals without counted sessions (each < 60 s) -> still no value.
+  EXPECT_FALSE(avgSessionSeconds(0, 0, 45, 0).has_value());
   // Empty window + legacy totals -> legacy arithmetic mean.
   EXPECT_EQ(avgSessionSeconds(0, 0, 3600, 60).value_or(0), 60u);
   // Window below the display gate (1-3 samples) -> still the legacy mean.

@@ -400,7 +400,11 @@ void drawGlobalStatsCard(const GfxRenderer& renderer, const int x, const int y, 
 
   const auto avgSecs = avgSessionSeconds(stats.sessionWindow.avg, stats.sessionWindow.count, stats.totalReadingSeconds,
                                          stats.totalSessions);
-  BookReadingStats::formatDuration(avgSecs.value_or(0), buf, sizeof(buf));
+  if (avgSecs.has_value()) {
+    BookReadingStats::formatDuration(*avgSecs, buf, sizeof(buf));
+  } else {
+    snprintf(buf, sizeof(buf), "%s", "-");
+  }
   if (showRtcStats) {
     drawStatCell(renderer, x, thirdW, y + layout.topCardTitleH + rowH, rowH, buf, tr(STR_STATS_AVG_SESSION_LBL));
   } else {
