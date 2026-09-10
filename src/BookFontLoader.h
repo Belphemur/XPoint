@@ -69,20 +69,28 @@ class BookFontLoader {
   uint32_t fingerprint_ = 0;
   std::atomic<bool> dirty_{false};
 
-  // Two-tier font-byte storage: PSRAM via PoolBytes, DRAM via unique_ptr.
-  // Owning pointers for the loaded font file bytes.
-  void* fontBytes_[4] = {};
-  uint8_t faceBytesOwner_[4] = {};  // 1 = PSRAM (heap_caps_free), 0 = DRAM (unique_ptr)
+  // Two-tier font-byte storage: each face has its own RAII owner.
+  // PSRAM: PoolBytes (heap_caps_free on reset). DRAM: unique_ptr<uint8_t[]> (delete[]).
+  PoolBytes fontPsramBytes_[4];
+  std::unique_ptr<uint8_t[]> fontDramBytes_[4];
+  void* fontBytes_[4] = {};          // non-owning raw pointer for fingerprinting
+  uint8_t faceBytesOwner_[4] = {};   // 0=none, 1=PSRAM, 2=DRAM
   uint32_t fontFileSizes_[4] = {};
 
-  // Glyph arenas — one per face, persisted for the face's lifetime.
-  // TtfFont::init borrows the arena; flushGlyphs rewinds to init mark.
+  // Per-face glyph arenas — each has its own persistent backing buffer.
   Arena arenas_[4];
   static constexpr size_t kGlyphArenaBytes = 8192;
+
+  // Aggregate DRAM budget: derived from free heap with floor guards.
+  uint32_t remainingBudget_ = 0;
 
   void scanFonts(const char* fontPath);
   bool loadFaceBytes(const FontFaceInfo& fi);
   FontChain* builtinFallback();
+
+  // Load a single face into the live chain (member so it can access private
+  // state: faces_, arenas_, fontBytes_, fontPsramBytes_, fontDramBytes_).
+  bool tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain);
 };
 
 // Defined in main.cpp beside sdFontSystem (design §3.2).

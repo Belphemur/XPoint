@@ -14,21 +14,17 @@
 // FontChain assembly (<=8 faces, styleCoverage()). fontFingerprint() = FNV-1a
 // over the LOADED font bytes xor styleCoverage — content-based, never path/mtime.
 //
-// Builtin fallback: singleton FontChain over BitmapBookFont (4 style instances =
-// 16KB static BSS — accounted in the C3 budget).
+// Builtin fallback: singleton FontChain over 4 static BitmapBookFont instances
+// (16KB static BSS — accounted in the C3 budget).
 //
 // sfnt VALIDATION BOUNDARY before TtfFont::init: table-directory bounds +
 // numTables sanity; on failure LOG_ERR + skip the face. TtfFont::init only
 // checks len<12 (TtfFont.cpp:36). Test corpus includes 2 malformed fonts.
 //
-// Face bytes: loaded into arena-spared buffer via loadFaceBytes, NOT kept
-// resident; stb needs bytes addressable only during init(). After init the raw
-// bytes can be released and glyph data lives in the per-face arena.
-//
-// WATCH: a single shared glyph arena backs all chain faces — TtfFont::flushGlyphs
-// rewinds to the face's init mark (TtfFont.cpp:133) and can invalidate later
-// faces' cached glyphs. Verified alternating styles do not storm cross-face
-// invalidation; per-face arenas is the accepted fix (now applied: arenas_[4]).
+// Face bytes: loaded into a transient buffer via loadFaceBytes, NOT kept
+// resident after init; stb needs bytes addressable only during init().
+// After init the raw bytes are released and glyph data lives in the per-face
+// arena (owned by BookFontLoader for the face's lifetime).
 //
 // Per AGENTS.md: makeUniqueNoThrow, no std::string in hot paths, tr() for UI
 // strings, HalStorage only (never SdFat direct).
@@ -93,73 +89,6 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
   return sz;
 }
 
-// ── two-tier font-byte allocator (private to this TU) ───────────────────────
-// Replaces the design-doc Tier enum (esp_psram_size(), which does not exist in
-// this repo) with the repo's actual pool convention: poolMalloc/poolMakeBytes
-// places large buffers in PSRAM on BOARD_HAS_PSRAM and in DRAM otherwise (per
-// AGENTS.md §10 + Memory.h). DRAM-only boards fall straight to
-// makeUniqueNoThrow<uint8_t[]>.
-//
-// FontBytes owns the right cleanup for whichever pool the allocation came from
-// and is move-only (the loader transfers ownership into fontBytes_[] once the
-// face init succeeds, then frees in releaseResidentCaches via the matching
-// poolFree/heap_caps_free/free).
-
-namespace {
-
-struct FontBytes {
-  PoolBytes psram;                  // valid + owns data when isPsram
-  std::unique_ptr<uint8_t[]> dram;  // valid + owns data when !isPsram
-  uint8_t* data = nullptr;
-  bool isPsram = false;
-  uint32_t size = 0;
-
-  FontBytes() = default;
-  FontBytes(FontBytes&&) noexcept = default;
-  FontBytes& operator=(FontBytes&&) noexcept = default;
-  FontBytes(const FontBytes&) = delete;
-  FontBytes& operator=(const FontBytes&) = delete;
-
-  ~FontBytes() {
-    if (isPsram) {
-      psram.reset();
-    } else if (dram) {
-      dram.reset();
-    }
-  }
-};
-
-// Allocate `size` bytes using the tier-appropriate pool. PSRAM path first on
-// boards that have it; DRAM fallback otherwise.
-static FontBytes allocateFontBytes(uint32_t size) {
-  FontBytes out;
-  out.size = size;
-  if (size == 0) return out;
-
-  // PSRAM path on boards that have it; poolMakeBytes uses poolMalloc underneath
-  // (lib/Memory/Memory.h).
-  if (HalMemory::getPsramHeap().total > 0) {
-    out.psram = poolMakeBytes(size);
-    if (out.psram) {
-      out.data = out.psram.get();
-      out.isPsram = true;
-      return out;
-    }
-  }
-
-  // DRAM fallback — makeUniqueNoThrow, never bare new (AGENTS.md §9).
-  out.dram = makeUniqueNoThrow<uint8_t[]>(size);
-  if (!out.dram) {
-    LOG_ERR("BFNT", "Font buffer OOM for %u bytes", size);
-    return out;
-  }
-  out.data = out.dram.get();
-  out.isPsram = false;
-  return out;
-}
-
-}  // namespace
-
 // ── BookFontLoader implementation ────────────────────────────────────────────
 
 BookFontLoader::BookFontLoader() = default;
@@ -175,9 +104,12 @@ void BookFontLoader::begin() {
   for (auto& a : arenas_) a = Arena{};
   for (uint8_t i = 0; i < 4; ++i) {
     fontBytes_[i] = nullptr;
+    fontPsramBytes_[i].reset();
+    fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
   }
+  remainingBudget_ = 0;
 }
 
 void BookFontLoader::ensureLoaded() {
@@ -189,17 +121,12 @@ void BookFontLoader::ensureLoaded() {
       delete faces_[i];
       faces_[i] = nullptr;
     }
-    if (fontBytes_[i]) {
-      if (faceBytesOwner_[i] == 1u) {
-        heap_caps_free(static_cast<uint8_t*>(fontBytes_[i]));
-      } else {
-        // Must NOT call free() on a new[] allocation — that is UB.
-        // The DRAM tier uses unique_ptr<uint8_t[]> which calls delete[] correctly.
-        // This path only fires for stale non-unique pointers; unique_ptr handles cleanup.
-        LOG_ERR("BFNT", "Unexpected non-unique DRAM font byte at index %u", i);
-      }
-      fontBytes_[i] = nullptr;
+    if (fontBytes_[i] && faceBytesOwner_[i] == 1u) {
+      heap_caps_free(static_cast<uint8_t*>(fontBytes_[i]));
     }
+    fontBytes_[i] = nullptr;
+    fontPsramBytes_[i].reset();
+    fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
     arenas_[i] = Arena{};
@@ -234,12 +161,12 @@ void BookFontLoader::releaseResidentCaches() {
       delete faces_[i];
       faces_[i] = nullptr;
     }
-    if (fontBytes_[i]) {
-      if (faceBytesOwner_[i] == 1u) {
-        heap_caps_free(static_cast<uint8_t*>(fontBytes_[i]));
-      }
-      fontBytes_[i] = nullptr;
+    if (fontBytes_[i] && faceBytesOwner_[i] == 1u) {
+      heap_caps_free(static_cast<uint8_t*>(fontBytes_[i]));
     }
+    fontBytes_[i] = nullptr;
+    fontPsramBytes_[i].reset();
+    fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
     arenas_[i] = Arena{};
@@ -263,16 +190,17 @@ uint32_t BookFontLoader::computeFingerprint() const {
 }
 
 FontChain* BookFontLoader::builtinFallback() {
-  // Singleton FontChain over BitmapBookFont (4 styles, 16KB static BSS).
-  // Registered styles: regular + bold + italic + bold-italic.
+  // Singleton FontChain over 4 static BitmapBookFont instances (4 styles,
+  // 16KB static BSS). The faces have static storage duration so FontChain
+  // entries remain valid after this function returns.
   static FontChain fallback;
   static bool init = false;
   if (!init) {
     init = true;
-    BitmapBookFont r(kNotoSansFont);
-    BitmapBookFont b(kNotoSansFont);
-    BitmapBookFont i(kNotoSansFont);
-    BitmapBookFont bi(kNotoSansFont);
+    static BitmapBookFont r(kNotoSansFont);
+    static BitmapBookFont b(kNotoSansFont);
+    static BitmapBookFont i(kNotoSansFont);
+    static BitmapBookFont bi(kNotoSansFont);
     fallback.add(&r, StyleNone);
     fallback.add(&b, StyleBold);
     fallback.add(&i, StyleItalic);
@@ -292,27 +220,64 @@ void BookFontLoader::scanFonts(const char* fontPath) {
 
 bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
   // Stub for Phase 1a — real implementation loads the whole font into a
-  // temporary buffer (framebuffer loan on DRAM tier) for init, then releases
-  // the raw bytes; glyph data persists in the per-face arena.
+  // transient buffer for init, then releases the raw bytes; glyph data
+  // persists in the per-face arena.
   (void)fi;
   return false;
 }
 
 // ── tryLoadFace — single face into the live chain ───────────────────────────
+// Member of BookFontLoader so it can access private members (faces_,
+// fontPsramBytes_, fontDramBytes_, fontBytes_, arenas_, remainingBudget_).
 
-static bool tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
-                        FontChain& chain) {
+bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
+                                  FontChain& chain) {
   // DRAM-tier size gate: skip oversized files (design §3.3).
+  // Use aggregate budget: check against remainingBudget_ first, then kMaxDramFontBytes.
   if (fi.fileSize > kMaxDramFontBytes) {
     LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file,
             fi.fileSize, kMaxDramFontBytes);
     return false;
   }
+  if (remainingBudget_ > 0 && fi.fileSize > remainingBudget_) {
+    LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file,
+            fi.fileSize, remainingBudget_);
+    return false;
+  }
 
-  FontBytes buf = allocateFontBytes(fi.fileSize);
-  if (!buf.data) return false;
+  // Allocate a transient buffer for the font file bytes. PSRAM path first on
+  // boards that have it; DRAM fallback otherwise.
+  void* fontBytes = nullptr;
+  bool isPsram = false;
 
-  if (readFontFile(fi.file, buf.data, buf.size) != buf.size) {
+  if (HalMemory::getPsramHeap().total > 0) {
+    PoolBytes psram = poolMakeBytes(fi.fileSize);
+    if (psram) {
+      fontBytes = psram.get();
+      isPsram = true;
+      fontPsramBytes_[faceIdx] = std::move(psram);
+    }
+  }
+
+  std::unique_ptr<uint8_t[]> localDram;
+  if (!fontBytes) {
+    localDram = makeUniqueNoThrow<uint8_t[]>(fi.fileSize);
+    if (!localDram) {
+      LOG_ERR("BFNT", "Font buffer OOM for %u bytes", fi.fileSize);
+      return false;
+    }
+    fontBytes = localDram.get();
+    isPsram = false;
+  }
+
+  if (readFontFile(fi.file, static_cast<uint8_t*>(fontBytes), fi.fileSize) !=
+      fi.fileSize) {
+    // Cleanup on failure: release whatever we allocated.
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
     return false;
   }
 
@@ -320,22 +285,39 @@ static bool tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
   // TtfFont::init only checks len<12; we validate here.
   if (fi.fileSize < 12) {
     LOG_ERR("BFNT", "Font %s too small for sfnt header", fi.file);
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
     return false;
   }
   uint16_t numTables =
-      static_cast<uint16_t>((buf.data[4] << 8) | buf.data[5]);
+      static_cast<uint16_t>((static_cast<const uint8_t*>(fontBytes)[4] << 8) |
+                             static_cast<const uint8_t*>(fontBytes)[5]);
   if (numTables == 0 || numTables > 65535) {
     LOG_ERR("BFNT", "Font %s invalid numTables %u", fi.file, numTables);
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
     return false;
   }
   uint32_t minSz = kMinSfntLen(numTables);
   if (fi.fileSize < minSz) {
     LOG_ERR("BFNT", "Font %s too small for table directory (%u < %u)", fi.file,
             fi.fileSize, minSz);
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
     return false;
   }
   for (uint16_t i = 0; i < numTables; ++i) {
-    const uint8_t* entry = buf.data + 12 + static_cast<size_t>(i) * 16;
+    const uint8_t* entry = static_cast<const uint8_t*>(fontBytes) + 12 +
+                           static_cast<size_t>(i) * 16;
     // Guard against overflow in offset+length (uint32_t wraparound).
     uint32_t offset = static_cast<uint32_t>(entry[8]) << 24 |
                       static_cast<uint32_t>(entry[9]) << 16 |
@@ -349,46 +331,64 @@ static bool tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi,
         offset + length < offset || offset + length > fi.fileSize) {
       LOG_ERR("BFNT", "Font %s table %u O/L %u/%u exceeds size", fi.file, i,
               offset, length);
+      if (isPsram) {
+        fontPsramBytes_[faceIdx].reset();
+      } else {
+        localDram.reset();
+      }
       return false;
     }
   }
 
-  // Per-face glyph arena — persisted in arenas_[faceIdx] so it outlives the
-  // face. TtfFont::init borrows the arena; flushGlyphs rewinds to the init
-  // mark (TtfFont.cpp:133). A local arena would dangle after tryLoadFace
-  // returns (CodeRabbit PRRT_kwDOUDrzps6g3eGS).
-  alignas(4) static uint8_t glyphBuf[kGlyphArenaBytes];
-  Arena localArena(glyphBuf, kGlyphArenaBytes);
-  arenas_[faceIdx] = localArena;
+  // Per-face glyph arena — each face gets its OWN persistent backing buffer
+  // (not the shared glyphBuf from the previous version). This prevents
+  // overwriting glyph data when loading multiple faces (PRRT_kwDOUDrzps6g4-n7).
+  alignas(4) static uint8_t glyphBufs[4][kGlyphArenaBytes];
+  arenas_[faceIdx] = Arena(glyphBufs[faceIdx], kGlyphArenaBytes);
 
   book::TtfFont* face = new (std::nothrow) book::TtfFont();
   if (!face) {
     LOG_ERR("BFNT", "TtfFont OOM for %s", fi.file);
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
     return false;
   }
-  if (!face->init(buf.data, fi.fileSize, arenas_[faceIdx])) {
+  if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize,
+                  arenas_[faceIdx])) {
     LOG_ERR("BFNT", "TtfFont::init failed for %s", fi.file);
     delete face;
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
     return false;
   }
 
   chain.add(face, fi.styleFlags);
 
-  // Transfer ownership of the font bytes to the loader. The DRAM tier's
-  // unique_ptr is released, transferring raw pointer ownership; the loader
-  // never calls free() on it (no new[]/free UB — Copilot PRRT_kwDOUDrzps6g3Zfk).
-  // PSRAM tier data is owned by PoolBytes which provides heap_caps_free on reset.
-  fontBytes_[faceIdx] = buf.data;
-  faceBytesOwner_[faceIdx] =
-      static_cast<uint8_t>(buf.isPsram ? 1 : 0);
+  // Transfer ownership of the font bytes to the loader.
+  // PSRAM: fontPsramBytes_ holds the RAII owner (heap_caps_free on reset).
+  // DRAM:   fontDramBytes_ holds the unique_ptr<uint8_t[]> (delete[] on reset).
+  // fontBytes_ is the non-owning raw pointer used for fingerprinting.
+  fontBytes_[faceIdx] = fontBytes;
+  faceBytesOwner_[faceIdx] = static_cast<uint8_t>(isPsram ? 1 : 2);
   fontFileSizes_[faceIdx] = fi.fileSize;
   faces_[faceIdx] = face;
 
-  // Invalidate the unique_ptr so ~FontBytes does not double-free.
-  if (!buf.isPsram) {
-    buf.dram.release();
+  // Steal the RAII owners so they persist beyond this function.
+  if (isPsram) {
+    // fontPsramBytes_[faceIdx] already moved from psram above.
   } else {
-    buf.psram.reset();
+    fontDramBytes_[faceIdx] = std::move(localDram);
+  }
+
+  // Decrement the aggregate DRAM budget (only for DRAM-tier allocations).
+  if (remainingBudget_ > 0 && !isPsram) {
+    remainingBudget_ -= fi.fileSize;
   }
 
   return true;
