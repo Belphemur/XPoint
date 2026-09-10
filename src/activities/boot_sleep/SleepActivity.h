@@ -14,7 +14,7 @@ class SleepActivity final : public Activity {
 
   // Resolves (and generates if needed) the cover BMP for a book path.
   // `renderer` picks the dither thresholds for absolute-capable SSD1677 panels.
-  static bool resolveCoverBmpPath(GfxRenderer& renderer, const std::string& bookPath, std::string& outPath);
+  static bool resolveCoverBmpPath(const GfxRenderer& renderer, const std::string& bookPath, std::string& outPath);
   // Renders the final shutdown screen for the auto power off wake, then powers down.
   static void renderShutdownScreen(GfxRenderer& renderer);
 

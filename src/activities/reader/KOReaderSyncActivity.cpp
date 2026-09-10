@@ -16,7 +16,7 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
-#include "ProgressSaver.h"
+#include "ProgressManager.h"
 #include "ReaderUtils.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
@@ -90,8 +90,8 @@ void KOReaderSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
   // Single-writer rule (design §4.7): the KOReader remote-accept save goes
   // through the saver so the background tick never reverts the synced
   // position.
-  if (!progressSaver.saveNow(epub->getCachePath().c_str(), spineIndex, page, 0, offset.has_value(),
-                             offset.value_or(0))) {
+  if (!progressManager.saveNow(epub->getCachePath().c_str(), spineIndex, page, 0, offset.has_value(),
+                               offset.value_or(0))) {
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;

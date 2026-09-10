@@ -35,7 +35,7 @@
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
-#include "ProgressSaver.h"
+#include "ProgressManager.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
@@ -499,7 +499,7 @@ void enterPowerOff() {
   // own exit path flushes progress via the saver.
   activityManager.shutdown();
   // Belt-and-braces: any capture that raced the exit above still lands.
-  progressSaver.flushNow();
+  progressManager.flushNow();
   // COVER_CUSTOM branch reads this; the timer-wake path reads the value
   // persisted at deep-sleep entry instead.
   stageAutoPowerOffCover(false);
@@ -637,7 +637,7 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
-  progressSaver.begin();
+  progressManager.begin();
 
   // Determine the wake cause BEFORE consuming the shutdown marker: if the
   // previous session staged an auto-off marker at sleep entry but the user

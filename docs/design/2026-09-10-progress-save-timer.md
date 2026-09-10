@@ -65,7 +65,7 @@ guard skipped a save when a same-page re-layout shifted only the
 
 ### 4.3 Flush worker on the second core
 
-A small `ProgressSaver` (src/ProgressSaver.cpp) owns a FreeRTOS task:
+A small `ProgressManager` (src/ProgressManager.cpp) owns a FreeRTOS task:
 
 - **Pin:** core 1 on dual-core boards (x4pro, sticky); core 0 at low priority
   on the single-core C3. Pin chosen at creation from `portNUM_PROCESSORS`.
@@ -174,10 +174,10 @@ reader's last captured position (see §9 Related fixes).
 | `PROGRESS_FLUSH_INTERVAL_MS` | 60000 | Crash window = 1-3 pages; ~60 writes/hr max for a fast reader vs 200-600 today (3-10x reduction depending on reading speed — see review N1). Longer doubles wear saving nobody needs; shorter buys nothing the exit/low-battery paths don't already cover. |
 | `LOW_BATTERY_PERCENT` | 5 | User-directed. Gated on battery health HEALTHY. |
 | `EXIT_FLUSH_TIMEOUT_MS` | 2000 | Bounds the worst-case book-exit latency if SD is wedged. |
-| Saver task priority | low (1) | Must never compete with render. |
-| Saver task stack | 2048 B | Record build + HalStorage call; no recursion. Verify with `uxTaskGetStackHighWaterMark()` on first device test (review N2). |
-| Saver task core | 1 (dual-core) / 0 (single-core, low prio) | Off the render core. |
-| Saver cache-path buffer | 160 B | Holds a copy of the current book's cache dir path; flushes dereference the copy, never the Epub object. |
+| Manager task priority | low (1) | Must never compete with render. |
+| Manager task stack | 2048 B | Record build + HalStorage call; no recursion. Verify with `uxTaskGetStackHighWaterMark()` on first device test (review N2). |
+| Manager task core | 1 (dual-core) / 0 (single-core, low prio) | Off the render core. |
+| Manager cache-path buffer | 160 B | Holds a copy of the current book's cache dir path; flushes dereference the copy, never the Epub object. |
 | Shared-state guard | FreeRTOS mutex | Review B1: `portENTER_CRITICAL` without a spinlock is per-core on the S3 and not a cross-core exclusion pair. One mutex shape serves both S3 and C3. |
 
 ## 6. Decision Log
@@ -195,9 +195,9 @@ reader's last captured position (see §9 Related fixes).
 | 2026-09-10 | No task notification on capture; flush = next timer fire ≤60 s later | Review S3: the earlier "~1 s later" claim depended on an unspecified notification mechanism. Dropped — the interval bounds the crash window regardless of capture timing, and notification-on-capture adds wake churn for no user-visible benefit. |
 | 2026-09-10 | `launchKOReaderSync()`'s early `epub.reset()` documented as safe-by-construction | Review S1: its synchronous save at line 1207 clears the dirty flag before `epub.reset()`, so the later `onExit()` flush is a no-op. Implementation must treat "epub null" as no-op flush, never a fault. |
 | 2026-09-10 (impl) | Interval-tick task instead of esp_timer + ISR + task-notify | During implementation: explicit flushes (exit, power-off) write synchronously on the caller's thread, so the ISR/notify machinery had no remaining job. `vTaskDelay` loop is the simplest structure that meets the same bounds. |
-| 2026-09-10 (impl) | Saver stores a cache-path copy, not the `Epub*` | The reader releases `epub` before teardown on the KOReader path; a raw pointer would dangle. `setBook(nullptr)` on exit also drops the pending record so book A's position is never written into book B's dir. |
+| 2026-09-10 (impl) | Manager stores a cache-path copy, not the `Epub*` | The reader releases `epub` before teardown on the KOReader path; a raw pointer would dangle. `setBook(nullptr)` on exit also drops the pending record so book A's position is never written into book B's dir. |
 | 2026-09-10 (impl) | `markFlushed()` for synchronous saves that bypass the saver | KOReader sync, DELETE_CACHE and low-battery per-turn saves write outside the saver; recording them keeps change detection consistent and prevents a redundant background rewrite. |
-| 2026-09-10 (impl) | Host-testable state machine extracted to `lib/ProgressFlush/` with 9 gtest cases | Review N3 method boundaries: `capture` / `beginFlush` / `endFlush` / `markFlushed`; device wrapper (src/ProgressSaver) supplies mutex + SD. Tests: test/progress_flush/. |
+| 2026-09-10 (impl) | Host-testable state machine extracted to `lib/ProgressFlush/` with 9 gtest cases | Review N3 method boundaries: `capture` / `beginFlush` / `endFlush` / `markFlushed`; device wrapper (src/ProgressManager) supplies mutex + SD. Tests: test/progress_flush/. |
 
 ## 7. Wear Analysis
 

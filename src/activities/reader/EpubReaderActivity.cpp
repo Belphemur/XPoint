@@ -42,8 +42,8 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
+#include "ProgressManager.h"
 #include "ProgressMapper.h"
-#include "ProgressSaver.h"
 #include "QrDisplayActivity.h"
 #include "ReaderActivity.h"
 #include "ReaderFontSizes.h"
@@ -205,9 +205,9 @@ EpubReaderActivity::~EpubReaderActivity() {
   // nothing is pending or no book is registered. The freshness reference is
   // cleared FIRST so the exit flush is never gated by a position snapshot
   // (and a background tick can never call into a destroying activity).
-  progressSaver.clearPosition();
-  progressSaver.flushNow();
-  progressSaver.setBook(nullptr);
+  progressManager.clearPosition();
+  progressManager.flushNow();
+  progressManager.setBook(nullptr);
 
   if (footnoteDepth > 0 && epub) {
     const SavedPosition& origin = savedPositions[0];
@@ -218,8 +218,8 @@ EpubReaderActivity::~EpubReaderActivity() {
     }
     // Single-writer rule (design §4.7): the footnote-origin save routes
     // through the saver like every other synchronous save.
-    progressSaver.saveNow(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, offset.has_value(),
-                          offset.value_or(0));
+    progressManager.saveNow(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, offset.has_value(),
+                            offset.value_or(0));
   }
 
   section.reset();
@@ -386,47 +386,37 @@ bool EpubReaderActivity::loadBook() {
   });
 
   epub->setupCacheDir();
-  progressSaver.setBook(epub->getCachePath().c_str());
+  progressManager.setBook(epub->getCachePath().c_str());
 
-  HalFile f;
-  bool loadValid = false;
-  uint8_t loadedData[10] = {0};
-  if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[10];
-    const int dataSize = f.read(data, sizeof(data));
-    loadValid = (dataSize == 4 || dataSize == 6 || dataSize == 10);
-    if (loadValid) {
-      memcpy(loadedData, data, sizeof(loadedData));
+  // ProgressManager owns the record format: one call decodes the on-disk
+  // state (was a hand-rolled byte parse here).
+  uint16_t savedSpine = 0;
+  uint16_t savedPage = 0;
+  uint16_t savedPageCount = 0;
+  uint32_t savedOffset = 0;
+  const size_t recordSize =
+      ProgressManager::load(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount, savedOffset);
+  if (recordSize > 0) {
+    currentSpineIndex = savedSpine;
+    nextPageNumber = savedPage;
+    if (nextPageNumber == UINT16_MAX) {
+      LOG_DBG("ERS", "Ignoring stale last-page sentinel from progress cache");
+      nextPageNumber = 0;
     }
-    if (dataSize == 4 || dataSize == 6 || dataSize == 10) {
-      currentSpineIndex = data[0] + (data[1] << 8);
-      nextPageNumber = data[2] + (data[3] << 8);
-      if (nextPageNumber == UINT16_MAX) {
-        LOG_DBG("ERS", "Ignoring stale last-page sentinel from progress cache");
-        nextPageNumber = 0;
-      }
-      cachedSpineIndex = currentSpineIndex;
-      LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
+    cachedSpineIndex = currentSpineIndex;
+    if (recordSize == ProgressManager::RECORD_SIZE_BASE) {
+      cachedChapterTotalPageCount = savedPageCount;
+    } else {
+      cachedChapterTotalPageCount = savedPageCount;
+      cachedVisibleTextOffset = savedOffset;
     }
-    if (dataSize == 6) {
-      cachedChapterTotalPageCount = data[4] + (data[5] << 8);
-    } else if (dataSize == 10) {
-      cachedChapterTotalPageCount = data[4] + (data[5] << 8);
-      cachedVisibleTextOffset = static_cast<uint32_t>(data[6]) | (static_cast<uint32_t>(data[7]) << 8) |
-                                (static_cast<uint32_t>(data[8]) << 16) | (static_cast<uint32_t>(data[9]) << 24);
-    }
-  }
+    LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
 
-  // Register the loaded progress (if valid) as the saver's baseline so
-  // "reopen, read nothing, exit" is a no-op: the first capture compares
-  // equal to the record already on disk (Copilot, PR #107).
-  if (loadValid) {
-    const bool hasSavedOffset = (loadedData[6] != 0 || loadedData[7] != 0 || loadedData[8] != 0 || loadedData[9] != 0);
-    const uint32_t savedOffset = static_cast<uint32_t>(loadedData[6]) | (static_cast<uint32_t>(loadedData[7]) << 8) |
-                                 (static_cast<uint32_t>(loadedData[8]) << 16) |
-                                 (static_cast<uint32_t>(loadedData[9]) << 24);
-    progressSaver.seedLastFlushed(currentSpineIndex, nextPageNumber, cachedChapterTotalPageCount, hasSavedOffset,
-                                  savedOffset);
+    // Register the loaded progress as the manager's baseline so
+    // "reopen, read nothing, exit" is a no-op: the first capture compares
+    // equal to the record already on disk (Copilot, PR #107).
+    progressManager.seedLastFlushed(currentSpineIndex, nextPageNumber, cachedChapterTotalPageCount,
+                                    recordSize == ProgressManager::RECORD_SIZE_OFFSET, savedOffset);
   }
 
   if (currentSpineIndex == 0) {
@@ -1160,8 +1150,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           epub->setupCacheDir();
           // Single-writer rule (design §4.7): the cache-clear save also goes
           // through the saver so its state matches what is on disk.
-          if (!progressSaver.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount, false,
-                                     0)) {
+          if (!progressManager.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount, false,
+                                       0)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
           }
         }
@@ -1276,8 +1266,8 @@ bool EpubReaderActivity::launchKOReaderSync() {
                         ? currentPageVisibleOffset
                         : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
     }
-    const bool saved = progressSaver.saveNow(epub->getCachePath().c_str(), currentSpineIndex, currentPage, totalPages,
-                                             savedOffset.has_value(), savedOffset.value_or(0));
+    const bool saved = progressManager.saveNow(epub->getCachePath().c_str(), currentSpineIndex, currentPage, totalPages,
+                                               savedOffset.has_value(), savedOffset.value_or(0));
     if (!saved) {
       LOG_ERR("KOSync", "Aborting sync because current progress could not be saved");
       pendingSyncSaveError = true;
@@ -1827,24 +1817,24 @@ void EpubReaderActivity::renderBook() {
     // Publish the just-rendered position as the saver's freshness reference
     // (under the saver mutex; no reader state is read at write time —
     // Copilot+CodeRabbit data-race finding, PR #107).
-    progressSaver.publishPosition(currentSpineIndex, section->currentPage, pageCount, hasOffset,
-                                  currentPageVisibleOffset.value_or(0));
+    progressManager.publishPosition(currentSpineIndex, section->currentPage, pageCount, hasOffset,
+                                    currentPageVisibleOffset.value_or(0));
     if (isLowBattery()) {
       // Low battery: persist on every turn (design §4.5). Charging counts as
       // NOT low battery (decision log 2026-09-10). saveNow captures through
       // the saver's change detection then flushes synchronously — an
       // unchanged record is a no-op (renderBook runs for redraws too), and a
       // failure stays pending for the tick to retry (single writer, §4.7).
-      if (!progressSaver.saveNow(epub->getCachePath().c_str(), currentSpineIndex, section->currentPage, pageCount,
-                                 hasOffset, currentPageVisibleOffset.value_or(0))) {
+      if (!progressManager.saveNow(epub->getCachePath().c_str(), currentSpineIndex, section->currentPage, pageCount,
+                                   hasOffset, currentPageVisibleOffset.value_or(0))) {
         LOG_ERR("ERS", "Low-battery progress save failed: spine=%d page=%d", currentSpineIndex, section->currentPage);
       }
     } else {
       // Normal battery: capture only — the saver task writes it within one
       // flush interval (design §4.1). Equal captures are no-ops inside the
       // saver, so an unchanged page costs nothing.
-      progressSaver.capture(currentSpineIndex, section->currentPage, pageCount, hasOffset,
-                            currentPageVisibleOffset.value_or(0));
+      progressManager.capture(currentSpineIndex, section->currentPage, pageCount, hasOffset,
+                              currentPageVisibleOffset.value_or(0));
     }
   }
   showPendingSyncSaveError();
