@@ -82,6 +82,16 @@ class FlushState {
     pending_ = Record{};
   }
 
+  // Seed lastFlushed from the on-disk record at book load: baselines the
+  // change detector so reopening a book and exiting untouched writes
+  // nothing (must be called AFTER reset()/setBook()).
+  void seedFlushed(const Record& record) {
+    lastFlushed_ = record;
+    flushed_ = true;
+  }
+
+  // Freshness reference (design §4.2, write-time gate): a pending record is
+
   bool shouldFlush() const { return dirty_; }
   bool hasFlushed() const { return flushed_; }
   const Record& lastFlushed() const { return lastFlushed_; }

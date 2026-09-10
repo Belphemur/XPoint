@@ -168,6 +168,13 @@ enum class BootResume : uint8_t {
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
 
+// Latched true before enterPowerOff() tears down the current activity: WiFi
+// activities call silentRestart() in onExit() to clear heap fragmentation,
+// but a power-off is a full rail cut — rebooting here would power the device
+// back up against the user's power gesture. Also makes main-loop sleep
+// checks inert while the shutdown teardown runs.
+static bool powerOffInProgress = false;
+
 #if FREEINK_CAP_TOUCH
 static bool finishWifiSessionWithoutRestart() {
   if (!BoardConfig::hasTouch()) return false;
@@ -185,7 +192,7 @@ static bool finishWifiSessionWithoutRestart() {
 #endif
 
 void silentRestart() {
-  if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
+  if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
   if (finishWifiSessionWithoutRestart()) return;
 #endif
@@ -202,7 +209,7 @@ void silentRestart() {
 }
 
 void silentRestartToReader() {
-  if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
+  if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
   if (finishWifiSessionWithoutRestart()) return;
 #endif
@@ -215,7 +222,7 @@ void silentRestartToReader() {
 }
 
 void restartToHomeAfterStorageHandoff() {
-  if (deepSleepInProgress) return;  // sleeping supersedes the storage handoff reboot
+  if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the storage handoff reboot
   silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Restart after storage handoff (target=home)");
@@ -478,6 +485,13 @@ void enterDeepSleep(bool fromTimeout = false) {
 // boot (same next-boot state as the auto power off shutdown).
 void enterPowerOff() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for shutdown preparation
+  // Snapshot the from-reader context BEFORE teardown: shutdown() empties the
+  // activity stack, so isReaderActivity() would always be false afterwards
+  // and COVER_CUSTOM / resume context would be lost (Copilot+CodeRabbit,
+  // PR #107). Also latch the shutdown FIRST so a WiFi activity's onExit()
+  // cannot silentRestart() its way into a reboot instead of a power-off.
+  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  powerOffInProgress = true;
   // Run the outgoing activity's onExit() — enterPowerOff() is reachable from
   // ANY activity, and this is what commits the reader's session state
   // (progress flush, stats commit) exactly like goToSleep() does before
@@ -486,9 +500,8 @@ void enterPowerOff() {
   activityManager.shutdown();
   // Belt-and-braces: any capture that raced the exit above still lands.
   progressSaver.flushNow();
-  // Fresh from-reader context for the COVER_CUSTOM shutdown branch (the
-  // timer-wake path reads the value persisted at deep-sleep entry instead).
-  APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  // COVER_CUSTOM branch reads this; the timer-wake path reads the value
+  // persisted at deep-sleep entry instead.
   stageAutoPowerOffCover(false);
   {
     RenderLock lock;

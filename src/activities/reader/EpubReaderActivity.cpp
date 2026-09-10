@@ -202,11 +202,10 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   // Design §4.4: the last captured position is flushed synchronously BEFORE
   // the epub/section teardown (epub may be released below). No-op when
-  // nothing is pending or no book is registered. The revalidator is
-  // unregistered FIRST so the exit flush is not gated by it (the reader
-  // state is still valid here, but after this point `this` is being
-  // destroyed and a background tick must never call into it).
-  progressSaver.setRevalidator(nullptr, nullptr);
+  // nothing is pending or no book is registered. The freshness reference is
+  // cleared FIRST so the exit flush is never gated by a position snapshot
+  // (and a background tick can never call into a destroying activity).
+  progressSaver.clearPosition();
   progressSaver.flushNow();
   progressSaver.setBook(nullptr);
 
@@ -388,21 +387,17 @@ bool EpubReaderActivity::loadBook() {
 
   epub->setupCacheDir();
   progressSaver.setBook(epub->getCachePath().c_str());
-  // Stale-record gate: a pending record is re-checked against the LIVE
-  // reader position at write time, so a capture made before a text-setting
-  // re-pagination (section reset, offset invalid) is dropped instead of
-  // persisted (user-reported hazard, PR #107).
-  progressSaver.setRevalidator(
-      [](const ProgressFlush::Record& record, void* ctx) {
-        auto* self = static_cast<EpubReaderActivity*>(ctx);
-        return self->isRecordFresh(record);
-      },
-      this);
 
   HalFile f;
+  bool loadValid = false;
+  uint8_t loadedData[10] = {0};
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[10];
-    int dataSize = f.read(data, sizeof(data));
+    const int dataSize = f.read(data, sizeof(data));
+    loadValid = (dataSize == 4 || dataSize == 6 || dataSize == 10);
+    if (loadValid) {
+      memcpy(loadedData, data, sizeof(loadedData));
+    }
     if (dataSize == 4 || dataSize == 6 || dataSize == 10) {
       currentSpineIndex = data[0] + (data[1] << 8);
       nextPageNumber = data[2] + (data[3] << 8);
@@ -420,6 +415,18 @@ bool EpubReaderActivity::loadBook() {
       cachedVisibleTextOffset = static_cast<uint32_t>(data[6]) | (static_cast<uint32_t>(data[7]) << 8) |
                                 (static_cast<uint32_t>(data[8]) << 16) | (static_cast<uint32_t>(data[9]) << 24);
     }
+  }
+
+  // Register the loaded progress (if valid) as the saver's baseline so
+  // "reopen, read nothing, exit" is a no-op: the first capture compares
+  // equal to the record already on disk (Copilot, PR #107).
+  if (loadValid) {
+    const bool hasSavedOffset = (loadedData[6] != 0 || loadedData[7] != 0 || loadedData[8] != 0 || loadedData[9] != 0);
+    const uint32_t savedOffset = static_cast<uint32_t>(loadedData[6]) | (static_cast<uint32_t>(loadedData[7]) << 8) |
+                                 (static_cast<uint32_t>(loadedData[8]) << 16) |
+                                 (static_cast<uint32_t>(loadedData[9]) << 24);
+    progressSaver.seedLastFlushed(currentSpineIndex, nextPageNumber, cachedChapterTotalPageCount, hasSavedOffset,
+                                  savedOffset);
   }
 
   if (currentSpineIndex == 0) {
@@ -1817,12 +1824,21 @@ void EpubReaderActivity::renderBook() {
     // currentPageVisibleOffset is the offset of the page just rendered
     // (currentSpineIndex), same convention saveProgress() uses.
     const bool hasOffset = currentPageVisibleOffset.has_value();
+    // Publish the just-rendered position as the saver's freshness reference
+    // (under the saver mutex; no reader state is read at write time —
+    // Copilot+CodeRabbit data-race finding, PR #107).
+    progressSaver.publishPosition(currentSpineIndex, section->currentPage, pageCount, hasOffset,
+                                  currentPageVisibleOffset.value_or(0));
     if (isLowBattery()) {
       // Low battery: persist on every turn (design §4.5). Charging counts as
-      // NOT low battery (decision log 2026-09-10). saveNow keeps the saver's
-      // change detection in sync (single writer, design §4.7).
-      progressSaver.saveNow(epub->getCachePath().c_str(), currentSpineIndex, section->currentPage, pageCount, hasOffset,
-                            currentPageVisibleOffset.value_or(0));
+      // NOT low battery (decision log 2026-09-10). saveNow captures through
+      // the saver's change detection then flushes synchronously — an
+      // unchanged record is a no-op (renderBook runs for redraws too), and a
+      // failure stays pending for the tick to retry (single writer, §4.7).
+      if (!progressSaver.saveNow(epub->getCachePath().c_str(), currentSpineIndex, section->currentPage, pageCount,
+                                 hasOffset, currentPageVisibleOffset.value_or(0))) {
+        LOG_ERR("ERS", "Low-battery progress save failed: spine=%d page=%d", currentSpineIndex, section->currentPage);
+      }
     } else {
       // Normal battery: capture only — the saver task writes it within one
       // flush interval (design §4.1). Equal captures are no-ops inside the
@@ -1905,23 +1921,6 @@ bool EpubReaderActivity::applyDeferredReposition() {
 void EpubReaderActivity::clearDeferredReposition() {
   cachedChapterTotalPageCount = 0;
   cachedVisibleTextOffset.reset();
-}
-
-// Stale-record gate for the saver (design §4.2): a pending record is fresh
-// when it matches the reader's LIVE position — same spine, and either an
-// exact page match, or the page count differs (re-pagination in flight,
-// position will be re-derived from the offset) with a matching offset. Runs
-// on the saver task under the saver mutex; touches only plain reader state.
-bool EpubReaderActivity::isRecordFresh(const ProgressFlush::Record& record) const {
-  if (record.spineIndex != currentSpineIndex) return false;
-  if (section) {
-    if (record.pageNumber == static_cast<uint16_t>(section->currentPage)) return true;
-    return record.hasOffset && currentPageVisibleOffset.has_value() &&
-           record.visibleTextOffset == *currentPageVisibleOffset;
-  }
-  // Section released (child screen up / mid-re-pagination): accept only an
-  // exact match with the cached position, which is what will be restored.
-  return record.pageNumber == static_cast<uint16_t>(nextPageNumber);
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {

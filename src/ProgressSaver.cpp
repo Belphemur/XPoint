@@ -12,11 +12,13 @@ namespace {
 // input. Pinned to core 0 on dual-core boards (the render task owns core 1,
 // ActivityManager.cpp) so the flusher cannot time-slice with a render; on
 // single-core boards priority 1 keeps it behind the render task at the same
-// level only when the render task blocks. Stack verified against
-// uxTaskGetStackHighWaterMark() on device (design §5, review N2).
+// level only when the render task blocks.
+// NOTE: this ESP-IDF build passes usStackDepth in BYTES (the render task at
+// ActivityManager.cpp passes 8192 directly), not FreeRTOS words.
 constexpr UBaseType_t SAVER_TASK_PRIORITY = 1;
-constexpr size_t SAVER_STACK_WORDS = 2048 / sizeof(StackType_t);
+constexpr size_t SAVER_STACK_BYTES = 2048;
 constexpr char SAVER_TASK_NAME[] = "progress_saver";
+}  // namespace
 
 ProgressFlush::Record makeRecord(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
                                  uint32_t visibleTextOffset) {
@@ -28,7 +30,6 @@ ProgressFlush::Record makeRecord(uint16_t spineIndex, uint16_t pageNumber, uint1
   record.visibleTextOffset = visibleTextOffset;
   return record;
 }
-}  // namespace
 
 ProgressSaver progressSaver;
 
@@ -55,7 +56,7 @@ void ProgressSaver::begin() {
               }
             }
           },
-          SAVER_TASK_NAME, SAVER_STACK_WORDS, this, SAVER_TASK_PRIORITY, nullptr, saverTaskCore) != pdPASS) {
+          SAVER_TASK_NAME, SAVER_STACK_BYTES, this, SAVER_TASK_PRIORITY, nullptr, saverTaskCore) != pdPASS) {
     LOG_ERR("PRG", "Failed to create progress saver task");
   }
 }
@@ -104,34 +105,53 @@ bool ProgressSaver::shouldFlush() const {
   return dirty;
 }
 
-void ProgressSaver::setRevalidator(bool (*fn)(const ProgressFlush::Record&, void*), void* ctx) {
+void ProgressSaver::seedLastFlushed(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
+                                    const bool hasOffset, const uint32_t visibleTextOffset) {
   if (mutex_ == nullptr) return;
   xSemaphoreTake(mutex_, portMAX_DELAY);
-  revalidate_ = fn;
-  revalidateCtx_ = ctx;
+  state_.seedFlushed(makeRecord(spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset));
+  xSemaphoreGive(mutex_);
+}
+
+void ProgressSaver::publishPosition(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
+                                    const bool hasOffset, const uint32_t visibleTextOffset) {
+  if (mutex_ == nullptr) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  lastPublished_ = makeRecord(spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
+  positionPublished_ = true;
+  xSemaphoreGive(mutex_);
+}
+
+void ProgressSaver::clearPosition() {
+  if (mutex_ == nullptr) return;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  // Freshness checks pass when no reference is published (reader tearing
+  // down / no book): the pending record will be dropped by the imminent
+  // flushNow() + setBook(nullptr) instead.
+  lastPublished_ = ProgressFlush::Record{};
+  positionPublished_ = false;
   xSemaphoreGive(mutex_);
 }
 
 bool ProgressSaver::saveNow(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
                             const uint16_t pageCount, const bool hasOffset, const uint32_t visibleTextOffset) {
   if (mutex_ == nullptr) return false;
-  // Whole-flush mutex hold: no background tick can interleave, and this
-  // record becomes lastFlushed atomically with the write itself (the saver
-  // is the single writer of progress state, design §4.7).
+  // Capture-first (Copilot D6, PR #107): record the position through the
+  // same change detection as the background path, THEN flush synchronously.
+  // An unchanged record is a no-op (renderBook() runs for redraws too —
+  // without this, low battery would rewrite an unchanged page on every
+  // redraw), and a failed write leaves the record pending for the tick to
+  // retry. The mutex is held for the whole capture+flush so no background
+  // tick can interleave (single writer, design §4.7).
   xSemaphoreTake(mutex_, portMAX_DELAY);
-  const bool ok = EpubReaderUtils::saveProgress(cachePath, spineIndex, pageNumber, pageCount,
-                                                hasOffset ? std::optional<uint32_t>(visibleTextOffset) : std::nullopt);
-  if (ok) {
-    ProgressFlush::Record written = makeRecord(spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
-    state_.markFlushed(written);
-  }
+  state_.capture(makeRecord(spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset));
+  const bool ok = writePendingLocked();
   xSemaphoreGive(mutex_);
   return ok;
 }
 
 bool ProgressSaver::writePending() {
   if (mutex_ == nullptr) return true;  // begin() never ran / OOM: fail closed
-  ProgressFlush::Record record;
   // The mutex is held for the WHOLE flush (state take -> SD write -> state
   // update): flushNow() on the reader task and the periodic tick cannot run
   // two writeAtomic() calls against the same progress.bin.tmp concurrently,
@@ -140,29 +160,47 @@ bool ProgressSaver::writePending() {
   // (CodeRabbit round-2, PR #107). The hold is bounded by one 10-byte
   // write (~ms).
   xSemaphoreTake(mutex_, portMAX_DELAY);
+  const bool ok = writePendingLocked();
+  xSemaphoreGive(mutex_);
+  return ok;
+}
+
+bool ProgressSaver::writePendingLocked() {
+  // Mutex already held (saveNow() or writePending() caller).
+  ProgressFlush::Record record;
   if (!state_.beginFlush(record)) {
-    xSemaphoreGive(mutex_);
     return true;  // nothing pending
   }
-  if (cachePath_[0] == '\0' || (revalidate_ != nullptr && !revalidate_(record, revalidateCtx_))) {
+  if (cachePath_[0] == '\0' || (positionPublished_ && !(record == lastPublished_))) {
     // No book registered (KOReader path released the epub before teardown),
-    // or the reader rejected the record as stale (position mutated during a
-    // re-pagination between capture and flush): drop the write either way —
+    // or the reader's published position has moved past the pending record
+    // (captured before a re-pagination / newer render): drop the write —
     // treat as written so the dirty flag does not retry forever.
+    LOG_DBG("PRG", "Flush dropped (no book=%d or stale: rec %u/%u vs pos %u/%u)", cachePath_[0] == '\0',
+            record.spineIndex, record.pageNumber, lastPublished_.spineIndex, lastPublished_.pageNumber);
     state_.endFlush(record, true);
-    xSemaphoreGive(mutex_);
     return true;
   }
   const bool ok = EpubReaderUtils::saveProgress(
       cachePath_, record.spineIndex, record.pageNumber, record.pageCount,
       record.hasOffset ? std::optional<uint32_t>(record.visibleTextOffset) : std::nullopt);
   state_.endFlush(record, ok);
-  xSemaphoreGive(mutex_);
+  if (ok) {
+    LOG_INF("PRG", "Progress saved: spine=%u page=%u/%u", record.spineIndex, record.pageNumber, record.pageCount);
+  } else {
+    LOG_ERR("PRG", "Progress save FAILED: spine=%u page=%u/%u (will retry)", record.spineIndex, record.pageNumber);
+  }
   return ok;
 }
 
 void ProgressSaver::flushTick() {
-  if (!writePending()) {
+  if (!shouldFlush()) {
+    return;  // idle tick: nothing captured since the last flush
+  }
+  const bool ok = writePending();
+  if (ok) {
+    LOG_DBG("PRG", "Timer flush done");
+  } else {
     LOG_ERR("PRG", "Background progress flush failed (will retry next tick)");
   }
 }

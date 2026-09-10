@@ -51,27 +51,38 @@ class ProgressSaver {
   // Periodic flush attempt from the saver task.
   void flushTick();
 
-  // Stale-record gate, called under the saver mutex at WRITE time with the
-  // pending record. Return false to drop the write (position mutated between
-  // capture and flush — e.g. a text-setting re-pagination reset the section,
-  // so the captured offset no longer matches what the reader will restore).
-  // The reader registers a callback that compares against its LIVE position;
-  // may be called from the saver task, so the callback must not touch SD or
-  // block — it runs on the reader's own state, copied plain.
-  void setRevalidator(bool (*fn)(const ProgressFlush::Record&, void*), void* ctx);
+  // Publish the reader's current position as the freshness reference. Called
+  // by the reader (under RenderLock) after every render; the saver's
+  // write-time check compares the pending record against this snapshot —
+  // NO reader state is touched at write time, so there is no cross-task
+  // data race on `section`/reader members (Copilot+CodeRabbit, PR #107).
+  void publishPosition(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
+                       uint32_t visibleTextOffset);
+  // Reader teardown: the pending record is no longer verifiable against a
+  // live position, so freshness checks pass until setBook(nullptr) resets.
+  void clearPosition();
+  // Seed lastFlushed from the progress record ALREADY ON DISK at book load
+  // (validated by the caller). Baselines change detection so "reopen, read
+  // nothing, exit" writes nothing (Copilot, PR #107). No SD write.
+  void seedLastFlushed(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
+                       uint32_t visibleTextOffset);
 
   bool shouldFlush() const;
 
  private:
+  // Core flush, mutex MUST be held by the caller (writePending / saveNow).
+  bool writePendingLocked();
+
   bool writePending();
 
   SemaphoreHandle_t mutex_ = nullptr;
   ProgressFlush::FlushState state_;
   char cachePath_[160] = {0};
-  // Stale-record gate (see setRevalidator). Raw fn+ctx, not std::function:
-  // hot path, no heap (AGENTS.md callback pattern).
-  bool (*revalidate_)(const ProgressFlush::Record&, void*) = nullptr;
-  void* revalidateCtx_ = nullptr;
+  // Last position the reader published (under mutex_, via publishPosition).
+  // The write-time freshness check compares the pending record against this
+  // snapshot instead of dereferencing reader state from the saver task.
+  ProgressFlush::Record lastPublished_{};
+  bool positionPublished_ = false;  // any position published since setBook()
 };
 
 // Global instance (created at boot, fed by the EPUB reader activity).
