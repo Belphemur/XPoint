@@ -208,7 +208,15 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   if (footnoteDepth > 0 && epub) {
     const SavedPosition& origin = savedPositions[0];
-    saveProgress(origin.spineIndex, origin.pageNumber, 0);
+    std::optional<uint32_t> offset;
+    if (section && origin.spineIndex == currentSpineIndex && origin.pageNumber >= 0 &&
+        origin.pageNumber < section->pageCount) {
+      offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(origin.pageNumber));
+    }
+    // Single-writer rule (design §4.7): the footnote-origin save routes
+    // through the saver like every other synchronous save.
+    progressSaver.saveNow(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, offset.has_value(),
+                          offset.value_or(0));
   }
 
   section.reset();
@@ -1129,10 +1137,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           section.reset();
           epub->clearCache();
           epub->setupCacheDir();
-          if (!saveProgress(backupSpine, backupPage, backupPageCount)) {
+          // Single-writer rule (design §4.7): the cache-clear save also goes
+          // through the saver so its state matches what is on disk.
+          if (!progressSaver.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount, false,
+                                     0)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
-          } else {
-            progressSaver.markFlushed(backupSpine, backupPage, backupPageCount, false, 0);
           }
         }
       }
@@ -1235,15 +1244,10 @@ bool EpubReaderActivity::launchKOReaderSync() {
   std::string localChapterName = (tocIdx >= 0) ? epub->getTocItem(tocIdx).title : "";
   const std::string savedEpubPath = epub->getPath();
 
-  if (!saveProgress(currentSpineIndex, currentPage, totalPages)) {
-    LOG_ERR("KOSync", "Aborting sync because current progress could not be saved");
-    pendingSyncSaveError = true;
-    requestUpdate();
-    return true;
-  }
-  // The synchronous save above wrote the pending position; keep the saver's
-  // state in sync so its next tick does not rewrite the same record after
-  // the epub has been released (design §4.4 KOReader exception).
+  // The synchronous save below routes through the saver (single writer,
+  // design §4.7); saveNow also records the position so the background tick
+  // never rewrites it after the epub has been released (design §4.4 KOReader
+  // exception).
   {
     std::optional<uint32_t> savedOffset;
     if (section && currentPage >= 0 && currentPage < section->pageCount) {
@@ -1251,8 +1255,14 @@ bool EpubReaderActivity::launchKOReaderSync() {
                         ? currentPageVisibleOffset
                         : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
     }
-    progressSaver.markFlushed(currentSpineIndex, currentPage, totalPages, savedOffset.has_value(),
-                              savedOffset.value_or(0));
+    const bool saved = progressSaver.saveNow(epub->getCachePath().c_str(), currentSpineIndex, currentPage, totalPages,
+                                             savedOffset.has_value(), savedOffset.value_or(0));
+    if (!saved) {
+      LOG_ERR("KOSync", "Aborting sync because current progress could not be saved");
+      pendingSyncSaveError = true;
+      requestUpdate();
+      return true;
+    }
   }
 
   LOG_DBG("KOSync", "Releasing epub for sync (heap before: %u)", (unsigned)ESP.getFreeHeap());
@@ -1795,12 +1805,10 @@ void EpubReaderActivity::renderBook() {
     const bool hasOffset = currentPageVisibleOffset.has_value();
     if (isLowBattery()) {
       // Low battery: persist on every turn (design §4.5). Charging counts as
-      // NOT low battery (decision log 2026-09-10).
-      if (EpubReaderUtils::saveProgress(*epub, currentSpineIndex, section->currentPage, pageCount,
-                                        currentPageVisibleOffset)) {
-        progressSaver.markFlushed(currentSpineIndex, section->currentPage, pageCount, hasOffset,
-                                  currentPageVisibleOffset.value_or(0));
-      }
+      // NOT low battery (decision log 2026-09-10). saveNow keeps the saver's
+      // change detection in sync (single writer, design §4.7).
+      progressSaver.saveNow(epub->getCachePath().c_str(), currentSpineIndex, section->currentPage, pageCount, hasOffset,
+                            currentPageVisibleOffset.value_or(0));
     } else {
       // Normal battery: capture only — the saver task writes it within one
       // flush interval (design §4.1). Equal captures are no-ops inside the
@@ -1883,16 +1891,6 @@ bool EpubReaderActivity::applyDeferredReposition() {
 void EpubReaderActivity::clearDeferredReposition() {
   cachedChapterTotalPageCount = 0;
   cachedVisibleTextOffset.reset();
-}
-
-bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
-  std::optional<uint32_t> offset;
-  if (section && spineIndex == currentSpineIndex && currentPage >= 0 && currentPage < section->pageCount) {
-    offset = (currentPage == section->currentPage && currentPageVisibleOffset.has_value())
-                 ? currentPageVisibleOffset
-                 : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
-  }
-  return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, offset);
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {

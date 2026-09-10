@@ -162,7 +162,6 @@ class EpubReaderActivity final : public ReaderActivity {
   bool applyDeferredReposition();
   void clearDeferredReposition();
   void rememberCurrentContentOffset();
-  bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   // Live section position, or the values cached before a child screen

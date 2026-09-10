@@ -41,10 +41,13 @@ class ProgressSaver {
   // Synchronous flush of the pending record (if any). Called on book exit,
   // sleep entry and power-off. Returns true when nothing was left unwritten.
   bool flushNow();
-  // Record that the given position was written by a synchronous save that
-  // bypassed the saver (KOReader sync, DELETE_CACHE, footnote exit).
-  void markFlushed(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
-                   uint32_t visibleTextOffset);
+  // THE synchronous progress save: writes `record` to `cachePath` right now
+  // and records it as lastFlushed so the background tick never rewrites it.
+  // Every save that bypasses the background task (low-battery per-turn,
+  // footnote exit, DELETE_CACHE, KOReader sync) MUST go through here — the
+  // saver is the single writer of progress state (design §4.7).
+  bool saveNow(const char* cachePath, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
+               uint32_t visibleTextOffset);
   // Periodic flush attempt from the saver task.
   void flushTick();
 

@@ -62,12 +62,12 @@ class FlushState {
   }
 
   // Record that `record` was already written by an external synchronous save
-  // (KOReader sync, DELETE_CACHE). Clears the dirty flag only when no newer
-  // capture intervened; otherwise the newer capture still owes a write.
+  // (KOReader sync, DELETE_CACHE). Always becomes the new lastFlushed; the
+  // dirty flag is cleared only when no newer capture is pending.
   void markFlushed(const Record& record) {
-    if (dirty_ && !(record == pending_)) return;
     lastFlushed_ = record;
     flushed_ = true;
+    if (dirty_ && !(record == pending_)) return;
     dirty_ = false;
   }
 

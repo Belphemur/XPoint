@@ -3,7 +3,6 @@
 #include <Epub.h>
 #include <Logging.h>
 
-#include <cstring>
 #include <optional>
 
 #include "activities/reader/EpubReaderUtils.h"
@@ -18,6 +17,17 @@ namespace {
 constexpr UBaseType_t SAVER_TASK_PRIORITY = 1;
 constexpr size_t SAVER_STACK_WORDS = 2048 / sizeof(StackType_t);
 constexpr char SAVER_TASK_NAME[] = "progress_saver";
+
+ProgressFlush::Record makeRecord(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
+                                 uint32_t visibleTextOffset) {
+  ProgressFlush::Record record;
+  record.spineIndex = spineIndex;
+  record.pageNumber = pageNumber;
+  record.pageCount = pageCount;
+  record.hasOffset = hasOffset;
+  record.visibleTextOffset = visibleTextOffset;
+  return record;
+}
 }  // namespace
 
 ProgressSaver progressSaver;
@@ -80,15 +90,8 @@ void ProgressSaver::setBook(const char* cachePath) {
 void ProgressSaver::capture(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
                             const bool hasOffset, const uint32_t visibleTextOffset) {
   if (mutex_ == nullptr) return;
-  ProgressFlush::Record record;
-  record.spineIndex = spineIndex;
-  record.pageNumber = pageNumber;
-  record.pageCount = pageCount;
-  record.hasOffset = hasOffset;
-  record.visibleTextOffset = visibleTextOffset;
-
   xSemaphoreTake(mutex_, portMAX_DELAY);
-  state_.capture(record);
+  state_.capture(makeRecord(spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset));
   xSemaphoreGive(mutex_);
 }
 
@@ -100,48 +103,48 @@ bool ProgressSaver::shouldFlush() const {
   return dirty;
 }
 
-void ProgressSaver::markFlushed(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
-                                const bool hasOffset, const uint32_t visibleTextOffset) {
-  if (mutex_ == nullptr) return;
-  ProgressFlush::Record record;
-  record.spineIndex = spineIndex;
-  record.pageNumber = pageNumber;
-  record.pageCount = pageCount;
-  record.hasOffset = hasOffset;
-  record.visibleTextOffset = visibleTextOffset;
-
+bool ProgressSaver::saveNow(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
+                            const uint16_t pageCount, const bool hasOffset, const uint32_t visibleTextOffset) {
+  if (mutex_ == nullptr) return false;
+  // Whole-flush mutex hold: no background tick can interleave, and this
+  // record becomes lastFlushed atomically with the write itself (the saver
+  // is the single writer of progress state, design §4.7).
   xSemaphoreTake(mutex_, portMAX_DELAY);
-  state_.markFlushed(record);
+  const bool ok = EpubReaderUtils::saveProgress(cachePath, spineIndex, pageNumber, pageCount,
+                                                hasOffset ? std::optional<uint32_t>(visibleTextOffset) : std::nullopt);
+  if (ok) {
+    ProgressFlush::Record written = makeRecord(spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
+    state_.markFlushed(written);
+  }
   xSemaphoreGive(mutex_);
+  return ok;
 }
 
 bool ProgressSaver::writePending() {
   if (mutex_ == nullptr) return true;  // begin() never ran / OOM: fail closed
   ProgressFlush::Record record;
-  char cachePath[sizeof(cachePath_)];
-  {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
-    if (!state_.beginFlush(record)) {
-      xSemaphoreGive(mutex_);
-      return true;  // nothing pending
-    }
-    // Copy the path out under the mutex: setBook() may mutate it while the
-    // SD write below runs (Copilot, PR #107).
-    memcpy(cachePath, cachePath_, sizeof(cachePath));
+  // The mutex is held for the WHOLE flush (state take -> SD write -> state
+  // update): flushNow() on the reader task and the periodic tick cannot run
+  // two writeAtomic() calls against the same progress.bin.tmp concurrently,
+  // and capture()/setBook() cannot interleave with an in-flight write, so
+  // its completion can never re-arm or regress a superseded record
+  // (CodeRabbit round-2, PR #107). The hold is bounded by one 10-byte
+  // write (~ms).
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  if (!state_.beginFlush(record)) {
     xSemaphoreGive(mutex_);
+    return true;  // nothing pending
   }
-  if (cachePath[0] == '\0') {
+  if (cachePath_[0] == '\0') {
     // No book registered (KOReader path released the epub before teardown):
     // treat as written so the dirty flag does not retry forever.
-    xSemaphoreTake(mutex_, portMAX_DELAY);
     state_.endFlush(record, true);
     xSemaphoreGive(mutex_);
     return true;
   }
   const bool ok = EpubReaderUtils::saveProgress(
-      cachePath, record.spineIndex, record.pageNumber, record.pageCount,
+      cachePath_, record.spineIndex, record.pageNumber, record.pageCount,
       record.hasOffset ? std::optional<uint32_t>(record.visibleTextOffset) : std::nullopt);
-  xSemaphoreTake(mutex_, portMAX_DELAY);
   state_.endFlush(record, ok);
   xSemaphoreGive(mutex_);
   return ok;
