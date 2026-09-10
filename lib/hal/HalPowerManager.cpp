@@ -305,6 +305,11 @@ void HalPowerManager::clearShutdownMarker() {
   _lastShutdownReasonCode = 0;
 }
 
+bool HalPowerManager::isBatteryCharging() const {
+  static const BatteryMonitor battery;
+  return battery.isCharging();
+}
+
 uint16_t HalPowerManager::getBatteryPercentage() const {
   static const BatteryMonitor battery;
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
