@@ -13,6 +13,7 @@
 #include "BookmarkEntry.h"
 #include "ChapterPosition.h"
 #include "EpubReaderMenuActivity.h"
+#include "ProgressManager.h"
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
@@ -144,10 +145,6 @@ class EpubReaderActivity final : public ReaderActivity {
   uint16_t buildViewportHeight = 0;
   bool partialRebuildStartFailed = false;
 
-  int lastSavedSpineIndex = -1;
-  int lastSavedPage = -1;
-  int lastSavedPageCount = -1;
-
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;
   static constexpr size_t BACKGROUND_BUILD_MIN_FREE_HEAP = 32 * 1024;
@@ -166,7 +163,6 @@ class EpubReaderActivity final : public ReaderActivity {
   bool applyDeferredReposition();
   void clearDeferredReposition();
   void rememberCurrentContentOffset();
-  bool saveProgress(int spineIndex, int currentPage, int pageCount);
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   // Live section position, or the values cached before a child screen

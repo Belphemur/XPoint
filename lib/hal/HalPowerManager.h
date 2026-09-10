@@ -49,6 +49,11 @@ class HalPowerManager {
   // deep sleep waking only on the power button. Never returns.
   [[noreturn]] void enterPowerOffSleep(HalGPIO& gpio);
 
+  // True when the battery is on external power / charging: the reader's
+  // progress saver must not treat <5% as low battery in that state (design
+  // decision log, 2026-09-10).
+  bool isBatteryCharging() const;
+
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 

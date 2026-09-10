@@ -339,6 +339,30 @@ void ActivityManager::goToSleep(bool fromTimeout) {
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
+// Manual power off (review B2 / user directive, PR #107): run the current
+// activity's onExit() exactly like goToSleep() does — enterPowerOff() is
+// reachable from ANY activity, and the outgoing activity's onExit() is what
+// commits its session state (reader progress/stats, settings staged for
+// save) before the rail is cut. The outgoing activity is destroyed, its slot
+// cleared, and no new activity is launched: the shutdown screen below is the
+// last thing on the panel.
+void ActivityManager::shutdown() {
+  if (pendingActivity) {
+    // A transition was already staged (e.g. the user held power while a
+    // screen was opening): drop it, we are shutting down.
+    pendingActivity.reset();
+    pendingAction = PendingAction::None;
+  }
+  if (currentActivity) {
+    RenderLock lock;
+    exitActivity(lock);
+  }
+  while (!stackActivities.empty()) {
+    stackActivities.back()->onExit();
+    stackActivities.pop_back();
+  }
+}
+
 void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {
