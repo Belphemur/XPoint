@@ -1,5 +1,6 @@
 #pragma once
 
+#include <BitmapHelpers.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@ struct DirectPixelWriter {
   // renderer's dual strip target (nullptr outside DUAL).
   uint8_t* dualFb = nullptr;
   GfxRenderer::RenderMode mode;
+  bool absolute = false;
   uint16_t displayWidthBytes;  // Runtime framebuffer stride (X4: 100, X3: 99)
   // Active write target: for tiled grayscale, fb is the band scratch, originY is
   // the band's top physical row, and clipRows is the band height. Off-band
@@ -44,6 +46,7 @@ struct DirectPixelWriter {
     originY = renderer.getWriteOriginY();
     clipRows = renderer.getWriteRows();
     mode = renderer.getRenderMode();
+    absolute = renderer.grayPlanesAreAbsolute();
     displayWidthBytes = renderer.getDisplayWidthBytes();
 
     const int phyW = renderer.getDisplayWidth();
@@ -160,12 +163,10 @@ struct DirectPixelWriter {
         state = pixelValue < 3;
         break;
       case GfxRenderer::GRAYSCALE_MSB:
-        draw = (pixelValue == 1 || pixelValue == 2);
-        state = false;
-        break;
-      case GfxRenderer::GRAYSCALE_LSB:
-        draw = (pixelValue == 1);
-        state = false;
+      case GfxRenderer::GRAYSCALE_LSB: {
+        const auto pixel = grayPlanePixel(pixelValue, mode == GfxRenderer::GRAYSCALE_MSB, absolute);
+        draw = pixel.write;
+        state = pixel.black;
         break;
       case GfxRenderer::GRAYSCALE_DUAL:
         draw = (pixelValue == 1 || pixelValue == 2);
@@ -173,6 +174,7 @@ struct DirectPixelWriter {
         msb = draw;
         lsb = (pixelValue == 2);
         break;
+      }
       default:
         return;
     }

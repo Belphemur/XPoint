@@ -1,5 +1,6 @@
 #include "SleepActivity.h"
 
+#include <BitmapHelpers.h>
 #include <Epub.h>
 #include <Epub/converters/PngToFramebufferConverter.h>
 #include <FontCacheManager.h>
@@ -289,11 +290,12 @@ bool renderTransparentOverlayPass(HalFile& file, const OverlayBmpInfo& info, con
           renderer.drawPixel(screenX, screenY, level < 3);
           break;
         case TransparentOverlayPass::GrayscaleLsb:
-          if (level == 1) renderer.drawPixel(screenX, screenY, false);
+        case TransparentOverlayPass::GrayscaleMsb: {
+          const auto planePixel =
+              grayPlanePixel(level, pass == TransparentOverlayPass::GrayscaleMsb, renderer.grayPlanesAreAbsolute());
+          if (planePixel.write) renderer.drawPixel(screenX, screenY, planePixel.black);
           break;
-        case TransparentOverlayPass::GrayscaleMsb:
-          if (level == 1 || level == 2) renderer.drawPixel(screenX, screenY, false);
-          break;
+        }
       }
     }
   }
@@ -348,19 +350,25 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
 
   if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::BW))
     return AlphaOverlayResult::Error;
-  renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return AlphaOverlayResult::Error;
+  } else {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
 
-  renderer.clearScreen(0x00);
+  // Absolute planes retain B/W background bits; each visible overlay pixel is rewritten in both passes.
+  if (!absolute) renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
   if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::GrayscaleLsb)) {
     renderer.setRenderMode(GfxRenderer::BW);
-    // The BW composite is already on the panel. Keep it instead of falling
-    // through to another overlay with this grayscale work buffer cleared.
+    // Keep the current display instead of trying another overlay with a
+    // framebuffer that now contains an incomplete gray plane.
     return AlphaOverlayResult::Rendered;
   }
   renderer.copyGrayscaleLsbBuffers();
 
-  renderer.clearScreen(0x00);
+  if (!absolute) renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
   if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::GrayscaleMsb)) {
     renderer.setRenderMode(GfxRenderer::BW);
@@ -502,24 +510,40 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 // SSD1677 the (0,0) LUT group is a hold waveform, on UC8279 displayStart
 // snapshots the base and the plane copies fold it into the absolute planes.
 void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, const int x, const int y, const int maxW,
-                               const int maxH, const float cropX, const float cropY, const bool hasGreyscale) {
+                               const int maxH, const float cropX, const float cropY, const bool hasGreyscale,
+                               const bool preserveBackground = false) {
   if (!hasGreyscale) {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     return;
   }
 
-  // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
-  // calibrated against the pixel state the single-pass HALF waveform leaves
-  // behind. A FULL (GC) base parks pixels in a different charge state and
-  // the differential nudge then lands unevenly (blotchy noise in gray areas).
-  renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  // Absolute planes retain the B/W base image (no clear needed) and need the
+  // absolute-quality base pass; the overlay pipeline repaints into cleared
+  // planes over the OEM HALF base.
+  const bool absolute = !preserveBackground &&
+                        renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return;
+  } else {
+    // OEM grayscale pipeline base. Must stay HALF: the gray nudge LUT is
+    // calibrated against the pixel state the single-pass HALF waveform leaves
+    // behind. A FULL (GC) base parks pixels in a different charge state and
+    // the differential nudge then lands unevenly (blotchy noise in gray areas).
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
 
   constexpr GfxRenderer::RenderMode grayPasses[2] = {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB};
   for (const auto mode : grayPasses) {
-    bitmap.rewindToData();
-    renderer.clearScreen(0x00);
+    if (bitmap.rewindToData() != BmpReaderError::Ok) {
+      LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
+      return;
+    }
+    renderer.clearScreen(absolute ? 0xFF : 0x00);
     renderer.setRenderMode(mode);
-    renderer.drawBitmap(bitmap, x, y, maxW, maxH, cropX, cropY);
+    if (!renderer.drawBitmap(bitmap, x, y, maxW, maxH, cropX, cropY)) {
+      LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
+      return;
+    }
     if (mode == GfxRenderer::GRAYSCALE_LSB) {
       renderer.copyGrayscaleLsbBuffers();
     } else {
@@ -686,7 +710,10 @@ void SleepActivity::renderCustomSleepScreen() const {
   // This takes priority over the /sleep folder.
   HalFile file;
   if (Storage.openFileForRead("SLP", "/sleep.bmp", file)) {
-    Bitmap bitmap(file, true);
+    Bitmap bitmap(file, true,
+                  renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
+                      display.getController() == HalDisplay::Controller::SSD1677 &&
+                      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Loading: /sleep.bmp");
       renderBitmapSleepScreen(bitmap);
@@ -706,7 +733,10 @@ void SleepActivity::renderCustomSleepScreen() const {
     if (Storage.openFileForRead("SLP", selectedPath, randFile)) {
       LOG_DBG("SLP", "Randomly loading: %s", selectedPath.c_str());
       delay(100);
-      Bitmap bitmap(randFile, true);
+      Bitmap bitmap(randFile, true,
+                    renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
+                        display.getController() == HalDisplay::Controller::SSD1677 &&
+                        SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
       if (bitmap.parseHeaders() == BmpReaderError::Ok) {
         renderBitmapSleepScreen(bitmap);
         randFile.close();
@@ -762,14 +792,18 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
       bitmap.hasGreyscale() && (preserveBackground || SETTINGS.sleepScreenCoverFilter ==
                                                           CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
 
-  renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY);
+  if (!renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, cropX, cropY)) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    return;
+  }
 
   if (!preserveBackground &&
       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
   }
 
-  displayImageWithGrayscale(renderer, bitmap, x, y, pageWidth, pageHeight, cropX, cropY, hasGreyscale);
+  displayImageWithGrayscale(renderer, bitmap, x, y, pageWidth, pageHeight, cropX, cropY, hasGreyscale,
+                            preserveBackground);
 }
 
 bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog) const {
@@ -811,9 +845,15 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   LOG_DBG("SLP", "Rendering transparent PNG overlay: %s (%dx%d)", path.c_str(), dimensions.width, dimensions.height);
 
   if (!converter.decodeToFramebuffer(path, renderer, config)) return false;
-  renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  const bool absolute = renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  if (absolute) {
+    if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return false;
+  } else {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  }
 
-  renderer.clearScreen(0x00);
+  // Absolute planes retain B/W background bits; each visible overlay pixel is rewritten in both passes.
+  if (!absolute) renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
   if (!converter.decodeToFramebuffer(path, renderer, config)) {
     renderer.setRenderMode(GfxRenderer::BW);
@@ -821,7 +861,7 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   }
   renderer.copyGrayscaleLsbBuffers();
 
-  renderer.clearScreen(0x00);
+  if (!absolute) renderer.clearScreen(0x00);
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
   if (!converter.decodeToFramebuffer(path, renderer, config)) {
     renderer.setRenderMode(GfxRenderer::BW);
@@ -889,6 +929,11 @@ void SleepActivity::renderCoverSleepScreen() const {
 
 bool SleepActivity::resolveCoverBmpPath(const std::string& bookPath, std::string& outPath) {
   const bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
+  // SSD absolute images use the new thresholds; other panels retain legacy tuning.
+  const bool originalThresholds =
+      renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported() &&
+      display.getController() == HalDisplay::Controller::SSD1677 &&
+      SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
 
   // Check if the current book is XTC, TXT, or EPUB
   if (FsHelpers::hasXtcExtension(bookPath)) {
@@ -928,12 +973,12 @@ bool SleepActivity::resolveCoverBmpPath(const std::string& bookPath, std::string
       return false;
     }
 
-    if (!lastEpub.generateCoverBmp(cropped)) {
+    if (!lastEpub.generateCoverBmp(cropped, originalThresholds)) {
       LOG_ERR("SLP", "Failed to generate cover bmp");
       return false;
     }
 
-    outPath = lastEpub.getCoverBmpPath(cropped);
+    outPath = lastEpub.getCoverBmpPath(cropped, originalThresholds);
   } else {
     return false;
   }
