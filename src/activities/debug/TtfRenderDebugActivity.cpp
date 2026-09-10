@@ -96,15 +96,21 @@ void TtfRenderDebugActivity::onEnter() {
   }
 #endif
 
-  // Seed the debug chapter once.
+  // Seed the debug chapter once. The settings dir may not exist on a fresh
+  // card; openFileForWrite does not create parent directories.
   if (!Storage.exists(kDebugTextPath)) {
+    Storage.ensureDirectoryExists("/.crosspoint");
     HalFile f;
     if (!Storage.openFileForWrite("TTFDBG", kDebugTextPath, f)) {
       LOG_ERR("TTFDBG", "text seed write failed: %s", kDebugTextPath);
       showFatal();
       return;
     }
-    f.write(kDebugText, strlen(kDebugText));
+    if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText)) {
+      LOG_ERR("TTFDBG", "text seed short write: %s", kDebugTextPath);
+      showFatal();
+      return;
+    }
   }
 
   book::fontLoader.ensureLoaded();

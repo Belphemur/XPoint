@@ -21,7 +21,9 @@ SdCardCacheStorage::SdCardCacheStorage(const char* dirPath) {
   }
   memcpy(dir_, dirPath, len + 1);
   // Normalize: no trailing slash; buildPath() always joins with '/'.
-  while (len > 1 && dir_[strlen(dir_) - 1] == '/') dir_[strlen(dir_) - 1] = '\0';
+  while (strlen(dir_) > 1 && dir_[1] != '\0' && dir_[strlen(dir_) - 1] == '/') {
+    dir_[strlen(dir_) - 1] = '\0';
+  }
   if (!Storage.ensureDirectoryExists(dir_)) LOG_ERR("TTFB", "CacheStorage: mkdir failed: %s", dir_);
 }
 

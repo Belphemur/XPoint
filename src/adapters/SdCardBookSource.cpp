@@ -12,7 +12,7 @@ SdCardBookSource::SdCardBookSource(const char* path) {
     LOG_ERR("TTFB", "BookSource: empty path");
     return;
   }
-  if (!Storage.openFileForRead("BOOKSRC", path, file_)) {
+  if (!Storage.openFileForRead("TTFB", path, file_)) {
     LOG_ERR("TTFB", "BookSource open failed: %s", path);
     return;
   }
