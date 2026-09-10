@@ -65,17 +65,6 @@ namespace {
 // fresh page needs the HALF ghost-cleanup and closing re-renders the page.
 bool xteinkClassPanel() { return gpio.isXteinkDevice() || BoardConfig::isX4Pro() || BoardConfig::isX4Classic(); }
 
-// Design §4.5: below 5% battery — and only when the gauge read is HEALTHY and
-// the battery is NOT charging — every page turn persists synchronously
-// instead of waiting for the saver task (LOW_BATTERY_PERCENT, design §5).
-constexpr uint8_t LOW_BATTERY_PERCENT = 5;
-
-bool isLowBattery() {
-  if (powerManager.isBatteryCharging()) return false;
-  if (powerManager.getBatteryHealthState() != HalPowerManager::BatteryHealthState::HEALTHY) return false;
-  return powerManager.getBatteryPercentage() < LOW_BATTERY_PERCENT;
-}
-
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
@@ -200,14 +189,11 @@ EpubReaderActivity::~EpubReaderActivity() {
   ImageBlock::setExtractor(nullptr, nullptr);
   discardOverlayPage();  // free the overlay's page snapshot if one is held
 
-  // Design §4.4: the last captured position is flushed synchronously BEFORE
-  // the epub/section teardown (epub may be released below). No-op when
-  // nothing is pending or no book is registered. The freshness reference is
-  // cleared FIRST so the exit flush is never gated by a position snapshot
-  // (and a background tick can never call into a destroying activity).
-  progressManager.clearPosition();
-  progressManager.flushNow();
-  progressManager.setBook(nullptr);
+  // Design §4.4: exit flushing is the manager's job — closeBook() flushes
+  // any unflushed change synchronously (bounded by one record write) and
+  // resets the manager state. The manager stays valid after this; no
+  // background tick can touch reader state.
+  progressManager.closeBook();
 
   if (footnoteDepth > 0 && epub) {
     const SavedPosition& origin = savedPositions[0];
@@ -386,17 +372,16 @@ bool EpubReaderActivity::loadBook() {
   });
 
   epub->setupCacheDir();
-  progressManager.setBook(epub->getCachePath().c_str());
 
-  // ProgressManager owns the record format: one call decodes the on-disk
-  // state (was a hand-rolled byte parse here).
+  // ProgressManager is the single source of truth: openBook() loads the
+  // on-disk record, seeds the manager's state, and hands the position back.
   uint16_t savedSpine = 0;
   uint16_t savedPage = 0;
   uint16_t savedPageCount = 0;
   uint32_t savedOffset = 0;
-  const size_t recordSize =
-      ProgressManager::load(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount, savedOffset);
-  if (recordSize > 0) {
+  const bool progressLoaded =
+      progressManager.openBook(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount, savedOffset);
+  if (progressLoaded) {
     currentSpineIndex = savedSpine;
     nextPageNumber = savedPage;
     if (nextPageNumber == UINT16_MAX) {
@@ -404,19 +389,11 @@ bool EpubReaderActivity::loadBook() {
       nextPageNumber = 0;
     }
     cachedSpineIndex = currentSpineIndex;
-    if (recordSize == ProgressManager::RECORD_SIZE_BASE) {
-      cachedChapterTotalPageCount = savedPageCount;
-    } else {
-      cachedChapterTotalPageCount = savedPageCount;
+    cachedChapterTotalPageCount = savedPageCount;
+    if (savedPageCount > 0) {
       cachedVisibleTextOffset = savedOffset;
     }
     LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
-
-    // Register the loaded progress as the manager's baseline so
-    // "reopen, read nothing, exit" is a no-op: the first capture compares
-    // equal to the record already on disk (Copilot, PR #107).
-    progressManager.seedLastFlushed(currentSpineIndex, nextPageNumber, cachedChapterTotalPageCount,
-                                    recordSize == ProgressManager::RECORD_SIZE_OFFSET, savedOffset);
   }
 
   if (currentSpineIndex == 0) {
@@ -1806,36 +1783,11 @@ void EpubReaderActivity::renderBook() {
   }
 
   {
-    // Change detection lives in the saver (design §4.2): the in-memory
-    // lastFlushed compare includes visibleTextOffset, so a same-page
-    // re-layout that only shifts the offset still counts (the old
-    // spine/page/count-only guard silently skipped it — Copilot, PR #107).
-    const uint16_t pageCount = section->estimatedTotalPages();
-    // currentPageVisibleOffset is the offset of the page just rendered
-    // (currentSpineIndex), same convention saveProgress() uses.
-    const bool hasOffset = currentPageVisibleOffset.has_value();
-    // Publish the just-rendered position as the saver's freshness reference
-    // (under the saver mutex; no reader state is read at write time —
-    // Copilot+CodeRabbit data-race finding, PR #107).
-    progressManager.publishPosition(currentSpineIndex, section->currentPage, pageCount, hasOffset,
-                                    currentPageVisibleOffset.value_or(0));
-    if (isLowBattery()) {
-      // Low battery: persist on every turn (design §4.5). Charging counts as
-      // NOT low battery (decision log 2026-09-10). saveNow captures through
-      // the saver's change detection then flushes synchronously — an
-      // unchanged record is a no-op (renderBook runs for redraws too), and a
-      // failure stays pending for the tick to retry (single writer, §4.7).
-      if (!progressManager.saveNow(epub->getCachePath().c_str(), currentSpineIndex, section->currentPage, pageCount,
-                                   hasOffset, currentPageVisibleOffset.value_or(0))) {
-        LOG_ERR("ERS", "Low-battery progress save failed: spine=%d page=%d", currentSpineIndex, section->currentPage);
-      }
-    } else {
-      // Normal battery: capture only — the saver task writes it within one
-      // flush interval (design §4.1). Equal captures are no-ops inside the
-      // saver, so an unchanged page costs nothing.
-      progressManager.capture(currentSpineIndex, section->currentPage, pageCount, hasOffset,
-                              currentPageVisibleOffset.value_or(0));
-    }
+    // One call per render: the manager keeps the in-memory position current
+    // and gates the disk write itself (changed + interval, or low battery —
+    // §4.2/§4.5). Unchanged renders are no-ops inside the manager.
+    progressManager.save(currentSpineIndex, section->currentPage, section->estimatedTotalPages(),
+                         currentPageVisibleOffset.has_value(), currentPageVisibleOffset.value_or(0));
   }
   showPendingSyncSaveError();
 

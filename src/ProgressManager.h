@@ -1,5 +1,6 @@
 #pragma once
 
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -7,23 +8,26 @@
 
 #include "../lib/ProgressFlush/ProgressFlush.h"
 
-// Progress manager for the EPUB reader — the SINGLE owner of everything
-// about reading progress (docs/design/2026-09-10-progress-save-timer.md):
-// - owns the on-disk record format (encode + decode of the 10-byte
-//   progress.bin record; EpubReaderUtils::saveProgress delegates here);
-// - owns reading it back (load(), called at book open);
-// - owns writing it: a low-priority task persists a dirty-gated record
-//   every FLUSH_INTERVAL_MS; book exit, sleep and power-off use flushNow();
-//   bypass paths use saveNow(). Single writer of progress state.
+// Single owner of EPUB reading progress
+// (docs/design/2026-09-10-progress-save-timer.md):
+// - FORMAT: the progress.bin record is encoded/decoded only here
+//   (private saveRecord()/load()); EpubReaderUtils::saveProgress wraps
+//   saveRecord.
+// - STATE: the current position AND the last-flushed baseline live here
+//   (heap-allocated; PSRAM on boards that have it). The reader reports
+//   every page change via save(); the manager decides what reaches disk.
+// - WRITES: gated — a change is persisted when FLUSH_INTERVAL_MS elapsed
+//   since the last flush (or low battery); the write runs on the manager
+//   task (core 0) so the reader never blocks on SD in steady state. Book
+//   exit (closeBook) and sleep/power-off (flushNow) flush synchronously.
 //
 // The manager holds a COPY of the book's cache path, never the Epub object
 // — the reader may release the epub before teardown (KOReader sync path),
-// so a raw pointer would dangle. No book registered = flush is a no-op.
+// so a raw pointer would dangle. No book open = writes are no-ops.
 //
-// Shared state is guarded by one mutex (review finding B1): on the dual-core
-// S3 a bare portENTER_CRITICAL is per-core and not a cross-core exclusion
-// pair. The mutex never wraps SD I/O; the record is copied out under the
-// mutex and written outside it.
+// One mutex guards all state AND each disk write (single writer by
+// construction: the worker and the synchronous flush paths can never run
+// two writeAtomic() calls against the same file concurrently).
 class ProgressManager {
  public:
   static constexpr unsigned long FLUSH_INTERVAL_MS = 60000;
@@ -40,69 +44,66 @@ class ProgressManager {
   ProgressManager& operator=(const ProgressManager&) = delete;
 
   void begin();
-  // Register the current book's cache dir. Empty path = no book (flushes no-op).
-  void setBook(const char* cachePath);
-  // Capture the reader's current position. Cheap, called from the reader
-  // task on every position change; no SD I/O.
-  void capture(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
-               uint32_t visibleTextOffset);
-  // Synchronous flush of the pending record (if any). Called on book exit,
-  // sleep entry and power-off. Returns true when nothing was left unwritten.
-  bool flushNow();
-  // THE synchronous progress save: writes `record` to `cachePath` right now
-  // and records it as lastFlushed so the background tick never rewrites it.
-  // Every save that bypasses the background task (low-battery per-turn,
-  // footnote exit, DELETE_CACHE, KOReader sync) MUST go through here — the
-  // manager is the single writer of progress state (design §4.7).
+  // Book open: loads the on-disk record (if valid) as BOTH the current
+  // progress and the last-flushed baseline, and registers the cache dir.
+  // Returns true when a record was loaded (out fields filled, hasOffset
+  // implied by the record size); false = fresh book (outs are 0).
+  bool openBook(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber, uint16_t& pageCount,
+                uint32_t& visibleTextOffset);
+  // The reader calls this on EVERY page change: the in-memory position is
+  // always up to date; the disk write is queued to the manager task only
+  // when the gate allows (changed + interval elapsed, or low battery).
+  void save(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset, uint32_t visibleTextOffset);
+  // Forced synchronous save for bypass paths (KOReader sync, DELETE_CACHE):
+  // writes `record` to `cachePath` now, updates the in-memory state to
+  // match. Works even with no book open (explicit cache path).
   bool saveNow(const char* cachePath, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
                uint32_t visibleTextOffset);
-  // Read the progress record for `cachePath`. Returns the byte count written
-  // to `data` (0 = no/garbage record) and fills `out` with the decoded
-  // fields; hasOffset/visibleTextOffset only valid when size 10.
-  // Replaces the reader's hand-rolled progress.bin parsing (DRY: one
-  // encoder, one decoder, both live here next to the format they define).
-  static size_t load(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber, uint16_t& pageCount,
-                     uint32_t& visibleTextOffset);
-  // Encode + write the record atomically. Static: the single producer of
-  // the on-disk byte layout (internal flush paths and EpubReaderUtils's
-  // convenience wrapper both route through here).
-  static bool saveRecord(const char* cachePath, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount,
-                         bool hasOffset, uint32_t visibleTextOffset);
-  // Periodic flush attempt from the manager task.
-  void flushTick();
-
-  // Publish the reader's current position as the freshness reference. Called
-  // by the reader (under RenderLock) after every render; the saver's
-  // write-time check compares the pending record against this snapshot —
-  // NO reader state is touched at write time, so there is no cross-task
-  // data race on `section`/reader members (Copilot+CodeRabbit, PR #107).
-  void publishPosition(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
-                       uint32_t visibleTextOffset);
-  // Reader teardown: the pending record is no longer verifiable against a
-  // live position, so freshness checks pass until setBook(nullptr) resets.
-  void clearPosition();
-  // Seed lastFlushed from the progress record ALREADY ON DISK at book load
-  // (validated by the caller). Baselines change detection so "reopen, read
-  // nothing, exit" writes nothing (Copilot, PR #107). No SD write.
-  void seedLastFlushed(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, bool hasOffset,
-                       uint32_t visibleTextOffset);
-
-  bool shouldFlush() const;
+  // Book exit: synchronous flush of any unflushed change (bounded by one
+  // record write), then full state reset. Called by the reader destructor —
+  // exit flushing is the manager's job, not the activity's.
+  void closeBook();
+  // Sleep / power off / explicit exit flush: synchronous flush of any
+  // unflushed change, state kept. Safe to call with no book open (no-op).
+  bool flushNow();
 
  private:
-  // Core flush, mutex MUST be held by the caller (writePending / saveNow).
-  bool writePendingLocked();
+  // ---- record format: the only encoder/decoder lives here ----
 
-  bool writePending();
+  // Read the progress record for `cachePath`. Returns the byte count read
+  // (0 = no/garbage record) and fills the outs; visibleTextOffset only
+  // meaningful when RECORD_SIZE_OFFSET is returned.
+  static size_t load(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber, uint16_t& pageCount,
+                     uint32_t& visibleTextOffset);
+  // Encode + write the record atomically. The single producer of the
+  // on-disk byte layout (internal flush paths and EpubReaderUtils's
+  // convenience wrapper route through here).
+  static bool saveRecord(const char* cachePath, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount,
+                         bool hasOffset, uint32_t visibleTextOffset);
+
+  // Mutex held: write current_ when it differs from lastFlushed_. Returns
+  // true when nothing needed writing or the write succeeded.
+  bool flushChangedLocked();
+
+  // Low-battery threshold (design §4.5): below this (gauge HEALTHY, not
+  // charging) save() stops gating on the interval — every change is
+  // persisted as soon as the worker can.
+  static constexpr uint8_t LOW_BATTERY_PERCENT = 5;
+  // Gate-time low-battery query: the HAL's cached reading (BATTERY_POLL_MS
+  // cadence) makes this cheap; only reads the battery singleton.
+  bool lowBattery() const;
 
   SemaphoreHandle_t mutex_ = nullptr;
-  ProgressFlush::FlushState state_;
+  // Heap-allocated state (poolMalloc: PSRAM-backed on BOARD_HAS_PSRAM
+  // boards, DRAM otherwise). Null = uninitialized (begin() failed): all
+  // ops no-op.
+  ProgressFlush::Record* current_ = nullptr;
+  ProgressFlush::Record* lastFlushed_ = nullptr;
+  unsigned long lastFlushMs_ = 0;  // last successful disk flush (millis())
   char cachePath_[160] = {0};
-  // Last position the reader published (under mutex_, via publishPosition).
-  // The write-time freshness check compares the pending record against this
-  // snapshot instead of dereferencing reader state from the manager task.
-  ProgressFlush::Record lastPublished_{};
-  bool positionPublished_ = false;  // any position published since setBook()
+  bool bookOpen_ = false;
+  bool writeQueued_ = false;  // worker owes a write
+  TaskHandle_t worker_ = nullptr;
 };
 
 // Global instance (created at boot, fed by the EPUB reader activity).

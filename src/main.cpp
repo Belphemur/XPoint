@@ -192,7 +192,6 @@ static bool finishWifiSessionWithoutRestart() {
 #endif
 
 void silentRestart() {
-  if (deepSleepInProgress || powerOffInProgress) return;  // sleeping/powering off supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
   if (finishWifiSessionWithoutRestart()) return;
 #endif
