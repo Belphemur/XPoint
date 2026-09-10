@@ -689,44 +689,99 @@ control over the legacy engine is meaningless. Consequences:
 ### 14.3 Fallback font: Atkinson Hyperlegible Next (round-3 directive)
 
 The always-present chain-tail fallback for PSRAM builds is **Atkinson
-Hyperlegible Next**, not the bundled `kNotoSansFont`:
-
-- `BitmapBookFont(const BitmapFont&)` takes any FreeInkUI `BitmapFont`, so the
-  fallback is generated with the SDK's own tool:
-  `freeink-sdk/libs/ui/FreeInkUI/tools/gen_font.py --ttf
-  AtkinsonHyperlegibleNext-<Style>.ttf --alpha ...` (source TTFs are the same
-  googlefonts/atkinson-hyperlegible-next releases already used by
-  `lib/EpdFont/scripts/sd-fonts.yaml:268-277`).
-- Emit 4 style variants (regular/bold/italic/bold-italic) at a body-text size
-  (~16px) with `--alpha` so anti-aliasing survives the adapter's 4bpp path;
-  register them as `kAtkinsonBookFont<Style>` and hand them to
-  `BookFontLoader`'s fallback chain in place of the four `kNotoSansFont`
-  instances (BookFontLoader.cpp:208-211 — Phase 2 change).
-- Rationale: book text should fall back to the same typeface users know from
-  the bitmap reader, Noto Sans remains the UI-chrome face, and the SDK's
-  bundled Noto data is not duplicated in flash.
-- Fallback semantics unchanged: end-of-chain, never a selectable family,
-  covers glyphs/styles a chosen TTF family lacks; single baked size (headings
-  render at body size under fallback).
+Hyperlegible Next, served from the bitmap font data already baked in flash**
+(`lib/EpdFont/builtinFonts/atkinson_hn_*.h`) — no new font payload, no
+`gen_font.py` run. Consumed through a CrossPoint-side `EpdBookFont :
+book::RenderFont` adapter over `EpdFontData` (see §14.5 for the full design
+and rationale; `BitmapBookFont`'s contiguous-range/1-4bpp assumptions do not
+fit the compressed 2-bit interval-based builtin data).
 
 ### 14.4 SD layout & file expectations (normative for Phase 2)
 
+**Round-3 directives: (a) one subfolder per family; (b) reuse the SAME font
+folders as the legacy bitmap system.** The TTF scanner walks the roots the
+legacy registry already uses and simply ignores the files it does not care
+about — one folder tree hosts both engines, no migration, no duplication.
+
 ```
-/fonts/                          ← SD-card root, non-recursive
-  MyFamily-Regular.ttf           ← filename convention (§3.7): suffix
-  MyFamily-Bold.ttf                match, case-insensitive; unknown suffix
-  MyFamily-Italic.ttf              = single-style Regular family named by stem
-  MyFamily-BoldItalic.ttf
-  SomeFont.ttf                   (→ family "SomeFont", Regular only)
-  free-fonts.json                OPTIONAL metadata (display names, license);
-                                 disk scan always wins over the manifest
+/fonts/                            ← visible root (legacy: /fonts)
+  Literata/
+    Literata-Regular.ttf           ← TTF: style inferred from the name (below)
+    Literata-Bold.ttf
+    Bookerly_14.cpfont             ← legacy file: IGNORED by the TTF scanner
+  Bookerly-SD/
+    Bookerly-SD_14.cpfont          ← legacy .cpfont bundle, untouched
+  SomeFamily/
+    regular.otf                    ← .otf works too
+  /.fonts/                         ← hidden root (legacy-preferred, SdCardFontRegistry.h:33-34)
+  free-fonts.json                  OPTIONAL, at root level (display names,
+                                   license); disk scan always wins
 ```
 
-- Suffixes: `-Regular`, `-Bold`, `-Italic`, `-BoldItalic` (case-insensitive).
-- Raw `.ttf`/`.otf` only — no `.cpfont`, no conversion (that is the point).
-- One file = one face; up to 4 faces group into a family; more than one family
-  is fine (32-family cap in the loader).
+**Folder = family; extension filtering is the only gate.** Both roots
+(`/fonts` and the hidden `/.fonts`) are scanned — hidden-root families win,
+exactly as `SdCardFontRegistry::scanRoot()` de-duplicates today
+(SdCardFontRegistry.cpp:201-202). Within a family folder the TTF scanner
+accepts only `.ttf`/`.otf`; `.cpfont` (legacy bundles), `.tmp`, `~` backups,
+`.json`, and macOS `._*`/hidden files are skipped without a log. The legacy
+`SdCardFontRegistry` in turn ignores `.ttf`/`.otf` (it only accepts
+`<name>_<size>.cpfont`, SdCardFontRegistry.cpp:62-95) — the two scanners
+coexist on the same folders with zero interference.
+
+**Folder name = family display name** (case preserved). Nested folders inside
+a family folder are ignored (one level deep only).
+
+**Style inference (per accepted file).** Match the filename
+(case-insensitive, extension stripped, word-boundary so `SemiBold` never
+matches `Bold`) against, in priority order:
+
+1. `bolditalic` / `bold_italic` / `bold-italic` → BoldItalic
+2. `italic`, `oblique`, `ital` → Italic
+3. `bold` → Bold
+4. `regular`, `normal`, `book`, `roman`, `text` → Regular
+5. No match → heuristics: `semibold`/`demibold`/`medium`/`black`/`heavy`/
+   `extrabold` → Bold; `light`/`thin` → Regular; folder with exactly one file
+   → Regular regardless of its name; otherwise the file is skipped with
+   `LOG_DBG` (unknown style). Duplicate style resolution: lexicographically
+   first wins, rest logged. A family with no Regular match but ≥1 file
+   promotes its first file to Regular.
+
+- One file = one face; up to 4 faces per family (regular/bold/italic/
+  bold-italic); 32-family cap (`kMaxDiscoveredFamilies`).
 - Per-face size guard: 2MB (CWE-400) on the PSRAM tier; fonts are loaded
   whole-file into PSRAM and stay resident while the face is live (§3.3).
-- PSRAM-less boards: `/fonts/` is not scanned, files may be present but are
-  ignored — no font bytes are ever read (§3.3 directive).
+- Enumeration: `HalStorage::listFiles()` on each root +
+  `HalFile::openNextFile()`/`isDirectory()` per family folder — the same
+  two-level walk `SdCardFontRegistry::scanDirectory()` already performs
+  (SdCardFontRegistry.cpp:98-142). No new HAL surface needed.
+- `free-fonts.json` stays optional metadata; when it and the disk disagree,
+  disk wins (§3.7).
+- PSRAM-less boards: the TTF scanner does not run at all; the legacy
+  registry keeps the folders to itself (§3.3 directive).
+
+### 14.5 Fallback font: Atkinson Hyperlegible Next from EXISTING bitmap data (round-3 directive)
+
+The always-present chain-tail fallback for PSRAM builds is **Atkinson
+Hyperlegible Next reusing the bitmap data already shipped in flash** — no new
+font payload is added:
+
+- The repo already bakes Atkinson Hyperlegible Next at 4 sizes × 4 styles as
+  compressed 2-bit `EpdFontData` (`lib/EpdFont/builtinFonts/atkinson_hn_*.h`,
+  generated by `fontconvert.py` with `--2bit --compress`; families wired in
+  `src/main.cpp:118-146`).
+- The SDK's `BitmapBookFont` cannot consume that data directly (it assumes a
+  contiguous codepoint range and raw 1/4-bit glyphs; `EpdFontData` uses
+  unicode intervals, optional DEFLATE groups, and 2-bit packing). Phase 2
+  therefore adds a small **`EpdBookFont : book::RenderFont`** adapter
+  (CrossPoint-side, alongside `src/adapters/`) that wraps one
+  `EpdFontData*`: interval lookup → `FontDecompressor` → 2-bit expansion to
+  8-bit coverage → `GlyphBitmap`, mapping `EpdGlyph.left/top` to
+  `xoff/yoff` and `fp4::toPixel(advanceX)` to `advance`. The four
+  atkinson_hn14 style faces register as the fallback chain in place of the
+  four `kNotoSansFont` instances (BookFontLoader.cpp:208-211).
+- Rationale: the fallback is the same typeface the bitmap reader already
+  uses; zero additional flash; kern/ligature tables come along for free.
+- Fallback semantics unchanged: end-of-chain, never a selectable family,
+  covers glyphs/styles a chosen TTF family lacks; single baked size
+  (headings render at body size under fallback). `kNotoSansFont` stays
+  UI-chrome only.
