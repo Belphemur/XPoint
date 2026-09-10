@@ -85,7 +85,7 @@ void PageHorizontalRule::render(GfxRenderer&, int, int, int) {}
 // Host stubs for the cover-image converters (declared in the JpegToBmpConverter.h /
 // PngToBmpConverter.h stub headers); Epub.cpp's generateCoverBmp/generateThumbBmp
 // are never called by this test.
-bool JpegToBmpConverter::jpegFileToBmpStream(HalFile&, HalFile&, bool) { return false; }
+bool JpegToBmpConverter::jpegFileToBmpStream(HalFile&, HalFile&, bool, bool) { return false; }
 bool JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(HalFile&, HalFile&, int, int) { return false; }
-bool PngToBmpConverter::pngFileToBmpStream(HalFile&, HalFile&, bool) { return false; }
+bool PngToBmpConverter::pngFileToBmpStream(HalFile&, HalFile&, bool, bool) { return false; }
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile&, HalFile&, int, int) { return false; }
