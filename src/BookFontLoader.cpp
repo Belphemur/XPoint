@@ -21,10 +21,11 @@
 // numTables sanity; on failure LOG_ERR + skip the face. TtfFont::init only
 // checks len<12 (TtfFont.cpp:36). Test corpus includes 2 malformed fonts.
 //
-// Face bytes: loaded into a transient buffer via loadFaceBytes, NOT kept
-// resident after init; stb needs bytes addressable only during init().
-// After init the raw bytes are released and glyph data lives in the per-face
-// arena (owned by BookFontLoader for the face's lifetime).
+// Face bytes: stb_truetype BORROWS the source bytes — they must stay resident
+// for the face's lifetime (TtfFont.h: "data is borrowed and must outlive the
+// font"). They live in fontPsramBytes_/fontDramBytes_ RAII owners, released
+// only in ensureLoaded()/releaseResidentCaches() when the face is deleted.
+// Glyph rasters live in the per-face arena (owned by BookFontLoader).
 //
 // Per AGENTS.md: makeUniqueNoThrow, no std::string in hot paths, tr() for UI
 // strings, HalStorage only (never SdFat direct).
@@ -35,6 +36,10 @@
 #include <HalMemory.h>
 #include <HalStorage.h>
 #include <Logging.h>
+
+#ifdef HOST_TEST
+#include "Arduino.h"  // host-test stub for ESP.getFreeHeap
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -47,6 +52,10 @@ namespace book {
 // derived from ESP.getFreeHeap()/getMaxAllocHeap() after all arenas are
 // allocated; this constant is the current placeholder (128KB floor).
 static constexpr uint32_t kMaxDramFontBytes = 128 * 1024;
+
+// PSRAM-tier per-face size guard (CWE-400): fonts live resident in PSRAM for
+// the face's lifetime; bound each file well below the 8MB PSRAM pool.
+static constexpr uint32_t kMaxPsramFontBytes = 2 * 1024 * 1024;
 
 // SFNT minimum: 12-byte header + numTables * 16-byte entries.
 static constexpr uint32_t kMinSfntLen(uint16_t numTables) { return 12u + static_cast<uint32_t>(numTables) * 16u; }
@@ -107,14 +116,13 @@ void BookFontLoader::begin() {
 void BookFontLoader::ensureLoaded() {
   if (!dirty_.load(std::memory_order_relaxed) && fingerprint_ != 0) return;
 
-  // Clear previous state.
+  // Clear previous state. The RAII owners (fontPsramBytes_/fontDramBytes_)
+  // release the byte buffers; never poolFree the raw pointers manually —
+  // fontPsramBytes_[i].reset() already calls poolFree (double-free).
   for (uint8_t i = 0; i < 4; ++i) {
     if (faces_[i]) {
       delete faces_[i];
       faces_[i] = nullptr;
-    }
-    if (fontBytes_[i] && faceBytesOwner_[i] == 1u) {
-      poolFree(fontBytes_[i]);
     }
     fontBytes_[i] = nullptr;
     fontPsramBytes_[i].reset();
@@ -125,6 +133,10 @@ void BookFontLoader::ensureLoaded() {
   }
   chain_ = FontChain{};
   if (familyCount_ == 0) return;
+
+  // Recompute the DRAM budget: the release loop above freed the previous
+  // faces' bytes, so a reload must not inherit the previously spent budget.
+  initBudget();
 
   const FamilyInfo& fam = families_[0];
   for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
@@ -146,13 +158,11 @@ uint32_t BookFontLoader::fontFingerprint() const { return fingerprint_; }
 void BookFontLoader::markDirty() { dirty_.store(true, std::memory_order_relaxed); }
 
 void BookFontLoader::releaseResidentCaches() {
+  // Same release discipline as ensureLoaded(): RAII owners own the bytes.
   for (uint8_t i = 0; i < 4; ++i) {
     if (faces_[i]) {
       delete faces_[i];
       faces_[i] = nullptr;
-    }
-    if (fontBytes_[i] && faceBytesOwner_[i] == 1u) {
-      poolFree(fontBytes_[i]);
     }
     fontBytes_[i] = nullptr;
     fontPsramBytes_[i].reset();
@@ -218,14 +228,20 @@ bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
 // fontPsramBytes_, fontDramBytes_, fontBytes_, arenas_, remainingBudget_).
 
 bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain) {
-  // DRAM-tier size gate: skip oversized files (design §3.3).
-  // Use aggregate budget: check against remainingBudget_ first, then kMaxDramFontBytes.
-  if (fi.fileSize > kMaxDramFontBytes) {
-    LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxDramFontBytes);
-    return false;
-  }
-  if (remainingBudget_ > 0 && fi.fileSize > remainingBudget_) {
-    LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file, fi.fileSize, remainingBudget_);
+  // DRAM-tier size gate: skip oversized files (design §3.3). PSRAM-backed
+  // boards bypass this DRAM budget; the PSRAM tier has its own guard below.
+  if (HalMemory::getPsramHeap().totalBytes == 0) {
+    if (fi.fileSize > kMaxDramFontBytes) {
+      LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxDramFontBytes);
+      return false;
+    }
+    // Budget of zero = exhausted; reject every non-empty font.
+    if (fi.fileSize > remainingBudget_) {
+      LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file, fi.fileSize, remainingBudget_);
+      return false;
+    }
+  } else if (fi.fileSize > kMaxPsramFontBytes) {
+    LOG_ERR("BFNT", "Font %s too large for PSRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxPsramFontBytes);
     return false;
   }
 
@@ -278,7 +294,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
   uint16_t numTables = static_cast<uint16_t>((static_cast<const uint8_t*>(fontBytes)[4] << 8) |
                                              static_cast<const uint8_t*>(fontBytes)[5]);
-  if (numTables == 0 || numTables > 65535) {
+  if (numTables == 0) {
     LOG_ERR("BFNT", "Font %s invalid numTables %u", fi.file, numTables);
     if (isPsram) {
       fontPsramBytes_[faceIdx].reset();
@@ -318,6 +334,11 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // Per-face glyph arena — each face gets its OWN persistent backing buffer
   // (not the shared glyphBuf from the previous version). This prevents
   // overwriting glyph data when loading multiple faces (PRRT_kwDOUDrzps6g4-n7).
+  // Size by SDK profile: TtfFont's slot tables alone need 4.6KB (SMALL:
+  // 256×12 + 64×24), 9.2KB (STANDARD: 512×12 + 128×24), 36.9KB (LARGE:
+  // 2048×12 + 512×24) before any glyph bitmap — 8KB fails STANDARD at
+  // TtfFont::init. 32KB covers STANDARD plus raster headroom; LARGE is
+  // not used by any current env.
   alignas(4) static uint8_t glyphBufs[4][kGlyphArenaBytes];
   arenas_[faceIdx] = Arena(glyphBufs[faceIdx], kGlyphArenaBytes);
 
@@ -380,8 +401,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
 void BookFontLoader::initBudget() {
   // Two-tier allocation budget (design §3.3): derive the DRAM budget from the
   // current free heap, keeping 32KB/16KB heap-gate floors for the hot render
-  // path and stack respectively. On PSRAM boards (S3) we can be generous;
-  // on C3 (no PSRAM) we must be conservative.
+  // path and stack respectively. On PSRAM boards (S3) fonts bypass the DRAM
+  // budget entirely, so this only governs the C3/Sticky (no-PSRAM) tier.
   uint32_t freeHeap = ESP.getFreeHeap();
   uint32_t maxAlloc = ESP.getMaxAllocHeap();
   uint32_t usable = std::min(freeHeap, maxAlloc);
@@ -390,7 +411,8 @@ void BookFontLoader::initBudget() {
   if (usable > floor) {
     remainingBudget_ = usable - floor;
   } else {
-    remainingBudget_ = kMaxDramFontBytes;
+    // Heap at/below the reserve: nothing safe to spend.
+    remainingBudget_ = 0;
   }
   // Cap at the compile-time max to avoid surprises.
   if (remainingBudget_ > kMaxDramFontBytes) {

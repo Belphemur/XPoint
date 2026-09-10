@@ -1,5 +1,4 @@
-#ifndef BOOK_FONT_LOADER_H
-#define BOOK_FONT_LOADER_H
+#pragma once
 
 #include <BookFont.h>
 #include <FreeInkBook.h>
@@ -84,8 +83,10 @@ class BookFontLoader {
   uint32_t fontFileSizes_[4] = {};
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
+  // Must fit TtfFont's profile-scaled slot tables: 4.6KB (SMALL) /
+  // 9.2KB (STANDARD) / 36.9KB (LARGE) before any glyph bitmap.
   Arena arenas_[4];
-  static constexpr size_t kGlyphArenaBytes = 8192;
+  static constexpr size_t kGlyphArenaBytes = 32 * 1024;
 
   // Aggregate DRAM budget: derived from free heap with floor guards.
   uint32_t remainingBudget_ = 0;
@@ -110,5 +111,3 @@ extern BookFontLoader fontLoader;
 
 }  // namespace book
 }  // namespace freeink
-
-#endif  // BOOK_FONT_LOADER_H
