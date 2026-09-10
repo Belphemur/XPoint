@@ -46,7 +46,7 @@
 #include <cstring>
 
 #include "render/TtfFont.h"
-#include "ui/FreeInkUIBookFont.h"
+#include <FreeInkUIBookFont.h>
 
 namespace freeink {
 namespace book {
