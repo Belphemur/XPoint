@@ -3,7 +3,6 @@
 #if defined(CROSSPOINT_TTF_DEBUG)
 
 #include <Arduino.h>  // ESP heap counters
-
 #include <BookFontLoader.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
@@ -138,11 +137,10 @@ void TtfRenderDebugActivity::onEnter() {
 
   DebugSink sink(*fonts, target);
   uint32_t pageCount = 0;
-  const book::BookStatus status =
-      book::ChapterLayout::layoutPlainText(source, params, scratch, sink, &pageCount);
+  const book::BookStatus status = book::ChapterLayout::layoutPlainText(source, params, scratch, sink, &pageCount);
 
-  LOG_INF("TTFDBG", "status=%s pages=%u scratchHigh=%u heap %u->%u psram %u->%u", bookStatusName(status),
-          pageCount, scratch.highWater(), heapBefore, ESP.getFreeHeap(), psramBefore, ESP.getFreePsram());
+  LOG_INF("TTFDBG", "status=%s pages=%u scratchHigh=%u heap %u->%u psram %u->%u", bookStatusName(status), pageCount,
+          scratch.highWater(), heapBefore, ESP.getFreeHeap(), psramBefore, ESP.getFreePsram());
 
   renderer.displayBuffer(HalDisplay::FULL_REFRESH);
   requestUpdate();
@@ -151,9 +149,8 @@ void TtfRenderDebugActivity::onEnter() {
 void TtfRenderDebugActivity::loop() {
   mappedInput.update();
   using B = MappedInputManager::Button;
-  if (mappedInput.wasReleased(B::Back) || mappedInput.wasReleased(B::Confirm) ||
-      mappedInput.wasReleased(B::Left) || mappedInput.wasReleased(B::Right) ||
-      mappedInput.wasReleased(B::Up) || mappedInput.wasReleased(B::Down) ||
+  if (mappedInput.wasReleased(B::Back) || mappedInput.wasReleased(B::Confirm) || mappedInput.wasReleased(B::Left) ||
+      mappedInput.wasReleased(B::Right) || mappedInput.wasReleased(B::Up) || mappedInput.wasReleased(B::Down) ||
       mappedInput.wasReleased(B::PageBack) || mappedInput.wasReleased(B::PageForward)) {
     finish();
   }
