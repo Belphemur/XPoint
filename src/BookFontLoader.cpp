@@ -102,24 +102,21 @@ BookFontLoader::~BookFontLoader() {
 }
 
 void BookFontLoader::begin() {
+  // Release any live resident state FIRST (deleting loaded faces before
+  // nulling their pointers), then reset the manifest and counters.
+  releaseResidentCaches();
   familyCount_ = 0;
-  fingerprint_ = 0;
-  dirty_.store(false, std::memory_order_relaxed);
   families_ = {};
-  chain_ = FontChain{};
-  std::fill(std::begin(faces_), std::end(faces_), nullptr);
-  std::fill(std::begin(arenas_), std::end(arenas_), Arena{});
-  std::fill(std::begin(fontBytes_), std::end(fontBytes_), nullptr);
-  std::generate(std::begin(fontPsramBytes_), std::end(fontPsramBytes_), []() { return PoolBytes{}; });
-  std::fill(std::begin(fontDramBytes_), std::end(fontDramBytes_), nullptr);
-  std::fill(std::begin(faceBytesOwner_), std::end(faceBytesOwner_), 0);
-  std::fill(std::begin(fontFileSizes_), std::end(fontFileSizes_), 0);
+  dirty_.store(false, std::memory_order_relaxed);
   remainingBudget_ = 0;
   initBudget();
 }
 
 void BookFontLoader::ensureLoaded() {
-  if (!dirty_.load(std::memory_order_relaxed) && fingerprint_ != 0) return;
+  // loaded_ distinguishes "a load attempt completed" from "never attempted":
+  // fingerprint 0 is a legitimate outcome (all faces rejected), so it cannot
+  // be the loaded-state flag or every getReaderFont() re-runs the SD load.
+  if (!dirty_.load(std::memory_order_relaxed) && loaded_) return;
 
   // Clear previous state. The RAII owners (fontPsramBytes_/fontDramBytes_)
   // release the byte buffers; never poolFree the raw pointers manually —
@@ -150,6 +147,7 @@ void BookFontLoader::ensureLoaded() {
     }
   }
   fingerprint_ = computeFingerprint();
+  loaded_ = true;
   dirty_.store(false, std::memory_order_relaxed);
 }
 
@@ -178,6 +176,7 @@ void BookFontLoader::releaseResidentCaches() {
   }
   chain_ = FontChain{};
   fingerprint_ = 0;
+  loaded_ = false;  // next getReaderFont() must re-attempt the load
 }
 
 uint32_t BookFontLoader::computeFingerprint() const {
@@ -364,12 +363,13 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // Per-face glyph arena — each face gets its OWN persistent backing buffer
   // (not the shared glyphBuf from the previous version). This prevents
   // overwriting glyph data when loading multiple faces (PRRT_kwDOUDrzps6g4-n7).
-  // Size by SDK profile: TtfFont's slot tables alone need 4.6KB (SMALL:
-  // 256×12 + 64×24), 9.2KB (STANDARD: 512×12 + 128×24), 36.9KB (LARGE:
-  // 2048×12 + 512×24) before any glyph bitmap — 8KB fails STANDARD at
-  // TtfFont::init. 32KB covers STANDARD plus raster headroom; LARGE is
-  // not used by any current env.
-  alignas(4) static uint8_t glyphBufs[4][kGlyphArenaBytes];
+  // Size by SDK profile (kGlyphArenaBytes in the header): TtfFont's slot
+  // tables alone need 4.6KB (SMALL), 9.2KB (STANDARD), 36.9KB (LARGE)
+  // before any glyph bitmap — 8KB fails STANDARD at TtfFont::init.
+  // Maximal alignment: Arena::allocArray aligns the OFFSET from base_, and
+  // TtfFont allocates GlyphSlot (uint64_t key) through it — an 4-aligned
+  // base would misalign the uint64_t and fault on ESP32-C3.
+  alignas(alignof(max_align_t)) static uint8_t glyphBufs[4][kGlyphArenaBytes];
   arenas_[faceIdx] = Arena(glyphBufs[faceIdx], kGlyphArenaBytes);
 
   TtfFont* face = new (std::nothrow) TtfFont();

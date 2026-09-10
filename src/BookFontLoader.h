@@ -81,6 +81,7 @@ class BookFontLoader {
   TtfFont* faces_[4] = {};
   FontChain chain_;
   uint32_t fingerprint_ = 0;
+  bool loaded_ = false;  // a load attempt completed (fingerprint 0 is valid)
   std::atomic<bool> dirty_{false};
 
   // Two-tier font-byte storage: each face has its own RAII owner.
@@ -94,13 +95,15 @@ class BookFontLoader {
   // Per-face glyph arenas — each has its own persistent backing buffer.
   // Size must fit TtfFont's profile-scaled slot tables before any glyph
   // bitmap: SMALL 4.6KB / STANDARD 9.2KB / LARGE 36.9KB (see TtfFont.h).
-  // The backing storage is sized by profile too (kGlyphArenaBytes below) so
-  // C3 (SMALL) does not burn 4x the full budget of static BSS on tables it
-  // cannot use.
+  // Backing storage is sized by profile too, so C3 (SMALL) does not burn
+  // static BSS on STANDARD/LARGE-sized tables it cannot use. Compare the
+  // resolved profile VALUES (BookProfile.h defines inactive selectors to 0,
+  // so defined() alone would always be true).
   Arena arenas_[4];
-#if defined(FREEINK_BOOK_SMALL)
+#include "BookProfile.h"
+#if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
   static constexpr size_t kGlyphArenaBytes = 12 * 1024;
-#elif defined(FREEINK_BOOK_LARGE)
+#elif FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_LARGE
   static constexpr size_t kGlyphArenaBytes = 48 * 1024;
 #else
   static constexpr size_t kGlyphArenaBytes = 32 * 1024;

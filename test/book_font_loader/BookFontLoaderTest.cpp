@@ -55,6 +55,16 @@ TEST(BookFontLoaderBasics, GetReaderFontFallsBackToBuiltin) {
   EXPECT_EQ(readerFont->styleCoverage(), 0x07);
 }
 
+TEST(BookFontLoaderBasics, RepeatedBeginDoesNotLeak) {
+  testSetPsramHeap({0, 0, 0, 0});
+  testSetFreeHeap(320 * 1024, 320 * 1024);
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  loader.begin();  // second begin() over a live loader must stay safe
+  EXPECT_EQ(loader.familyCount(), 0u);
+  EXPECT_EQ(loader.fontFingerprint(), 0u);
+}
+
 TEST(BookFontLoaderBasics, BudgetClampsToMaxAndFloors) {
   testSetPsramHeap({0, 0, 0, 0});  // no PSRAM → DRAM tier
   freeink::book::BookFontLoader loader;
