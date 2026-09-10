@@ -1784,8 +1784,11 @@ void EpubReaderActivity::renderBook() {
 #endif
   }
 
-  if (currentSpineIndex != lastSavedSpineIndex || section->currentPage != lastSavedPage ||
-      section->pageCount != lastSavedPageCount) {
+  {
+    // Change detection lives in the saver (design §4.2): the in-memory
+    // lastFlushed compare includes visibleTextOffset, so a same-page
+    // re-layout that only shifts the offset still counts (the old
+    // spine/page/count-only guard silently skipped it — Copilot, PR #107).
     const uint16_t pageCount = section->estimatedTotalPages();
     // currentPageVisibleOffset is the offset of the page just rendered
     // (currentSpineIndex), same convention saveProgress() uses.
@@ -1797,18 +1800,13 @@ void EpubReaderActivity::renderBook() {
                                         currentPageVisibleOffset)) {
         progressSaver.markFlushed(currentSpineIndex, section->currentPage, pageCount, hasOffset,
                                   currentPageVisibleOffset.value_or(0));
-        lastSavedSpineIndex = currentSpineIndex;
-        lastSavedPage = section->currentPage;
-        lastSavedPageCount = pageCount;
       }
     } else {
       // Normal battery: capture only — the saver task writes it within one
-      // flush interval (design §4.1).
+      // flush interval (design §4.1). Equal captures are no-ops inside the
+      // saver, so an unchanged page costs nothing.
       progressSaver.capture(currentSpineIndex, section->currentPage, pageCount, hasOffset,
                             currentPageVisibleOffset.value_or(0));
-      lastSavedSpineIndex = currentSpineIndex;
-      lastSavedPage = section->currentPage;
-      lastSavedPageCount = pageCount;
     }
   }
   showPendingSyncSaveError();

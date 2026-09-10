@@ -3,14 +3,18 @@
 #include <Epub.h>
 #include <Logging.h>
 
+#include <cstring>
 #include <optional>
 
 #include "activities/reader/EpubReaderUtils.h"
 
 namespace {
 // Low priority: progress persistence must never compete with rendering or
-// input. Stack verified against uxTaskGetStackHighWaterMark() on device
-// (design §5, review N2).
+// input. Pinned to core 0 on dual-core boards (the render task owns core 1,
+// ActivityManager.cpp) so the flusher cannot time-slice with a render; on
+// single-core boards priority 1 keeps it behind the render task at the same
+// level only when the render task blocks. Stack verified against
+// uxTaskGetStackHighWaterMark() on device (design §5, review N2).
 constexpr UBaseType_t SAVER_TASK_PRIORITY = 1;
 constexpr size_t SAVER_STACK_WORDS = 2048 / sizeof(StackType_t);
 constexpr char SAVER_TASK_NAME[] = "progress_saver";
@@ -26,7 +30,12 @@ void ProgressSaver::begin() {
       return;
     }
   }
-  if (xTaskCreate(
+#if defined(configNUM_CORES) && configNUM_CORES > 1
+  constexpr BaseType_t saverTaskCore = 0;  // render task owns core 1
+#else
+  constexpr BaseType_t saverTaskCore = 0;
+#endif
+  if (xTaskCreatePinnedToCore(
           [](void* ctx) {
             auto* saver = static_cast<ProgressSaver*>(ctx);
             for (;;) {
@@ -36,7 +45,7 @@ void ProgressSaver::begin() {
               }
             }
           },
-          SAVER_TASK_NAME, SAVER_STACK_WORDS, this, SAVER_TASK_PRIORITY, nullptr) != pdPASS) {
+          SAVER_TASK_NAME, SAVER_STACK_WORDS, this, SAVER_TASK_PRIORITY, nullptr, saverTaskCore) != pdPASS) {
     LOG_ERR("PRG", "Failed to create progress saver task");
   }
 }
@@ -56,7 +65,14 @@ void ProgressSaver::setBook(const char* cachePath) {
   if (cachePath == nullptr || cachePath[0] == '\0') {
     cachePath_[0] = '\0';
   } else {
-    snprintf(cachePath_, sizeof(cachePath_), "%s", cachePath);
+    const int written = snprintf(cachePath_, sizeof(cachePath_), "%s", cachePath);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(cachePath_)) {
+      // Truncated path would scatter progress.bin into a wrong directory;
+      // disable flushing rather than write there (Copilot, PR #107).
+      LOG_ERR("PRG", "Cache path too long for progress saver: %s", cachePath);
+      cachePath_[0] = '\0';
+      state_.clearPending();
+    }
   }
   xSemaphoreGive(mutex_);
 }
@@ -100,16 +116,21 @@ void ProgressSaver::markFlushed(const uint16_t spineIndex, const uint16_t pageNu
 }
 
 bool ProgressSaver::writePending() {
+  if (mutex_ == nullptr) return true;  // begin() never ran / OOM: fail closed
   ProgressFlush::Record record;
+  char cachePath[sizeof(cachePath_)];
   {
     xSemaphoreTake(mutex_, portMAX_DELAY);
     if (!state_.beginFlush(record)) {
       xSemaphoreGive(mutex_);
       return true;  // nothing pending
     }
+    // Copy the path out under the mutex: setBook() may mutate it while the
+    // SD write below runs (Copilot, PR #107).
+    memcpy(cachePath, cachePath_, sizeof(cachePath));
     xSemaphoreGive(mutex_);
   }
-  if (cachePath_[0] == '\0') {
+  if (cachePath[0] == '\0') {
     // No book registered (KOReader path released the epub before teardown):
     // treat as written so the dirty flag does not retry forever.
     xSemaphoreTake(mutex_, portMAX_DELAY);
@@ -118,7 +139,7 @@ bool ProgressSaver::writePending() {
     return true;
   }
   const bool ok = EpubReaderUtils::saveProgress(
-      cachePath_, record.spineIndex, record.pageNumber, record.pageCount,
+      cachePath, record.spineIndex, record.pageNumber, record.pageCount,
       record.hasOffset ? std::optional<uint32_t>(record.visibleTextOffset) : std::nullopt);
   xSemaphoreTake(mutex_, portMAX_DELAY);
   state_.endFlush(record, ok);
