@@ -1,0 +1,5 @@
+{
+  "name": "ProgressFlush",
+  "description": "Host-testable dirty/latch/retry state machine for background progress flushing",
+  "build": {}
+}
