@@ -415,7 +415,7 @@ static void stageAutoPowerOffCover(bool requireTimerEnabled) {
   if (!coverShown) return;
   if (APP_STATE.openEpubPath.empty()) return;
   std::string coverPath;
-  if (SleepActivity::resolveCoverBmpPath(APP_STATE.openEpubPath, coverPath)) {
+  if (SleepActivity::resolveCoverBmpPath(renderer, APP_STATE.openEpubPath, coverPath)) {
     APP_STATE.autoPowerOffCoverBmpPath = std::move(coverPath);
   }
 }

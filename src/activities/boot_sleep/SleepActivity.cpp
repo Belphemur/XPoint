@@ -910,7 +910,7 @@ void SleepActivity::renderCoverSleepScreen() const {
   }
 
   std::string coverBmpPath;
-  if (APP_STATE.openEpubPath.empty() || !resolveCoverBmpPath(APP_STATE.openEpubPath, coverBmpPath)) {
+  if (APP_STATE.openEpubPath.empty() || !resolveCoverBmpPath(renderer, APP_STATE.openEpubPath, coverBmpPath)) {
     return (this->*renderNoCoverSleepScreen)();
   }
 
@@ -927,7 +927,7 @@ void SleepActivity::renderCoverSleepScreen() const {
   return (this->*renderNoCoverSleepScreen)();
 }
 
-bool SleepActivity::resolveCoverBmpPath(const std::string& bookPath, std::string& outPath) {
+bool SleepActivity::resolveCoverBmpPath(GfxRenderer& renderer, const std::string& bookPath, std::string& outPath) {
   const bool cropped = SETTINGS.sleepScreenCoverMode == CrossPointSettings::SLEEP_SCREEN_COVER_MODE::CROP;
   // SSD absolute images use the new thresholds; other panels retain legacy tuning.
   const bool originalThresholds =
