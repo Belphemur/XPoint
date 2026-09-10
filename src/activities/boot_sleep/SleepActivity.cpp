@@ -520,8 +520,8 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
   // Absolute planes retain the B/W base image (no clear needed) and need the
   // absolute-quality base pass; the overlay pipeline repaints into cleared
   // planes over the OEM HALF base.
-  const bool absolute = !preserveBackground &&
-                        renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  const bool absolute =
+      !preserveBackground && renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   if (absolute) {
     if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return;
   } else {

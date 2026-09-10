@@ -168,12 +168,12 @@ struct DirectPixelWriter {
         draw = pixel.write;
         state = pixel.black;
         break;
-      case GfxRenderer::GRAYSCALE_DUAL:
-        draw = (pixelValue == 1 || pixelValue == 2);
-        state = false;
-        msb = draw;
-        lsb = (pixelValue == 2);
-        break;
+        case GfxRenderer::GRAYSCALE_DUAL:
+          draw = (pixelValue == 1 || pixelValue == 2);
+          state = false;
+          msb = draw;
+          lsb = (pixelValue == 2);
+          break;
       }
       default:
         return;
