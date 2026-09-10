@@ -90,9 +90,9 @@ class BookFontLoader {
   // Aggregate DRAM budget: derived from free heap with floor guards.
   uint32_t remainingBudget_ = 0;
 
-  void scanFonts(const char* fontPath);
-  bool loadFaceBytes(const FontFaceInfo& fi);
-  FontChain* builtinFallback();
+  static void scanFonts(const char* fontPath);
+  static bool loadFaceBytes(const FontFaceInfo& fi);
+  static FontChain* builtinFallback();
 
   // Load a single face into the live chain (member so it can access private
   // state: faces_, arenas_, fontBytes_, fontPsramBytes_, fontDramBytes_).

@@ -198,8 +198,6 @@ FontChain* BookFontLoader::builtinFallback() {
   return &fallback;
 }
 
-// ── scanFonts / loadFaceBytes (private) ──────────────────────────────────────
-
 void BookFontLoader::scanFonts(const char* fontPath) {
   // Stub for Phase 1a — real scan iterates /fonts/*.ttf|.otf, groups by
   // filename convention (Family-Regular.ttf etc.), and optionally enriches
