@@ -59,3 +59,5 @@ add_subdirectory(chapter_position)
 
 add_subdirectory(inflate_stream)
 add_subdirectory(fs_helpers)
+
+add_subdirectory(absolute_grayscale)
