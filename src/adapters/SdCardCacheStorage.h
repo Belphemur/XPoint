@@ -2,6 +2,9 @@
 
 #include <BookStorage.h>
 #include <HalStorage.h>
+#include <Memory.h>
+
+#include <memory>
 
 namespace freeink {
 namespace book {
@@ -38,6 +41,11 @@ class SdCardCacheStorage : public CacheStorage {
   char dir_[kDirMax] = {};
   char writeTmpPath_[kPathMax] = {};
   char writeFinalPath_[kPathMax] = {};
+  // Shared scratch for joined paths across the read-side methods: a 256B
+  // buffer would blow the <256B stack-local budget on every call, and
+  // HalStorage serializes SD access so single-buffer reuse is safe. Null
+  // (allocation failed) makes every path-based operation fail.
+  std::unique_ptr<char[]> pathBuf_;
   HalFile writeHandle_;  // the open .tmp between beginWrite()/endWrite()
 };
 

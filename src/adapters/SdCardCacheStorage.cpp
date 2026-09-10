@@ -25,6 +25,11 @@ SdCardCacheStorage::SdCardCacheStorage(const char* dirPath) {
     dir_[strlen(dir_) - 1] = '\0';
   }
   if (!Storage.ensureDirectoryExists(dir_)) LOG_ERR("TTFB", "CacheStorage: mkdir failed: %s", dir_);
+
+  pathBuf_ = makeUniqueNoThrow<char[]>(kPathMax);
+  if (!pathBuf_) {
+    LOG_ERR("TTFB", "CacheStorage: OOM: %u bytes path buffer", (unsigned)kPathMax);
+  }
 }
 
 bool SdCardCacheStorage::validName(const char* name) {
@@ -39,42 +44,38 @@ bool SdCardCacheStorage::buildPath(const char* name, const char* suffix, char* o
 }
 
 bool SdCardCacheStorage::exists(const char* name) {
-  if (!validName(name)) return false;
-  char path[kPathMax];
-  if (!buildPath(name, "", path, sizeof(path))) return false;
+  if (dir_[0] == '\0' || !pathBuf_ || !validName(name)) return false;
+  if (!buildPath(name, "", pathBuf_.get(), kPathMax)) return false;
   HalFile f;
-  if (!Storage.openFileForRead("TTFB", path, f)) return false;
+  if (!Storage.openFileForRead("TTFB", pathBuf_.get(), f)) return false;
   return f.isOpen();
 }
 
 bool SdCardCacheStorage::remove(const char* name) {
-  if (!validName(name)) return false;
-  char path[kPathMax];
-  if (!buildPath(name, "", path, sizeof(path))) return false;
-  return Storage.remove(path);
+  if (dir_[0] == '\0' || !pathBuf_ || !validName(name)) return false;
+  if (!buildPath(name, "", pathBuf_.get(), kPathMax)) return false;
+  return Storage.remove(pathBuf_.get());
 }
 
 int64_t SdCardCacheStorage::fileSize(const char* name) {
-  if (!validName(name)) return -1;
-  char path[kPathMax];
-  if (!buildPath(name, "", path, sizeof(path))) return -1;
+  if (dir_[0] == '\0' || !pathBuf_ || !validName(name)) return -1;
+  if (!buildPath(name, "", pathBuf_.get(), kPathMax)) return -1;
   HalFile f;
-  if (!Storage.openFileForRead("TTFB", path, f)) return -1;  // absent
+  if (!Storage.openFileForRead("TTFB", pathBuf_.get(), f)) return -1;  // absent
   return static_cast<int64_t>(f.fileSize64());
 }
 
 int32_t SdCardCacheStorage::readAt(const char* name, uint32_t offset, void* dst, uint32_t len) {
-  if (!validName(name) || dst == nullptr) return -1;
-  char path[kPathMax];
-  if (!buildPath(name, "", path, sizeof(path))) return -1;
+  if (dir_[0] == '\0' || !pathBuf_ || !validName(name) || dst == nullptr) return -1;
+  if (!buildPath(name, "", pathBuf_.get(), kPathMax)) return -1;
   HalFile f;
-  if (!Storage.openFileForRead("TTFB", path, f)) return -1;
+  if (!Storage.openFileForRead("TTFB", pathBuf_.get(), f)) return -1;
   if (!f.seek64(offset)) return -1;
   return f.read(dst, len);
 }
 
 bool SdCardCacheStorage::beginWrite(const char* name) {
-  if (!validName(name)) return false;
+  if (dir_[0] == '\0' || !validName(name)) return false;
   if (writeHandle_.isOpen()) {
     LOG_ERR("TTFB", "beginWrite: a write is already active");
     return false;

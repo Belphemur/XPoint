@@ -9,6 +9,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <render/PageRenderer.h>
 
 #include <cstdint>
@@ -51,8 +52,13 @@ const char kDebugText[] =
     "ticked with the patience of something that had all the time in the "
     "world. He sat down, unfolded the paper, and began, at last, to read.\n";
 
-// Static BSS (not heap): measuring the heap delta is the point of this rig.
+// Non-PSRAM boards: static BSS (not heap) — measuring the DRAM heap delta is
+// the point of this rig there. PSRAM boards: the 24KB scratch would overflow
+// DRAM BSS (the S3 build is near the segment limit), so it is allocated from
+// PSRAM via PoolBytes, which also keeps the heap delta measurement intact.
+#if !defined(BOARD_HAS_PSRAM)
 alignas(alignof(max_align_t)) uint8_t s_scratch[kScratchBytes];
+#endif
 
 // Renders page 0 as it arrives, then stops layout. Runs are consumed in the
 // callback — they are valid only while onPage() executes.
@@ -107,6 +113,9 @@ void TtfRenderDebugActivity::onEnter() {
       return;
     }
     if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText)) {
+      // A partial file must not count as a valid seed on the next boot.
+      f.close();
+      Storage.remove(kDebugTextPath);
       LOG_ERR("TTFDBG", "text seed short write: %s", kDebugTextPath);
       showFatal();
       return;
@@ -135,8 +144,20 @@ void TtfRenderDebugActivity::onEnter() {
   params.language = "en";
   params.font = fonts;
 
+#if defined(BOARD_HAS_PSRAM)
+  PoolBytes scratchBytes = poolMakeBytes(kScratchBytes);
+  if (!scratchBytes) {
+    LOG_ERR("TTFDBG", "OOM: %u bytes PSRAM scratch", static_cast<unsigned>(kScratchBytes));
+    showFatal();
+    return;
+  }
+  uint8_t* scratchBase = scratchBytes.get();
+#else
+  uint8_t* scratchBase = s_scratch;
+#endif
+
   book::Arena scratch;
-  scratch.init(s_scratch, sizeof(s_scratch));
+  scratch.init(scratchBase, kScratchBytes);
 
   book::FrameTarget target = makeFrameTarget(renderer);
   renderer.clearScreen(0xFF);  // white background; PageRenderer inks glyphs only

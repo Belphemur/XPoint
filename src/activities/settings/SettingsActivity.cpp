@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -373,9 +374,15 @@ void SettingsActivity::toggleCurrentSetting() {
                                });
         break;
 #if defined(CROSSPOINT_TTF_DEBUG)
-      case SettingAction::TtfDebugRender:
-        startActivityForResult(std::make_unique<TtfRenderDebugActivity>(renderer, mappedInput), resultHandler);
+      case SettingAction::TtfDebugRender: {
+        auto activity = makeUniqueNoThrow<TtfRenderDebugActivity>(renderer, mappedInput);
+        if (!activity) {
+          LOG_ERR("SET", "OOM: TtfRenderDebugActivity");
+          break;
+        }
+        startActivityForResult(std::move(activity), resultHandler);
         break;
+      }
 #endif
       case SettingAction::Language:
         // Row labels are translated once in rebuildRowItems() and don't
