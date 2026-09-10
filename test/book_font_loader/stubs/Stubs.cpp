@@ -1,4 +1,6 @@
 // Host-test stub definitions for BookFontLoader's HAL/Arduino dependencies.
+#include <cstddef>
+
 #include "Arduino.h"
 #include "HalMemory.h"
 #include "HalStorage.h"
@@ -10,12 +12,19 @@ HalStorage HalStorage::instance;
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   (void)moduleName;
-  (void)path;
-  (void)file;
-  return false;  // no SD in host tests
+  auto it = files.find(path);
+  if (it == files.end()) return false;  // missing file = failed open
+  file.data = &it->second;
+  return true;
 }
 
-// No PSRAM in host tests — forces the DRAM tier so budget logic is exercised.
-HalMemory::HeapStats HalMemory::getPsramHeap() { return {0, 0, 0, 0}; }
-HalMemory::HeapStats HalMemory::getDefaultHeap() { return {320 * 1024, 320 * 1024, 0, 0}; }
-HalMemory::HeapStats HalMemory::getInternalHeap() { return {320 * 1024, 320 * 1024, 0, 0}; }
+// Test control for the memory tiers: settable from tests via these hooks.
+static HalMemory::HeapStats fakePsram{0, 0, 0, 0};
+static HalMemory::HeapStats fakeInternal{320 * 1024, 320 * 1024, 0, 0};
+
+HalMemory::HeapStats HalMemory::getPsramHeap() { return fakePsram; }
+HalMemory::HeapStats HalMemory::getDefaultHeap() { return fakeInternal; }
+HalMemory::HeapStats HalMemory::getInternalHeap() { return fakeInternal; }
+
+void testSetPsramHeap(HalMemory::HeapStats s) { fakePsram = s; }
+void testSetInternalHeap(HalMemory::HeapStats s) { fakeInternal = s; }

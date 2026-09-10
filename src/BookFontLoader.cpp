@@ -208,12 +208,15 @@ FontChain* BookFontLoader::builtinFallback() {
   return &fallback;
 }
 
-void BookFontLoader::scanFonts(const char* fontPath) {
-  // Stub for Phase 1a — real scan iterates /fonts/*.ttf|.otf, groups by
-  // filename convention (Family-Regular.ttf etc.), and optionally enriches
-  // from free-fonts.json. Filled in a later phase.
-  (void)fontPath;
-}
+// ── scanFonts / loadFaceBytes (private, Phase 2 fill-ins) ────────────────────
+// Phase 1a ships the loader infrastructure only; discovery (instance-backed
+// /fonts walk grouping Family-Regular/Bold/Italic.ttf into families_) is
+// implemented in Phase 2, where begin() will call it and main.cpp will call
+// fontLoader.begin() beside sdFontSystem.begin(renderer). Until then
+// familyCount_ stays 0 and getReaderFont() serves the builtin fallback — the
+// intended Phase 1a behavior (no reader wiring yet, zero regression risk).
+
+void BookFontLoader::scanFonts(const char* fontPath) { (void)fontPath; }
 
 bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
   // Stub for Phase 1a — real implementation loads the whole font into a
@@ -262,9 +265,22 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
 
   std::unique_ptr<uint8_t[]> localDram;
   if (!fontBytes) {
+    // DRAM fallback (no PSRAM, or PSRAM pool exhausted): the DRAM gates apply
+    // to the actual allocation tier, not the detected board capability.
+    if (fi.fileSize > kMaxDramFontBytes) {
+      LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxDramFontBytes);
+      fontPsramBytes_[faceIdx].reset();
+      return false;
+    }
+    if (fi.fileSize > remainingBudget_) {
+      LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file, fi.fileSize, remainingBudget_);
+      fontPsramBytes_[faceIdx].reset();
+      return false;
+    }
     localDram = makeUniqueNoThrow<uint8_t[]>(fi.fileSize);
     if (!localDram) {
       LOG_ERR("BFNT", "Font buffer OOM for %u bytes", fi.fileSize);
+      fontPsramBytes_[faceIdx].reset();
       return false;
     }
     fontBytes = localDram.get();
@@ -391,7 +407,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
 
   // Decrement the aggregate DRAM budget (only for DRAM-tier allocations).
-  if (remainingBudget_ > 0 && !isPsram) {
+  if (!isPsram && fi.fileSize <= remainingBudget_) {
     remainingBudget_ -= fi.fileSize;
   }
 

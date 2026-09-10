@@ -19,7 +19,7 @@ target_include_directories(BookFontLoaderTest PRIVATE
 
 target_compile_definitions(BookFontLoaderTest PRIVATE
   # Memory.h host mode (no heap_caps); matches the real host-test gating.
-  $<$<NOT:$<BOOL:${ESP_PLATFORM}>>:HOST_TEST=1>
+  HOST_TEST=1
 )
 
 target_link_libraries(BookFontLoaderTest PRIVATE

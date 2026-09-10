@@ -65,6 +65,12 @@ class BookFontLoader {
   // Public fingerprint helper — content-based, never path/mtime.
   uint32_t computeFingerprint() const;
 
+#if defined(HOST_TEST)
+  // Host-test seams: seed the manifest deterministically and read the budget.
+  FamilyInfo& editFamily(uint8_t idx) { return families_[idx]; }
+  uint32_t dramBudgetForTest() const { return remainingBudget_; }
+#endif
+
  private:
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
@@ -83,10 +89,19 @@ class BookFontLoader {
   uint32_t fontFileSizes_[4] = {};
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
-  // Must fit TtfFont's profile-scaled slot tables: 4.6KB (SMALL) /
-  // 9.2KB (STANDARD) / 36.9KB (LARGE) before any glyph bitmap.
+  // Size must fit TtfFont's profile-scaled slot tables before any glyph
+  // bitmap: SMALL 4.6KB / STANDARD 9.2KB / LARGE 36.9KB (see TtfFont.h).
+  // The backing storage is sized by profile too (kGlyphArenaBytes below) so
+  // C3 (SMALL) does not burn 4x the full budget of static BSS on tables it
+  // cannot use.
   Arena arenas_[4];
+#if defined(FREEINK_BOOK_SMALL)
+  static constexpr size_t kGlyphArenaBytes = 12 * 1024;
+#elif defined(FREEINK_BOOK_LARGE)
+  static constexpr size_t kGlyphArenaBytes = 48 * 1024;
+#else
   static constexpr size_t kGlyphArenaBytes = 32 * 1024;
+#endif
 
   // Aggregate DRAM budget: derived from free heap with floor guards.
   uint32_t remainingBudget_ = 0;
