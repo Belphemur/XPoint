@@ -39,38 +39,46 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
 
 ## 4. Design
 
-### 4.1 Capture at page turn, write later
+### 4.1 One call per page change
 
-`pageTurn()` (or the equivalent position-mutating paths: `skipPages()`,
-`jumpToPercent()`, chapter jumps) calls `captureCandidate()` on the new
-position. The capture must happen *while the live `section` exists*, because
-the `visibleTextOffset` lookup (`section->getVisibleTextOffsetForPage()`)
-requires it. Capture is pure memory: copy the 16-byte position record and mark
-dirty if changed. No mutex, no SD.
+The reader calls `progressManager.save(...)` once per rendered page (in
+`renderBook()`, where the live `section` provides the
+`visibleTextOffset`). That is the reader's ENTIRE progress obligation:
+`openBook()` at load, `save()` on every render, `closeBook()` at teardown.
+Everything else — change detection, interval gating, battery fallback,
+task scheduling, disk I/O — lives in the manager.
 
 ### 4.2 In-memory change detection
 
-The manager holds `lastFlushed = {spine, page, pageCount, visibleTextOffset}`
-(16 bytes, mirroring the 10-byte on-disk record). `captureCandidate()`
-compares the candidate against `lastFlushed`:
+`ProgressManager` (final structure) holds TWO records, both allocated with
+`poolMalloc` (PSRAM-backed on `BOARD_HAS_PSRAM` boards, DRAM otherwise):
 
-- identical -> not dirty; the timer fires on an empty flag and performs zero
-  SD I/O (a reader parked on one page writes nothing, indefinitely);
-- different -> dirty; the flush task will write on its next wake.
+- `current_` — the reader's latest position, updated by every `save()`
+  call. The manager IS the single source of truth for progress; the reader
+  keeps no shadow copy.
+- `lastFlushed_` — the record known to be on disk.
 
-On a successful flush, `lastFlushed` is updated to the written position. The
-exit flush goes through the same compare, so "opened, read nothing, exited"
-writes nothing.
+`save()` (called by the reader on every page change) always updates
+`current_`; the DISK write is gated:
+
+- changed (`current_ != lastFlushed_`, `visibleTextOffset` participates) AND
+- ≥60 s since the last flush — **or** low battery (<5%, gauge HEALTHY, not
+  charging — queried from the HAL at gate time; its cached 1.5 s reading
+  makes the query free).
+
+When the gate opens, `save()` wakes the worker task
+(`xTaskNotifyGive`), which performs the write on core 0. A queued write
+also fires within one interval even if its notification raced a flush.
 
 This replaces the existing `lastSavedSpineIndex/page/pageCount` guard
-(EpubReaderActivity.cpp:1742) — same purpose, one source of truth, moved off
-the render path (DRY). The offset now participates in the compare: the old
+(EpubReaderActivity.cpp:1742) — same purpose, one source of truth, moved
+off the render path (DRY). The offset participates in the compare: the old
 guard skipped a save when a same-page re-layout shifted only the
 `visibleTextOffset`; with the offset in the key that gap is closed.
 
 ### 4.3 Flush worker on the second core
 
-A small `ProgressManager` (src/ProgressManager.cpp) owns a FreeRTOS task:
+`ProgressManager` owns a low-priority FreeRTOS worker task (final shape):
 
 - **Pin:** core 0 on BOTH board classes — the render task owns core 1 on
   dual-core boards (ActivityManager.cpp), and priority 1 cannot preempt it;
@@ -79,64 +87,47 @@ A small `ProgressManager` (src/ProgressManager.cpp) owns a FreeRTOS task:
 - **Stack:** 2048 BYTES passed directly — this ESP-IDF build takes
   `usStackDepth` in bytes (the render task passes 8192 directly). The
   word-division form created a 512-byte stack (Copilot, PR #107).
-- **Trigger (simplified from the esp_timer sketch):** the task itself loops on
-  `vTaskDelay(FLUSH_INTERVAL_MS)` and flushes when dirty. The original
-  esp_timer + `xTaskNotifyFromISR` design assumed the explicit flushes would
-  signal the task; in the final shape the explicit paths (book exit, power
-  off) write synchronously on the caller's thread instead, so the ISR/notify
-  machinery had no remaining job. An interval tick with no interrupt context
-  is the simplest structure that satisfies the design (KISS).
-- **Task loop:** on wake, if dirty, copy the pending record out under the
-  shared-state mutex, then one `ProgressFile::writeAtomic` through
-  `HalStorage` (its mutex serializes with the main task's other SD access)
-  with the mutex NOT held. Update `lastFlushed` on success; leave dirty set
-  on failure so the next tick retries.
-- **Book identity:** ProgressManager stores a COPY of the book's cache path
-  (`setBook()`), never the `Epub` object — the reader may release the epub
-  before teardown (KOReader sync path), so a raw pointer would dangle.
-  `setBook(nullptr)` on book exit performs a FULL state reset (dirty,
-  flushed, lastFlushed, pending): book A's records must never seed book B's
-  change detection.
-- **Write-time freshness gate:** the reader publishes its position
-  (`publishPosition()`) under the manager mutex after every render; the
-  flush compares the pending record against that snapshot and DROPS the
-  write when they differ (position changed between capture and flush —
-  re-pagination, newer render). No reader state is read at write time
-  (the earlier revalidator-callback form was a data race: it dereferenced
-  `section` from the manager task, which holds no RenderLock).
-- **Bypass-path sync:** synchronous saves that bypass the background task
-  (KOReader sync, DELETE_CACHE, low-battery per-turn saves, footnote exit)
-  go through `saveNow()`, which captures through the same change detection
-  and then flushes synchronously under the manager mutex — single writer,
-  unchanged records are no-ops, failures stay pending for the tick retry.
+- **Trigger:** `ulTaskNotifyTake` with a `FLUSH_INTERVAL_MS` timeout.
+  `save()` gives a notification when its gate opens; the timeout is the
+  "basic timer since last flush" backstop — a queued write always fires
+  within one interval even if its notification raced a flush. No
+  always-ticking poll loop, no esp_timer (the interval+notify block is the
+  simplest structure that satisfies the bound — KISS).
+- **Task loop:** on wake, take the manager mutex and write `current_` when
+  it differs from `lastFlushed_` (one `ProgressFile::writeAtomic` through
+  `HalStorage`). The mutex IS held across the write: worker vs synchronous
+  flush can never interleave, so there is exactly one writer by
+  construction and no torn/overlapping tmp-file state.
+- **Book identity:** the manager stores a COPY of the book's cache path
+  (registered by `openBook()`), never the `Epub` object — the reader may
+  release the epub before teardown (KOReader sync path), so a raw pointer
+  would dangle. `closeBook()` performs a full state reset: book A's
+  records must never seed book B's gate.
+- **Bypass paths:** `saveNow()` writes synchronously (KOReader sync,
+  DELETE_CACHE) and updates the in-memory baseline when the path is the
+  open book's own file. Exit/sleep/power-off flushing is the manager's job
+  (`closeBook()` / `flushNow()`), not the activity's.
 
-**Memory:** ~2 KB task stack, one 16-byte pending record, one 16-byte
-`lastFlushed` record, one 160-byte cache-path copy, static (no heap after
-task creation at boot).
+**Memory:** ~2 KB task stack, two 16-byte records (`current_`/`lastFlushed_`,
+pool-allocated, PSRAM-backed where available), one 160-byte cache-path copy.
 
 **Cross-core protection (review finding B1):** on the dual-core S3,
 `portENTER_CRITICAL()` without a spinlock disables interrupts on the local
-core only and is NOT a mutual-exclusion pair across cores — a torn 16-byte
-read was possible. The shared state (dirty flag + pending record +
-`lastFlushed`) is therefore guarded by a dedicated FreeRTOS mutex
-(`xSemaphoreCreateMutex()`), taken by both `captureCandidate()` (reader task)
-and the flush loop (manager task) around the read-modify-update of the shared
-record. On the single-core C3 the same mutex is simply correct too, so one
-code shape serves both. The critical section never wraps SD I/O — the mutex
-is held only for the memory copy.
+core only and is NOT a mutual-exclusion pair across cores. All shared state
+(two records, path, flags) is therefore guarded by one dedicated FreeRTOS
+mutex (`xSemaphoreCreateMutex()`) taken by the reader task (`save`,
+`openBook`, `saveNow`) and the worker around every state access AND each
+disk write — the single-writer invariant is structural, not by discipline.
+On the single-core C3 the same mutex is simply correct too.
 
 ### 4.4 Book exit — synchronous flush, bounded
 
-`onExit()` (and the destructor path that already re-saves footnote origin,
-EpubReaderActivity.cpp:188-191) captures the final position and requests an
-immediate flush, then waits up to EXIT_FLUSH_TIMEOUT_MS (2000) for the task
-to complete before `epub`/`section` are reset. The async design exists only
-for mid-reading; at exit the reader state is being destroyed, so this one
-save is on-path by design. Worst case (SD wedged) adds ≤2 s to leaving a
-book.
-
-The `epub` reference needed for the cache path must remain valid during this
-wait — the flush is issued before any `.reset()` in the teardown sequence.
+The READER DESTRUCTOR calls `closeBook()`: the manager flushes any
+unflushed change synchronously (bounded by one record write, ~ms class)
+under the mutex, then fully resets its state. Exit flushing is the
+manager's responsibility — the activity's teardown just invokes it before
+`epub`/`section` are reset. Worst case (SD wedged) adds one write's
+latency to leaving a book.
 
 **KOReader sync exception (review finding S1):** `launchKOReaderSync()`
 (EpubReaderActivity.cpp:1185-1239) calls `saveProgress()` synchronously at
@@ -191,13 +182,14 @@ reader's last captured position (see §9 Related fixes).
 | Constant | Value | Rationale |
 |---|---|---|
 | `PROGRESS_FLUSH_INTERVAL_MS` | 60000 | Crash window = 1-3 pages; ~60 writes/hr max for a fast reader vs 200-600 today (3-10x reduction depending on reading speed — see review N1). Longer doubles wear saving nobody needs; shorter buys nothing the exit/low-battery paths don't already cover. |
-| `LOW_BATTERY_PERCENT` | 5 | User-directed. Gated on battery health HEALTHY. |
-| `EXIT_FLUSH_TIMEOUT_MS` | 2000 | Bounds the worst-case book-exit latency if SD is wedged. |
-| Manager task priority | low (1) | Must never compete with render. |
-| Manager task stack | 2048 B | Record build + HalStorage call; no recursion. Verify with `uxTaskGetStackHighWaterMark()` on first device test (review N2). |
-| Manager task core | 1 (dual-core) / 0 (single-core, low prio) | Off the render core. |
-| Manager cache-path buffer | 160 B | Holds a copy of the current book's cache dir path; flushes dereference the copy, never the Epub object. |
-| Shared-state guard | FreeRTOS mutex | Review B1: `portENTER_CRITICAL` without a spinlock is per-core on the S3 and not a cross-core exclusion pair. One mutex shape serves both S3 and C3. |
+| `LOW_BATTERY_PERCENT` (private) | 5 | User-directed. Queried at gate time; gated on battery health HEALTHY and not charging. |
+| Worker task priority | low (1) | Must never compete with render. |
+| Worker task stack | 2048 B | Record write + HalStorage call; no recursion. Verify with `uxTaskGetStackHighWaterMark()` on first device test (review N2). |
+| Worker task core | 0 (both classes) | Render task owns core 1 on dual-core boards. |
+| Worker trigger | `ulTaskNotifyTake` (60 s timeout) | Notification from save() when the gate opens; the timeout backstops a raced notification. No always-ticking poll. |
+| Manager cache-path buffer | 160 B | Holds a copy of the current book's cache dir path; writes dereference the copy, never the Epub object. |
+| Shared-state guard | FreeRTOS mutex (held across writes) | Review B1: `portENTER_CRITICAL` without a spinlock is per-core on the S3 and not a cross-core exclusion pair. Held across the write too: single writer by construction. |
+| Progress state allocation | `poolMalloc` (PSRAM-backed where available) | User directive: dynamic, PSRAM when the board has it. Two 16-byte records. |
 
 ## 6. Decision Log
 
@@ -222,6 +214,7 @@ reader's last captured position (see §9 Related fixes).
 | 2026-09-10 (review) | Write-time freshness gate via published position snapshot | Revalidator callback reading reader state from the manager task was a data race (no RenderLock held); snapshot published under the manager mutex replaces it. Also closes the stale-capture and cross-book hazards. |
 | 2026-09-10 (review) | `saveNow()` = capture-first then synchronous flush | Low battery + redraws rewrote unchanged pages; capture through the same change detection makes equal records no-ops and failures retryable. Reopen seeding (`seedLastFlushed`) makes "reopen, read nothing, exit" write nothing. |
 | 2026-09-10 (review) | `enterPowerOff()` runs `ActivityManager::shutdown()` first, with a `powerOffInProgress` latch | Manual power-off now runs ANY outgoing activity's onExit() (like goToSleep does) and WiFi activities can no longer silentRestart() during teardown; from-reader context snapshotted before the stack is emptied. |
+| 2026-09-10 (redesign) | Gated-save contract: two records + gate in save(); FlushState machinery deleted | User directive ("very complex design — tick, timer, etc"): the manager holds `current_` + `lastFlushed_`; save() always updates memory, gates the disk write on changed+interval (or low battery); worker is notification-driven with a 60 s timeout backstop; flushChangedLocked holds the mutex across the write. Freshness/publish/markFlushed/seed machinery deleted — superseded by "worker always writes the latest in-memory record". |
 
 ## 7. Wear Analysis
 
@@ -239,14 +232,13 @@ path as much as wear.
 
 ## 8. Testing
 
-- Host-testable: the change-detection logic (candidate vs `lastFlushed`)
-  extracted into `lib/` per the host-test-lib pattern (references/host-test-lib-pattern.md);
-  the dirty/latch/retry state machine is pure C++ (review N3: expose explicit
-  method boundaries — `capture(record)`, `shouldFlush()`, `markFlushed(record)` —
-  so the state machine is testable without mocking FreeRTOS primitives).
-- On-device: serial log shows flush cadence under fast page turns; `progress.bin`
-  correct after forced power-off mid-read (worst case one interval stale);
-  exit flush verified by killing power immediately after back-out.
+- Host-testable: the record round-trip (encode/decode) is exercised by the
+  existing suite; the gate decision (changed × interval × low-battery) is
+  pure logic inside `save()` and is exercised on-device via serial logs.
+- On-device: serial log shows flush cadence under fast page turns
+  (LOG_INF per successful save); `progress.bin` correct after forced
+  power-off mid-read (worst case one interval stale); exit flush verified
+  by killing power immediately after back-out.
 
 ## 9. Related fixes (outside this PR)
 
