@@ -194,10 +194,10 @@ FontChain* BookFontLoader::builtinFallback() {
   static bool init = false;
   if (!init) {
     init = true;
-    static BitmapBookFont r(kNotoSansFont);
-    static BitmapBookFont b(kNotoSansFont);
-    static BitmapBookFont i(kNotoSansFont);
-    static BitmapBookFont bi(kNotoSansFont);
+    static freeink::ui::BitmapBookFont r(kNotoSansFont);
+    static freeink::ui::BitmapBookFont b(kNotoSansFont);
+    static freeink::ui::BitmapBookFont i(kNotoSansFont);
+    static freeink::ui::BitmapBookFont bi(kNotoSansFont);
     fallback.add(&r, StyleNone);
     fallback.add(&b, StyleBold);
     fallback.add(&i, StyleItalic);
