@@ -24,12 +24,17 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
 - Progress survives book exit, deep sleep, and power off *always* (synchronous flush at those points).
 - Under low battery (<5%), degrade to the current save-every-turn behavior.
 - Never write when the progress content has not changed.
+- **Single owner of the record format:** `ProgressManager` encodes
+  (`saveRecord()`), decodes (`load()`), and writes (background tick /
+  `flushNow()` / `saveNow()`) the progress record. `EpubReaderUtils::
+  saveProgress` is a thin Epub-flavored wrapper; the reader does no
+  hand-rolled byte parsing (final structure, SOLID pass).
 
 ## 3. Non-Goals
 
 - Changing the `progress.bin` on-disk format (stays the 10-byte record of
   EpubReaderUtils.h; load path in `loadBook()` is untouched).
-- Migrating TXT/XTC readers to the same saver (follow-up PR).
+- Migrating TXT/XTC readers to the same manager (follow-up PR).
 - A user-facing settings row for the interval (KISS: constexpr only).
 
 ## 4. Design
@@ -45,7 +50,7 @@ dirty if changed. No mutex, no SD.
 
 ### 4.2 In-memory change detection
 
-The saver holds `lastFlushed = {spine, page, pageCount, visibleTextOffset}`
+The manager holds `lastFlushed = {spine, page, pageCount, visibleTextOffset}`
 (16 bytes, mirroring the 10-byte on-disk record). `captureCandidate()`
 compares the candidate against `lastFlushed`:
 
@@ -67,8 +72,13 @@ guard skipped a save when a same-page re-layout shifted only the
 
 A small `ProgressManager` (src/ProgressManager.cpp) owns a FreeRTOS task:
 
-- **Pin:** core 1 on dual-core boards (x4pro, sticky); core 0 at low priority
-  on the single-core C3. Pin chosen at creation from `portNUM_PROCESSORS`.
+- **Pin:** core 0 on BOTH board classes — the render task owns core 1 on
+  dual-core boards (ActivityManager.cpp), and priority 1 cannot preempt it;
+  on single-core boards core 0 is the only core. (`xTaskCreatePinnedToCore`,
+  not `xTaskCreate` — the pin is part of the review fixes.)
+- **Stack:** 2048 BYTES passed directly — this ESP-IDF build takes
+  `usStackDepth` in bytes (the render task passes 8192 directly). The
+  word-division form created a 512-byte stack (Copilot, PR #107).
 - **Trigger (simplified from the esp_timer sketch):** the task itself loops on
   `vTaskDelay(FLUSH_INTERVAL_MS)` and flushes when dirty. The original
   esp_timer + `xTaskNotifyFromISR` design assumed the explicit flushes would
@@ -81,15 +91,24 @@ A small `ProgressManager` (src/ProgressManager.cpp) owns a FreeRTOS task:
   `HalStorage` (its mutex serializes with the main task's other SD access)
   with the mutex NOT held. Update `lastFlushed` on success; leave dirty set
   on failure so the next tick retries.
-- **Book identity:** the saver stores a COPY of the book's cache path
+- **Book identity:** ProgressManager stores a COPY of the book's cache path
   (`setBook()`), never the `Epub` object — the reader may release the epub
   before teardown (KOReader sync path), so a raw pointer would dangle.
-  `setBook(nullptr)` on book exit drops any pending record: a record
-  captured for book A must never be written into book B's cache dir.
-- **Bypass-path sync:** synchronous saves that bypass the saver (KOReader
-  sync, DELETE_CACHE, low-battery per-turn saves) call `markFlushed()` so
-  the saver's change detection stays consistent and its next tick is a
-  no-op.
+  `setBook(nullptr)` on book exit performs a FULL state reset (dirty,
+  flushed, lastFlushed, pending): book A's records must never seed book B's
+  change detection.
+- **Write-time freshness gate:** the reader publishes its position
+  (`publishPosition()`) under the manager mutex after every render; the
+  flush compares the pending record against that snapshot and DROPS the
+  write when they differ (position changed between capture and flush —
+  re-pagination, newer render). No reader state is read at write time
+  (the earlier revalidator-callback form was a data race: it dereferenced
+  `section` from the manager task, which holds no RenderLock).
+- **Bypass-path sync:** synchronous saves that bypass the background task
+  (KOReader sync, DELETE_CACHE, low-battery per-turn saves, footnote exit)
+  go through `saveNow()`, which captures through the same change detection
+  and then flushes synchronously under the manager mutex — single writer,
+  unchanged records are no-ops, failures stay pending for the tick retry.
 
 **Memory:** ~2 KB task stack, one 16-byte pending record, one 16-byte
 `lastFlushed` record, one 160-byte cache-path copy, static (no heap after
@@ -101,7 +120,7 @@ core only and is NOT a mutual-exclusion pair across cores — a torn 16-byte
 read was possible. The shared state (dirty flag + pending record +
 `lastFlushed`) is therefore guarded by a dedicated FreeRTOS mutex
 (`xSemaphoreCreateMutex()`), taken by both `captureCandidate()` (reader task)
-and the flush loop (saver task) around the read-modify-update of the shared
+and the flush loop (manager task) around the read-modify-update of the shared
 record. On the single-core C3 the same mutex is simply correct too, so one
 code shape serves both. The critical section never wraps SD I/O — the mutex
 is held only for the memory copy.
@@ -186,7 +205,7 @@ reader's last captured position (see §9 Related fixes).
 |---|---|---|
 | 2026-09-10 | 60 s dirty-gated timer | Chosen over 30 s / 120 s: wear reduction is already ample at 60 s (endurance never the binding constraint — the SQLite pivot proved *pattern* was), and the crash window (1-3 pages) is indistinguishable from 30 s in practice. Constant, not a setting (KISS). |
 | 2026-09-10 | Change check in memory (`lastFlushed`) | User-directed. Replaces the render-path guard; `visibleTextOffset` now participates, closing a silent-skip gap in the old spine/page/count-only guard. |
-| 2026-09-10 | EPUB reader only in this PR | TXT/XTC keep per-turn saves; follow-up migrates them onto the same saver. Keeps this PR reviewable. |
+| 2026-09-10 | EPUB reader only in this PR | TXT/XTC keep per-turn saves; follow-up migrates them onto the same manager. Keeps this PR reviewable. |
 | 2026-09-10 | Charging counts as NOT low battery | On USB power a crash loses nothing irreplaceable, and the exit flush still runs. Simpler than forcing sync saves while charging. |
 | 2026-09-10 | Exit-failure UX = popup | Reuses the existing `STR_SAVE_PROGRESS_FAILED` path; timer failures stay silent. |
 | 2026-09-10 | Shared state guarded by FreeRTOS mutex, not `portENTER_CRITICAL` | Review B1 (blocking): on dual-core S3, `portENTER_CRITICAL` without a spinlock disables interrupts on the local core only — two cores never exclude each other, and the 16-byte record copy is not atomic. Torn read → corrupt position on disk. |
@@ -196,8 +215,13 @@ reader's last captured position (see §9 Related fixes).
 | 2026-09-10 | `launchKOReaderSync()`'s early `epub.reset()` documented as safe-by-construction | Review S1: its synchronous save at line 1207 clears the dirty flag before `epub.reset()`, so the later `onExit()` flush is a no-op. Implementation must treat "epub null" as no-op flush, never a fault. |
 | 2026-09-10 (impl) | Interval-tick task instead of esp_timer + ISR + task-notify | During implementation: explicit flushes (exit, power-off) write synchronously on the caller's thread, so the ISR/notify machinery had no remaining job. `vTaskDelay` loop is the simplest structure that meets the same bounds. |
 | 2026-09-10 (impl) | Manager stores a cache-path copy, not the `Epub*` | The reader releases `epub` before teardown on the KOReader path; a raw pointer would dangle. `setBook(nullptr)` on exit also drops the pending record so book A's position is never written into book B's dir. |
-| 2026-09-10 (impl) | `markFlushed()` for synchronous saves that bypass the saver | KOReader sync, DELETE_CACHE and low-battery per-turn saves write outside the saver; recording them keeps change detection consistent and prevents a redundant background rewrite. |
+| 2026-09-10 (impl) | `markFlushed()` for synchronous saves that bypass ProgressManager | KOReader sync, DELETE_CACHE and low-battery per-turn saves write outside ProgressManager; recording them keeps change detection consistent and prevents a redundant background rewrite. |
 | 2026-09-10 (impl) | Host-testable state machine extracted to `lib/ProgressFlush/` with 9 gtest cases | Review N3 method boundaries: `capture` / `beginFlush` / `endFlush` / `markFlushed`; device wrapper (src/ProgressManager) supplies mutex + SD. Tests: test/progress_flush/. |
+| 2026-09-10 (review R1) | `ProgressSaver` renamed `ProgressManager`; owns encode (`saveRecord`), decode (`load`) and write | SOLID/final pass: the record format was defined in three places (EpubReaderUtils encode, reader's loadBook byte parse, ProgressManager writes). One owner; EpubReaderUtils becomes a thin wrapper. (User directive: "fix it properly".) |
+| 2026-09-10 (review) | Task pinned core 0, stack passed in BYTES (2048 B) | Copilot: render task owns core 1; and this ESP-IDF build takes usStackDepth in bytes — the word-division form created a 512-byte stack. |
+| 2026-09-10 (review) | Write-time freshness gate via published position snapshot | Revalidator callback reading reader state from the manager task was a data race (no RenderLock held); snapshot published under the manager mutex replaces it. Also closes the stale-capture and cross-book hazards. |
+| 2026-09-10 (review) | `saveNow()` = capture-first then synchronous flush | Low battery + redraws rewrote unchanged pages; capture through the same change detection makes equal records no-ops and failures retryable. Reopen seeding (`seedLastFlushed`) makes "reopen, read nothing, exit" write nothing. |
+| 2026-09-10 (review) | `enterPowerOff()` runs `ActivityManager::shutdown()` first, with a `powerOffInProgress` latch | Manual power-off now runs ANY outgoing activity's onExit() (like goToSleep does) and WiFi activities can no longer silentRestart() during teardown; from-reader context snapshotted before the stack is emptied. |
 
 ## 7. Wear Analysis
 
