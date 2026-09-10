@@ -180,7 +180,7 @@ bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
   return true;
 }
 
-// Decodes a v7 record (150 bytes = v6 plus the session window). Returns false
+// Decodes a v7 record (134 bytes = v6 plus the session window). Returns false
 // on size/version mismatch.
 bool decodeV7(const uint8_t* data, const int n, BookReadingStats& stats) {
   if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;

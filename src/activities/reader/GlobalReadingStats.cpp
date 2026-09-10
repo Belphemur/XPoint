@@ -162,7 +162,7 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   }
 
   // v1/v2 (13/17 bytes) are not supported by this build: a fresh start is
-  // safer than decoding an outdated layout. v3 (159), v4 (195) and v5 (236)
+  // safer than decoding an outdated layout. v3 (159), v4 (195) and v5 (225)
   // are recognized; v3 lacks the trailing WPM window and v4 the trailing
   // session window — both parse with it empty.
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {

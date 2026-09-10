@@ -58,7 +58,7 @@ struct WpmWindow {
   bool full() const { return count >= WPM_WINDOW_SIZE; }
 };
 
-// Rolling 18-sample session-duration window (seconds) with a trimmed mean:
+// Rolling 10-sample session-duration window (seconds) with a trimmed mean:
 // the two longest and two shortest sessions are dropped so a single marathon
 // (or an aborted glance) doesn't skew the average — the Kindle-style session
 // algorithm, mirroring WpmWindow. Samples are contiguous in [0, count); the

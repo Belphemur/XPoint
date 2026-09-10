@@ -121,7 +121,7 @@ same wire shape the WPM window uses (`avg` u16, `count` u16, samples u16 ×N,
 `pos` u8 = 5 + 2N bytes):
 
 ```
-SessionWindow wire (N = SESSION_WINDOW_SIZE = 8) = 5 + 16 = 21 bytes
+SessionWindow wire (N = SESSION_WINDOW_SIZE = 10) = 5 + 20 = 25 bytes
 ```
 
 ### 3.1 Per-book: v6 → **v7** (109 B → **134 B**)
@@ -260,10 +260,10 @@ require a persisted flag that breaks the pure-`count` gate contract.
 1. `ReadingStatsUtils.{h,cpp}`: `SessionWindow` (+ constants, `record`,
    `trimmedMean`, `normalize`, `clear`), `avgSessionSeconds` helper.
 2. `BookReadingStats.{h,cpp}`: v7 layout (`STATS_FILE_VERSION = 7`,
-   `STATS_FILE_SIZE = 150`), `decodeV7`, session-window read/write,
+   `STATS_FILE_SIZE = 134`), `decodeV7`, session-window read/write,
    `recordSession`, extended `clearWpmStats`, candidate names `{v7, v6}`.
 3. `GlobalReadingStats.{h,cpp}`: v5 layout (`GLOBAL_STATS_VERSION = 5`,
-   236 B), v4 branch gains empty session window, `recordGlobalSession`,
+   225 B), v4 branch gains empty session window, `recordGlobalSession`,
    extended `clearWpmStats`.
 4. `EpubReaderActivity`: `sessionPageTurns` counter on the existing
    forward-turn recording block (one counter, no parallel plumbing), reset
