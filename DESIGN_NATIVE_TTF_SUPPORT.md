@@ -645,3 +645,88 @@ Discrepancies found in the previous draft, all corrected above:
 28. Synthetic bold "must be verified in Phase 2" (§3.7) / "optional upstream ask" (§5 D5b) → already implemented upstream: `PageRenderer::renderText` double-strikes +1px on a bold shortfall (PageRenderer.cpp:183-195); §3.7/§5 D5/§8 R7 corrected.
 29. "Style bits map 1:1 / mapping is a cast" → only BOLD/ITALIC/UNDERLINE coincide; the old STRIKETHROUGH=8/SUP=16/SUB=32/RUBY_CONTINUE=64 bits (EpdFontFamily.h:10-21) collide with `StyleSuperscript=8`/`StyleSubscript=16` (BookFont.h:17-24) — a cast would render strikethrough as superscript; §2.1/§2.3/§5 D8 corrected.
 30. **Phase 3.5 added (§4)**: the §3.5 feature-parity note previously deferred ruby + per-word focus splits (and mis-cited §8 R6) — replaced by the blocking Phase 3.5 parity-enforcement gate with the full verified feature ledger (engine-covered items, CrossPoint adapter work, genuine engine gaps), §8 R3 rewritten as a blocking risk, §11 Q3 resolved into the gate, and Phase 4 deletion gated on the checklist.
+
+
+---
+
+## 14. Font architecture & UX split (round-3 directive)
+
+> **Status: USER DIRECTIVE, 2026-09-10.** Supersedes any earlier wording in this
+> document about a mixed/dual-font UX or a DRAM font tier (§3.3 directive stands:
+> PSRAM-only). This section is the authoritative font-architecture plan for Phase 2+.
+
+### 14.1 Two device classes, one font stack each
+
+| Device class | Builds | Font engine | Reader activity | Font UX |
+|---|---|---|---|---|
+| **PSRAM** (X4 Pro, X4C, Paper Mono; `BOARD_HAS_PSRAM`) | `CROSSPOINT_TTF_READER=1` (default ON) | FreeInkBook native TTF (`FontChain`) | New reader activity only | Family picker + continuous size |
+| **PSRAM-less** (X4, Sticky; C3 / no-PSRAM S3) | flag absent | Legacy EpdFont bitmap path | Existing `EpubReaderActivity` unchanged | Existing bitmap font picker, no size slider |
+
+- **Compile-time split, not runtime.** On PSRAM-less builds none of the TTF stack
+  links at all (`BookFontLoader`, adapters, `ChapterLayout`/`PageRenderer` path,
+  font/size settings UI) — zero flash/RAM cost, zero new UX. On PSRAM builds the
+  legacy reader activity, `FontCacheManager`, and the old font-settings tab are
+  **compiled out**; the two render paths never coexist in one binary.
+- **No runtime toggle, no dual-mode testing.** A device is one class or the
+  other for its whole life.
+- **UI chrome stays bitmap on every device** (`GfxRenderer` + `EpdFont`):
+  menus, settings, dialogs are crisp at fixed sizes and need no scaling. "TTF
+  devices" differ only in the book-reading surface.
+
+### 14.2 Font size UX
+
+Continuous size control exists **only on the TTF device class** — bitmap fonts
+are baked at fixed sizes (`BitmapBookFont` metrics ignore `sizePx`), so a size
+control over the legacy engine is meaningless. Consequences:
+
+- PSRAM builds: the reader font settings show family + size (8..72 pt,
+  `ttfFontPointSize`) because TTF makes size real. One settings shape, no
+  conditional widgets.
+- PSRAM-less builds: the classic fixed-size list, exactly as today.
+- We do **not** ship a mode-dependent settings screen that mixes both — that
+  would cost code *and* confuse users (bitmap + size = no-op).
+
+### 14.3 Fallback font: Atkinson Hyperlegible Next (round-3 directive)
+
+The always-present chain-tail fallback for PSRAM builds is **Atkinson
+Hyperlegible Next**, not the bundled `kNotoSansFont`:
+
+- `BitmapBookFont(const BitmapFont&)` takes any FreeInkUI `BitmapFont`, so the
+  fallback is generated with the SDK's own tool:
+  `freeink-sdk/libs/ui/FreeInkUI/tools/gen_font.py --ttf
+  AtkinsonHyperlegibleNext-<Style>.ttf --alpha ...` (source TTFs are the same
+  googlefonts/atkinson-hyperlegible-next releases already used by
+  `lib/EpdFont/scripts/sd-fonts.yaml:268-277`).
+- Emit 4 style variants (regular/bold/italic/bold-italic) at a body-text size
+  (~16px) with `--alpha` so anti-aliasing survives the adapter's 4bpp path;
+  register them as `kAtkinsonBookFont<Style>` and hand them to
+  `BookFontLoader`'s fallback chain in place of the four `kNotoSansFont`
+  instances (BookFontLoader.cpp:208-211 — Phase 2 change).
+- Rationale: book text should fall back to the same typeface users know from
+  the bitmap reader, Noto Sans remains the UI-chrome face, and the SDK's
+  bundled Noto data is not duplicated in flash.
+- Fallback semantics unchanged: end-of-chain, never a selectable family,
+  covers glyphs/styles a chosen TTF family lacks; single baked size (headings
+  render at body size under fallback).
+
+### 14.4 SD layout & file expectations (normative for Phase 2)
+
+```
+/fonts/                          ← SD-card root, non-recursive
+  MyFamily-Regular.ttf           ← filename convention (§3.7): suffix
+  MyFamily-Bold.ttf                match, case-insensitive; unknown suffix
+  MyFamily-Italic.ttf              = single-style Regular family named by stem
+  MyFamily-BoldItalic.ttf
+  SomeFont.ttf                   (→ family "SomeFont", Regular only)
+  free-fonts.json                OPTIONAL metadata (display names, license);
+                                 disk scan always wins over the manifest
+```
+
+- Suffixes: `-Regular`, `-Bold`, `-Italic`, `-BoldItalic` (case-insensitive).
+- Raw `.ttf`/`.otf` only — no `.cpfont`, no conversion (that is the point).
+- One file = one face; up to 4 faces group into a family; more than one family
+  is fine (32-family cap in the loader).
+- Per-face size guard: 2MB (CWE-400) on the PSRAM tier; fonts are loaded
+  whole-file into PSRAM and stay resident while the face is live (§3.3).
+- PSRAM-less boards: `/fonts/` is not scanned, files may be present but are
+  ignored — no font bytes are ever read (§3.3 directive).
