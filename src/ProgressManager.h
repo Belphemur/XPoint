@@ -6,13 +6,10 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
-#include "../lib/ProgressFlush/ProgressFlush.h"
-
 // Single owner of EPUB reading progress
 // (docs/design/2026-09-10-progress-save-timer.md):
 // - FORMAT: the progress.bin record is encoded/decoded only here
-//   (private saveRecord()/load()); EpubReaderUtils::saveProgress wraps
-//   saveRecord.
+//   (private saveRecord()/load()); the reader does no byte parsing.
 // - STATE: the current position AND the last-flushed baseline live here
 //   (heap-allocated; PSRAM on boards that have it). The reader reports
 //   every page change via save(); the manager decides what reaches disk.
@@ -33,9 +30,22 @@ class ProgressManager {
   static constexpr unsigned long FLUSH_INTERVAL_MS = 60000;
   // On-disk record: 6 bytes of spine/page/count (+4 bytes visibleTextOffset
   // when known). Byte order matches the firmware's historical layout — do
-  // not reorder without a load-side migration.
+  // not reorder without a load-side migration. The offset participates in
+  // change detection: a same-page re-layout that only shifts the offset
+  // still counts as progress.
   static constexpr size_t RECORD_SIZE_BASE = 6;
   static constexpr size_t RECORD_SIZE_OFFSET = 10;
+
+  // Decoded progress.bin record.
+  struct Record {
+    uint16_t spineIndex = 0;
+    uint16_t pageNumber = 0;
+    uint16_t pageCount = 0;
+    uint32_t visibleTextOffset = 0;
+    bool hasOffset = false;
+
+    bool operator==(const Record&) const = default;
+  };
 
   ProgressManager() = default;
   ~ProgressManager();
@@ -90,15 +100,18 @@ class ProgressManager {
   // persisted as soon as the worker can.
   static constexpr uint8_t LOW_BATTERY_PERCENT = 5;
   // Gate-time low-battery query: the HAL's cached reading (BATTERY_POLL_MS
-  // cadence) makes this cheap; only reads the battery singleton.
-  bool lowBattery() const;
+  // cadence) makes this cheap; reads only the battery singleton — static.
+  static bool lowBattery();
 
   SemaphoreHandle_t mutex_ = nullptr;
   // Heap-allocated state (poolMalloc: PSRAM-backed on BOARD_HAS_PSRAM
   // boards, DRAM otherwise). Null = uninitialized (begin() failed): all
   // ops no-op.
-  ProgressFlush::Record* current_ = nullptr;
-  ProgressFlush::Record* lastFlushed_ = nullptr;
+  // Heap-allocated state (poolMalloc: PSRAM-backed on BOARD_HAS_PSRAM
+  // boards, DRAM otherwise). Null = uninitialized (begin() failed): all
+  // ops no-op.
+  Record* current_ = nullptr;
+  Record* lastFlushed_ = nullptr;
   unsigned long lastFlushMs_ = 0;  // last successful disk flush (millis())
   char cachePath_[160] = {0};
   bool bookOpen_ = false;

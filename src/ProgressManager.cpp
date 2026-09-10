@@ -31,16 +31,16 @@ void ProgressManager::begin() {
   // Dynamic allocation via the pool (user directive): PSRAM-backed on
   // BOARD_HAS_PSRAM boards, DRAM otherwise. Null on OOM = every operation
   // becomes a safe no-op (fail closed).
-  auto cur = poolMakeBytes(sizeof(ProgressFlush::Record));
-  auto last = poolMakeBytes(sizeof(ProgressFlush::Record));
+  auto cur = poolMakeBytes(sizeof(ProgressManager::Record));
+  auto last = poolMakeBytes(sizeof(ProgressManager::Record));
   if (cur == nullptr || last == nullptr) {
     LOG_ERR(MUTEX_TAG, "OOM: progress state");
     return;  // pool bytes free themselves; mutex stays, ops no-op on null state
   }
-  current_ = reinterpret_cast<ProgressFlush::Record*>(cur.get());
-  lastFlushed_ = reinterpret_cast<ProgressFlush::Record*>(last.get());
-  *current_ = ProgressFlush::Record{};
-  *lastFlushed_ = ProgressFlush::Record{};
+  current_ = reinterpret_cast<ProgressManager::Record*>(cur.get());
+  lastFlushed_ = reinterpret_cast<ProgressManager::Record*>(last.get());
+  *current_ = ProgressManager::Record{};
+  *lastFlushed_ = ProgressManager::Record{};
   // Ownership released to the raw members; the destructor poolFree()s them.
   (void)cur.release();
   (void)last.release();
@@ -86,8 +86,8 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
   if (mutex_ == nullptr || current_ == nullptr) return false;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   // Full reset: a previous book's state must never seed this book's gate.
-  *current_ = ProgressFlush::Record{};
-  *lastFlushed_ = ProgressFlush::Record{};
+  *current_ = ProgressManager::Record{};
+  *lastFlushed_ = ProgressManager::Record{};
   writeQueued_ = false;
   lastFlushMs_ = millis();
 
@@ -160,7 +160,7 @@ bool ProgressManager::saveNow(const char* cachePath, const uint16_t spineIndex, 
   if (ok) {
     // Only update the in-memory baseline when THIS is the open book's file;
     // a bypass save for another path must not mark our book as flushed.
-    if (bookOpen_ && cachePath_ != nullptr && strncmp(cachePath, cachePath_, sizeof(cachePath_)) == 0) {
+    if (bookOpen_ && strncmp(cachePath, cachePath_, sizeof(cachePath_)) == 0) {
       current_->spineIndex = spineIndex;
       current_->pageNumber = pageNumber;
       current_->pageCount = pageCount;
@@ -179,8 +179,8 @@ void ProgressManager::closeBook() {
   if (mutex_ == nullptr || current_ == nullptr) return;
   xSemaphoreTake(mutex_, portMAX_DELAY);
   flushChangedLocked();
-  *current_ = ProgressFlush::Record{};
-  *lastFlushed_ = ProgressFlush::Record{};
+  *current_ = ProgressManager::Record{};
+  *lastFlushed_ = ProgressManager::Record{};
   cachePath_[0] = '\0';
   bookOpen_ = false;
   writeQueued_ = false;
@@ -218,12 +218,11 @@ bool ProgressManager::flushChangedLocked() {
   return ok;
 }
 
-bool ProgressManager::lowBattery() const {
-  // Ask the HAL directly: the battery percentage is cached at
-  // BATTERY_POLL_MS cadence, so this is cheap and never blocks on I2C more
-  // than the status-bar's own reads already do. Gate semantics (design
-  // §4.5): below LOW_BATTERY_PERCENT, gauge HEALTHY, NOT charging —
-  // charging means external power, so there is nothing to protect.
+// Gate semantics (design §4.5): below LOW_BATTERY_PERCENT, gauge HEALTHY,
+// NOT charging — charging means external power, so there is nothing to
+// protect. Pure HAL reads (the singleton's own cached values): static,
+// no member state touched.
+bool ProgressManager::lowBattery() {
   if (powerManager.isBatteryCharging()) return false;
   if (powerManager.getBatteryHealthState() != HalPowerManager::BatteryHealthState::HEALTHY) return false;
   return powerManager.getBatteryPercentage() < LOW_BATTERY_PERCENT;
