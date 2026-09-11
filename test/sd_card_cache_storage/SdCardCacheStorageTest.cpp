@@ -1,14 +1,13 @@
 // Host tests for SdCardCacheStorage (PRRT...Ulfv): validName accept/reject,
 // endWrite success (tmp→final), rename-failure paths (final preserved via
 // "<final>.old" rotate), and close-failure handling.
-#include "adapters/SdCardCacheStorage.h"
-
-#include "HalFile.h"
-#include "HalStorage.h"
-
 #include <gtest/gtest.h>
 
 #include <string>
+
+#include "HalFile.h"
+#include "HalStorage.h"
+#include "adapters/SdCardCacheStorage.h"
 
 using freeink::book::SdCardCacheStorage;
 

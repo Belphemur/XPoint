@@ -15,7 +15,10 @@ class HalFile {
 
   bool isOpen() const { return open_; }
   // Used by the HalStorage stub after a successful open.
-  void markOpen(bool o) { open_ = o; cursor = 0; }
+  void markOpen(bool o) {
+    open_ = o;
+    cursor = 0;
+  }
   uint64_t fileSize64() { return data ? data->size() : 0; }
   size_t position() const { return cursor; }
   bool seek(size_t pos) { return seek64(pos); }

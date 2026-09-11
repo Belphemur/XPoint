@@ -1,8 +1,8 @@
 // Host-test stub definitions for SdCardCacheStorage's HAL dependencies.
+#include <utility>
+
 #include "HalFile.h"
 #include "HalStorage.h"
-
-#include <utility>
 
 bool HalFile::testFailClose = false;
 
