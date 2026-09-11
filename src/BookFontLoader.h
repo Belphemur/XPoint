@@ -125,8 +125,10 @@ class BookFontLoader {
   // Aggregate DRAM budget: derived from free heap with floor guards.
   uint32_t remainingBudget_ = 0;
 
-  static void scanFonts(const char* fontPath);
-  static bool loadFaceBytes(const FontFaceInfo& fi);
+  // Two-level family walk (design §14.4): one subfolder per family under
+  // `rootPath`, hidden root scanned first so it wins on name collisions.
+  // Appends into the caller's manifest (capped at kMaxDiscoveredFamilies).
+  static void scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount);
   static FontChain* builtinFallback();
 
   // Load a single face into the live chain (member so it can access private

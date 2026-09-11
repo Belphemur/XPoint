@@ -684,6 +684,14 @@ Discrepancies found in the previous draft, all corrected above:
   NotoSansHebrew/NotoSansArabic glyph data, but CJK ideographs are NOT covered
   and render as missing glyphs. No SD-`.cpfont` font is wired into the reader
   chain (§3.6).
+- **Flag scope (Phase 2a shipped).** `CROSSPOINT_TTF_READER=1` is defined
+  exactly on the nine PSRAM-class envs: `x4pro`, `x4pro_profile`, `x4c`,
+  `x4c-gh_release`, `x4pro-gh_release`, `x4pro-gh_release_rc`, `papermono`,
+  `papermono-gh_release`, `papermono-gh_release_rc`. It is absent from every
+  C3 and sticky env, so PSRAM-less binaries stay byte-identical to `develop`
+  (zero flash/RAM cost; verified by `pio run -e default`). During Phase 2 both
+  render paths still coexist in PSRAM binaries (the legacy reader is the
+  build-flag kill switch); the legacy reader is compiled out only in Phase 4.
 
 ### 14.2 Font size UX
 

@@ -38,6 +38,15 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#if defined(CROSSPOINT_TTF_READER)
+#include <builtinFonts/atkinson_hn_14_bold.h>
+#include <builtinFonts/atkinson_hn_14_bolditalic.h>
+#include <builtinFonts/atkinson_hn_14_italic.h>
+#include <builtinFonts/atkinson_hn_14_regular.h>
+
+#include "adapters/EpdBookFont.h"
+#endif
+
 #ifdef HOST_TEST
 #include "Arduino.h"  // host-test stub for ESP.getFreeHeap
 #endif
@@ -92,6 +101,93 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
   return sz;
 }
 
+
+
+// ── scanFonts — per-family TTF discovery (design §14.4) ──────────────────
+
+namespace {
+// Font roots. The hidden root is scanned first so it wins on family-name
+// collisions, matching the SdCardFontRegistry sleep-folder pattern.
+constexpr const char* kFontsRootHidden = "/.fonts";
+constexpr const char* kFontsRootVisible = "/fonts";
+
+// Case-insensitive ends-with on a null-terminated string.
+bool endsWithIgnoreCase(const char* s, const char* suffix) {
+  const size_t sLen = strlen(s);
+  const size_t sufLen = strlen(suffix);
+  if (sLen < sufLen) return false;
+  for (size_t i = 0; i < sufLen; ++i) {
+    if (tolower(static_cast<unsigned char>(s[sLen - sufLen + i])) !=
+        tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Word-boundary case-insensitive substring test: the token must start after
+// a non-alphanumeric (or string start) and end before one, so "SemiBold"
+// does not match "bold".
+bool hasWord(const char* hay, const char* token) {
+  const size_t tLen = strlen(token);
+  for (size_t i = 0; hay[i] != '\0'; ++i) {
+    if (i > 0 && isalnum(static_cast<unsigned char>(hay[i - 1]))) continue;
+    size_t j = 0;
+    while (token[j] != '\0' && tolower(static_cast<unsigned char>(hay[i + j])) == token[j]) ++j;
+    if (token[j] != '\0') continue;
+    const char after = hay[i + tLen];
+    if (after == '\0' || !isalnum(static_cast<unsigned char>(after))) return true;
+  }
+  return false;
+}
+
+// Style inference priority per design §14.4: bolditalic → italic family →
+// bold → regular family → weight heuristics → skip.
+// `lower` is the lowercased filename stem.
+bool inferStyleFlags(const char* lower, uint8_t& styleOut) {
+  if (hasWord(lower, "bolditalic")) {
+    styleOut = StyleBold | StyleItalic;
+    return true;
+  }
+  if (hasWord(lower, "italic") || hasWord(lower, "oblique") || hasWord(lower, "ital")) {
+    styleOut = StyleItalic;
+    return true;
+  }
+  if (hasWord(lower, "bold")) {
+    styleOut = StyleBold;
+    return true;
+  }
+  if (hasWord(lower, "regular") || hasWord(lower, "normal") || hasWord(lower, "book") ||
+      hasWord(lower, "roman") || hasWord(lower, "text")) {
+    styleOut = StyleNone;
+    return true;
+  }
+  if (hasWord(lower, "semibold") || hasWord(lower, "demibold") || hasWord(lower, "medium") ||
+      hasWord(lower, "black") || hasWord(lower, "heavy") || hasWord(lower, "extrabold")) {
+    styleOut = StyleBold;
+    return true;
+  }
+  if (hasWord(lower, "light") || hasWord(lower, "thin")) {
+    styleOut = StyleNone;
+    return true;
+  }
+  return false;
+}
+
+// Case-insensitive comparison for family dedupe and same-style duplicate
+// resolution (lexicographically-first filename wins).
+int ciCompare(const char* a, const char* b) {
+  while (*a != '\0' && *b != '\0') {
+    const int ca = tolower(static_cast<unsigned char>(*a));
+    const int cb = tolower(static_cast<unsigned char>(*b));
+    if (ca != cb) return ca - cb;
+    ++a;
+    ++b;
+  }
+  return tolower(static_cast<unsigned char>(*a)) - tolower(static_cast<unsigned char>(*b));
+}
+}  // namespace
+
 // ── BookFontLoader implementation ────────────────────────────────────────────
 
 BookFontLoader::BookFontLoader() = default;
@@ -109,6 +205,11 @@ void BookFontLoader::begin() {
   familyCount_ = 0;
   families_ = {};
   dirty_.store(false, std::memory_order_relaxed);
+#if defined(CROSSPOINT_TTF_READER)
+  // Hidden root first so it wins on family-name collisions (§14.4).
+  scanFonts(kFontsRootHidden, families_.data(), familyCount_);
+  scanFonts(kFontsRootVisible, families_.data(), familyCount_);
+#endif
   remainingBudget_ = 0;
   initBudget();
 }
@@ -201,17 +302,23 @@ uint32_t BookFontLoader::computeFingerprint() const {
 }
 
 FontChain* BookFontLoader::builtinFallback() {
-  // Singleton FontChain over 4 BitmapBookFont instances (4 styles),
-  // placement-new'ed into a pool block so their coverage_[64*64] payloads
-  // live in PSRAM instead of static BSS (PSRAM-only directive):
-  // 4 * sizeof(BitmapBookFont) ≈ 16.4KB total.
-  // The faces are intentional device-lifetime singletons: destructors are
-  // never run so FontChain entries remain valid after this function returns.
+  // Singleton FontChain over 4 fallback faces (4 styles), placement-new'ed
+  // into a pool block so their payloads live in PSRAM instead of static BSS
+  // (PSRAM-only directive). The faces are intentional device-lifetime
+  // singletons: destructors are never run so FontChain entries remain valid
+  // after this function returns.
+#if defined(CROSSPOINT_TTF_READER)
+  // Reader chain (§14.5): four RenderFont adapters over the baked Atkinson
+  // fonts so the whole chain speaks the same rasterize protocol.
+  using FaceType = EpdBookFont;
+#else
+  using FaceType = freeink::ui::BitmapBookFont;
+#endif
   static FontChain fallback;
   static PoolBytes backing;  // PoolBytes object itself is only a pointer of BSS
   static bool init = false;
   if (!init) {
-    static constexpr size_t kFallbackBytes = 4 * sizeof(freeink::ui::BitmapBookFont);
+    static constexpr size_t kFallbackBytes = 4 * sizeof(FaceType);
     backing = poolMakeBytes(kFallbackBytes);
     if (!backing) {
       LOG_ERR("BFNT", "OOM: %u bytes for builtin fallback fonts", static_cast<unsigned>(kFallbackBytes));
@@ -224,11 +331,18 @@ FontChain* BookFontLoader::builtinFallback() {
     // call (see singleton note).
     // cppcheck-suppress constVariablePointer ; placement-new writes through these addresses
     auto* slots = reinterpret_cast<char*>(backing.get());
-    constexpr auto faceSize = sizeof(freeink::ui::BitmapBookFont);
-    auto* r = new (slots + 0 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* b = new (slots + 1 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* i = new (slots + 2 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* bi = new (slots + 3 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    constexpr auto faceSize = sizeof(FaceType);
+#if defined(CROSSPOINT_TTF_READER)
+    auto* r = new (slots + 0 * faceSize) FaceType(&atkinson_hn_14_regular);
+    auto* b = new (slots + 1 * faceSize) FaceType(&atkinson_hn_14_bold);
+    auto* i = new (slots + 2 * faceSize) FaceType(&atkinson_hn_14_italic);
+    auto* bi = new (slots + 3 * faceSize) FaceType(&atkinson_hn_14_bolditalic);
+#else
+    auto* r = new (slots + 0 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+    auto* b = new (slots + 1 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+    auto* i = new (slots + 2 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+    auto* bi = new (slots + 3 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+#endif
     fallback.add(r, StyleNone);
     fallback.add(b, StyleBold);
     fallback.add(i, StyleItalic);
@@ -240,24 +354,131 @@ FontChain* BookFontLoader::builtinFallback() {
   }
   return &fallback;
 }
+void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
+  HalFile root = Storage.open(rootPath);
+  if (!root || !root.isDirectory()) {
+    LOG_DBG("BFNT", "Font root not found: %s", rootPath);
+    return;
+  }
 
-// ── scanFonts / loadFaceBytes (private, Phase 2 fill-ins) ────────────────────
-// Phase 1a ships the loader infrastructure only; discovery (instance-backed
-// /fonts walk grouping Family-Regular/Bold/Italic.ttf into families_) is
-// implemented in Phase 2, where begin() will call it and main.cpp will call
-// fontLoader.begin() beside sdFontSystem.begin(renderer). Until then
-// familyCount_ stays 0 and getReaderFont() serves the builtin fallback — the
-// intended Phase 1a behavior (no reader wiring yet, zero regression risk).
+  char dirName[128];
+  char fileName[128];
+  char lower[128];
+  char subPath[160];
+  while (true) {
+    HalFile dir = root.openNextFile();
+    if (!dir) break;
+    if (!dir.isDirectory()) continue;
+    dir.getName(dirName, sizeof(dirName));
 
-void BookFontLoader::scanFonts(const char* fontPath) { (void)fontPath; }
+    // Skip hidden/system folders (macOS ._*, .Trashes, _folders).
+    if (dirName[0] == '.' || dirName[0] == '_') continue;
+    // Hidden root wins on dedupe: the later (visible) pass skips existing names.
+    bool exists = false;
+    for (uint8_t i = 0; i < familyCount; ++i) {
+      if (ciCompare(families[i].name, dirName) == 0) {
+        exists = true;
+        break;
+      }
+    }
+    if (exists) continue;
+    if (familyCount >= kMaxDiscoveredFamilies) {
+      LOG_DBG("BFNT", "Family cap reached, skipping %s", dirName);
+      continue;
+    }
+    if (strlen(dirName) >= sizeof(families[0].name)) {
+      LOG_DBG("BFNT", "Family name too long: %s", dirName);
+      continue;
+    }
 
-bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
-  // Stub for Phase 1a — real implementation loads the whole font into a
-  // transient buffer for init, then releases the raw bytes; glyph data
-  // persists in the per-face arena.
-  (void)fi;
-  return false;
+    FamilyInfo fam = {};
+    strncpy(fam.name, dirName, sizeof(fam.name) - 1);
+
+    const int subLen = snprintf(subPath, sizeof(subPath), "%s/%s", rootPath, dirName);
+    if (subLen < 0 || static_cast<size_t>(subLen) >= sizeof(subPath)) continue;
+
+    HalFile subdir = Storage.open(subPath);
+    if (!subdir || !subdir.isDirectory()) continue;
+
+    while (true) {
+      HalFile entry = subdir.openNextFile();
+      if (!entry) break;
+      if (entry.isDirectory()) continue;
+      entry.getName(fileName, sizeof(fileName));
+
+      // Skip macOS resource forks, hidden files, editor backups.
+      if (fileName[0] == '.' || fileName[0] == '_') continue;
+      const size_t nameLen = strlen(fileName);
+      if (nameLen > 0 && fileName[nameLen - 1] == '~') continue;
+      const bool isTtf = endsWithIgnoreCase(fileName, ".ttf");
+      if (!isTtf && !endsWithIgnoreCase(fileName, ".otf")) continue;
+
+      // Stem for style inference (extension stripped, lowercased).
+      const size_t stemLen = nameLen - 4;
+      if (stemLen == 0 || stemLen >= sizeof(lower)) continue;
+      for (size_t i = 0; i < stemLen; ++i) {
+        lower[i] = static_cast<char>(tolower(static_cast<unsigned char>(fileName[i])));
+      }
+      lower[stemLen] = '\0';
+
+      uint8_t style = 0;
+      if (!inferStyleFlags(lower, style)) {
+        LOG_DBG("BFNT", "No style tokens in %s/%s — skipped", fam.name, fileName);
+        continue;
+      }
+
+      // Same-style duplicate: lexicographically-first filename wins.
+      uint8_t slot = kMaxFacesPerFamily;
+      for (uint8_t i = 0; i < fam.faceCount; ++i) {
+        if (fam.faces[i].styleFlags == style) {
+          slot = i;
+          break;
+        }
+      }
+      if (slot < kMaxFacesPerFamily) {
+        if (ciCompare(fileName, fam.faces[slot].name) >= 0) continue;  // existing wins
+      } else {
+        if (fam.faceCount >= kMaxFacesPerFamily) continue;
+        slot = fam.faceCount++;
+      }
+
+      FontFaceInfo& face = fam.faces[slot];
+      face = {};
+      strncpy(face.name, lower, sizeof(face.name) - 1);
+      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, fileName) >=
+          static_cast<int>(sizeof(face.file))) {
+        --fam.faceCount;
+        LOG_DBG("BFNT", "Path too long for %s/%s", fam.name, fileName);
+        continue;
+      }
+      face.styleFlags = style;
+      face.fileSize = entry.fileSize();
+    }
+
+    if (fam.faceCount == 0) continue;  // empty / unparseable family: not registered
+
+    // A family with files but no Regular face promotes its lexicographically-
+    // first face (case-insensitive) to Regular.
+    bool hasRegular = false;
+    for (uint8_t i = 0; i < fam.faceCount; ++i) {
+      if (fam.faces[i].styleFlags == StyleNone) {
+        hasRegular = true;
+        break;
+      }
+    }
+    if (!hasRegular) {
+      int first = 0;
+      for (uint8_t i = 1; i < fam.faceCount; ++i) {
+        if (ciCompare(fam.faces[i].name, fam.faces[first].name) < 0) first = i;
+      }
+      fam.faces[first].styleFlags = StyleNone;
+    }
+
+    families[familyCount++] = fam;
+    LOG_DBG("BFNT", "Family %s: %u faces from %s", fam.name, fam.faceCount, rootPath);
+  }
 }
+
 
 // ── tryLoadFace — single face into the live chain ────────────────────────────
 // Member of BookFontLoader so it can access private members (faces_,

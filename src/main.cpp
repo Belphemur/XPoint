@@ -589,6 +589,12 @@ void setupDisplayAndFonts(bool seamless = false) {
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
 
+  // Native-TTF reader font discovery (design §14.1): gated so PSRAM-less
+  // builds never scan or allocate for the native-TTF path.
+#if defined(CROSSPOINT_TTF_READER)
+  freeink::book::fontLoader.begin();
+#endif
+
   LOG_DBG("MAIN", "Fonts setup");
 }
 
