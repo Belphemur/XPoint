@@ -72,6 +72,10 @@ class BookFontLoader {
   FamilyInfo& editFamily(uint8_t idx) { return families_[idx]; }
   void setFamilyCountForTest(uint8_t n) { familyCount_ = n; }
   uint32_t dramBudgetForTest() const { return remainingBudget_; }
+  // Drive the §14.4 two-root discovery walk against the stub storage.
+  static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
+    scanFonts(rootPath, families, familyCount);
+  }
 #endif
 
  private:

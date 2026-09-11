@@ -161,3 +161,153 @@ TEST(BookFontLoaderConstants, DiscoveryBound) {
 }
 
 }  // namespace
+// ── scanFonts — §14.4 per-family discovery walk ──────────────────────────────
+
+namespace {
+
+namespace book = freeink::book;
+using freeink::book::BookFontLoader;
+
+constexpr uint8_t kStyleBI = freeink::book::StyleBold | freeink::book::StyleItalic;
+
+void resetStorage() {
+  Storage.files.clear();
+  Storage.dirs.clear();
+}
+
+// Registers a file entry (and every ancestor directory) in the stub storage.
+void seedFile(const std::string& path, const std::string& bytes = "x") {
+  for (size_t slash = path.find('/', 1); slash != std::string::npos; slash = path.find('/', slash + 1)) {
+    Storage.dirs.insert(path.substr(0, slash));
+  }
+  Storage.files[path] = bytes;
+}
+
+const freeink::book::FontFaceInfo* findFace(const freeink::book::FamilyInfo& fam, uint8_t styleFlags) {
+  for (uint8_t i = 0; i < fam.faceCount; ++i) {
+    if (fam.faces[i].styleFlags == styleFlags) return &fam.faces[i];
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST(ScanFontsTest, DiscoversFamiliesAndStyles) {
+  resetStorage();
+  seedFile("/fonts/Bookerly/Bookerly-Regular.ttf");
+  seedFile("/fonts/Bookerly/Bookerly-Bold.ttf");
+  seedFile("/fonts/Bookerly/Bookerly-Italic.ttf");
+  seedFile("/fonts/Bookerly/Bookerly-BoldItalic.ttf");
+  seedFile("/fonts/Bookerly/Bookerly-SemiBold.ttf", "");  // weight heuristic → Bold
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Bookerly");
+  EXPECT_EQ(fams[0].faceCount, 4u);
+  ASSERT_NE(findFace(fams[0], freeink::book::StyleNone), nullptr);
+  ASSERT_NE(findFace(fams[0], freeink::book::StyleBold), nullptr);
+  ASSERT_NE(findFace(fams[0], freeink::book::StyleItalic), nullptr);
+  ASSERT_NE(findFace(fams[0], kStyleBI), nullptr);
+  // Regular's full path points inside the family folder.
+  EXPECT_STREQ(findFace(fams[0], freeink::book::StyleNone)->file, "/fonts/Bookerly/Bookerly-Regular.ttf");
+}
+
+TEST(ScanFontsTest, HiddenRootWinsFamilyDedupe) {
+  resetStorage();
+  seedFile("/.fonts/Bookerly/Bookerly-Light.ttf");
+  seedFile("/fonts/Bookerly/Bookerly-Regular.ttf");
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  // Hidden root first (the begin() order), so its family claims the name.
+  BookFontLoader::scanFontsForTest("/.fonts", fams, count);
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  // Hidden root wins: the surviving family's Regular is its promoted file.
+  EXPECT_STREQ(fams[0].faces[0].file, "/.fonts/Bookerly/Bookerly-Light.ttf");
+  EXPECT_EQ(fams[0].faces[0].styleFlags, freeink::book::StyleNone);
+}
+
+TEST(ScanFontsTest, StylePriorityAndWordBoundaries) {
+  resetStorage();
+  seedFile("/fonts/Mix/Mix-SemiBold.ttf");  // weight heuristic → Bold
+  seedFile("/fonts/Mix/Mix-Light.ttf");     // light → Regular
+  seedFile("/fonts/Mix/Mix-Italic.ttf");    // Italic
+  seedFile("/fonts/Mix/Mix-ExtraBold.ttf", "x");
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  // SemiBold ≠ Bold (word boundary), so Mix has exactly: Regular(Light),
+  // Bold(SemiBold), Bold(ExtraBold — dup resolved lexicographically? No:
+  // ExtraBold is Bold too → same slot as SemiBold, first file wins).
+  const auto* bold = findFace(fams[0], freeink::book::StyleBold);
+  ASSERT_NE(bold, nullptr);
+  EXPECT_STREQ(bold->name, "mix-extrabold");  // lexicographically-first dup wins
+  const auto* regular = findFace(fams[0], freeink::book::StyleNone);
+  ASSERT_NE(regular, nullptr);
+  EXPECT_STREQ(regular->name, "mix-light");
+  ASSERT_NE(findFace(fams[0], freeink::book::StyleItalic), nullptr);
+}
+
+TEST(ScanFontsTest, SingleFileFamilyPromotesRegular) {
+  resetStorage();
+  seedFile("/fonts/Solo/Solo-Head.ttf");
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_EQ(fams[0].faceCount, 1u);
+  EXPECT_EQ(fams[0].faces[0].styleFlags, freeink::book::StyleNone);
+}
+
+TEST(ScanFontsTest, SkipsJunkFilesAndFolders) {
+  resetStorage();
+  seedFile("/fonts/Clean/Clean-Regular.ttf");
+  seedFile("/fonts/Clean/._Clean-Regular.ttf", "");   // macOS resource fork
+  seedFile("/fonts/Clean/Clean-Regular.ttf~", "");    // editor backup
+  seedFile("/fonts/Clean/Clean-Regular.json", "");    // wrong extension
+  seedFile("/fonts/.Trashes/Clean-Regular.ttf", "");  // hidden folder
+  seedFile("/fonts/_private/x-Regular.ttf", "");      // underscore folder
+  seedFile("/fonts/Loose-Regular.ttf", "");           // root-level: ignored
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Clean");
+  EXPECT_EQ(fams[0].faceCount, 1u);
+}
+
+TEST(ScanFontsTest, FamilyCapAt32) {
+  resetStorage();
+  for (int i = 0; i < BookFontLoader::kMaxDiscoveredFamilies + 4; ++i) {
+    seedFile(std::string("/fonts/Fam") + static_cast<char>('A' + i % 26) + std::to_string(i) + "/F-Regular.ttf");
+  }
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  EXPECT_EQ(count, BookFontLoader::kMaxDiscoveredFamilies);
+}
+
+TEST(ScanFontsTest, OtfExtensionAccepted) {
+  resetStorage();
+  seedFile("/fonts/Otf/Otf-Regular.otf");
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].faces[0].file, "/fonts/Otf/Otf-Regular.otf");
+}
+
+TEST(ScanFontsTest, MissingRootIsQuietNoop) {
+  resetStorage();
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  EXPECT_EQ(count, 0u);
+}

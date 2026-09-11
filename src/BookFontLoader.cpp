@@ -397,6 +397,12 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     HalFile subdir = Storage.open(subPath);
     if (!subdir || !subdir.isDirectory()) continue;
 
+    // Extension-accepted candidates (§14.4 rule 7: a family folder with
+    // exactly one .ttf/.otf registers it as Regular even without style
+    // tokens in the name).
+    char soloFile[128] = {};
+    uint8_t candidateCount = 0;
+
     while (true) {
       HalFile entry = subdir.openNextFile();
       if (!entry) break;
@@ -409,6 +415,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       if (nameLen > 0 && fileName[nameLen - 1] == '~') continue;
       const bool isTtf = endsWithIgnoreCase(fileName, ".ttf");
       if (!isTtf && !endsWithIgnoreCase(fileName, ".otf")) continue;
+      if (candidateCount < UINT8_MAX) ++candidateCount;
+      if (candidateCount == 1) strncpy(soloFile, fileName, sizeof(soloFile) - 1);
 
       // Stem for style inference (extension stripped, lowercased).
       const size_t stemLen = nameLen - 4;
@@ -451,23 +459,36 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       face.fileSize = entry.fileSize();
     }
 
-    if (fam.faceCount == 0) continue;  // empty / unparseable family: not registered
-
-    // A family with files but no Regular face promotes its lexicographically-
-    // first face (case-insensitive) to Regular.
-    bool hasRegular = false;
-    for (uint8_t i = 0; i < fam.faceCount; ++i) {
-      if (fam.faces[i].styleFlags == StyleNone) {
-        hasRegular = true;
-        break;
+    if (fam.faceCount == 0) {
+      if (candidateCount != 1) continue;  // empty / unparseable family
+      // Single-file family: register the lone face as Regular (§14.4).
+      FontFaceInfo& face = fam.faces[0];
+      fam.faceCount = 1;
+      face = {};
+      strncpy(face.name, soloFile, sizeof(face.name) - 1);
+      face.name[sizeof(face.name) - 1] = '\0';
+      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
+        fam.faceCount = 0;
+        continue;
       }
-    }
-    if (!hasRegular) {
-      int first = 0;
-      for (uint8_t i = 1; i < fam.faceCount; ++i) {
-        if (ciCompare(fam.faces[i].name, fam.faces[first].name) < 0) first = i;
+      face.styleFlags = StyleNone;
+    } else {
+      // A family with files but no Regular face promotes its lexicographically-
+      // first face (case-insensitive) to Regular.
+      bool hasRegular = false;
+      for (uint8_t i = 0; i < fam.faceCount; ++i) {
+        if (fam.faces[i].styleFlags == StyleNone) {
+          hasRegular = true;
+          break;
+        }
       }
-      fam.faces[first].styleFlags = StyleNone;
+      if (!hasRegular) {
+        int first = 0;
+        for (uint8_t i = 1; i < fam.faceCount; ++i) {
+          if (ciCompare(fam.faces[i].name, fam.faces[first].name) < 0) first = i;
+        }
+        fam.faces[first].styleFlags = StyleNone;
+      }
     }
 
     families[familyCount++] = fam;

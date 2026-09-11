@@ -55,27 +55,51 @@ size_t HalFile::getName(char* name, size_t len) {
 HalFile HalFile::openNextFile() {
   HalFile child;
   if (!dir || storage == nullptr || path == nullptr) return child;
+  // Cursor lives on the PARENT directory handle (mirrors SdFat's per-handle
+  // iteration state): advance it past every returned entry or a directory
+  // containing one immediate child would loop forever. Files and subdirs
+  // merge into one enumeration ordered by path so a root-level file cannot
+  // shadow subdirectories that sort before it.
   const std::string prefix = *path + "/";
-  // First immediate child (file, then directory) after the cursor, in path
-  // order. Map/set keys are stable pointers, safe to hand out.
+  const auto isChild = [&prefix](const std::string& p) {
+    return p.compare(0, prefix.size(), prefix) == 0 && p.find('/', prefix.size()) == std::string::npos;
+  };
+  const std::string* bestFile = nullptr;
   for (const auto& [p, bytes] : storage->files) {
     (void)bytes;
-    if (p > nextFrom && p.compare(0, prefix.size(), prefix) == 0 && p.find('/', prefix.size()) == std::string::npos) {
-      child.data = &storage->files.find(p)->second;
-      child.path = &storage->files.find(p)->first;
-      child.nextFrom = p;
-      return child;
+    if (p > nextFrom && isChild(p)) {
+      bestFile = &p;
+      break;
     }
   }
+  const std::string* bestDir = nullptr;
   for (const auto& d : storage->dirs) {
-    if (d.size() > prefix.size() && d.compare(0, prefix.size(), prefix) == 0 &&
-        d.find('/', prefix.size()) == std::string::npos && d > nextFrom) {
-      child.dir = true;
-      child.path = &*storage->dirs.find(d);
-      child.storage = storage;
-      child.nextFrom = d;
-      return child;
+    if (d.size() > prefix.size() && d > nextFrom && isChild(d)) {
+      bestDir = &d;
+      break;
     }
+  }
+  const std::string* best = nullptr;
+  bool bestIsDir = false;
+  if (bestFile != nullptr && bestDir != nullptr) {
+    bestIsDir = *bestDir < *bestFile;
+    best = bestIsDir ? bestDir : bestFile;
+  } else if (bestFile != nullptr) {
+    best = bestFile;
+  } else if (bestDir != nullptr) {
+    best = bestDir;
+    bestIsDir = true;
+  }
+  if (best == nullptr) return child;
+  nextFrom = *best;
+  if (!bestIsDir) {
+    auto it = storage->files.find(*best);
+    child.data = &it->second;
+    child.path = &it->first;
+  } else {
+    child.dir = true;
+    child.path = &*storage->dirs.find(*best);
+    child.storage = storage;
   }
   return child;
 }
