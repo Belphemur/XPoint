@@ -286,7 +286,21 @@ void EpubReaderActivity::onExit() {
       const uint64_t chapterStart =
           currentSpineIndex >= 1 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
       const uint64_t chapterBytes = (chapterEnd > chapterStart) ? (chapterEnd - chapterStart) : 0;
+#if defined(CROSSPOINT_TTF_READER)
+      float bookProgressPercent;
+      if (ttf_ && !section) {
+        // Mirrors-based percent (computeBookProgressPercent needs a Section).
+        const float chapterProgress =
+            cachedChapterTotalPageCount > 0
+                ? static_cast<float>(ttfPage) / static_cast<float>(cachedChapterTotalPageCount)
+                : 0.0f;
+        bookProgressPercent = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+      } else {
+        bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
+      }
+#else
       const float bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
+#endif
       if (bookSize > 0 && chapterBytes > 0 && chapterPages > 0 && bookProgressPercent >= 0.0f &&
           bookProgressPercent <= 100.0f) {
         const uint64_t bookPagesEstimate = static_cast<uint64_t>(chapterPages) * bookSize / chapterBytes;
@@ -418,9 +432,14 @@ bool EpubReaderActivity::loadBook() {
       nextPageNumber = savedPage == UINT16_MAX ? 0 : savedPage;
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = savedPageCount;
-      // Restore through pageForChar only when the generation still matches;
-      // otherwise the record degrades to a chapter-start open (§7).
+      // Restore through pageForChar only when the generation still matches.
+      // A legacy-shape record has no usable page mapping for TTF layout, so
+      // it degrades to a chapter-start open (§7).
       ttfHasSavedPosition = ttfSavedGeneration != 0;
+      if (!ttfHasSavedPosition) {
+        nextPageNumber = 0;
+        cachedChapterTotalPageCount = 0;
+      }
       LOG_DBG("ERS", "Loaded TTF progress: spine %d, page %d, gen %u", currentSpineIndex, nextPageNumber,
               ttfSavedGeneration);
     }
@@ -719,7 +738,10 @@ void EpubReaderActivity::loop() {
 
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_ && !RenderLock::peek() && buildTickHeapGate()) {
-    ttfBackgroundBuildTick();
+    RenderLock lock;
+    if (ttf_ && buildTickHeapGate()) {
+      ttfBackgroundBuildTick();
+    }
   }
 #endif
 
@@ -2125,6 +2147,10 @@ void EpubReaderActivity::renderBookTtf() {
   // 1) Layout params + generation for the current geometry/settings state.
   freeink::book::LayoutParams params;
   ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+  if (params.font == nullptr) {
+    showBuildError();
+    return;
+  }
   const uint32_t generation = freeink::book::layoutGenerationHash(params, freeink::book::fontLoader.fontFingerprint());
   ttfGeneration = generation;
   ttfGenerationValid = true;
@@ -2255,11 +2281,10 @@ void EpubReaderActivity::renderBookTtf() {
       LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
     }
   }
-  ttf_->scratch().release(scratchMark);
-
 #ifdef READING_STATS_ENABLED
   // Reading-stats approximation: whitespace-token count over the page runs
-  // (§3.5 v1 parity note — engine runs carry no per-word data).
+  // (§3.5 v1 parity note — engine runs carry no per-word data). Must run
+  // before the scratch release: the run pointers live in the arena.
   {
     uint16_t words = 0;
     bool inWord = false;
@@ -2278,6 +2303,7 @@ void EpubReaderActivity::renderBookTtf() {
     currentPageWordsOnPage = words;
   }
 #endif
+  ttf_->scratch().release(scratchMark);
 
   // 6) Chrome after the page: keep the legacy position mirrors in sync so
   // renderStatusBar/KOReader/bookmark code reads the same values.
@@ -2914,8 +2940,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 }
 
 void EpubReaderActivity::renderStatusBar() const {
-  const int currentPage = section ? section->currentPage + 1 : 1;
-  const float pageCount = section ? section->estimatedTotalPages() : 1;
+  // Legacy path reads the Section; the TTF path keeps nextPageNumber /
+  // cachedChapterTotalPageCount in sync as its mirrors.
+  const int currentPage = section ? section->currentPage + 1 : nextPageNumber + 1;
+  const float pageCount =
+      section ? section->estimatedTotalPages() : (cachedChapterTotalPageCount > 0 ? cachedChapterTotalPageCount : 1);
   const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
   const float bookProgress = epub ? (epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100) : 0;
 

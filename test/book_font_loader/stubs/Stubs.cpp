@@ -43,7 +43,7 @@ std::string lastComponent(const std::string& p) {
 }  // namespace
 
 size_t HalFile::getName(char* name, size_t len) {
-  if (path == nullptr) {
+  if (path == nullptr || len == 0) {
     if (len > 0) name[0] = '\0';
     return 0;
   }

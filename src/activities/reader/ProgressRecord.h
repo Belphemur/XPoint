@@ -72,11 +72,14 @@ inline size_t encode(const bool hasOffset, const bool hasGeneration, const uint1
   putU16(out, spineIndex);
   putU16(out + 2, pageNumber);
   putU16(out + 4, pageCount);
-  if (hasOffset) {
-    putU32(out + 6, visibleTextOffset);
-  } else if (hasGeneration) {
+  // Branch order must match the size selection above: a generation-tagged
+  // record writes its full 16 bytes even if hasOffset is also set (the
+  // offset slot carries the charOffset then).
+  if (hasGeneration) {
     putU32(out + 6, charOffset);
     putU32(out + 10, generation);
+  } else if (hasOffset) {
+    putU32(out + 6, visibleTextOffset);
   }
   return size;
 }
@@ -89,7 +92,9 @@ inline size_t decode(const uint8_t* buf, const size_t len, ProgressRecord& out) 
   out.spineIndex = getU16(buf);
   out.pageNumber = getU16(buf + 2);
   out.pageCount = getU16(buf + 4);
-  if (len >= kSizeGeneration) {
+  // Only the exact canonical sizes are recognized; any other length
+  // (truncated or from a future layout) degrades to the 6-byte base shape.
+  if (len == kSizeGeneration) {
     // Generation layout: charOffset occupies the legacy offset slot, but the
     // semantics differ — a legacy consumer must not map it as a text offset.
     out.charOffset = getU32(buf + 6);
@@ -97,7 +102,7 @@ inline size_t decode(const uint8_t* buf, const size_t len, ProgressRecord& out) 
     out.hasGeneration = true;
     return kSizeGeneration;
   }
-  if (len >= kSizeOffset) {
+  if (len == kSizeOffset) {
     out.visibleTextOffset = getU32(buf + 6);
     out.hasOffset = true;
     return kSizeOffset;

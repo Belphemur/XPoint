@@ -69,6 +69,13 @@ const GlyphBitmap* EpdBookFont::rasterize(uint32_t codepoint, uint16_t sizePx) {
   }
 
   const uint32_t needed = static_cast<uint32_t>(g->width) * static_cast<uint32_t>(g->height);
+  if (needed == 0) {
+    // Zero-extent glyphs (the bundled Atkinson space, U+0020) carry no ink:
+    // serve an advance-only bitmap without touching the coverage pool.
+    glyph_ = GlyphBitmap{
+        nullptr, 0, 0, g->left, static_cast<int16_t>(-g->top), static_cast<int16_t>(fp4::toPixel(g->advanceX))};
+    return &glyph_;
+  }
   if (!coverage_ || coverageSize_ < needed) {
     coverage_ = poolMakeBytes(needed);
     if (!coverage_) {

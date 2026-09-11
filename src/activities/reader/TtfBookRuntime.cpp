@@ -262,8 +262,7 @@ BookStatus TtfBookRuntime::beginChapterSession(const uint16_t spineIndex, const 
 BookStatus TtfBookRuntime::stepBuild(const uint16_t minNewPages) {
   if (sessionSpine_ == kNoSpine) return BookStatus::NotFound;
   if (session_.done()) {
-    finishSession();
-    return BookStatus::Ok;
+    return finishSession() ? BookStatus::Ok : BookStatus::IoError;
   }
   const BookStatus st = session_.step(minNewPages);
   if (writer_.failed()) {
@@ -276,14 +275,17 @@ BookStatus TtfBookRuntime::stepBuild(const uint16_t minNewPages) {
     abortSession();
     return st;
   }
-  if (session_.done()) finishSession();
+  if (session_.done()) return finishSession() ? BookStatus::Ok : BookStatus::IoError;
   return BookStatus::Ok;
 }
 
-void TtfBookRuntime::finishSession() {
-  if (sessionSpine_ == kNoSpine) return;
+bool TtfBookRuntime::finishSession() {
+  if (sessionSpine_ == kNoSpine) return false;
   writer_.setTotalChars(session_.totalChars());
-  if (!writer_.finish()) {
+  const bool ok = writer_.finish();
+  if (!ok) {
+    // The chapter stays uncached: the next open rebuilds it instead of the
+    // caller believing a cache file exists.
     LOG_ERR("TTFB", "Writer finish failed for %s", cacheName_);
   }
   LOG_DBG("TTFB", "Session done: %u pages, totalChars=%u, scratch highWater=%u failedAlloc=%u",
@@ -293,6 +295,7 @@ void TtfBookRuntime::finishSession() {
   sessionSpine_ = kNoSpine;
   sessionGen_ = 0;
   resetBuildArenas();
+  return ok;
 }
 
 void TtfBookRuntime::abortSession() {
@@ -419,7 +422,15 @@ void TtfBookRuntime::makeLayoutParams(GfxRenderer& renderer, LayoutParams& out, 
 
   const char* lang = catalog_.metadata().language;
   out.language = (lang != nullptr && lang[0] != '\0') ? lang : "en";
-  out.font = fontLoader.getReaderFont();
+  FontChain* chain = fontLoader.getReaderFont();
+  if (chain == nullptr || chain->styleCoverage() == 0) {
+    // builtinFallback() can serve an empty chain when its PSRAM backing
+    // failed: layout without any face is not viable, so reject here.
+    LOG_ERR("TTFB", "No reader font chain available — cannot lay out");
+    out.font = nullptr;
+    return;
+  }
+  out.font = chain;
 }
 
 }  // namespace book

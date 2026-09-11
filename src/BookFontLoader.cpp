@@ -138,19 +138,29 @@ bool hasWord(const char* hay, const char* token) {
   return false;
 }
 
-// Style inference priority per design §14.4: bolditalic → italic family →
-// bold → regular family → weight heuristics → skip.
+// Style inference per design §14.4. Bold and italic are detected
+// independently (so "Font-Bold-Italic.ttf" gets both flags); the fused
+// "bolditalic"/"boldoblique" forms are matched explicitly because their
+// halves never sit on word boundaries ("BoldOblique": "bold" ends inside
+// the word, "oblique" starts inside it). "SemiBold" never matches "bold" —
+// the weight heuristics own those names.
 // `lower` is the lowercased filename stem.
 bool inferStyleFlags(const char* lower, uint8_t& styleOut) {
-  if (hasWord(lower, "bolditalic")) {
+  if (hasWord(lower, "bolditalic") || hasWord(lower, "boldoblique")) {
     styleOut = StyleBold | StyleItalic;
     return true;
   }
-  if (hasWord(lower, "italic") || hasWord(lower, "oblique") || hasWord(lower, "ital")) {
+  const bool italic = hasWord(lower, "italic") || hasWord(lower, "oblique") || hasWord(lower, "ital");
+  const bool bold = hasWord(lower, "bold");
+  if (italic && bold) {
+    styleOut = StyleBold | StyleItalic;
+    return true;
+  }
+  if (italic) {
     styleOut = StyleItalic;
     return true;
   }
-  if (hasWord(lower, "bold")) {
+  if (bold) {
     styleOut = StyleBold;
     return true;
   }
@@ -358,15 +368,35 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     return;
   }
 
-  char dirName[128];
-  char fileName[128];
-  char lower[128];
-  char subPath[160];
+  // The walk frame would need ~550B of stack locals (over the 256B stack
+  // budget, and scanFonts runs from boot wiring) — one heap scratch instead.
+  struct ScanScratch {
+    char dirName[48];   // FamilyInfo::name cap; longer folder names are skipped
+    char fileName[64];  // FontFaceInfo::file cap minus dir prefix headroom
+    char lower[64];     // lowercased stem
+    char subPath[160];  // SdCardCacheStorage::kDirMax
+    char soloFile[64];  // §14.4 rule 7: the lone candidate's name
+  };
+  // sizeof() on the decayed pointers would measure the pointer, not the
+  // buffer — the walk uses the struct's member sizes everywhere.
+  const auto scratch = makeUniqueNoThrow<ScanScratch>();
+  if (!scratch) {
+    LOG_ERR("BFNT", "OOM: scan scratch");
+    return;
+  }
+  char* dirName = scratch->dirName;
+  char* fileName = scratch->fileName;
+  char* lower = scratch->lower;
+  char* subPath = scratch->subPath;
+  constexpr size_t kDirNameCap = sizeof(ScanScratch::dirName);
+  constexpr size_t kFileNameCap = sizeof(ScanScratch::fileName);
+  constexpr size_t kLowerCap = sizeof(ScanScratch::lower);
+  constexpr size_t kSubPathCap = sizeof(ScanScratch::subPath);
   while (true) {
     HalFile dir = root.openNextFile();
     if (!dir) break;
     if (!dir.isDirectory()) continue;
-    dir.getName(dirName, sizeof(dirName));
+    dir.getName(dirName, kDirNameCap);
 
     // Skip hidden/system folders (macOS ._*, .Trashes, _folders).
     if (dirName[0] == '.' || dirName[0] == '_') continue;
@@ -383,7 +413,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       LOG_DBG("BFNT", "Family cap reached, skipping %s", dirName);
       continue;
     }
-    if (strlen(dirName) >= sizeof(families[0].name)) {
+    if (strlen(dirName) >= kDirNameCap) {
       LOG_DBG("BFNT", "Family name too long: %s", dirName);
       continue;
     }
@@ -391,8 +421,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     FamilyInfo fam = {};
     strncpy(fam.name, dirName, sizeof(fam.name) - 1);
 
-    const int subLen = snprintf(subPath, sizeof(subPath), "%s/%s", rootPath, dirName);
-    if (subLen < 0 || static_cast<size_t>(subLen) >= sizeof(subPath)) continue;
+    const int subLen = snprintf(subPath, kSubPathCap, "%s/%s", rootPath, dirName);
+    if (subLen < 0 || static_cast<size_t>(subLen) >= kSubPathCap) continue;
 
     HalFile subdir = Storage.open(subPath);
     if (!subdir || !subdir.isDirectory()) continue;
@@ -400,14 +430,14 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     // Extension-accepted candidates (§14.4 rule 7: a family folder with
     // exactly one .ttf/.otf registers it as Regular even without style
     // tokens in the name).
-    char soloFile[128] = {};
+    char* const soloFile = scratch->soloFile;
     uint8_t candidateCount = 0;
 
     while (true) {
       HalFile entry = subdir.openNextFile();
       if (!entry) break;
       if (entry.isDirectory()) continue;
-      entry.getName(fileName, sizeof(fileName));
+      entry.getName(fileName, kFileNameCap);
 
       // Skip macOS resource forks, hidden files, editor backups.
       if (fileName[0] == '.' || fileName[0] == '_') continue;
@@ -416,11 +446,11 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       const bool isTtf = endsWithIgnoreCase(fileName, ".ttf");
       if (!isTtf && !endsWithIgnoreCase(fileName, ".otf")) continue;
       if (candidateCount < UINT8_MAX) ++candidateCount;
-      if (candidateCount == 1) strncpy(soloFile, fileName, sizeof(soloFile) - 1);
+      if (candidateCount == 1) snprintf(soloFile, kFileNameCap, "%s", fileName);
 
       // Stem for style inference (extension stripped, lowercased).
       const size_t stemLen = nameLen - 4;
-      if (stemLen == 0 || stemLen >= sizeof(lower)) continue;
+      if (stemLen == 0 || stemLen >= kLowerCap) continue;
       for (size_t i = 0; i < stemLen; ++i) {
         lower[i] = static_cast<char>(tolower(static_cast<unsigned char>(fileName[i])));
       }
@@ -440,21 +470,25 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           break;
         }
       }
-      if (slot < kMaxFacesPerFamily) {
+      const bool replacingExisting = slot < kMaxFacesPerFamily;
+      if (replacingExisting) {
         if (ciCompare(fileName, fam.faces[slot].name) >= 0) continue;  // existing wins
       } else {
         if (fam.faceCount >= kMaxFacesPerFamily) continue;
-        slot = fam.faceCount++;
       }
+      // Validate the full path BEFORE touching the slot: a too-long path must
+      // not clobber an existing face (or shrink the count of one).
+      char newFile[kFileNameCap];
+      if (snprintf(newFile, kFileNameCap, "%s/%s", subPath, fileName) >= static_cast<int>(kFileNameCap)) {
+        LOG_DBG("BFNT", "Path too long for %s/%s", fam.name, fileName);
+        continue;
+      }
+      if (!replacingExisting) slot = fam.faceCount++;
 
       FontFaceInfo& face = fam.faces[slot];
       face = {};
       snprintf(face.name, sizeof(face.name), "%s", lower);
-      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, fileName) >= static_cast<int>(sizeof(face.file))) {
-        --fam.faceCount;
-        LOG_DBG("BFNT", "Path too long for %s/%s", fam.name, fileName);
-        continue;
-      }
+      snprintf(face.file, sizeof(face.file), "%s", newFile);
       face.styleFlags = style;
       face.fileSize = entry.fileSize();
     }
@@ -465,8 +499,10 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       FontFaceInfo& face = fam.faces[0];
       fam.faceCount = 1;
       face = {};
-      strncpy(face.name, soloFile, sizeof(face.name) - 1);
-      face.name[sizeof(face.name) - 1] = '\0';
+      if (snprintf(face.name, sizeof(face.name), "%s", soloFile) >= static_cast<int>(sizeof(face.name))) {
+        fam.faceCount = 0;
+        continue;
+      }
       if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
         fam.faceCount = 0;
         continue;

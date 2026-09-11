@@ -79,7 +79,7 @@ class TtfBookRuntime {
   // abort; finish() (full commit) when the session completes.
   BookStatus beginChapterSession(uint16_t spineIndex, const LayoutParams& params, uint32_t generation);
   BookStatus stepBuild(uint16_t minNewPages);
-  void finishSession();  // session done: commit final cache file
+  bool finishSession();  // session done: commit final cache file (false = SD failure)
   void abortSession();   // suspend partial + tear down (arena reset included)
   bool sessionFor(uint16_t spineIndex) const { return sessionSpine_ == spineIndex; }
   bool sessionActive() const { return sessionSpine_ != kNoSpine && session_.active(); }

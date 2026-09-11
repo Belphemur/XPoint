@@ -71,6 +71,22 @@ TEST(ProgressRecordTest, GenerationShapeRoundTrip) {
   EXPECT_EQ(rec.generation, 0x87654321u);
 }
 
+TEST(ProgressRecordTest, GenerationShapeWinsWhenBothFlagsSet) {
+  // The 16-byte selection takes priority: a caller setting both flags must
+  // still get a fully written generation record (no stale stack bytes in the
+  // generation slot).
+  uint8_t buf[progress_record::kSizeGeneration];
+  memset(buf, 0xEE, sizeof(buf));
+  const size_t n = progress_record::encode(/*hasOffset=*/true, /*hasGeneration=*/true, 2, 5, 33, 0xDEAD, 0xABCDEF,
+                                           0x1234, buf, sizeof(buf));
+  ASSERT_EQ(n, progress_record::kSizeGeneration);
+  ProgressRecord rec;
+  ASSERT_EQ(progress_record::decode(buf, n, rec), progress_record::kSizeGeneration);
+  EXPECT_TRUE(rec.hasGeneration);
+  EXPECT_EQ(rec.charOffset, 0xABCDEFu);
+  EXPECT_EQ(rec.generation, 0x1234u);
+}
+
 TEST(ProgressRecordTest, LegacyReaderDegradesGenerationRecord) {
   // A legacy reader reading a 16-byte TTF record keeps only the base triple;
   // the charOffset slot must NOT be mistaken for a visible-text offset.
