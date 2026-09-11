@@ -170,20 +170,18 @@ void TtfBookRuntime::closeChapterCache() {
   cacheArena_ = Arena{};
 }
 
-uint32_t TtfBookRuntime::availablePageCount() const {
-  if (sessionSpine_ != kNoSpine && (session_.active() || session_.done())) return writer_.pageCount();
+uint32_t TtfBookRuntime::availablePageCount(const uint16_t spineIndex) const {
+  if (sessionFor(spineIndex)) return writer_.pageCount();
   return cacheReady_ ? cacheReader_.pageCount() : 0;
 }
 
-uint32_t TtfBookRuntime::pageCharStart(const uint16_t pageIndex) const {
-  if (sessionSpine_ != kNoSpine && (session_.active() || session_.done())) {
-    return writer_.charStart(pageIndex);
-  }
+uint32_t TtfBookRuntime::pageCharStart(const uint16_t spineIndex, const uint16_t pageIndex) const {
+  if (sessionFor(spineIndex)) return writer_.charStart(pageIndex);
   return cacheReady_ ? cacheReader_.charStart(pageIndex) : 0;
 }
 
-bool TtfBookRuntime::readPage(const uint16_t pageIndex, Page* out) {
-  if (sessionSpine_ != kNoSpine && (session_.active() || session_.done()) && pageIndex < writer_.pageCount()) {
+bool TtfBookRuntime::readPage(const uint16_t spineIndex, const uint16_t pageIndex, Page* out) {
+  if (sessionFor(spineIndex) && pageIndex < writer_.pageCount()) {
     return writer_.readPage(pageIndex, scratch_, out) == BookStatus::Ok;
   }
   if (cacheReady_ && pageIndex < cacheReader_.pageCount()) {
@@ -192,8 +190,8 @@ bool TtfBookRuntime::readPage(const uint16_t pageIndex, Page* out) {
   return false;
 }
 
-bool TtfBookRuntime::pageForChar(const uint32_t charOffset, uint32_t* pageOut) const {
-  if (sessionSpine_ != kNoSpine && (session_.active() || session_.done())) {
+bool TtfBookRuntime::pageForChar(const uint16_t spineIndex, const uint32_t charOffset, uint32_t* pageOut) const {
+  if (sessionFor(spineIndex)) {
     *pageOut = writer_.pageForChar(charOffset);
     return writer_.pageCount() > 0;
   }
@@ -202,10 +200,8 @@ bool TtfBookRuntime::pageForChar(const uint32_t charOffset, uint32_t* pageOut) c
   return cacheReader_.pageCount() > 0;
 }
 
-bool TtfBookRuntime::charForAnchor(const uint32_t idHash, uint32_t* charOut) const {
-  if (sessionSpine_ != kNoSpine && (session_.active() || session_.done())) {
-    return writer_.charForAnchor(idHash, charOut);
-  }
+bool TtfBookRuntime::charForAnchor(const uint16_t spineIndex, const uint32_t idHash, uint32_t* charOut) const {
+  if (sessionFor(spineIndex)) return writer_.charForAnchor(idHash, charOut);
   return cacheReady_ && cacheReader_.charForAnchor(idHash, charOut);
 }
 

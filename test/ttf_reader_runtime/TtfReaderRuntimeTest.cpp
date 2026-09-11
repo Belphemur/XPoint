@@ -80,6 +80,10 @@ TEST(ProgressRecordTest, GenerationShapeWinsWhenBothFlagsSet) {
   const size_t n = progress_record::encode(/*hasOffset=*/true, /*hasGeneration=*/true, 2, 5, 33, 0xDEAD, 0xABCDEF,
                                            0x1234, buf, sizeof(buf));
   ASSERT_EQ(n, progress_record::kSizeGeneration);
+  // All 16 bytes are written: the reserved tail (14..15) must be zero, not
+  // the caller's stack data.
+  EXPECT_EQ(buf[14], 0);
+  EXPECT_EQ(buf[15], 0);
   ProgressRecord rec;
   ASSERT_EQ(progress_record::decode(buf, n, rec), progress_record::kSizeGeneration);
   EXPECT_TRUE(rec.hasGeneration);

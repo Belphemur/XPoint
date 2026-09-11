@@ -8,7 +8,7 @@
 //   6  : {u16 spineIndex, u16 pageNumber, u16 pageCount}          (legacy)
 //   10 : legacy + {u32 visibleTextOffset}                          (legacy)
 //   16 : {u16 spineIndex, u16 pageNumber, u16 pageCount,
-//         u32 charOffset, u32 generation}                          (TTF reader)
+//         u32 charOffset, u32 generation, u16 reserved=0}          (TTF reader)
 //
 // The 16-byte layout shares its prefix with the legacy 10-byte one. This
 // firmware's own load path recognizes the exact length and keeps
@@ -82,6 +82,7 @@ inline size_t encode(const bool hasOffset, const bool hasGeneration, const uint1
   if (hasGeneration) {
     putU32(out + 6, charOffset);
     putU32(out + 10, generation);
+    putU16(out + 14, 0);  // reserved: the 16-byte shape writes all 16 bytes
   } else if (hasOffset) {
     putU32(out + 6, visibleTextOffset);
   }

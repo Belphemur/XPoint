@@ -430,7 +430,7 @@ Atomic-record layout (little-endian, byte-packed; writer:
 |---|---|
 | 6 | `u16 spineIndex, u16 pageNumber, u16 pageCount` |
 | 10 | 6-byte shape + `u32 visibleTextOffset` |
-| 16 | `u16 spineIndex, u16 pageNumber, u16 pageCount, u32 charOffset, u32 generation` (TTF reader) |
+| 16 | `u16 spineIndex, u16 pageNumber, u16 pageCount, u32 charOffset, u32 generation, u16 reserved=0` (TTF reader) |
 
 The 16-byte shape shares its 10-byte prefix with the legacy layout.
 **Downgrade caveat:** pre-change firmware reads only 10 bytes and cannot

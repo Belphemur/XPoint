@@ -88,12 +88,15 @@ class TtfBookRuntime {
   uint64_t sessionBytesConsumed() const { return session_.bytesConsumed(); }
   uint64_t sessionBytesTotal() const { return session_.bytesTotal(); }
 
-  // Unified page access over writer (live build) and cache reader:
-  uint32_t availablePageCount() const;  // max(writer, reader) watermark
-  uint32_t pageCharStart(uint16_t pageIndex) const;
-  bool readPage(uint16_t pageIndex, Page* out);  // mark/release scratch_ inside
-  bool pageForChar(uint32_t charOffset, uint32_t* pageOut) const;
-  bool charForAnchor(uint32_t idHash, uint32_t* charOut) const;
+  // Unified page access over writer (live build) and cache reader. All
+  // accessors are scoped to `spineIndex`: a session building a DIFFERENT
+  // spine (the next-chapter prefetch) never serves its writer data here —
+  // the spine's own cache reader (or nothing) answers instead.
+  uint32_t availablePageCount(uint16_t spineIndex) const;
+  uint32_t pageCharStart(uint16_t spineIndex, uint16_t pageIndex) const;
+  bool readPage(uint16_t spineIndex, uint16_t pageIndex, Page* out);  // scratch mark held by caller
+  bool pageForChar(uint16_t spineIndex, uint32_t charOffset, uint32_t* pageOut) const;
+  bool charForAnchor(uint16_t spineIndex, uint32_t idHash, uint32_t* charOut) const;
 
   // Scratch arena for readPage()'s decode allocations: the caller takes a
   // mark before readPage() and releases it after rendering (Page text/runs
