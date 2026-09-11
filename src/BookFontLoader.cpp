@@ -222,8 +222,8 @@ FontChain* BookFontLoader::builtinFallback() {
     // not — cppcheck portability gate) and let it implicitly convert to void*.
     // No typed pointer variable (cppcheck constVariablePointer), no destructor
     // call (see singleton note).
-    auto* slots = reinterpret_cast<char*>(  // placement-new constructs faces at these addresses (writes through them)
-        backing.get());                     // cppcheck-suppress constVariablePointer
+    // cppcheck-suppress constVariablePointer ; placement-new writes through these addresses
+    auto* slots = reinterpret_cast<char*>(backing.get());
     constexpr auto faceSize = sizeof(freeink::ui::BitmapBookFont);
     auto* r = new (slots + 0 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
     auto* b = new (slots + 1 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
