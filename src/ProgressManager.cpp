@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "activities/reader/ProgressFile.h"
+#include "activities/reader/ProgressRecord.h"
 
 namespace {
 // Low priority: progress persistence must never compete with rendering or
@@ -127,7 +128,9 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
   const size_t size = load(cachePath_, spineIndex, pageNumber, pageCount, visibleTextOffset);
   xSemaphoreGive(diskMutex_);
   if (size > 0) {
-    const bool hasOffset = (size == RECORD_SIZE_OFFSET);
+    // A generation-tagged (16-byte) TTF record read through the legacy open
+    // degrades: its charOffset slot is NOT a visible text offset.
+    const bool hasOffset = (size == progress_record::kSizeOffset);
     current_->spineIndex = spineIndex;
     current_->pageNumber = pageNumber;
     current_->pageCount = pageCount;
@@ -140,6 +143,76 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
   }
   return size > 0;
 }
+
+#if defined(CROSSPOINT_TTF_READER)
+bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber,
+                                  uint16_t& pageCount, uint32_t& charOffset, uint32_t& generation) {
+  charOffset = 0;
+  generation = 0;
+  // Base restore first: spine/page/pageCount + legacy-shape degrade.
+  uint32_t baseOffset = 0;
+  if (!openBook(cachePath, spineIndex, pageNumber, pageCount, baseOffset)) return false;
+
+  // Inspect the on-disk layout for the generation-tagged shape (same mutex
+  // discipline as openBook's read).
+  xSemaphoreTake(diskMutex_, portMAX_DELAY);
+  HalFile f;
+  bool gen = false;
+  if (Storage.openFileForRead(MUTEX_TAG, std::string(cachePath) + "/progress.bin", f)) {
+    uint8_t data[progress_record::kSizeGeneration];
+    const int n = f.read(data, sizeof(data));
+    ProgressRecord rec;
+    if (n > 0 && progress_record::decode(data, static_cast<size_t>(n), rec) == progress_record::kSizeGeneration) {
+      charOffset = rec.charOffset;
+      generation = rec.generation;
+      gen = true;
+    }
+  }
+  xSemaphoreGive(diskMutex_);
+  if (gen) {
+    current_->hasOffset = false;
+    current_->hasGeneration = true;
+    current_->generation = generation;
+    current_->visibleTextOffset = charOffset;  // char-offset carrier
+    *lastFlushed_ = *current_;
+    LOG_INF(MUTEX_TAG, "TTF progress loaded: spine=%u page=%u charOffset=%u gen=%u", spineIndex, pageNumber, charOffset,
+            generation);
+  } else {
+    LOG_DBG(MUTEX_TAG, "openBookTtf(): legacy record — chapter-start degrade");
+  }
+  return true;
+}
+
+void ProgressManager::saveTtf(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
+                              const uint32_t charOffset, const uint32_t generation) {
+  if (diskMutex_ == nullptr || current_ == nullptr || !bookOpen_) {
+    LOG_DBG(MUTEX_TAG, "saveTtf(): DROPPED (state/bookOpen)");
+    return;
+  }
+  const bool lowBat = lowBattery();
+  bool due = false;
+  {
+    current_->spineIndex = spineIndex;
+    current_->pageNumber = pageNumber;
+    current_->pageCount = pageCount;
+    current_->hasOffset = false;
+    current_->hasGeneration = true;
+    current_->generation = generation;
+    current_->visibleTextOffset = charOffset;  // char-offset carrier
+
+    const bool changed = !(*current_ == *lastFlushed_);
+    const uint32_t sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
+    const bool intervalElapsed = sinceFlushSec >= (FLUSH_INTERVAL_MS / 1000);
+    due = changed && (intervalElapsed || lowBat || writeQueued_);
+    if (due) writeQueued_ = true;
+    LOG_INF(MUTEX_TAG, "saveTtf(): spine=%u page=%u/%u charOffset=%u gen=%u due=%d", spineIndex, pageNumber, pageCount,
+            charOffset, generation, due ? 1 : 0);
+  }
+  if (due && worker_ != nullptr) {
+    xTaskNotifyGive(worker_);
+  }
+}
+#endif
 
 void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
                            const bool hasOffset, const uint32_t visibleTextOffset) {
@@ -162,6 +235,12 @@ void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber,
     current_->pageCount = pageCount;
     current_->hasOffset = hasOffset;
     current_->visibleTextOffset = visibleTextOffset;
+#if defined(CROSSPOINT_TTF_READER)
+    // A legacy-shape save (Txt/Xtc readers, bitmap reader) migrates the
+    // record back down; the next TTF save rewrites the 16-byte shape.
+    current_->hasGeneration = false;
+    current_->generation = 0;
+#endif
 
     // Gate (design §4.2): write only when the position changed since the
     // last flush AND the interval elapsed — unless low battery or a write
@@ -191,17 +270,49 @@ bool ProgressManager::saveNow(const char* cachePath, const uint16_t spineIndex, 
     LOG_DBG(MUTEX_TAG, "saveNow(): unavailable (disk mutex/state null)");
     return false;
   }
-  LOG_DBG(MUTEX_TAG, "saveNow(): spine=%u page=%u/%u offset=%u", spineIndex, pageNumber, pageCount, visibleTextOffset);
-  const bool ok = saveRecordLocked(cachePath, spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
+  Record rec;
+  rec.spineIndex = spineIndex;
+  rec.pageNumber = pageNumber;
+  rec.pageCount = pageCount;
+  rec.hasOffset = hasOffset;
+  rec.visibleTextOffset = visibleTextOffset;
+  const bool ok = saveNowRecord(cachePath, rec);
+  return ok;
+}
+
+#if defined(CROSSPOINT_TTF_READER)
+bool ProgressManager::saveNowTtf(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
+                                 const uint16_t pageCount, const uint32_t charOffset, const uint32_t generation) {
+  if (diskMutex_ == nullptr || current_ == nullptr) {
+    LOG_DBG(MUTEX_TAG, "saveNowTtf(): unavailable (disk mutex/state null)");
+    return false;
+  }
+  LOG_DBG(MUTEX_TAG, "saveNowTtf(): spine=%u page=%u/%u charOffset=%u gen=%u", spineIndex, pageNumber, pageCount,
+          charOffset, generation);
+  Record rec;
+  rec.spineIndex = spineIndex;
+  rec.pageNumber = pageNumber;
+  rec.pageCount = pageCount;
+  rec.hasOffset = false;
+  rec.hasGeneration = true;
+  rec.generation = generation;
+  rec.visibleTextOffset = charOffset;
+  return saveNowRecord(cachePath, rec);
+}
+#endif
+
+// Shared body of the synchronous bypass saves (legacy + TTF record shapes).
+bool ProgressManager::saveNowRecord(const char* cachePath, const Record& rec) {
+  if (diskMutex_ == nullptr || current_ == nullptr) {
+    LOG_DBG(MUTEX_TAG, "saveNow(): unavailable (disk mutex/state null)");
+    return false;
+  }
+  const bool ok = saveRecordLocked(cachePath, rec);
   if (ok) {
     // Only update the in-memory baseline when THIS is the open book's file;
     // a bypass save for another path must not mark our book as flushed.
     if (bookOpen_ && strncmp(cachePath, cachePath_, sizeof(cachePath_)) == 0) {
-      current_->spineIndex = spineIndex;
-      current_->pageNumber = pageNumber;
-      current_->pageCount = pageCount;
-      current_->hasOffset = hasOffset;
-      current_->visibleTextOffset = visibleTextOffset;
+      *current_ = rec;
       *lastFlushed_ = *current_;
       lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
       writeQueued_ = false;
@@ -248,8 +359,7 @@ bool ProgressManager::flushChanged() {
   LOG_INF(MUTEX_TAG, "flushChanged(): flushing spine=%u page=%u/%u sinceFlush=%lus", current_->spineIndex,
           current_->pageNumber, current_->pageCount,
           static_cast<unsigned long>(static_cast<uint32_t>(millis() / 1000) - lastFlushSec_));
-  const bool ok = saveRecordLocked(cachePath_, current_->spineIndex, current_->pageNumber, current_->pageCount,
-                                   current_->hasOffset, current_->visibleTextOffset);
+  const bool ok = saveRecordLocked(cachePath_, *current_);
   if (ok) {
     *lastFlushed_ = *current_;
     lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
@@ -264,11 +374,9 @@ bool ProgressManager::flushChanged() {
   return ok;
 }
 
-bool ProgressManager::saveRecordLocked(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
-                                       const uint16_t pageCount, const bool hasOffset,
-                                       const uint32_t visibleTextOffset) {
+bool ProgressManager::saveRecordLocked(const char* cachePath, const Record& rec) {
   xSemaphoreTake(diskMutex_, portMAX_DELAY);
-  const bool ok = saveRecord(cachePath, spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
+  const bool ok = saveRecord(cachePath, rec);
   xSemaphoreGive(diskMutex_);
   return ok;
 }
@@ -290,44 +398,46 @@ size_t ProgressManager::load(const char* cachePath, uint16_t& spineIndex, uint16
     LOG_DBG(MUTEX_TAG, "load(): no progress.bin at %s", cachePath);
     return 0;
   }
-  uint8_t data[RECORD_SIZE_OFFSET];
+  uint8_t data[progress_record::kSizeGeneration];
   const int n = f.read(data, sizeof(data));
-  if (n != static_cast<int>(RECORD_SIZE_BASE) && n != static_cast<int>(RECORD_SIZE_OFFSET)) {
+  ProgressRecord rec;
+  const size_t size = progress_record::decode(data, n > 0 ? static_cast<size_t>(n) : 0, rec);
+  if (size == 0) {
     LOG_DBG(MUTEX_TAG, "load(): malformed record (read=%d)", n);
     return 0;  // missing / garbage / short record
   }
-  spineIndex = static_cast<uint16_t>(data[0] + (data[1] << 8));
-  pageNumber = static_cast<uint16_t>(data[2] + (data[3] << 8));
-  pageCount = static_cast<uint16_t>(data[4] + (data[5] << 8));
-  if (n == static_cast<int>(RECORD_SIZE_OFFSET)) {
-    visibleTextOffset = static_cast<uint32_t>(data[6]) | (static_cast<uint32_t>(data[7]) << 8) |
-                        (static_cast<uint32_t>(data[8]) << 16) | (static_cast<uint32_t>(data[9]) << 24);
-  } else {
-    visibleTextOffset = 0;
-  }
-  return static_cast<size_t>(n);
+  // A 16-byte TTF record read through the legacy path keeps only the base
+  // triple (hasOffset false): charOffset is NOT a visible text offset.
+  spineIndex = rec.spineIndex;
+  pageNumber = rec.pageNumber;
+  pageCount = rec.pageCount;
+  visibleTextOffset = rec.visibleTextOffset;
+  return size;
 }
 
-bool ProgressManager::saveRecord(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
-                                 const uint16_t pageCount, const bool hasOffset, const uint32_t visibleTextOffset) {
-  uint8_t data[RECORD_SIZE_OFFSET];
-  data[0] = spineIndex & 0xFF;
-  data[1] = (spineIndex >> 8) & 0xFF;
-  data[2] = pageNumber & 0xFF;
-  data[3] = (pageNumber >> 8) & 0xFF;
-  data[4] = pageCount & 0xFF;
-  data[5] = (pageCount >> 8) & 0xFF;
-  size_t dataSize = RECORD_SIZE_BASE;
-  if (hasOffset) {
-    data[6] = visibleTextOffset & 0xFF;
-    data[7] = (visibleTextOffset >> 8) & 0xFF;
-    data[8] = (visibleTextOffset >> 16) & 0xFF;
-    data[9] = (visibleTextOffset >> 24) & 0xFF;
-    dataSize = RECORD_SIZE_OFFSET;
+bool ProgressManager::saveRecord(const char* cachePath, const Record& rec) {
+  uint8_t data[progress_record::kSizeGeneration];
+  const size_t dataSize = progress_record::encode(rec.hasOffset,
+#if defined(CROSSPOINT_TTF_READER)
+                                                  rec.hasGeneration,
+#else
+                                                  false,
+#endif
+                                                  rec.spineIndex, rec.pageNumber, rec.pageCount, rec.visibleTextOffset,
+                                                  rec.visibleTextOffset,
+#if defined(CROSSPOINT_TTF_READER)
+                                                  rec.generation,
+#else
+                                                  0,
+#endif
+                                                  data, sizeof(data));
+  if (dataSize == 0) {
+    return false;
   }
   if (!ProgressFile::writeAtomic(cachePath, data, dataSize)) {
     return false;
   }
-  LOG_DBG(MUTEX_TAG, "Record written: spine=%u offset=%u page=%u", spineIndex, visibleTextOffset, pageNumber);
+  LOG_DBG(MUTEX_TAG, "Record written: spine=%u offset=%u page=%u", rec.spineIndex, rec.visibleTextOffset,
+          rec.pageNumber);
   return true;
 }
