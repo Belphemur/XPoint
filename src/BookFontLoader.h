@@ -100,6 +100,19 @@ class BookFontLoader {
   // resolved profile VALUES (BookProfile.h defines inactive selectors to 0,
   // so defined() alone would always be true).
   Arena arenas_[4];
+
+  // PSRAM-only directive (zero native-TTF DRAM BSS): arena backing is
+  // allocated lazily from the pool per face slot (poolMakeBytes), never
+  // statically. poolMakeBytes lands in PSRAM on PSRAM boards and falls to
+  // DRAM malloc otherwise — per design §14.1 no TTF face is ever loaded on
+  // PSRAM-less boards, so it never allocates there in practice.
+  PoolBytes glyphBacking_[4] = {};
+
+  // Native-TTF PSRAM budget (all well within the 8MB pool):
+  //   glyph arenas: 4 x kGlyphArenaBytes (12/32/48KB by profile) = 48–192KB
+  //   builtin BitmapBookFont fallback: 4 x sizeof(BitmapBookFont) ≈ 16.4KB
+  //   debug-rig scratch: 256KB transient (TtfRenderDebugActivity)
+  //   font file bytes: up to kMaxPsramFontBytes (2MB) per face
 #include "BookProfile.h"
 #if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL
   static constexpr size_t kGlyphArenaBytes = 12 * 1024;
