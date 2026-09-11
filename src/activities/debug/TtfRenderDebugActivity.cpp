@@ -25,7 +25,6 @@ namespace book = freeink::book;
 namespace {
 
 constexpr char kDebugTextPath[] = "/.crosspoint/ttf_debug.txt";
-constexpr size_t kScratchBytes = 24576;
 constexpr uint16_t kBaseSizePx = 29;  // 14pt at 150 DPI
 
 // Hard-coded plain-text chapter (flash); paragraphs split on blank lines.
@@ -52,12 +51,20 @@ const char kDebugText[] =
     "ticked with the patience of something that had all the time in the "
     "world. He sat down, unfolded the paper, and began, at last, to read.\n";
 
-// Non-PSRAM boards: static BSS (not heap) — measuring the DRAM heap delta is
-// the point of this rig there. PSRAM boards: the 24KB scratch would overflow
-// DRAM BSS (the S3 build is near the segment limit), so it is allocated from
-// PSRAM via PoolBytes, which also keeps the heap delta measurement intact.
-#if !defined(BOARD_HAS_PSRAM)
-alignas(alignof(max_align_t)) uint8_t s_scratch[kScratchBytes];
+// PSRAM-only directive (design §3.3/§14.1): the native-TTF path — including
+// this rig — runs exclusively on PSRAM boards; every buffer (layout scratch
+// included) comes from PSRAM. PSRAM-less boards log a fatal screen and never
+// attempt layout. P1a debt (kanban t_f7a102a2, Phase 2): BookFontLoader's own
+// glyph arenas and BitmapBookFont coverage buffers are still static BSS (DRAM)
+// and are rewritten to PSRAM-only compile-out in Phase 2.
+#if defined(BOARD_HAS_PSRAM)
+// The engine's STANDARD profile (env:x4pro defines no FREEINK_BOOK_SMALL) has
+// a ~152KB fixture peak for ChapterLayout::layoutPlainText (freeink-book.md
+// "Memory profiles") — Standard kParTextCap=8192 x3 (24KB) + span/run/line
+// arrays + styleText (12KB) + CSS rule table (16 rules) + page arena (24KB) +
+// the 4KB read buffer — hence the design §3.3 256KB budget (headroom over
+// 152KB; failure is a clean OutOfMemory with failedAllocSize() logged).
+constexpr size_t kScratchBytes = 256 * 1024;
 #endif
 
 // Renders page 0 as it arrives, then stops layout. Runs are consumed in the
@@ -87,20 +94,20 @@ void TtfRenderDebugActivity::onEnter() {
   const uint32_t psramBefore = ESP.getFreePsram();
   LOG_INF("TTFDBG", "heap before: %u psram: %u", heapBefore, psramBefore);
 
+#if !defined(BOARD_HAS_PSRAM)
+  LOG_ERR("TTFDBG", "native TTF unavailable (no PSRAM)");
+  renderer.clearScreen();
+  renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_TTF_DEBUG_RENDER), true);
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  requestUpdate();
+  return;
+#else
   const auto showFatal = [this]() {
     renderer.clearScreen();
     renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_TTF_DEBUG_RENDER), true);
     renderer.displayBuffer(HalDisplay::FULL_REFRESH);
     requestUpdate();
   };
-
-#if !defined(BOARD_HAS_PSRAM)
-  if (ESP.getFreeHeap() < 32768) {
-    LOG_ERR("TTFDBG", "heap gate: %u < 32768", ESP.getFreeHeap());
-    showFatal();
-    return;
-  }
-#endif
 
   // Seed the debug chapter once. The settings dir may not exist on a fresh
   // card; openFileForWrite does not create parent directories. The seed is
@@ -148,7 +155,6 @@ void TtfRenderDebugActivity::onEnter() {
   params.language = "en";
   params.font = fonts;
 
-#if defined(BOARD_HAS_PSRAM)
   PoolBytes scratchBytes = poolMakeBytes(kScratchBytes);
   if (!scratchBytes) {
     LOG_ERR("TTFDBG", "OOM: %u bytes PSRAM scratch", static_cast<unsigned>(kScratchBytes));
@@ -156,9 +162,6 @@ void TtfRenderDebugActivity::onEnter() {
     return;
   }
   uint8_t* scratchBase = scratchBytes.get();
-#else
-  uint8_t* scratchBase = s_scratch;
-#endif
 
   book::Arena scratch;
   scratch.init(scratchBase, kScratchBytes);
@@ -170,11 +173,13 @@ void TtfRenderDebugActivity::onEnter() {
   uint32_t pageCount = 0;
   const book::BookStatus status = book::ChapterLayout::layoutPlainText(source, params, scratch, sink, &pageCount);
 
-  LOG_INF("TTFDBG", "status=%s pages=%u scratchHigh=%u heap %u->%u psram %u->%u", bookStatusName(status), pageCount,
-          scratch.highWater(), heapBefore, ESP.getFreeHeap(), psramBefore, ESP.getFreePsram());
+  LOG_INF("TTFDBG", "status=%s pages=%u scratchHigh=%u failedAlloc=%u heap %u->%u psram %u->%u", bookStatusName(status),
+          pageCount, scratch.highWater(), scratch.failedAllocSize(), heapBefore, ESP.getFreeHeap(), psramBefore,
+          ESP.getFreePsram());
 
   renderer.displayBuffer(HalDisplay::FULL_REFRESH);
   requestUpdate();
+#endif  // BOARD_HAS_PSRAM
 }
 
 void TtfRenderDebugActivity::loop() {
