@@ -1,12 +1,12 @@
 name: CI
 
 # CI for the CrossPoint Reader firmware + host unit tests.
-# Runs on the integration branch (develop), master, and every PR.
+# Runs on the integration branches (develop, feat/ttf-support), master, and every PR.
 # The `ci` job at the bottom is the single required status check.
 
 on:
   push:
-    branches: [develop, master]
+    branches: [develop, master, feat/ttf-support]
   pull_request:
   workflow_dispatch:
 
