@@ -165,6 +165,7 @@ class EpubReaderActivity final : public ReaderActivity {
   uint32_t ttfCurrentCharStart = 0;  // charStart of the last rendered page
   // Progress-record restore data (consumed on the chapter's first open).
   bool ttfHasSavedPosition = false;
+  uint16_t ttfSavedSpine = 0;
   uint32_t ttfSavedCharOffset = 0;
   uint32_t ttfSavedGeneration = 0;
   bool ttfPrefetchActive = false;     // session building the NEXT spine

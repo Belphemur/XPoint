@@ -36,6 +36,7 @@ class HalFile {
   }
   int read() { return -1; }
   size_t write(const void* buf, size_t count) {
+    if (testFailWrite) return 0;
     if (!data) return 0;
     const auto* b = static_cast<const char*>(buf);
     if (cursor + count > data->size()) data->resize(cursor + count);
@@ -54,6 +55,7 @@ class HalFile {
 
   // Test control (defined in Stubs.cpp).
   static bool testFailClose;
+  static bool testFailWrite;
 
  private:
   bool open_ = false;

@@ -146,9 +146,11 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
 
 #if defined(CROSSPOINT_TTF_READER)
 bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber,
-                                  uint16_t& pageCount, uint32_t& charOffset, uint32_t& generation) {
+                                  uint16_t& pageCount, uint32_t& charOffset, uint32_t& generation,
+                                  bool& hasGeneration) {
   charOffset = 0;
   generation = 0;
+  hasGeneration = false;
   // Base restore first: spine/page/pageCount + legacy-shape degrade.
   uint32_t baseOffset = 0;
   if (!openBook(cachePath, spineIndex, pageNumber, pageCount, baseOffset)) return false;
@@ -159,12 +161,18 @@ bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, u
   HalFile f;
   bool gen = false;
   if (Storage.openFileForRead(MUTEX_TAG, std::string(cachePath) + "/progress.bin", f)) {
-    uint8_t data[progress_record::kSizeGeneration];
-    const int n = f.read(data, sizeof(data));
+    const uint64_t fileSize = f.fileSize64();
+    uint8_t data[progress_record::kSizeGeneration + 1];
+    const size_t bytesToRead =
+        fileSize > progress_record::kSizeGeneration ? progress_record::kSizeGeneration + 1
+                                                     : static_cast<size_t>(fileSize);
+    const int n = f.read(data, bytesToRead);
     ProgressRecord rec;
-    if (n > 0 && progress_record::decode(data, static_cast<size_t>(n), rec) == progress_record::kSizeGeneration) {
+    if (n == static_cast<int>(bytesToRead) &&
+        progress_record::decode(data, static_cast<size_t>(n), rec) == progress_record::kSizeGeneration) {
       charOffset = rec.charOffset;
       generation = rec.generation;
+      hasGeneration = true;
       gen = true;
     }
   }
@@ -398,10 +406,20 @@ size_t ProgressManager::load(const char* cachePath, uint16_t& spineIndex, uint16
     LOG_DBG(MUTEX_TAG, "load(): no progress.bin at %s", cachePath);
     return 0;
   }
-  uint8_t data[progress_record::kSizeGeneration];
-  const int n = f.read(data, sizeof(data));
+  const uint64_t fileSize = f.fileSize64();
+  if (fileSize < progress_record::kSizeBase) {
+    LOG_DBG(MUTEX_TAG, "load(): progress record too short (%llu bytes)", static_cast<unsigned long long>(fileSize));
+    return 0;
+  }
+  uint8_t data[progress_record::kSizeGeneration + 1];
+  const size_t bytesToRead =
+      fileSize > progress_record::kSizeGeneration ? progress_record::kSizeGeneration + 1
+                                                   : static_cast<size_t>(fileSize);
+  const int n = f.read(data, bytesToRead);
   ProgressRecord rec;
-  const size_t size = progress_record::decode(data, n > 0 ? static_cast<size_t>(n) : 0, rec);
+  const size_t size = n == static_cast<int>(bytesToRead)
+                          ? progress_record::decode(data, static_cast<size_t>(n), rec)
+                          : 0;
   if (size == 0) {
     LOG_DBG(MUTEX_TAG, "load(): malformed record (read=%d)", n);
     return 0;  // missing / garbage / short record
