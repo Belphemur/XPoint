@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "BookReadingStats.h"
+#include "FinishedBooksIndex.h"
 #include "GlobalReadingStats.h"
 #include "HalStorage.h"
 
@@ -31,6 +32,33 @@ uint32_t readLe32At(const std::vector<uint8_t>& data, size_t offset) {
          (static_cast<uint32_t>(data[offset + 2]) << 16) | (static_cast<uint32_t>(data[offset + 3]) << 24);
 }
 
+void writeLe16At(std::vector<uint8_t>& data, size_t offset, uint16_t value) {
+  data[offset] = value & 0xFF;
+  data[offset + 1] = (value >> 8) & 0xFF;
+}
+
+void writeLe32At(std::vector<uint8_t>& data, size_t offset, uint32_t value) {
+  data[offset] = value & 0xFF;
+  data[offset + 1] = (value >> 8) & 0xFF;
+  data[offset + 2] = (value >> 16) & 0xFF;
+  data[offset + 3] = (value >> 24) & 0xFF;
+}
+
+void writeLe64At(std::vector<uint8_t>& data, size_t offset, uint64_t value) {
+  for (size_t i = 0; i < 8; ++i) {
+    data[offset + i] = static_cast<uint8_t>(value >> (i * 8));
+  }
+}
+
+uint64_t testPathKey(const std::string& path) {
+  uint64_t hash = 14695981039346656037ULL;
+  for (const unsigned char c : path) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
 ReadingStatsDateTime makeDateTime(uint16_t year, uint8_t month, uint8_t day, uint8_t hour) {
   ReadingStatsDateTime dt;
   dt.date.year = year;
@@ -48,6 +76,7 @@ class ReadingStatsBinaryStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
     Storage.clear();
+    FinishedBooksIndex::clearRecentBooksForTest();
     // Reset the destructive-save latch: loading a missing file leaves it false
     // (load() only latches on a detected newer-format record).
     GlobalReadingStats::load();
@@ -549,4 +578,138 @@ TEST_F(ReadingStatsBinaryStoreTest, GlobalV5SessionWindowWireOffsets) {
   EXPECT_EQ(bytes[197], 1u);    // count low byte
   EXPECT_EQ(bytes[198], 0u);    // count high byte
   EXPECT_EQ(bytes[224], 1u);    // pos
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRoundTripAndWireSize) {
+  BookReadingStats stats;
+  stats.isCompleted = true;
+  stats.totalReadingSeconds = 7200;
+  stats.startDate = ReadingStatsDate{2026, 8, 1};
+  stats.finishedDate = ReadingStatsDate{2026, 8, 10};
+
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/one.epub", "One", "Author", stats));
+  const auto bytes = readFileBytes("/.crosspoint/finished_books.bin");
+  ASSERT_EQ(bytes.size(), 41u);  // 8-byte header + 33-byte fixed/text entry
+  EXPECT_EQ(bytes[4], 3u);       // CPFB version
+  EXPECT_EQ(bytes[5], 1u);       // one entry
+  EXPECT_EQ(bytes[6], 0u);       // reserved field
+
+  const auto entries = FinishedBooksIndex::load();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].pathKey, testPathKey("/books/one.epub"));
+  EXPECT_EQ(entries[0].title, "One");
+  EXPECT_EQ(entries[0].author, "Author");
+  EXPECT_EQ(entries[0].totalReadingSeconds, 7200u);
+  EXPECT_EQ(entries[0].startDate.year, 2026u);
+  EXPECT_EQ(entries[0].finishedDate.day, 10u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksCapsAt32Entries) {
+  BookReadingStats stats;
+  stats.isCompleted = true;
+  for (int i = 0; i < 33; ++i) {
+    const std::string path = "/books/" + std::to_string(i) + ".epub";
+    ASSERT_TRUE(FinishedBooksIndex::record(path, "Book " + std::to_string(i), "Author", stats));
+  }
+
+  const auto entries = FinishedBooksIndex::load();
+  EXPECT_EQ(entries.size(), FinishedBooksIndex::MAX_ENTRIES);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRecoversFromBackup) {
+  BookReadingStats first;
+  first.isCompleted = true;
+  first.totalReadingSeconds = 100;
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/first.epub", "First", "Author", first));
+
+  BookReadingStats second;
+  second.isCompleted = true;
+  second.totalReadingSeconds = 200;
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/second.epub", "Second", "Author", second));
+  EXPECT_TRUE(Storage.exists("/.crosspoint/finished_books.bin.bak"));
+
+  HalFile corrupt;
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", "/.crosspoint/finished_books.bin", corrupt));
+  const uint8_t garbage[] = {0, 1, 2};
+  ASSERT_EQ(corrupt.write(garbage, sizeof(garbage)), sizeof(garbage));
+
+  const auto entries = FinishedBooksIndex::load();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].title, "First");
+  EXPECT_EQ(entries[0].totalReadingSeconds, 100u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRecoversCompletedRecentBooks) {
+  FinishedBooksIndex::setRecentBooksForTest({{"/books/epub.epub", "Epub", "Epub Author"},
+                                             {"/books/xtc.xtc", "Xtc", "Xtc Author"},
+                                             {"/books/plain.txt", "Plain", "Plain Author"}});
+
+  BookReadingStats epubStats;
+  epubStats.isCompleted = true;
+  epubStats.totalReadingSeconds = 111;
+  epubStats.save("/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}("/books/epub.epub")));
+  BookReadingStats xtcStats;
+  xtcStats.isCompleted = true;
+  xtcStats.totalReadingSeconds = 222;
+  xtcStats.save("/.crosspoint/xtc_" + std::to_string(std::hash<std::string>{}("/books/xtc.xtc")));
+
+  const auto entries = FinishedBooksIndex::load();
+  ASSERT_EQ(entries.size(), 2u);
+  EXPECT_EQ(entries[0].title, "Epub");
+  EXPECT_EQ(entries[1].title, "Xtc");
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksMigratesPath) {
+  BookReadingStats stats;
+  stats.isCompleted = true;
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/old.epub", "Old", "Author", stats));
+  ASSERT_TRUE(FinishedBooksIndex::migratePath("/books/old.epub", "/books/new.epub"));
+
+  const auto entries = FinishedBooksIndex::load();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].pathKey, testPathKey("/books/new.epub"));
+  EXPECT_EQ(entries[0].title, "Old");
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksLegacyV2LoadsStartDate) {
+  constexpr char path[] = "/books/legacy.epub";
+  const std::string title = "Legacy";
+  std::vector<uint8_t> bytes(8 + 8 + 4 + 4 + 4 + 2 + title.size(), 0);
+  std::memcpy(bytes.data(), "CPFB", 4);
+  bytes[4] = 2;
+  bytes[5] = 1;
+  size_t offset = 8;
+  writeLe64At(bytes, offset, testPathKey(path));
+  offset += 8;
+  writeLe32At(bytes, offset, 321);
+  offset += 4;
+  writeLe16At(bytes, offset, 2025);
+  offset += 2;
+  bytes[offset++] = 7;
+  bytes[offset++] = 4;
+  writeLe16At(bytes, offset, 2025);
+  offset += 2;
+  bytes[offset++] = 7;
+  bytes[offset++] = 8;
+  writeLe16At(bytes, offset, static_cast<uint16_t>(title.size()));
+  offset += 2;
+  std::memcpy(bytes.data() + offset, title.data(), title.size());
+  {
+    HalFile file;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", "/.crosspoint/finished_books.bin", file));
+    ASSERT_EQ(file.write(bytes.data(), bytes.size()), bytes.size());
+  }
+
+  const auto entries = FinishedBooksIndex::load();
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0].pathKey, testPathKey(path));
+  EXPECT_EQ(entries[0].totalReadingSeconds, 321u);
+  EXPECT_EQ(entries[0].startDate.year, 2025u);
+  EXPECT_EQ(entries[0].startDate.month, 7u);
+  EXPECT_EQ(entries[0].startDate.day, 4u);
+  EXPECT_EQ(entries[0].finishedDate.year, 2025u);
+  EXPECT_EQ(entries[0].finishedDate.month, 7u);
+  EXPECT_EQ(entries[0].finishedDate.day, 8u);
+  EXPECT_EQ(entries[0].title, title);
+  EXPECT_TRUE(entries[0].author.empty());
 }
