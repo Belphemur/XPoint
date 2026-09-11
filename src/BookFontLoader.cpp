@@ -52,6 +52,7 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <memory>
 
@@ -103,6 +104,7 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
 
 // ── scanFonts — per-family TTF discovery (design §14.4) ──────────────────
 
+#if defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)
 namespace {
 // Font roots. The hidden root is scanned first so it wins on family-name
 // collisions, matching the SdCardFontRegistry sleep-folder pattern.
@@ -130,7 +132,9 @@ bool hasWord(const char* hay, const char* token) {
   for (size_t i = 0; hay[i] != '\0'; ++i) {
     if (i > 0 && isalnum(static_cast<unsigned char>(hay[i - 1]))) continue;
     size_t j = 0;
-    while (token[j] != '\0' && tolower(static_cast<unsigned char>(hay[i + j])) == token[j]) ++j;
+    while (token[j] != '\0' && hay[i + j] != '\0' && tolower(static_cast<unsigned char>(hay[i + j])) == token[j]) {
+      ++j;
+    }
     if (token[j] != '\0') continue;
     const char after = hay[i + tLen];
     if (after == '\0' || !isalnum(static_cast<unsigned char>(after))) return true;
@@ -194,6 +198,7 @@ int ciCompare(const char* a, const char* b) {
   return tolower(static_cast<unsigned char>(*a)) - tolower(static_cast<unsigned char>(*b));
 }
 }  // namespace
+#endif
 
 // ── BookFontLoader implementation ────────────────────────────────────────────
 
@@ -361,6 +366,7 @@ FontChain* BookFontLoader::builtinFallback() {
   }
   return &fallback;
 }
+#if defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)
 void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
   HalFile root = Storage.open(rootPath);
   if (!root || !root.isDirectory()) {
@@ -398,7 +404,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     HalFile dir = root.openNextFile();
     if (!dir) break;
     if (!dir.isDirectory()) continue;
-    dir.getName(dirName, kDirNameCap);
+    const size_t nameLen = dir.getName(dirName, kDirNameCap);
 
     // Skip hidden/system folders (macOS ._*, .Trashes, _folders).
     if (dirName[0] == '.' || dirName[0] == '_') continue;
@@ -415,7 +421,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       LOG_DBG("BFNT", "Family cap reached, skipping %s", dirName);
       continue;
     }
-    if (strlen(dirName) >= kDirNameCap) {
+    if (nameLen >= kDirNameCap - 1) {
       LOG_DBG("BFNT", "Family name too long: %s", dirName);
       continue;
     }
@@ -479,7 +485,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       }
       const bool replacingExisting = slot < kMaxFacesPerFamily;
       if (replacingExisting) {
-        if (ciCompare(fileName, fam.faces[slot].name) >= 0) continue;  // existing wins
+        if (ciCompare(lower, fam.faces[slot].name) >= 0) continue;  // existing wins
       } else {
         if (fam.faceCount >= kMaxFacesPerFamily) continue;
       }
@@ -506,10 +512,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       FontFaceInfo& face = fam.faces[0];
       fam.faceCount = 1;
       face = {};
-      if (snprintf(face.name, sizeof(face.name), "%s", soloFile) >= static_cast<int>(sizeof(face.name))) {
-        fam.faceCount = 0;
-        continue;
-      }
+      snprintf(face.name, sizeof(face.name), "%s", lower);
       if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
         fam.faceCount = 0;
         continue;
@@ -539,6 +542,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     LOG_DBG("BFNT", "Family %s: %u faces from %s", fam.name, fam.faceCount, rootPath);
   }
 }
+#endif
 
 // ── tryLoadFace — single face into the live chain ────────────────────────────
 // Member of BookFontLoader so it can access private members (faces_,
