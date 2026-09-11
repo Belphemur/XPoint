@@ -55,9 +55,7 @@ inline void putU32(uint8_t* p, const uint32_t v) {
   p[3] = static_cast<uint8_t>(v >> 24);
 }
 
-inline uint16_t getU16(const uint8_t* p) {
-  return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1]) << 8;
-}
+inline uint16_t getU16(const uint8_t* p) { return static_cast<uint16_t>(p[0]) | static_cast<uint16_t>(p[1]) << 8; }
 
 inline uint32_t getU32(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 | static_cast<uint32_t>(p[2]) << 16 |

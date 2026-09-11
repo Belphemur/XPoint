@@ -303,9 +303,8 @@ void TtfBookRuntime::abortSession() {
     if (!writer_.suspend(static_cast<uint32_t>(consumed), static_cast<uint32_t>(total))) {
       LOG_ERR("TTFB", "Writer suspend failed — partial build not committed");
     } else {
-      LOG_DBG("TTFB", "Partial build suspended: %u pages (%u/%u bytes)",
-              static_cast<unsigned>(writer_.pageCount()), static_cast<unsigned>(consumed),
-              static_cast<unsigned>(total));
+      LOG_DBG("TTFB", "Partial build suspended: %u pages (%u/%u bytes)", static_cast<unsigned>(writer_.pageCount()),
+              static_cast<unsigned>(consumed), static_cast<unsigned>(total));
     }
   } else if (session_.done()) {
     finishSession();
@@ -391,8 +390,7 @@ void TtfBookRuntime::applyReaderLayoutParams(LayoutParams& params) {
   params.focusReading = SETTINGS.focusReadingEnabled != 0;
   params.embeddedStyles = true;
   params.hyphenator = nullptr;  // Phase 2b
-  params.baseSizePx =
-      static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.fontPointSize) * 150.0f / 72.0f));
+  params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.fontPointSize) * 150.0f / 72.0f));
 }
 
 void TtfBookRuntime::makeLayoutParams(GfxRenderer& renderer, LayoutParams& out, const bool autoTurnActive) const {

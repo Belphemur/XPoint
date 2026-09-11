@@ -25,8 +25,8 @@ namespace book = freeink::book;
 
 TEST(ProgressRecordTest, BaseShapeRoundTrip) {
   uint8_t buf[progress_record::kSizeGeneration] = {};
-  const size_t n = progress_record::encode(/*hasOffset=*/false, /*hasGeneration=*/false, 7, 12, 40, 0, 0, 0, buf,
-                                           sizeof(buf));
+  const size_t n =
+      progress_record::encode(/*hasOffset=*/false, /*hasGeneration=*/false, 7, 12, 40, 0, 0, 0, buf, sizeof(buf));
   ASSERT_EQ(n, progress_record::kSizeBase);
 
   ProgressRecord rec;
@@ -40,8 +40,8 @@ TEST(ProgressRecordTest, BaseShapeRoundTrip) {
 
 TEST(ProgressRecordTest, OffsetShapeRoundTrip) {
   uint8_t buf[progress_record::kSizeGeneration] = {};
-  const size_t n = progress_record::encode(/*hasOffset=*/true, /*hasGeneration=*/false, 3, 9, 55, 0x11223344, 0, 0,
-                                           buf, sizeof(buf));
+  const size_t n = progress_record::encode(/*hasOffset=*/true, /*hasGeneration=*/false, 3, 9, 55, 0x11223344, 0, 0, buf,
+                                           sizeof(buf));
   EXPECT_EQ(n, progress_record::kSizeOffset);
 
   ProgressRecord rec;

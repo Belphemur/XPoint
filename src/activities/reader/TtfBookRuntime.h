@@ -24,10 +24,9 @@
 #include <BookCatalog.h>
 #include <BookStorage.h>
 #include <CrossPointSettings.h>
+#include <Memory.h>
 #include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
-
-#include <Memory.h>
 
 #include "adapters/SdCardBookSource.h"
 #include "adapters/SdCardCacheStorage.h"
@@ -105,7 +104,9 @@ class TtfBookRuntime {
   // the same heap gates as the legacy Section prefetch.
   bool openPrefetch(uint16_t spineIndex, uint32_t generation);
   void dropPrefetch();
-  bool prefetchFor(uint16_t spineIndex) const { return prefetchSpine_ >= 0 && static_cast<uint16_t>(prefetchSpine_) == spineIndex; }
+  bool prefetchFor(uint16_t spineIndex) const {
+    return prefetchSpine_ >= 0 && static_cast<uint16_t>(prefetchSpine_) == spineIndex;
+  }
   uint32_t prefetchPageCount() const { return prefetchSpine_ >= 0 ? prefetchReader_.pageCount() : 0; }
 
   // ---- pure helpers (host-testable) ----
