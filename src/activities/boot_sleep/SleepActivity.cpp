@@ -596,7 +596,7 @@ bool selectShutdownCustomImage(std::string& outPath) {
   return !outPath.empty();
 }
 
-// Draw one image framed for the shutdown screen: centered border (~2/3 panel,
+// Draw one image framed for the shutdown screen: centered border (~3/4 panel,
 // inset 6), caption below, cover filter applied like the sleep screen does.
 // Flushes the panel itself (the bitmap must stay open through the grayscale
 // passes). Returns false when the BMP is unusable and the caller must fall
@@ -611,7 +611,7 @@ bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool 
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-  constexpr float FRAME_FRACTION = 0.66f;
+  constexpr float FRAME_FRACTION = 0.76f;
   constexpr int FRAME_INSET = 6;
   const int frameW = static_cast<int>(static_cast<float>(pageWidth) * FRAME_FRACTION);
   const int frameH = static_cast<int>(static_cast<float>(pageHeight) * FRAME_FRACTION);
