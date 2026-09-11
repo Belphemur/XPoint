@@ -84,11 +84,19 @@ bool SdCardCacheStorage::beginWrite(const char* name) {
   }
   if (!buildPath(name, ".tmp", writeTmpPath_, sizeof(writeTmpPath_))) return false;
   if (!buildPath(name, "", writeFinalPath_, sizeof(writeFinalPath_))) return false;
-  // Remove a stale "<final>.old" left by a previous endWrite() that crashed
-  // between the rotate-rename and the final rename; the current final (if
-  // any) is the good copy at this point, so the leftover .old is garbage.
+  // Recover a stale "<final>.old" left by a previous endWrite() that crashed
+  // between the rotate-rename and the final rename. If no final exists, the
+  // .old IS the last good cache — restore it. If a final exists, the .old is
+  // garbage from an already-completed publish and can be removed.
   if (pathBuf_ && buildPath(name, ".old", pathBuf_.get(), kPathMax)) {
-    Storage.remove(pathBuf_.get());
+    if (!Storage.exists(writeFinalPath_) && Storage.exists(pathBuf_.get())) {
+      if (!Storage.rename(pathBuf_.get(), writeFinalPath_)) {
+        LOG_ERR("TTFB", "beginWrite: restore .old failed: %s", writeFinalPath_);
+        return false;
+      }
+    } else {
+      Storage.remove(pathBuf_.get());
+    }
   }
   // openFileForWrite truncates, so a stale .tmp from a previous crash is reused.
   if (!Storage.openFileForWrite("TTFB", writeTmpPath_, writeHandle_)) {

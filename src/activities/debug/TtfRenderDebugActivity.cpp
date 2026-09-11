@@ -91,6 +91,10 @@ struct DebugSink : book::PageSink {
 void TtfRenderDebugActivity::onEnter() {
   Activity::onEnter();
 
+  // The ActivityManager render loop applies SETTINGS.screenInverted for other
+  // activities; this rig draws directly in onEnter, so apply polarity here too
+  // (pattern: SleepActivity::onEnter) or night-mode leaves the screen inverted.
+  display.setInverted(SETTINGS.screenInverted != 0);
   const uint32_t heapBefore = ESP.getFreeHeap();
   const uint32_t psramBefore = ESP.getFreePsram();
   LOG_INF("TTFDBG", "heap before: %u psram: %u", heapBefore, psramBefore);
