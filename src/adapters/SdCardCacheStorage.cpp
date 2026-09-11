@@ -146,14 +146,18 @@ bool SdCardCacheStorage::endWrite() {
   }
   if (writeFailed_) {
     LOG_ERR("TTFB", "endWrite: skipped publish after write failure");
-    if (writeHandle_.isOpen() && !writeHandle_.close()) endWriteFailed_ = true;
-    endWriteFailed_ = true;
+    if (!writeHandle_.close()) {
+      LOG_ERR("TTFB", "endWrite: close failed: %s", writeTmpPath_);
+      endWriteFailed_ = true;
+    }
     return false;
   }
   if (!writeHandle_.sync()) {
     LOG_ERR("TTFB", "endWrite: sync failed");
-    if (writeHandle_.isOpen() && !writeHandle_.close()) endWriteFailed_ = true;
-    endWriteFailed_ = true;
+    if (!writeHandle_.close()) {
+      LOG_ERR("TTFB", "endWrite: close failed: %s", writeTmpPath_);
+      endWriteFailed_ = true;
+    }
     return false;
   }
   // close() flushes the last sector; a failure here means the .tmp is not a
