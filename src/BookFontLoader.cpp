@@ -218,12 +218,12 @@ FontChain* BookFontLoader::builtinFallback() {
       LOG_ERR("BFNT", "OOM: %u bytes for builtin fallback fonts", static_cast<unsigned>(kFallbackBytes));
       return &fallback;  // empty chain (coverage 0); caller falls back further
     }
-    auto* slots = reinterpret_cast<freeink::ui::BitmapBookFont*>(backing.get());
+    auto* base = reinterpret_cast<freeink::ui::BitmapBookFont*>(backing.get());
     // No destructor call — see singleton note above.
-    auto* r = new (slots + 0) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* b = new (slots + 1) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* i = new (slots + 2) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* bi = new (slots + 3) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* r = new (base + 0) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* b = new (base + 1) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* i = new (base + 2) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* bi = new (base + 3) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
     fallback.add(r, StyleNone);
     fallback.add(b, StyleBold);
     fallback.add(i, StyleItalic);
