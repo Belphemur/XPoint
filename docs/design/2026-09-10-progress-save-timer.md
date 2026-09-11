@@ -93,10 +93,10 @@ guard skipped a save when a same-page re-layout shifted only the
   within one interval even if its notification raced a flush. No
   always-ticking poll loop, no esp_timer (the interval+notify block is the
   simplest structure that satisfies the bound — KISS).
-- **Task loop:** on wake, take the manager mutex and write `current_` when
-  it differs from `lastFlushed_` (one `ProgressFile::writeAtomic` through
-  `HalStorage`). The mutex IS held across the write: worker vs synchronous
-  flush can never interleave, so there is exactly one writer by
+- **Task loop:** on wake, write `current_` when it differs from
+  `lastFlushed_` (one `ProgressFile::writeAtomic` through `HalStorage`,
+  under `diskMutex_`). The disk mutex IS held across the write: worker vs
+  synchronous flush can never interleave, so there is exactly one writer by
   construction and no torn/overlapping tmp-file state.
 - **Book identity:** the manager stores a COPY of the book's cache path
   (registered by `openBook()`), never the `Epub` object — the reader may
@@ -108,17 +108,21 @@ guard skipped a save when a same-page re-layout shifted only the
   open book's own file. Exit/sleep/power-off flushing is the manager's job
   (`closeBook()` / `flushNow()`), not the activity's.
 
-**Memory:** ~2 KB task stack, two 16-byte records (`current_`/`lastFlushed_`,
+**Memory:** 4 KB task stack, two 16-byte records (`current_`/`lastFlushed_`,
 pool-allocated, PSRAM-backed where available), one 160-byte cache-path copy.
 
-**Cross-core protection (review finding B1):** on the dual-core S3,
-`portENTER_CRITICAL()` without a spinlock disables interrupts on the local
-core only and is NOT a mutual-exclusion pair across cores. All shared state
-(two records, path, flags) is therefore guarded by one dedicated FreeRTOS
-mutex (`xSemaphoreCreateMutex()`) taken by the reader task (`save`,
-`openBook`, `saveNow`) and the worker around every state access AND each
-disk write — the single-writer invariant is structural, not by discipline.
-On the single-core C3 the same mutex is simply correct too.
+**Locking model (revised 2026-09-10 on-device, supersedes review finding B1):**
+the B1 all-state FreeRTOS mutex deadlocked the reader: `save()` runs on the
+render task at every page turn, and taking the manager mutex there let a
+flush/openBook/saveNow path holding it across SD I/O block rendering forever
+(silent freeze, no panic). Final model: in-memory state is deliberately
+UNguarded — `save()` is lock-free (native-width field writes are atomic on
+the RISC-V core; a torn multi-field snapshot can only yield a stale,
+self-correcting flush baseline, never a crash); one `diskMutex_` serializes
+ALL progress.bin disk access (openBook()'s load read, every
+flush/saveNow/worker write through `saveRecordLocked()`). An SD stall can
+only ever block the flusher, never the render task. The battery gate read
+runs before state update, outside any lock.
 
 ### 4.4 Book exit — synchronous flush, bounded
 
@@ -148,7 +152,7 @@ signal), `pageTurn()`'s capture degrades to the current synchronous
 `saveProgress()` call. Above 5%: timer mode only.
 
 The synchronous fallback **updates `lastFlushed` and clears the dirty flag**
-through the same shared-state mutex as a timer flush, so the timer's next
+through the same disk-serialized path as a timer flush, so the timer's next
 fire is a guaranteed no-op (review finding S2) — no double-write, no stale
 write, and the timer stays armed so no mode-transition bookkeeping is needed.
 
@@ -184,11 +188,11 @@ reader's last captured position (see §9 Related fixes).
 | `PROGRESS_FLUSH_INTERVAL_MS` | 120000 | Crash window = 2-4 pages; ~30 writes/hr max for a fast reader vs 200-600 today (5-20x reduction depending on reading speed — see review N1). Longer puts more progress at risk per crash; shorter buys nothing the exit/low-battery paths don't already cover. |
 | `LOW_BATTERY_PERCENT` (private) | 5 | User-directed. Queried at gate time; gated on battery health HEALTHY and not charging. |
 | Worker task priority | low (1) | Must never compete with render. |
-| Worker task stack | 2048 B | Record write + HalStorage call; no recursion. Verify with `uxTaskGetStackHighWaterMark()` on first device test (review N2). |
+| Worker task stack | 4096 B | SdFat write+flush+remove+rename chain overflowed 2048 B (stack canary panic on progress_mgr, first real flush); device-verified 1536 B high-water of 4096. Re-check `uxTaskGetStackHighWaterMark()` after SDK changes. |
 | Worker task core | 0 (both classes) | Render task owns core 1 on dual-core boards. |
 | Worker trigger | `ulTaskNotifyTake` (120 s timeout) | Notification from save() when the gate opens; the timeout backstops a raced notification. No always-ticking poll. |
 | Manager cache-path buffer | 160 B | Holds a copy of the current book's cache dir path; writes dereference the copy, never the Epub object. |
-| Shared-state guard | FreeRTOS mutex (held across writes) | Review B1: `portENTER_CRITICAL` without a spinlock is per-core on the S3 and not a cross-core exclusion pair. Held across the write too: single writer by construction. |
+| Shared-state guard | NONE for in-memory state; `diskMutex_` for all progress.bin disk access | Device-proven revision of B1: a manager mutex taken by save() on the render task deadlocked against flush/openBook paths holding it across SD I/O. save() is lock-free (native-width field writes, torn snapshot = stale self-correcting baseline); diskMutex_ serializes load + writeAtomic so disk ops never interleave. |
 | Progress state allocation | `poolMalloc` (PSRAM-backed where available) | User directive: dynamic, PSRAM when the board has it. Two 16-byte records. |
 
 ## 6. Decision Log
@@ -214,6 +218,7 @@ reader's last captured position (see §9 Related fixes).
 | 2026-09-10 (review) | Task pinned core 0, stack passed in BYTES (2048 B) | Copilot: render task owns core 1; and this ESP-IDF build takes usStackDepth in bytes — the word-division form created a 512-byte stack. |
 | 2026-09-10 (review) | Write-time freshness gate via published position snapshot | Revalidator callback reading reader state from the manager task was a data race (no RenderLock held); snapshot published under the manager mutex replaces it. Also closes the stale-capture and cross-book hazards. |
 | 2026-09-10 (review) | `saveNow()` = capture-first then synchronous flush | Low battery + redraws rewrote unchanged pages; capture through the same change detection makes equal records no-ops and failures retryable. Reopen seeding (`seedLastFlushed`) makes "reopen, read nothing, exit" write nothing. |
+| 2026-09-10 (impl) | Lock-free save() + diskMutex_ for disk I/O only; worker stack 4096 B | Device instrumentation found two latent bugs: (1) the all-state mutex from B1 deadlocked — save() on the render task blocked on a flush/openBook path holding it across SD I/O (silent freeze, no panic); (2) the worker's 2048 B stack tripped the canary in the SdFat write+flush+remove+rename chain. In-memory state is now deliberately unguarded; the disk mutex makes read/write interleave impossible. |
 | 2026-09-10 (review) | `enterPowerOff()` runs `ActivityManager::shutdown()` first, with a `powerOffInProgress` latch | Manual power-off now runs ANY outgoing activity's onExit() (like goToSleep does) and WiFi activities can no longer silentRestart() during teardown; from-reader context snapshotted before the stack is emptied. |
 | 2026-09-10 (redesign) | Gated-save contract: two records + gate in save(); FlushState machinery deleted | User directive ("very complex design — tick, timer, etc"): the manager holds `current_` + `lastFlushed_`; save() always updates memory, gates the disk write on changed+interval (or low battery); worker is notification-driven with a 60 s timeout backstop; flushChangedLocked holds the mutex across the write. Freshness/publish/markFlushed/seed machinery deleted — superseded by "worker always writes the latest in-memory record". |
 
