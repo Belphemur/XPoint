@@ -32,6 +32,7 @@ import re
 import signal
 import sys
 import threading
+import warnings
 from collections import deque
 from datetime import datetime
 
@@ -66,6 +67,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="Suppress lines containing this keyword (case-insensitive)",
     )
+    parser.add_argument(
+        "--no-graph",
+        action="store_true",
+        help="Skip the matplotlib graph entirely (useful for headless/SSH runs)",
+    )
     return parser
 
 
@@ -81,6 +87,7 @@ PACKAGE_MAPPING: dict[str, str] = {
 }
 
 try:
+    import matplotlib
     import matplotlib.pyplot as plt
     import serial
     from colorama import Fore, Style, init
@@ -127,6 +134,26 @@ shutdown_event = threading.Event()
 
 # Initialize colors
 init(autoreset=True)
+
+# The memory graph needs an interactive backend. On headless boxes (SSH) or
+# minimal distros (arch-based like CachyOS ship python-matplotlib without any
+# GUI binding by default) matplotlib silently falls back to "Agg", whose
+# show() only prints "FigureCanvasAgg is non-interactive" and returns at once.
+# Treat that as "text-only" mode instead of spamming warnings.
+NON_INTERACTIVE_BACKENDS = ("agg", "cairo", "pdf", "pgf", "ps", "svg", "template")
+# Order favors native Wayland/X11 support on Arch, WebAgg is a last resort that
+# serves the graph via localhost and opens the default browser.
+INTERACTIVE_FALLBACK_BACKENDS = (
+    "QtAgg",
+    "Qt5Agg",
+    "TkAgg",
+    "GTK4Agg",
+    "GTK3Agg",
+    "WebAgg",
+)
+
+warnings.filterwarnings("ignore", message=".*non-interactive.*cannot be shown.*")
+warnings.filterwarnings("ignore", message=".*Animation was deleted without rendering.*")
 
 # Color mapping for log lines
 COLOR_KEYWORDS: dict[str, list[str]] = {
@@ -417,6 +444,42 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
     return []
 
 
+def select_interactive_backend() -> str | None:
+    """
+    Return the name of a matplotlib backend that can actually open a window.
+
+    Probes the current backend first (e.g. TkAgg/QtAgg already configured), then
+    tries every reasonable GUI backend in order. WebAgg is kept as a last resort
+    because it only needs a browser, which makes it the most portable fallback
+    for arch-based / minimal systems. Returns None when the environment is
+    headless, so the caller falls back to text-only monitoring.
+    """
+    def _interactive() -> bool:
+        return matplotlib.get_backend().lower() not in NON_INTERACTIVE_BACKENDS
+
+    def _canvas_shows() -> bool:
+        try:
+            plt.figure()
+            plt.show(block=False)
+            return bool(plt.get_fignums())
+        except Exception:
+            return False
+        finally:
+            plt.close("all")
+
+    if _interactive() and _canvas_shows():
+        return matplotlib.get_backend()
+
+    for candidate in INTERACTIVE_FALLBACK_BACKENDS:
+        try:
+            matplotlib.use(candidate)
+        except Exception:
+            continue
+        if _canvas_shows():
+            return matplotlib.get_backend()
+    return None
+
+
 def get_auto_detected_port() -> list[str]:
     """
     Attempts to auto-detect the serial port for the ESP32 device.
@@ -528,6 +591,36 @@ def main() -> None:
     except (AttributeError, ValueError):
         pass
 
+    graph_backend = None if args.no_graph else select_interactive_backend()
+
+    if graph_backend is None:
+        print(
+            f"\n{Fore.YELLOW}Memory graph disabled: no interactive matplotlib "
+            f"backend available ('{matplotlib.get_backend()}')."
+            f"{Style.RESET_ALL}"
+        )
+        print(
+            f"\n{Fore.CYAN}Running as text-only serial monitor. Device output "
+            f"still works; only the live graph is skipped.{Style.RESET_ALL}"
+        )
+        print(
+            f"\n{Fore.CYAN}To enable the graph, install the tooling via uv:{Style.RESET_ALL}"
+        )
+        print(f"{Fore.CYAN}    uv sync --extra graph{Style.RESET_ALL}")
+        print(
+            f"{Fore.CYAN}(or system-wide: sudo pacman -S python-pyqt6){Style.RESET_ALL}"
+        )
+        print(
+            f"\n{Fore.CYAN}Relaunch with --no-graph to silence this note.{Style.RESET_ALL}"
+        )
+        try:
+            shutdown_event.wait()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            shutdown_event.set()
+        return
+
     fig = plt.figure(figsize=(10, 6))
 
     # Update graph every 1000ms
@@ -537,11 +630,15 @@ def main() -> None:
 
     try:
         print(
-            f"{Fore.YELLOW}Starting Graph Window... (Close window or press Ctrl-C to exit){Style.RESET_ALL}"
+            f"{Fore.YELLOW}Starting Graph Window ({graph_backend})... "
+            f"(Close window or press Ctrl-C to exit){Style.RESET_ALL}"
         )
         plt.show()
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}Exiting...{Style.RESET_ALL}")
+    except Exception as e:  # e.g. GUI backend broken mid-run; keep the monitor alive
+        print(f"\n{Fore.RED}Graph error ({e}); running as text-only monitor.{Style.RESET_ALL}")
+        shutdown_event.wait()
     finally:
         shutdown_event.set()  # Ensure all threads know to stop
         plt.close("all")  # Force close any lingering plot windows

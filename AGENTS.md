@@ -593,12 +593,19 @@ pio run -t clean
 ### Monitoring and Debugging
 
 ```bash
+# One-time setup: project venv + graph backend (PyQt6 via uv)
+uv sync --extra graph
+
 # Enhanced monitor with color/logging (recommended)
-python3 scripts/debugging_monitor.py
+uv run python scripts/debugging_monitor.py
 
 # Standard PlatformIO monitor
 pio device monitor
 ```
+
+The monitor auto-selects an interactive matplotlib backend (QtAgg/TkAgg/GTK);
+on headless runs it degrades to text-only with a hint (use `--no-graph` to
+suppress).
 
 **Via VS Code**: Click Monitor (🔌) button in PlatformIO toolbar
 
