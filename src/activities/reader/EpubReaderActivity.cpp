@@ -2080,6 +2080,13 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
       needFullBuild = true;
       return false;
     }
+    // A normal jump beyond the built prefix stays pending on a partial
+    // cache: consuming it would let a heap-gated background build fall back
+    // to the old page. A complete cache clamps it below.
+    if (!haveTotal && jump >= available) {
+      needFullBuild = true;
+      return false;
+    }
     pendingPageJump.reset();
     targetOut = std::max(0, jump);
     return true;
