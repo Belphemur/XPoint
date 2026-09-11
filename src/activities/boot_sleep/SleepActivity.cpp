@@ -504,14 +504,19 @@ void releaseSdFontCachesForDecode(const GfxRenderer& renderer) {
 }
 
 // Flush an image that is already drawn into the BW framebuffer (at the given
-// placement) to the panel, running the OEM grayscale pipeline when the bitmap
+// placement) to the panel, running the grayscale pipeline when the bitmap
 // carries gray levels. The gray plane passes only mark gray pixels, so other
 // content in the base framebuffer (frames, captions, overlays) survives: on
 // SSD1677 the (0,0) LUT group is a hold waveform, on UC8279 displayStart
 // snapshots the base and the plane copies fold it into the absolute planes.
+// allowAbsolutePlanes=false opts OUT of that folding (full-screen art only):
+// absolute planes repaint the whole panel from the plane content alone, so any
+// scene content the gray passes don't redraw (frame border, caption) would be
+// erased from the panel. Callers whose base framebuffer carries such scene
+// content must pass false.
 void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, const int x, const int y, const int maxW,
                                const int maxH, const float cropX, const float cropY, const bool hasGreyscale,
-                               const bool preserveBackground = false) {
+                               const bool preserveBackground = false, const bool allowAbsolutePlanes = true) {
   if (!hasGreyscale) {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     return;
@@ -520,8 +525,8 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
   // Absolute planes retain the B/W base image (no clear needed) and need the
   // absolute-quality base pass; the overlay pipeline repaints into cleared
   // planes over the OEM HALF base.
-  const bool absolute =
-      !preserveBackground && renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  const bool absolute = allowAbsolutePlanes && !preserveBackground &&
+                        renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   if (absolute) {
     if (!renderer.displayGrayscaleBase(HalDisplay::GrayscaleMode::Absolute)) return;
   } else {
@@ -635,8 +640,12 @@ bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool 
     renderer.invertScreen();
   }
 
+  // The shutdown screen is a framed scene: border and caption live in the base
+  // framebuffer but outside the image, so the absolute-plane pass (which
+  // repaints the whole panel) would erase them. Force the OEM fold pipeline.
   displayImageWithGrayscale(renderer, bitmap, placement.x, placement.y, innerW, innerH, placement.cropX,
-                            placement.cropY, hasGreyscale);
+                            placement.cropY, hasGreyscale, /*preserveBackground=*/false,
+                            /*allowAbsolutePlanes=*/false);
   return true;
 }
 
