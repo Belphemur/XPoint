@@ -255,7 +255,7 @@ TEST(ScanFontsTest, StylePriorityAndWordBoundaries) {
 
 TEST(ScanFontsTest, SingleFileFamilyPromotesRegular) {
   resetStorage();
-  seedFile("/fonts/Solo/Solo-Head.ttf");
+  seedFile("/fonts/Solo/Solo-Head.ttf", std::string(1234, 'f'));
 
   book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
@@ -263,6 +263,9 @@ TEST(ScanFontsTest, SingleFileFamilyPromotesRegular) {
   ASSERT_EQ(count, 1u);
   EXPECT_EQ(fams[0].faceCount, 1u);
   EXPECT_EQ(fams[0].faces[0].styleFlags, freeink::book::StyleNone);
+  // The promoted face must carry the lone candidate's size, or
+  // tryLoadFace() would read zero bytes and reject the family.
+  EXPECT_EQ(fams[0].faces[0].fileSize, 1234u);
 }
 
 TEST(ScanFontsTest, SkipsJunkFilesAndFolders) {

@@ -10,12 +10,16 @@
 //   16 : {u16 spineIndex, u16 pageNumber, u16 pageCount,
 //         u32 charOffset, u32 generation}                          (TTF reader)
 //
-// The 16-byte layout shares its prefix with the legacy 10-byte one, so a
-// legacy reader that encounters a TTF record still reads a sane
-// spine/page/pageCount triple (and must NOT treat charOffset as a visible
-// text offset — decode() reports the layout via hasGeneration instead).
-// Load-side migration: any unknown size degrades to the 6-byte base fields;
-// reads never fail.
+// The 16-byte layout shares its prefix with the legacy 10-byte one. This
+// firmware's own load path recognizes the exact length and keeps
+// charOffset/generation distinct. PRE-CHANGE firmware cannot discriminate
+// (it reads 10 bytes and has no length knowledge beyond that): it will
+// interpret bytes 6-9 (the charOffset) as a visibleTextOffset. That means a
+// position misrestore within the right chapter when downgrading from a
+// CROSSPOINT_TTF_READER build to an older one — never a crash, and the
+// reader's next save rewrites the record in its native shape (self-healing).
+// Load-side migration (this firmware): any unknown size degrades to the
+// 6-byte base fields; reads never fail.
 
 #include <stddef.h>
 #include <stdint.h>

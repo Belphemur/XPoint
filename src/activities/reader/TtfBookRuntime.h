@@ -108,6 +108,9 @@ class TtfBookRuntime {
     return prefetchSpine_ >= 0 && static_cast<uint16_t>(prefetchSpine_) == spineIndex;
   }
   uint32_t prefetchPageCount() const { return prefetchSpine_ >= 0 ? prefetchReader_.pageCount() : 0; }
+  // True when the prefetch reader holds a suspended partial prefix (the
+  // next chapter still needs a build to reach its end).
+  bool prefetchPartial() const { return prefetchSpine_ >= 0 && prefetchReader_.isPartial(); }
 
   // ---- pure helpers (host-testable) ----
 

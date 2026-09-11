@@ -83,6 +83,10 @@ TEST(ProgressRecordTest, GenerationShapeWinsWhenBothFlagsSet) {
   ProgressRecord rec;
   ASSERT_EQ(progress_record::decode(buf, n, rec), progress_record::kSizeGeneration);
   EXPECT_TRUE(rec.hasGeneration);
+  EXPECT_FALSE(rec.hasOffset);  // generation precedence clears the offset flag
+  EXPECT_EQ(rec.spineIndex, 2);
+  EXPECT_EQ(rec.pageNumber, 5);
+  EXPECT_EQ(rec.pageCount, 33);
   EXPECT_EQ(rec.charOffset, 0xABCDEFu);
   EXPECT_EQ(rec.generation, 0x1234u);
 }

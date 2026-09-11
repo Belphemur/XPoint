@@ -2013,10 +2013,12 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   if (pendingPageJump.has_value()) {
     const int jump = *pendingPageJump;
     if (jump == static_cast<int>(std::numeric_limits<uint16_t>::max())) {
-      // Last-page sentinel: wait for the full chapter (legacy behavior).
-      if (available > 0 && !buildRunning) {
+      // Last-page sentinel: the end of the CHAPTER, so it may only resolve
+      // once the total is known — a suspended partial prefix is not the end
+      // (legacy behavior: wait for the full build).
+      if (haveTotal) {
         pendingPageJump.reset();
-        targetOut = available - 1;
+        targetOut = std::max(0, available - 1);
         return true;
       }
       needFullBuild = true;
@@ -2404,9 +2406,11 @@ void EpubReaderActivity::ttfPrefetchTick() {
   }
 
   // Start building the next chapter only while the current one is fully
-  // served from its cache — the session member is shared (§3.5).
-  if (!ttfPrefetchActive && ttf_->cacheReady() && !ttf_->cachePartial() &&
-      !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+  // served from its cache AND the next spine has no complete cache yet —
+  // otherwise a warm prefetch reader would be rewritten on every idle tick.
+  // A suspended partial next-chapter cache still earns a build (§3.5).
+  if (!ttfPrefetchActive && !(ttf_->prefetchFor(nextSpine) && !ttf_->prefetchPartial()) && ttf_->cacheReady() &&
+      !ttf_->cachePartial() && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (ttf_->beginChapterSession(static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
@@ -3207,7 +3211,11 @@ void EpubReaderActivity::closeOverlayToPage() {
 }
 
 void EpubReaderActivity::renderOverlay() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (!epub || !toolbarUi || (!section && !ttf_)) return;
+#else
   if (!epub || !section || !toolbarUi) return;
+#endif
 
   ReaderToolbarUi::Model model;
   // The toolbar's tool pill is the button-navigation cursor: tap-first (same
@@ -3219,11 +3227,13 @@ void EpubReaderActivity::renderOverlay() {
 
   if (overlay == Overlay::Toolbar) {
     chapterTitle = currentChapterTitle();
-    const int pageCount = section->estimatedTotalPages();
+    // Legacy reads the Section; the TTF path reads its position mirrors.
+    const int pageCount = section ? section->estimatedTotalPages() : cachedChapterTotalPageCount;
+    const int chapterCurrentPage = section ? section->currentPage + 1 : nextPageNumber + 1;
     const float chapterProgress =
-        pageCount > 0 ? static_cast<float>(section->currentPage + 1) / static_cast<float>(pageCount) : 0.0f;
+        pageCount > 0 ? static_cast<float>(chapterCurrentPage) / static_cast<float>(pageCount) : 0.0f;
     const float bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress);
-    pageInfo = std::to_string(section->currentPage + 1) + "/" + std::to_string(pageCount) + "   " +
+    pageInfo = std::to_string(chapterCurrentPage) + "/" + std::to_string(pageCount) + "   " +
                std::to_string(clampPercent(static_cast<int>(bookProgress * 100.0f + 0.5f))) + "%";
     model.chapterTitle = chapterTitle.c_str();
     model.pageInfo = pageInfo.c_str();

@@ -432,10 +432,14 @@ Atomic-record layout (little-endian, byte-packed; writer:
 | 10 | 6-byte shape + `u32 visibleTextOffset` |
 | 16 | `u16 spineIndex, u16 pageNumber, u16 pageCount, u32 charOffset, u32 generation` (TTF reader) |
 
-The 16-byte shape shares its 10-byte prefix with the legacy layout, so a
-legacy reader that meets a TTF record still reads a sane
-spine/page/pageCount triple (the `charOffset` slot is NOT a visible-text
-offset; legacy restores treat it as offset-less and degrade gracefully).
+The 16-byte shape shares its 10-byte prefix with the legacy layout.
+**Downgrade caveat:** pre-change firmware reads only 10 bytes and cannot
+discriminate the shape, so it interprets the `charOffset` slot as a
+`visibleTextOffset` — a position misrestore within the right chapter (never
+a crash), self-healing on the reader's next save, which rewrites the record
+in that firmware's native shape. This firmware's own legacy paths
+(`ProgressManager::load`) decode by exact length and degrade to the base
+triple instead.
 Load-side migration never fails: any unrecognized size degrades to the
 6-byte base restore. The TTF reader restores through
 `pageForChar` only when the saved `generation` matches the current layout

@@ -376,6 +376,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     char lower[64];     // lowercased stem
     char subPath[160];  // SdCardCacheStorage::kDirMax
     char soloFile[64];  // §14.4 rule 7: the lone candidate's name
+    FamilyInfo fam;     // 552B manifest row — heap, reset per family
+    uint32_t soloSize = 0;
   };
   // sizeof() on the decayed pointers would measure the pointer, not the
   // buffer — the walk uses the struct's member sizes everywhere.
@@ -418,7 +420,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       continue;
     }
 
-    FamilyInfo fam = {};
+    FamilyInfo& fam = scratch->fam;
+    fam = {};
     strncpy(fam.name, dirName, sizeof(fam.name) - 1);
 
     const int subLen = snprintf(subPath, kSubPathCap, "%s/%s", rootPath, dirName);
@@ -431,6 +434,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     // exactly one .ttf/.otf registers it as Regular even without style
     // tokens in the name).
     char* const soloFile = scratch->soloFile;
+    uint32_t& soloSize = scratch->soloSize;
     uint8_t candidateCount = 0;
 
     while (true) {
@@ -446,7 +450,10 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       const bool isTtf = endsWithIgnoreCase(fileName, ".ttf");
       if (!isTtf && !endsWithIgnoreCase(fileName, ".otf")) continue;
       if (candidateCount < UINT8_MAX) ++candidateCount;
-      if (candidateCount == 1) snprintf(soloFile, kFileNameCap, "%s", fileName);
+      if (candidateCount == 1) {
+        snprintf(soloFile, kFileNameCap, "%s", fileName);
+        soloSize = entry.fileSize();
+      }
 
       // Stem for style inference (extension stripped, lowercased).
       const size_t stemLen = nameLen - 4;
@@ -507,6 +514,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
         fam.faceCount = 0;
         continue;
       }
+      face.fileSize = soloSize;
       face.styleFlags = StyleNone;
     } else {
       // A family with files but no Regular face promotes its lexicographically-
