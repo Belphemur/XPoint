@@ -98,6 +98,8 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
 #if defined(CROSSPOINT_TTF_DEBUG)
   // Hidden engine bring-up row; compiled out of release builds.
+  // CROSSPOINT_TTF_DEBUG is intentionally enabled for the default, x4pro, and
+  // x4pro_profile development environments (see platformio.ini).
   systemSettings.push_back(SettingInfo::Action(StrId::STR_TTF_DEBUG_RENDER, SettingAction::TtfDebugRender));
 #endif
   readerSettings.insert(readerSettings.begin(),
@@ -374,13 +376,17 @@ void SettingsActivity::toggleCurrentSetting() {
                                });
         break;
 #if defined(CROSSPOINT_TTF_DEBUG)
+      // Intentionally enabled for the default, x4pro, and x4pro_profile
+      // development environments (see platformio.ini).
       case SettingAction::TtfDebugRender: {
         auto activity = makeUniqueNoThrow<TtfRenderDebugActivity>(renderer, mappedInput);
         if (!activity) {
           LOG_ERR("SET", "OOM: TtfRenderDebugActivity");
           break;
         }
-        startActivityForResult(std::move(activity), resultHandler);
+        // The debug activity changes no settings, so skip the generic
+        // resultHandler's SETTINGS.saveToFile(). Capture-less lambda: no dangling.
+        startActivityForResult(std::move(activity), [](const ActivityResult&) {});
         break;
       }
 #endif

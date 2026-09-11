@@ -72,7 +72,8 @@ parity path via tiled Gray8 quantization is tracked in the design doc
 - `DESIGN_NATIVE_TTF_SUPPORT.md` — full design document
 - `src/BookFontLoader.{h,cpp}` — TTF discovery, loading, chain management (new)
 - `src/adapters/` — `SdCardBookSource`, `SdCardCacheStorage`,
-  `FrameTargetFactory`, `PagePaint`, `SdCardBookFontAdapter` (CJK fallback)
+  `FrameTargetFactory`, `PagePaint` (no SD-`.cpfont` reader CJK fallback —
+  documented v1 limitation, design doc §3.6)
 - `src/activities/reader/EpubReaderActivity.{h,cpp}` — reader integration
 - `src/activities/settings/TextSettingsActivity.{h,cpp}` — UI extensions
 - `src/CrossPointSettings.{h,cpp}` — new settings keys + migration

@@ -34,7 +34,9 @@ SdCardCacheStorage::SdCardCacheStorage(const char* dirPath) {
 
 bool SdCardCacheStorage::validName(const char* name) {
   if (name == nullptr || name[0] == '\0') return false;
-  if (strchr(name, '/') != nullptr) return false;  // flat names only
+  if (strchr(name, '/') != nullptr || strchr(name, '\\') != nullptr) return false;  // flat names only
+  // Reject path traversal: "." and ".." would build <dir>/.. and escape the cache dir.
+  if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return false;
   return strlen(name) <= kNameMax;
 }
 
@@ -107,6 +109,14 @@ bool SdCardCacheStorage::endWrite() {
     return false;
   }
   writeHandle_.close();
+  // SdFat's rename does not overwrite an existing destination, so drop the old
+  // file first (pattern from ProgressFile::writeAtomic,
+  // src/activities/reader/ProgressFile.h). Unlike writeAtomic, a failed remove
+  // is fatal here: the .tmp is left in place for a retry.
+  if (Storage.exists(writeFinalPath_) && !Storage.remove(writeFinalPath_)) {
+    LOG_ERR("TTFB", "endWrite: remove failed: %s", writeFinalPath_);
+    return false;
+  }
   if (!Storage.rename(writeTmpPath_, writeFinalPath_)) {
     LOG_ERR("TTFB", "endWrite: rename failed: %s", writeFinalPath_);
     return false;
