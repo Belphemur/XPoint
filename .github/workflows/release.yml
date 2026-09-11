@@ -1,8 +1,8 @@
 name: Compile Release
 
 # Builds every board's release firmware on tag push, with each .bin named exactly as
-# OtaUpdater requests it from the GitHub release (plain firmware.bin for the C3 X4/X3
-# binary, firmware-<board>.bin for every other board), then creates a draft GitHub
+# OtaUpdater requests it from the GitHub release: crosspoint-<version>-<device>.bin
+# (the combined C3 X4/X3 binary uses device tag x3-x4), then creates a draft GitHub
 # Release, attaches all build artifacts, and generates + signs a per-board manifest.json
 # (Ed25519) so the device can verify OTA authenticity.
 #
@@ -32,21 +32,25 @@ jobs:
       matrix:
         include:
           - pio_env: gh_release
-            asset: firmware.bin
-            board: x4
+            device: x3-x4
           - pio_env: sticky-gh_release
-            asset: firmware-sticky.bin
-            board: sticky
+            device: sticky
           - pio_env: x4pro-gh_release
-            asset: firmware-x4pro.bin
-            board: x4pro
+            device: x4pro
           - pio_env: papermono-gh_release
-            asset: firmware-papermono.bin
-            board: papermono
+            device: papermono
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          configured_version="$(sed -n 's/^version = //p' platformio.ini | head -n1)"
+          test "$version" = "$configured_version"
 
       - uses: actions/setup-python@v7
         with:
@@ -79,20 +83,24 @@ jobs:
       - name: Build CrossPoint
         run: pio run -e ${{ matrix.pio_env }} -j1
 
-      - name: Name release asset
+      - name: Prepare firmware asset
+        id: asset
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [ "${{ matrix.asset }}" != "firmware.bin" ]; then
-            cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
-              ".pio/build/${{ matrix.pio_env }}/${{ matrix.asset }}"
-          fi
+          version="${RELEASE_TAG#v}"
+          asset="crosspoint-${version}-${{ matrix.device }}.bin"
+          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
+            ".pio/build/${{ matrix.pio_env }}/${asset}"
+          echo "name=$asset" >> "$GITHUB_OUTPUT"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset }}
+          name: ${{ steps.asset.outputs.name }}
           path: |
             .pio/build/${{ matrix.pio_env }}/bootloader.bin
-            .pio/build/${{ matrix.pio_env }}/${{ matrix.asset }}
+            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.name }}
             .pio/build/${{ matrix.pio_env }}/firmware.elf
             .pio/build/${{ matrix.pio_env }}/firmware.map
             .pio/build/${{ matrix.pio_env }}/partitions.bin
@@ -119,12 +127,12 @@ jobs:
         id: collect
         run: |
           mkdir -p dist
-          # Map each uploaded artifact dir back to its asset .bin name. The
-          # artifact folder may itself be named like `firmware-papermono.bin`, so
-          # search for the actual *file* recursively and never match a directory
-          # (a directory match made `cp` fail with "omitting directory").
+          # Map each uploaded artifact dir back to its crosspoint-<version>-<device>.bin
+          # asset name. The artifact folder is named like the asset, so search for the
+          # actual *file* recursively and never match a directory (a directory match
+          # made `cp` fail with "omitting directory").
           for d in artifacts/*/; do
-            bin=$(find "$d" -type f -name 'firmware*.bin' | head -n1)
+            bin=$(find "$d" -type f -name 'crosspoint-*.bin' | head -n1)
             [ -n "$bin" ] && cp "$bin" "dist/$(basename "$bin")"
           done
           ls -la dist
@@ -139,19 +147,23 @@ jobs:
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
           dist = "dist"
-          # board suffix -> manifest board name (matches FirmwareBoardTag.cpp)
-          suffix_board = {
-              "firmware.bin": "x4",
-              "firmware-sticky.bin": "sticky",
-              "firmware-x4pro.bin": "x4pro",
-              "firmware-papermono.bin": "papermono",
+          # Asset device tag -> manifest board name (matches FirmwareBoardTag.cpp).
+          # The combined C3 X4/X3 image is one compatibility class, tagged x4.
+          device_board = {
+              "x3-x4": "x4",
+              "sticky": "sticky",
+              "x4pro": "x4pro",
+              "papermono": "papermono",
           }
+          version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          prefix = f"crosspoint-{version}-"
           boards = []
-          for path in sorted(glob.glob(os.path.join(dist, "firmware*.bin"))):
+          for path in sorted(glob.glob(os.path.join(dist, "crosspoint-*.bin"))):
               name = os.path.basename(path)
-              board = suffix_board.get(name)
+              device = name[len(prefix):-len(".bin")]
+              board = device_board.get(device)
               if not board:
-                  print(f"skip {name}: unknown board suffix", file=sys.stderr)
+                  print(f"skip {name}: unknown device tag", file=sys.stderr)
                   continue
               with open(path, "rb") as f:
                   data = f.read()
@@ -167,7 +179,7 @@ jobs:
                   "sha256": sha,
               })
           manifest = {
-              "version": os.environ["GITHUB_REF_NAME"].lstrip("v"),
+              "version": version,
               "repository": os.environ["GITHUB_REPOSITORY"],
               "boards": boards,
           }
@@ -219,5 +231,4 @@ jobs:
             --draft \
             --title "XPoint ${{ steps.collect.outputs.tag }}" \
             --notes-file dist/NOTES.md \
-            dist/firmware.bin dist/firmware-sticky.bin dist/firmware-x4pro.bin \
-            dist/firmware-papermono.bin dist/manifest.json dist/manifest.json.sig
+            dist/crosspoint-*.bin dist/manifest.json dist/manifest.json.sig
