@@ -27,7 +27,7 @@
 // two writeAtomic() calls against the same file concurrently).
 class ProgressManager {
  public:
-  static constexpr unsigned long FLUSH_INTERVAL_MS = 60000;
+  static constexpr unsigned long FLUSH_INTERVAL_MS = 120000;
   // On-disk record: 6 bytes of spine/page/count (+4 bytes visibleTextOffset
   // when known). Byte order matches the firmware's historical layout — do
   // not reorder without a load-side migration. The offset participates in

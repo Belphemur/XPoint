@@ -20,7 +20,7 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
 ## 2. Goals
 
 - Zero SD I/O on the page-turn hot path under normal battery.
-- Progress survives a hard crash within a bounded window (60 s).
+- Progress survives a hard crash within a bounded window (120 s).
 - Progress survives book exit, deep sleep, and power off *always* (synchronous flush at those points).
 - Under low battery (<5%), degrade to the current save-every-turn behavior.
 - Never write when the progress content has not changed.
@@ -62,7 +62,7 @@ task scheduling, disk I/O — lives in the manager.
 `current_`; the DISK write is gated:
 
 - changed (`current_ != lastFlushed_`, `visibleTextOffset` participates) AND
-- ≥60 s since the last flush — **or** low battery (<5%, gauge HEALTHY, not
+- ≥120 s since the last flush — **or** low battery (<5%, gauge HEALTHY, not
   charging — queried from the HAL at gate time; its cached 1.5 s reading
   makes the query free).
 
@@ -159,13 +159,13 @@ user is about to lose the device anyway.
 
 `SleepActivity` (auto-power-off dwell) and `HalPowerManager::startDeepSleep()`
 entry trigger the same bounded exit-flush before sleeping. Without this, a
-crash-only timer would lose the last ≤60 s on every power-off.
+crash-only timer would lose the last ≤120 s on every power-off.
 
 **Manual power-off gap (review finding B2, user-confirmed bug):**
 `enterPowerOff()` (src/main.cpp:478-511) bypasses the activity lifecycle
 entirely — it renders the shutdown screen, persists `APP_STATE`, and calls
 `enterPowerOffSleep()` (`[[noreturn]]`) without ever calling the reader's
-`onExit()` or destructor. Under this design the last ≤60 s of progress would
+`onExit()` or destructor. Under this design the last ≤120 s of progress would
 be lost on every manual power-off. This design will add a synchronous bounded
 flush inside `enterPowerOff()` before the noreturn path, using the
 reader's last captured position (see §9 Related fixes).
@@ -181,12 +181,12 @@ reader's last captured position (see §9 Related fixes).
 
 | Constant | Value | Rationale |
 |---|---|---|
-| `PROGRESS_FLUSH_INTERVAL_MS` | 60000 | Crash window = 1-3 pages; ~60 writes/hr max for a fast reader vs 200-600 today (3-10x reduction depending on reading speed — see review N1). Longer doubles wear saving nobody needs; shorter buys nothing the exit/low-battery paths don't already cover. |
+| `PROGRESS_FLUSH_INTERVAL_MS` | 120000 | Crash window = 2-4 pages; ~30 writes/hr max for a fast reader vs 200-600 today (5-20x reduction depending on reading speed — see review N1). Longer puts more progress at risk per crash; shorter buys nothing the exit/low-battery paths don't already cover. |
 | `LOW_BATTERY_PERCENT` (private) | 5 | User-directed. Queried at gate time; gated on battery health HEALTHY and not charging. |
 | Worker task priority | low (1) | Must never compete with render. |
 | Worker task stack | 2048 B | Record write + HalStorage call; no recursion. Verify with `uxTaskGetStackHighWaterMark()` on first device test (review N2). |
 | Worker task core | 0 (both classes) | Render task owns core 1 on dual-core boards. |
-| Worker trigger | `ulTaskNotifyTake` (60 s timeout) | Notification from save() when the gate opens; the timeout backstops a raced notification. No always-ticking poll. |
+| Worker trigger | `ulTaskNotifyTake` (120 s timeout) | Notification from save() when the gate opens; the timeout backstops a raced notification. No always-ticking poll. |
 | Manager cache-path buffer | 160 B | Holds a copy of the current book's cache dir path; writes dereference the copy, never the Epub object. |
 | Shared-state guard | FreeRTOS mutex (held across writes) | Review B1: `portENTER_CRITICAL` without a spinlock is per-core on the S3 and not a cross-core exclusion pair. Held across the write too: single writer by construction. |
 | Progress state allocation | `poolMalloc` (PSRAM-backed where available) | User directive: dynamic, PSRAM when the board has it. Two 16-byte records. |
@@ -196,6 +196,7 @@ reader's last captured position (see §9 Related fixes).
 | Date | Decision | Rationale |
 |---|---|---|
 | 2026-09-10 | 60 s dirty-gated timer | Chosen over 30 s / 120 s: wear reduction is already ample at 60 s (endurance never the binding constraint — the SQLite pivot proved *pattern* was), and the crash window (1-3 pages) is indistinguishable from 30 s in practice. Constant, not a setting (KISS). |
+| 2026-09-10 (impl) | Interval raised 60 s → 120 s | User directive: fewer background SD writes matter more than the extra minute of crash-window risk; exit/low-battery/power-off flush paths are unchanged, so the worst-case data loss stays bounded (≤120 s) and only in the hard-crash scenario. |
 | 2026-09-10 | Change check in memory (`lastFlushed`) | User-directed. Replaces the render-path guard; `visibleTextOffset` now participates, closing a silent-skip gap in the old spine/page/count-only guard. |
 | 2026-09-10 | EPUB reader only in this PR | TXT/XTC keep per-turn saves; follow-up migrates them onto the same manager. Keeps this PR reviewable. |
 | 2026-09-10 | Charging counts as NOT low battery | On USB power a crash loses nothing irreplaceable, and the exit flush still runs. Simpler than forcing sync saves while charging. |
@@ -221,10 +222,10 @@ reader's last captured position (see §9 Related fixes).
 Per hour of active reading:
 
 - Today: 1 write per page turn ≈ 200-600 writes (plus FAT remove+rename pair each).
-- Proposed: ≤60 writes dirty-gated, ~0 when parked on one page, +1 on exit,
-  per-turn only under 5% battery. **3-10x reduction depending on reading
+- Proposed: ≤30 writes dirty-gated, ~0 when parked on one page, +1 on exit,
+  per-turn only under 5% battery. **5-20x reduction depending on reading
   speed** (review N1: 600/hr assumes 10 pages/min — fast; typical readers at
-  1-3 pages/min land nearer 3x), effectively unlimited for idle reading.
+  1-3 pages/min land nearer 5x), effectively unlimited for idle reading.
 
 SD card endurance (10k-100k erase cycles/block): even the per-turn mode is
 decades-safe; the win here is bus contention and serialization on the render

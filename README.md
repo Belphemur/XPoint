@@ -67,11 +67,11 @@ exist upstream, and stay out of your way until you want them.
   accepted but has no visual effect).
 11. **Smart progress saving — writes only when something changed.** Stock
    CrossPoint writes your reading position to the SD card on *every single
-   page turn*. XPoint keeps your place in memory and persists it once a
-   minute only if you actually moved — and always the instant you close the
-   book, sleep, or power off. The result: up to **10× fewer SD writes**
+   page turn*. XPoint keeps your place in memory and persists it every
+   two minutes only if you actually moved — and always the instant you close the
+   book, sleep, or power off. The result: up to **20× fewer SD writes**
    during a reading session, less card wear, and no page-turn lag — with
-   at most 60 seconds of progress ever at risk, and a low-battery mode that
+   at most 2 minutes of progress ever at risk, and a low-battery mode that
    switches back to save-on-every-turn when it matters most.
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
