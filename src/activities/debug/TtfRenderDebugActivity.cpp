@@ -18,6 +18,7 @@
 #include "CrossPointSettings.h"
 #include "adapters/FrameTargetFactory.h"
 #include "adapters/SdCardBookSource.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace book = freeink::book;
@@ -54,9 +55,9 @@ const char kDebugText[] =
 // PSRAM-only directive (design §3.3/§14.1): the native-TTF path — including
 // this rig — runs exclusively on PSRAM boards; every buffer (layout scratch
 // included) comes from PSRAM. PSRAM-less boards log a fatal screen and never
-// attempt layout. P1a debt (kanban t_f7a102a2, Phase 2): BookFontLoader's own
-// glyph arenas and BitmapBookFont coverage buffers are still static BSS (DRAM)
-// and are rewritten to PSRAM-only compile-out in Phase 2.
+// attempt layout. BookFontLoader itself is PSRAM-clean as of 7b9479d0 (glyph
+// arenas + fallback chain moved off DRAM BSS); the remaining Phase 2 debt is
+// the PSRAM-only compile-out + DRAM-tier deletion (kanban t_f7a102a2).
 #if defined(BOARD_HAS_PSRAM)
 // The engine's STANDARD profile (env:x4pro defines no FREEINK_BOOK_SMALL) has
 // a ~152KB fixture peak for ChapterLayout::layoutPlainText (freeink-book.md
@@ -97,14 +98,18 @@ void TtfRenderDebugActivity::onEnter() {
 #if !defined(BOARD_HAS_PSRAM)
   LOG_ERR("TTFDBG", "native TTF unavailable (no PSRAM)");
   renderer.clearScreen();
-  renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_TTF_DEBUG_RENDER), true);
+  const Rect screenRect = UITheme::getInstance().getScreenSafeArea(renderer);
+  UITheme::drawCenteredText(renderer, screenRect, UI_10_FONT_ID, renderer.getScreenHeight() / 2,
+                            tr(STR_TTF_DEBUG_RENDER));
   renderer.displayBuffer(HalDisplay::FULL_REFRESH);
   requestUpdate();
   return;
 #else
   const auto showFatal = [this]() {
     renderer.clearScreen();
-    renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_TTF_DEBUG_RENDER), true);
+    const Rect screenRect = UITheme::getInstance().getScreenSafeArea(renderer);
+    UITheme::drawCenteredText(renderer, screenRect, UI_10_FONT_ID, renderer.getScreenHeight() / 2,
+                              tr(STR_TTF_DEBUG_RENDER));
     renderer.displayBuffer(HalDisplay::FULL_REFRESH);
     requestUpdate();
   };
@@ -122,12 +127,23 @@ void TtfRenderDebugActivity::onEnter() {
       showFatal();
       return;
     }
-    if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText) || !f.close() ||
-        !Storage.rename(kSeedTmpPath, kDebugTextPath)) {
+    if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText)) {
       // A partial or unpublishable seed must not count as valid next boot.
       f.close();
       Storage.remove(kSeedTmpPath);
       LOG_ERR("TTFDBG", "text seed short write: %s", kSeedTmpPath);
+      showFatal();
+      return;
+    }
+    if (!f.close()) {
+      Storage.remove(kSeedTmpPath);
+      LOG_ERR("TTFDBG", "text seed close failed: %s", kSeedTmpPath);
+      showFatal();
+      return;
+    }
+    if (!Storage.rename(kSeedTmpPath, kDebugTextPath)) {
+      Storage.remove(kSeedTmpPath);
+      LOG_ERR("TTFDBG", "text seed publish (rename) failed: %s", kDebugTextPath);
       showFatal();
       return;
     }

@@ -211,7 +211,6 @@ FontChain* BookFontLoader::builtinFallback() {
   static PoolBytes backing;  // PoolBytes object itself is only a pointer of BSS
   static bool init = false;
   if (!init) {
-    init = true;
     static constexpr size_t kFallbackBytes = 4 * sizeof(freeink::ui::BitmapBookFont);
     backing = poolMakeBytes(kFallbackBytes);
     if (!backing) {
@@ -228,6 +227,10 @@ FontChain* BookFontLoader::builtinFallback() {
     fallback.add(b, StyleBold);
     fallback.add(i, StyleItalic);
     fallback.add(bi, StyleBold | StyleItalic);
+    // Mark built only after full construction: a transient PSRAM failure
+    // above must leave init false so the next call retries, instead of
+    // permanently serving the empty chain.
+    init = true;
   }
   return &fallback;
 }
@@ -407,6 +410,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     } else {
       localDram.reset();
     }
+    glyphBacking_[faceIdx].reset();
+    arenas_[faceIdx] = Arena{};
     return false;
   }
   if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, arenas_[faceIdx])) {
@@ -417,6 +422,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     } else {
       localDram.reset();
     }
+    glyphBacking_[faceIdx].reset();
+    arenas_[faceIdx] = Arena{};
     return false;
   }
 
@@ -428,6 +435,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     } else {
       localDram.reset();
     }
+    glyphBacking_[faceIdx].reset();
+    arenas_[faceIdx] = Arena{};
     return false;
   }
 

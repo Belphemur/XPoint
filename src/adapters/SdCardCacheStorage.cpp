@@ -84,6 +84,12 @@ bool SdCardCacheStorage::beginWrite(const char* name) {
   }
   if (!buildPath(name, ".tmp", writeTmpPath_, sizeof(writeTmpPath_))) return false;
   if (!buildPath(name, "", writeFinalPath_, sizeof(writeFinalPath_))) return false;
+  // Remove a stale "<final>.old" left by a previous endWrite() that crashed
+  // between the rotate-rename and the final rename; the current final (if
+  // any) is the good copy at this point, so the leftover .old is garbage.
+  if (pathBuf_ && buildPath(name, ".old", pathBuf_.get(), kPathMax)) {
+    Storage.remove(pathBuf_.get());
+  }
   // openFileForWrite truncates, so a stale .tmp from a previous crash is reused.
   if (!Storage.openFileForWrite("TTFB", writeTmpPath_, writeHandle_)) {
     LOG_ERR("TTFB", "beginWrite: open failed: %s", writeTmpPath_);
@@ -115,18 +121,38 @@ bool SdCardCacheStorage::endWrite() {
     LOG_ERR("TTFB", "endWrite: close failed: %s", writeTmpPath_);
     return false;
   }
-  // SdFat's rename does not overwrite an existing destination, so drop the old
-  // file first (pattern from ProgressFile::writeAtomic,
-  // src/activities/reader/ProgressFile.h). Unlike writeAtomic, a failed remove
-  // is fatal here: the .tmp is left in place for a retry.
-  if (Storage.exists(writeFinalPath_) && !Storage.remove(writeFinalPath_)) {
-    LOG_ERR("TTFB", "endWrite: remove failed: %s", writeFinalPath_);
-    return false;
+  // Rotate the previous final aside before publishing: SdFat's rename does
+  // not overwrite an existing destination, so the old file must move first.
+  // Renaming (instead of removing) preserves the last good cache across a
+  // power loss between the two renames — the doc contract at
+  // DESIGN_NATIVE_TTF_SUPPORT.md:503 ("mid-build failure retains previous
+  // final"). A rotate-rename failure is non-fatal for the .tmp: it is left
+  // in place and the whole publish is retried later.
+  const char* oldPath = nullptr;
+  if (Storage.exists(writeFinalPath_)) {
+    if (!pathBuf_) {
+      LOG_ERR("TTFB", "endWrite: no path buffer: %s", writeFinalPath_);
+      return false;
+    }
+    const int n = snprintf(pathBuf_.get(), kPathMax, "%s.old", writeFinalPath_);
+    if (n <= 0 || static_cast<size_t>(n) >= kPathMax) {
+      LOG_ERR("TTFB", "endWrite: rotate path overflow: %s", writeFinalPath_);
+      return false;
+    }
+    if (!Storage.rename(writeFinalPath_, pathBuf_.get())) {
+      LOG_ERR("TTFB", "endWrite: rotate failed (final kept): %s", writeFinalPath_);
+      return false;
+    }
+    oldPath = pathBuf_.get();
   }
   if (!Storage.rename(writeTmpPath_, writeFinalPath_)) {
     LOG_ERR("TTFB", "endWrite: rename failed: %s", writeFinalPath_);
+    // Best-effort restore: the rotate already moved the previous final, put
+    // it back so a cache always exists for readers.
+    if (oldPath != nullptr) Storage.rename(oldPath, writeFinalPath_);
     return false;
   }
+  if (oldPath != nullptr) Storage.remove(oldPath);
   return true;
 }
 
