@@ -71,6 +71,19 @@ TEST(ProgressRecordTest, GenerationShapeRoundTrip) {
   EXPECT_EQ(rec.generation, 0x87654321u);
 }
 
+TEST(ProgressRecordTest, GenerationShapePreservesZeroGeneration) {
+  uint8_t buf[progress_record::kSizeGeneration] = {};
+  const size_t n = progress_record::encode(/*hasOffset=*/false, /*hasGeneration=*/true, 2, 5, 33, 0, 0xABCDEF,
+                                           0, buf, sizeof(buf));
+  ASSERT_EQ(n, progress_record::kSizeGeneration);
+
+  ProgressRecord rec;
+  EXPECT_EQ(progress_record::decode(buf, n, rec), progress_record::kSizeGeneration);
+  EXPECT_TRUE(rec.hasGeneration);
+  EXPECT_EQ(rec.generation, 0u);
+  EXPECT_EQ(rec.charOffset, 0xABCDEFu);
+}
+
 TEST(ProgressRecordTest, GenerationShapeWinsWhenBothFlagsSet) {
   // The 16-byte selection takes priority: a caller setting both flags must
   // still get a fully written generation record (no stale stack bytes in the
@@ -125,7 +138,10 @@ TEST(ProgressRecordTest, MalformedAndShortRecordsDegrade) {
   (void)progress_record::encode(true, true, 1, 2, 3, 99, 5, 6, full, sizeof(full));
   EXPECT_EQ(progress_record::decode(full, progress_record::kSizeBase, rec), progress_record::kSizeBase);
   EXPECT_EQ(rec.spineIndex, 1);
-  // Oversized cap → encode refuses.
+  // A future/oversized record is not silently accepted as the current shape.
+  EXPECT_EQ(progress_record::decode(full, progress_record::kSizeGeneration + 1, rec), progress_record::kSizeBase);
+  EXPECT_FALSE(rec.hasGeneration);
+  // Oversized cap -> encode refuses.
   EXPECT_EQ(progress_record::encode(true, false, 1, 2, 3, 0, 0, 0, buf, 4), 0u);
 }
 
@@ -188,6 +204,10 @@ class MemCacheStorage final : public book::CacheStorage {
     return true;
   }
   bool write(const void* data, const uint32_t len) override {
+    if (failNextWrite) {
+      failNextWrite = false;
+      return false;
+    }
     const auto* p = static_cast<const uint8_t*>(data);
     writeBuf_.insert(writeBuf_.end(), p, p + len);
     return true;
@@ -205,11 +225,30 @@ class MemCacheStorage final : public book::CacheStorage {
   }
 
   std::map<std::string, std::vector<uint8_t>> files_;
+  bool failNextWrite = false;
 
  private:
   std::string writeName_;
   std::vector<uint8_t> writeBuf_;
 };
+
+TEST(PageCacheWriterFailureTest, FailedBeginCanBeDiscardedAndStorageReused) {
+  const auto arenaBuf = std::make_unique<uint8_t[]>(64 * 1024);
+  book::Arena arena(arenaBuf.get(), 64 * 1024);
+  MemCacheStorage storage;
+  storage.failNextWrite = true;
+
+  book::PageCacheWriter writer;
+  EXPECT_FALSE(writer.begin(storage, "s0-fail.fibp", 1, arena));
+  EXPECT_TRUE(writer.failed());
+  writer.finish();
+  EXPECT_FALSE(storage.exists("s0-fail.fibp"));
+
+  book::PageCacheWriter retry;
+  ASSERT_TRUE(retry.begin(storage, "s0-retry.fibp", 2, arena));
+  ASSERT_TRUE(retry.finish());
+  EXPECT_TRUE(storage.exists("s0-retry.fibp"));
+}
 
 namespace {
 
@@ -255,6 +294,7 @@ TEST(PageCacheRestoreTest, PageForCharOverSyntheticCharStartTable) {
   book::PageCacheReader reader;
   ASSERT_EQ(reader.open(storage, "s0-abc.fibp", 0xABCU, arena), book::BookStatus::Ok);
   ASSERT_EQ(reader.pageCount(), 5u);
+  ASSERT_EQ(reader.totalChars(), 500u);
   ASSERT_FALSE(reader.isPartial());
 
   // Position restore: a saved charOffset maps to the page whose charStart
@@ -265,6 +305,10 @@ TEST(PageCacheRestoreTest, PageForCharOverSyntheticCharStartTable) {
   EXPECT_EQ(reader.pageForChar(250), 2u);
   EXPECT_EQ(reader.pageForChar(499), 4u);
   EXPECT_EQ(reader.pageForChar(999999), 4u);
+  // pageForChar clamps beyond the chapter; callers must check totalChars()
+  // before treating the result as a valid saved-position mapping.
+  EXPECT_EQ(reader.pageForChar(reader.totalChars()), 4u);
+  EXPECT_EQ(reader.pageForChar(reader.totalChars() + 1), 4u);
 
   // charStart round-trip.
   for (uint32_t i = 0; i < 5; ++i) {
@@ -295,6 +339,7 @@ TEST(PageCacheRestoreTest, PartialSuspendServesBuiltPagesAndReportsPartial) {
   for (uint32_t i = 0; i < 3; ++i) {
     ASSERT_TRUE(writer.onPage(makePage(i * 50, i, "partial text")));
   }
+  writer.setTotalChars(150);
   // Suspend commits a PARTIAL footer carrying the input-side build progress.
   ASSERT_TRUE(writer.suspend(1234, 4096));
 
@@ -304,6 +349,7 @@ TEST(PageCacheRestoreTest, PartialSuspendServesBuiltPagesAndReportsPartial) {
   EXPECT_EQ(reader.pageCount(), 3u);
   EXPECT_EQ(reader.buildBytesConsumed(), 1234u);
   EXPECT_EQ(reader.buildBytesTotal(), 4096u);
+  EXPECT_EQ(reader.totalChars(), 150u);
   // A suspended partial still restores the position within its prefix.
   EXPECT_EQ(reader.pageForChar(200), 2u);
   EXPECT_EQ(reader.pageForChar(100000), 2u);  // watermark clamp, not the total

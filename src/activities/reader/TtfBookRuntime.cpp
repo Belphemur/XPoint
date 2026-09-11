@@ -225,11 +225,6 @@ BookStatus TtfBookRuntime::beginChapterSession(const uint16_t spineIndex, const 
     LOG_ERR("TTFB", "pageCacheName overflow");
     return BookStatus::NotFound;
   }
-  writer_ = PageCacheWriter{};
-  if (!writer_.begin(cacheStorage_, cacheName_, generation, scratch_)) {
-    LOG_ERR("TTFB", "Writer begin failed for %s", cacheName_);
-    return BookStatus::IoError;
-  }
   if (!prescanBytes_) {
     prescanBytes_ = poolMakeBytes(kPrescanBytes);
     if (!prescanBytes_) {
@@ -246,10 +241,21 @@ BookStatus TtfBookRuntime::beginChapterSession(const uint16_t spineIndex, const 
   prescanArena_ = Arena{};
   if (st != BookStatus::Ok) {
     LOG_ERR("TTFB", "Session begin failed: %s (%s)", bookStatusName(st), spineHref_);
+    session_.abort();
+    writer_.finish();  // Discard an open write if begin failed after storage acquisition.
     writer_ = PageCacheWriter{};
     scratch_.reset();
     parseArena_.reset();
     return st;
+  }
+  if (!writer_.begin(cacheStorage_, cacheName_, generation, scratch_)) {
+    LOG_ERR("TTFB", "Writer begin failed for %s", cacheName_);
+    session_.abort();
+    writer_.finish();  // Close/remove the active .tmp before the next build can reuse it.
+    writer_ = PageCacheWriter{};
+    scratch_.reset();
+    parseArena_.reset();
+    return BookStatus::IoError;
   }
   sessionSpine_ = spineIndex;
   sessionGen_ = generation;
@@ -302,6 +308,7 @@ void TtfBookRuntime::abortSession() {
     const uint64_t total = session_.bytesTotal();
     if (!writer_.suspend(static_cast<uint32_t>(consumed), static_cast<uint32_t>(total))) {
       LOG_ERR("TTFB", "Writer suspend failed — partial build not committed");
+      writer_.finish();  // Close/remove the active .tmp after a failed suspend.
     } else {
       LOG_DBG("TTFB", "Partial build suspended: %u pages (%u/%u bytes)", static_cast<unsigned>(writer_.pageCount()),
               static_cast<unsigned>(consumed), static_cast<unsigned>(total));
@@ -330,10 +337,10 @@ bool TtfBookRuntime::openPrefetch(const uint16_t spineIndex, const uint32_t gene
       return false;
     }
   }
-  if (!pageCacheName(spineIndex, generation, cacheName_, sizeof(cacheName_))) return false;
-  if (!cacheStorage_.exists(cacheName_)) return false;
+  if (!pageCacheName(spineIndex, generation, prefetchCacheName_, sizeof(prefetchCacheName_))) return false;
+  if (!cacheStorage_.exists(prefetchCacheName_)) return false;
   prefetchArena_ = Arena(prefetchArenaBytes_.get(), kPrefetchArenaBytes);
-  const BookStatus st = prefetchReader_.open(cacheStorage_, cacheName_, generation, prefetchArena_);
+  const BookStatus st = prefetchReader_.open(cacheStorage_, prefetchCacheName_, generation, prefetchArena_);
   if (st != BookStatus::Ok) {
     prefetchArena_ = Arena{};
     return false;

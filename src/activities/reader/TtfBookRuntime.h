@@ -73,6 +73,7 @@ class TtfBookRuntime {
   bool cacheReady() const { return cacheReady_; }
   bool cachePartial() const { return cacheReady_ && cacheReader_.isPartial(); }
   uint32_t cacheTotalChars() const { return cacheReady_ ? cacheReader_.totalChars() : 0; }
+  uint32_t cacheGeneration() const { return cacheReady_ ? cacheGen_ : 0; }
 
   // Chapter build session for one spine. Begins the writer + layout session;
   // the first step() emits the first page. Suspends (partial commit) on
@@ -84,6 +85,10 @@ class TtfBookRuntime {
   bool sessionFor(uint16_t spineIndex) const { return sessionSpine_ == spineIndex; }
   bool sessionActive() const { return sessionSpine_ != kNoSpine && session_.active(); }
   bool sessionDone() const { return sessionSpine_ != kNoSpine && session_.done(); }
+  bool sessionMatchesGeneration(uint32_t generation) const {
+    return sessionSpine_ != kNoSpine && sessionGen_ == generation;
+  }
+  uint32_t sessionTotalChars() const { return sessionSpine_ == kNoSpine ? 0 : session_.totalChars(); }
   uint16_t sessionSpine() const { return sessionSpine_; }
   uint64_t sessionBytesConsumed() const { return session_.bytesConsumed(); }
   uint64_t sessionBytesTotal() const { return session_.bytesTotal(); }
@@ -166,6 +171,7 @@ class TtfBookRuntime {
   uint32_t prefetchGen_ = 0;
 
   char cacheName_[64] = {};
+  char prefetchCacheName_[64] = {};
   char spineHref_[192] = {};
 };
 
