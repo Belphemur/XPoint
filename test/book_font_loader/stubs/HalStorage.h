@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 
 #include "HalFile.h"
@@ -19,9 +20,12 @@ class HalStorage {
   bool openFileForRead(const char* moduleName, const String& path, HalFile& file) {
     return openFileForRead(moduleName, path.c_str(), file);
   }
+  HalFile open(const char* path);
 
   // Test control: populate with path -> bytes. Empty map = all opens fail.
   std::map<std::string, std::string> files;
+  // Registered directory paths (open() returns a directory handle for them).
+  std::set<std::string> dirs;
 
  private:
   HalStorage() = default;

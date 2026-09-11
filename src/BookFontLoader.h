@@ -72,6 +72,10 @@ class BookFontLoader {
   FamilyInfo& editFamily(uint8_t idx) { return families_[idx]; }
   void setFamilyCountForTest(uint8_t n) { familyCount_ = n; }
   uint32_t dramBudgetForTest() const { return remainingBudget_; }
+  // Drive the §14.4 two-root discovery walk against the stub storage.
+  static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
+    scanFonts(rootPath, families, familyCount);
+  }
 #endif
 
  private:
@@ -125,8 +129,10 @@ class BookFontLoader {
   // Aggregate DRAM budget: derived from free heap with floor guards.
   uint32_t remainingBudget_ = 0;
 
-  static void scanFonts(const char* fontPath);
-  static bool loadFaceBytes(const FontFaceInfo& fi);
+  // Two-level family walk (design §14.4): one subfolder per family under
+  // `rootPath`, hidden root scanned first so it wins on name collisions.
+  // Appends into the caller's manifest (capped at kMaxDiscoveredFamilies).
+  static void scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount);
   static FontChain* builtinFallback();
 
   // Load a single face into the live chain (member so it can access private

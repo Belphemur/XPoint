@@ -19,6 +19,9 @@
 #include "ReaderToolbarUi.h"
 #include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
+#if defined(CROSSPOINT_TTF_READER)
+#include "TtfBookRuntime.h"
+#endif
 #ifdef READING_STATS_ENABLED
 #include "BookReadingStats.h"
 #include "GlobalReadingStats.h"
@@ -144,6 +147,36 @@ class EpubReaderActivity final : public ReaderActivity {
   uint16_t buildViewportWidth = 0;
   uint16_t buildViewportHeight = 0;
   bool partialRebuildStartFailed = false;
+
+#if defined(CROSSPOINT_TTF_READER)
+  // Native-TTF page source (design §3.5). Null until loadBook() succeeds
+  // (a failed open falls back to the legacy Section path — build-flag kill
+  // switch). The legacy section members above stay the single position
+  // mirror for chrome: nextPageNumber/cachedChapterTotalPageCount are kept
+  // in sync with the TTF page state so renderStatusBar/KOReader/bookmarks
+  // read the same values on both paths.
+  std::unique_ptr<freeink::book::TtfBookRuntime> ttf_;
+  int ttfSpine = -1;          // spine the runtime's reader/session belong to
+  int ttfPage = 0;            // chapter-local page index
+  uint32_t ttfPageCount = 0;  // pages available for the current chapter
+  uint32_t ttfGeneration = 0;
+  bool ttfGenerationValid = false;
+  bool ttfRestoreLastPage = false;   // back-navigation into the previous chapter
+  uint32_t ttfCurrentCharStart = 0;  // charStart of the last rendered page
+  // Progress-record restore data (consumed on the chapter's first open).
+  bool ttfHasSavedPosition = false;
+  uint32_t ttfSavedCharOffset = 0;
+  uint32_t ttfSavedGeneration = 0;
+  bool ttfPrefetchActive = false;     // session building the NEXT spine
+  bool ttfReflowJumpPending = false;  // position restore via char offset
+  void renderBookTtf();
+  bool ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params, bool& needFullBuild);
+  void ttfBackgroundBuildTick();
+  void ttfPrefetchTick();
+  void ttfInvalidateCaches();
+  void ttfSaveProgress();
+  bool ttfPageTurn(bool isForwardTurn);
+#endif
 
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
   static constexpr int BACKGROUND_BUILD_PAGES_PER_TICK = 2;

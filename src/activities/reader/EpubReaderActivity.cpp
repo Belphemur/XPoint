@@ -58,6 +58,14 @@
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
+#if defined(CROSSPOINT_TTF_READER)
+#include <BookFontLoader.h>
+#include <render/PageRenderer.h>
+
+#include "activities/reader/ProgressRecord.h"
+#include "adapters/FrameTargetFactory.h"
+#endif
+
 namespace {
 // The X4 Pro and X4 Classic carry the X4's panel but sit outside isXteinkDevice()
 // (that helper also gates power management). Overlay refresh choices are per-panel:
@@ -211,6 +219,12 @@ EpubReaderActivity::~EpubReaderActivity() {
   section.reset();
   nextSectionPrefetch.reset();
   nextSectionSpineIndex = -1;
+#if defined(CROSSPOINT_TTF_READER)
+  // Abort/suspend any open session (partial cache commit) and release the
+  // arenas BEFORE the progress manager's state is gone but while epub is
+  // still valid for logging.
+  ttf_.reset();
+#endif
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -263,13 +277,30 @@ void EpubReaderActivity::onExit() {
       globalStats.recordGlobalSession(elapsedSecs);
     }
     if (epub) {
-      const uint16_t chapterPages = section ? section->estimatedTotalPages() : 0;
+      uint16_t chapterPages = section ? section->estimatedTotalPages() : 0;
+#if defined(CROSSPOINT_TTF_READER)
+      if (!section && ttf_) chapterPages = static_cast<uint16_t>(ttfPageCount);
+#endif
       const uint64_t bookSize = epub->getBookSize();
       const uint64_t chapterEnd = epub->getCumulativeSpineItemSize(currentSpineIndex);
       const uint64_t chapterStart =
           currentSpineIndex >= 1 ? epub->getCumulativeSpineItemSize(currentSpineIndex - 1) : 0;
       const uint64_t chapterBytes = (chapterEnd > chapterStart) ? (chapterEnd - chapterStart) : 0;
+#if defined(CROSSPOINT_TTF_READER)
+      float bookProgressPercent;
+      if (ttf_ && !section) {
+        // Mirrors-based percent (computeBookProgressPercent needs a Section).
+        const float chapterProgress =
+            cachedChapterTotalPageCount > 0
+                ? static_cast<float>(ttfPage) / static_cast<float>(cachedChapterTotalPageCount)
+                : 0.0f;
+        bookProgressPercent = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+      } else {
+        bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
+      }
+#else
       const float bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
+#endif
       if (bookSize > 0 && chapterBytes > 0 && chapterPages > 0 && bookProgressPercent >= 0.0f &&
           bookProgressPercent <= 100.0f) {
         const uint64_t bookPagesEstimate = static_cast<uint64_t>(chapterPages) * bookSize / chapterBytes;
@@ -373,27 +404,64 @@ bool EpubReaderActivity::loadBook() {
 
   epub->setupCacheDir();
 
+#if defined(CROSSPOINT_TTF_READER)
+  // Native-TTF page source (design §3.5). A failed open falls back to the
+  // legacy Section path — the build-flag kill switch.
+  ttf_ = makeUniqueNoThrow<freeink::book::TtfBookRuntime>();
+  if (ttf_) {
+    const std::string ttfCacheDir = epub->getCachePath() + "/ficache";
+    if (!ttf_->open(bookPath.c_str(), ttfCacheDir.c_str())) {
+      LOG_ERR("ERS", "TTF runtime open failed — using legacy reader path");
+      ttf_.reset();
+    }
+  }
+#endif
+
   // ProgressManager is the single source of truth: openBook() loads the
   // on-disk record, seeds the manager's state, and hands the position back.
   uint16_t savedSpine = 0;
   uint16_t savedPage = 0;
   uint16_t savedPageCount = 0;
   uint32_t savedOffset = 0;
-  const bool progressLoaded =
-      progressManager.openBook(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount, savedOffset);
-  if (progressLoaded) {
-    currentSpineIndex = savedSpine;
-    nextPageNumber = savedPage;
-    if (nextPageNumber == UINT16_MAX) {
-      LOG_DBG("ERS", "Ignoring stale last-page sentinel from progress cache");
-      nextPageNumber = 0;
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    const bool progressLoaded = progressManager.openBookTtf(epub->getCachePath().c_str(), savedSpine, savedPage,
+                                                            savedPageCount, ttfSavedCharOffset, ttfSavedGeneration);
+    if (progressLoaded) {
+      currentSpineIndex = savedSpine;
+      nextPageNumber = savedPage == UINT16_MAX ? 0 : savedPage;
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = savedPageCount;
+      // Restore through pageForChar only when the generation still matches.
+      // A legacy-shape record has no usable page mapping for TTF layout, so
+      // it degrades to a chapter-start open (§7).
+      ttfHasSavedPosition = ttfSavedGeneration != 0;
+      if (!ttfHasSavedPosition) {
+        nextPageNumber = 0;
+        cachedChapterTotalPageCount = 0;
+      }
+      LOG_DBG("ERS", "Loaded TTF progress: spine %d, page %d, gen %u", currentSpineIndex, nextPageNumber,
+              ttfSavedGeneration);
     }
-    cachedSpineIndex = currentSpineIndex;
-    cachedChapterTotalPageCount = savedPageCount;
-    if (savedPageCount > 0) {
-      cachedVisibleTextOffset = savedOffset;
+  } else
+#endif
+  {
+    const bool progressLoaded =
+        progressManager.openBook(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount, savedOffset);
+    if (progressLoaded) {
+      currentSpineIndex = savedSpine;
+      nextPageNumber = savedPage;
+      if (nextPageNumber == UINT16_MAX) {
+        LOG_DBG("ERS", "Ignoring stale last-page sentinel from progress cache");
+        nextPageNumber = 0;
+      }
+      cachedSpineIndex = currentSpineIndex;
+      cachedChapterTotalPageCount = savedPageCount;
+      if (savedPageCount > 0) {
+        cachedVisibleTextOffset = savedOffset;
+      }
+      LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
     }
-    LOG_DBG("ERS", "Loaded cache: %d, %d", currentSpineIndex, nextPageNumber);
   }
 
   if (currentSpineIndex == 0) {
@@ -501,6 +569,12 @@ bool EpubReaderActivity::buildTickHeapGate() {
 }
 
 void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    ttfPrefetchTick();
+    return;
+  }
+#endif
 #if defined(BOARD_HAS_PSRAM) && defined(ESP_PLATFORM)
 #ifdef BOOK_PROFILE
   const auto prefetchStart = millis();
@@ -553,6 +627,19 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
 }
 
 void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    // Phase 2a: word hit-testing has no engine substrate (§3.5 v1 loss);
+    // surface the same popup the no-dictionary path uses.
+    (void)mode;
+    (void)touchX;
+    (void)touchY;
+    showDictionaryMessage = true;
+    dictionaryMessageTime = millis();
+    requestUpdate();
+    return;
+  }
+#endif
   if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
@@ -649,6 +736,15 @@ void EpubReaderActivity::loop() {
     }
   }
 
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_ && !RenderLock::peek() && buildTickHeapGate()) {
+    RenderLock lock;
+    if (ttf_ && buildTickHeapGate()) {
+      ttfBackgroundBuildTick();
+    }
+  }
+#endif
+
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
   clearEndOfBookOptionsIfNeeded();
 
@@ -721,7 +817,11 @@ void EpubReaderActivity::loop() {
       return;
     }
 
-    if (!section) {
+    if (!section
+#if defined(CROSSPOINT_TTF_READER)
+        && !ttf_
+#endif
+    ) {
       requestUpdate();
       return;
     }
@@ -842,7 +942,11 @@ void EpubReaderActivity::loop() {
   constexpr unsigned long kMinManualTurnGapMs = 200;
   const bool turnGuardActive = RenderLock::peek() || (millis() - lastPageTurnTime) < kMinManualTurnGapMs;
   if (pendingManualTurn != 0 && !turnGuardActive) {
-    if (!section) {
+    if (!section
+#if defined(CROSSPOINT_TTF_READER)
+        && !ttf_
+#endif
+    ) {
       pendingManualTurn = 0;
       return;
     }
@@ -886,7 +990,11 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (!section) {
+  if (!section
+#if defined(CROSSPOINT_TTF_READER)
+      && !ttf_
+#endif
+  ) {
     requestUpdate();
     return;
   }
@@ -1235,8 +1343,17 @@ bool EpubReaderActivity::launchKOReaderSync() {
                         ? currentPageVisibleOffset
                         : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
     }
+#if defined(CROSSPOINT_TTF_READER)
+    // The TTF path records the generation-tagged char offset so the record
+    // keeps its restore anchor; the legacy path keeps the visible-text offset.
+    const bool saved = ttf_ ? progressManager.saveNowTtf(epub->getCachePath().c_str(), currentSpineIndex, currentPage,
+                                                         totalPages, ttfCurrentCharStart, ttfGeneration)
+                            : progressManager.saveNow(epub->getCachePath().c_str(), currentSpineIndex, currentPage,
+                                                      totalPages, savedOffset.has_value(), savedOffset.value_or(0));
+#else
     const bool saved = progressManager.saveNow(epub->getCachePath().c_str(), currentSpineIndex, currentPage, totalPages,
                                                savedOffset.has_value(), savedOffset.value_or(0));
+#endif
     if (!saved) {
       LOG_ERR("KOSync", "Aborting sync because current progress could not be saved");
       pendingSyncSaveError = true;
@@ -1290,6 +1407,23 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
     cachedChapterTotalPageCount = section->pageCount;
     nextPageNumber = section->currentPage;
   }
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    // Geometry change → new generation → new caches; the position rides the
+    // chapter char offset (§3.5).
+    if (ttfCurrentCharStart > 0) {
+      ttfReflowJumpPending = true;
+    }
+    ttf_->abortSession();
+    ttf_->dropPrefetch();
+    ttf_->closeChapterCache();
+    ttfPrefetchActive = false;
+    ttfSpine = -1;
+    ttfPage = -1;
+    ttfPageCount = 0;
+    ttfGenerationValid = false;
+  }
+#endif
 
   if (SETTINGS.orientation != orientation) {
     SETTINGS.orientation = orientation;
@@ -1324,6 +1458,9 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 }
 
 bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) return ttfPageTurn(isForwardTurn);
+#endif
   if (!section) return false;
   {
     RenderLock lock;
@@ -1393,6 +1530,30 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 }
 
 bool EpubReaderActivity::skipPages(int amount) {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    if (amount > 0) {
+      if (currentSpineIndex + 1 >= epub->getSpineItemsCount()) return false;
+      RenderLock lock;
+      nextPageNumber = 0;
+      currentSpineIndex++;
+      ttfRestoreLastPage = false;
+      return true;
+    }
+    if (ttfPage > 0) {
+      ttfPage = 0;
+      return true;
+    }
+    if (currentSpineIndex > 0) {
+      RenderLock lock;
+      nextPageNumber = 0;
+      currentSpineIndex--;
+      ttfRestoreLastPage = true;
+      return true;
+    }
+    return false;
+  }
+#endif
   if (!section) return false;
   if (amount > 0) {
     RenderLock lock;
@@ -1439,11 +1600,24 @@ void EpubReaderActivity::onReturnFromEndOfBook() {
 }
 
 bool EpubReaderActivity::skipLoopDelay() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    return ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive() && !buildHeapPaused;
+  }
+#endif
   return section && section->isBuilding() && !buildHeapPaused &&
          (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
 }
 
 void EpubReaderActivity::renderBook() {
+#if defined(CROSSPOINT_TTF_READER)
+  // Native-TTF page source (design §3.5): a fully separate render path so the
+  // legacy Section pipeline below stays untouched.
+  if (ttf_) {
+    renderBookTtf();
+    return;
+  }
+#endif
 #ifdef BOOK_PROFILE
   uint32_t render_book_start_ms = millis();
   uint8_t core = xPortGetCoreID();
@@ -1813,6 +1987,544 @@ void EpubReaderActivity::renderBook() {
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
 }
+
+// ── Native-TTF render path (design §3.5, CROSSPOINT_TTF_READER builds) ───────
+
+#if defined(CROSSPOINT_TTF_READER)
+
+void EpubReaderActivity::ttfSaveProgress() {
+  // progressManager stays the single writer; this reports the
+  // generation-tagged record shape (charOffset + generation) instead of a
+  // visible-text offset.
+  progressManager.saveTtf(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage),
+                          static_cast<uint16_t>(ttfPageCount), ttfCurrentCharStart, ttfGeneration);
+}
+
+// Resolves the pending navigation state into a chapter-local target page.
+// Returns false when more build output is needed first (jump states stay
+// pending and are retried on the next render pass). `needFullBuild` asks for
+// a complete build (percent jumps / last-page sentinels), not just enough
+// pages to cover the target.
+bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params,
+                                              bool& needFullBuild) {
+  (void)params;
+  const int available = static_cast<int>(ttfPageCount);
+  const bool buildRunning = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive();
+  const bool haveTotal = ttf_->sessionDone() || (ttf_->cacheReady() && !ttf_->cachePartial() && !buildRunning);
+
+  if (pendingPageJump.has_value()) {
+    const int jump = *pendingPageJump;
+    if (jump == static_cast<int>(std::numeric_limits<uint16_t>::max())) {
+      // Last-page sentinel: the end of the CHAPTER, so it may only resolve
+      // once the total is known — a suspended partial prefix is not the end
+      // (legacy behavior: wait for the full build).
+      if (haveTotal) {
+        pendingPageJump.reset();
+        targetOut = std::max(0, available - 1);
+        return true;
+      }
+      needFullBuild = true;
+      return false;
+    }
+    pendingPageJump.reset();
+    targetOut = std::max(0, jump);
+    return true;
+  }
+
+  if (ttfRestoreLastPage) {
+    // Back from page 0 into the previous chapter (§3.5): last built page,
+    // degrading to page 0 on a cold chapter.
+    ttfRestoreLastPage = false;
+    targetOut = available > 0 ? available - 1 : 0;
+    return true;
+  }
+
+  if (!pendingAnchor.empty()) {
+    const uint32_t anchorHash = freeink::book::ZipCatalog::hashPath(pendingAnchor.c_str());
+    uint32_t charOffset = 0;
+    uint32_t page = 0;
+    if (ttf_->charForAnchor(static_cast<uint16_t>(currentSpineIndex), anchorHash, &charOffset) &&
+        ttf_->pageForChar(static_cast<uint16_t>(currentSpineIndex), charOffset, &page)) {
+      pendingAnchor.clear();
+      targetOut = static_cast<int>(page);
+      return true;
+    }
+    if (ttf_->cacheReady() && !ttf_->cachePartial() && !buildRunning) {
+      pendingAnchor.clear();
+      LOG_DBG("ERS", "Anchor not found in built TTF chapter, opening at page 0");
+      targetOut = 0;
+      return true;
+    }
+    needFullBuild = true;
+    return false;
+  }
+
+  if (ttfReflowJumpPending) {
+    // Settings/orientation reflow: restore the position through the character
+    // offset of the page that was shown before the caches were dropped. The
+    // offset only maps once the chapter's page index is COMPLETE — a partial
+    // prefix clamps beyond-watermark offsets and would lose the position.
+    uint32_t page = 0;
+    if (ttf_->pageForChar(static_cast<uint16_t>(currentSpineIndex), ttfCurrentCharStart, &page)) {
+      if (haveTotal) {
+        ttfReflowJumpPending = false;
+        targetOut = static_cast<int>(page);
+        return true;
+      }
+      needFullBuild = true;
+      return false;
+    }
+    if (ttf_->cacheReady() && !ttf_->cachePartial() && !buildRunning) {
+      ttfReflowJumpPending = false;
+      targetOut = 0;
+      return true;
+    }
+    needFullBuild = true;
+    return false;
+  }
+
+  if (ttfHasSavedPosition) {
+    if (ttfSavedGeneration != ttfGeneration) {
+      ttfHasSavedPosition = false;
+      targetOut = 0;  // generation mismatch: chapter-start degrade (§7)
+      return true;
+    }
+    // Generation still matches: wait for a cache that can actually map the
+    // offset. pageForChar() clamps beyond-watermark offsets on a partial
+    // prefix, so a provisional (prefix) result must not consume the saved
+    // position — accept it only under haveTotal.
+    uint32_t page = 0;
+    if (ttf_->pageForChar(static_cast<uint16_t>(currentSpineIndex), ttfSavedCharOffset, &page)) {
+      if (haveTotal) {
+        ttfHasSavedPosition = false;
+        targetOut = static_cast<int>(page);
+        return true;
+      }
+      needFullBuild = true;
+      return false;
+    }
+    if (haveTotal) {
+      ttfHasSavedPosition = false;
+      targetOut = 0;  // offset absent from the complete chapter text
+      return true;
+    }
+    needFullBuild = true;
+    return false;
+  }
+
+  if (pendingOffsetJump.has_value()) {
+    // KOReader-sync offset jump: under TTF it addresses the chapter char
+    // offset space. A cold/partial cache cannot map it faithfully — keep the
+    // jump pending and let the full build produce the complete index first.
+    uint32_t page = 0;
+    if (ttf_->pageForChar(static_cast<uint16_t>(currentSpineIndex), *pendingOffsetJump, &page)) {
+      if (haveTotal) {
+        pendingOffsetJump.reset();
+        targetOut = static_cast<int>(page);
+        return true;
+      }
+      needFullBuild = true;
+      return false;
+    }
+    if (haveTotal) {
+      pendingOffsetJump.reset();
+      targetOut = 0;  // offset absent from the chapter text
+      return true;
+    }
+    needFullBuild = true;
+    return false;
+  }
+
+  if (pendingPercentJump) {
+    if (!ttf_->sessionDone() && (ttf_->cacheReady() ? ttf_->cachePartial() : true)) {
+      needFullBuild = true;
+      return false;
+    }
+    int newPage = static_cast<int>(pendingSpineProgress * static_cast<float>(available));
+    if (newPage >= available) newPage = available - 1;
+    pendingPercentJump = false;
+    targetOut = std::max(0, newPage);
+    return true;
+  }
+
+  // Default: preserved page (re-render) or the pending default page set by
+  // navigation (pageTurn/menu/KOReader).
+  targetOut = ttfPage >= 0 ? ttfPage : std::max(0, nextPageNumber);
+  return true;
+}
+
+void EpubReaderActivity::renderBookTtf() {
+  if (!epub || !ttf_) return;
+
+  const auto showPendingSyncSaveError = [this]() {
+    if (!pendingSyncSaveError) return;
+    pendingSyncSaveError = false;
+    GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
+  };
+  const auto showBuildError = [this]() {
+    renderer.clearScreen();
+    GUI.drawPopup(renderer, tr(STR_INDEX_FAILED));
+    automaticPageTurnActive = false;
+  };
+
+  if (currentSpineIndex < 0) currentSpineIndex = 0;
+  if (currentSpineIndex > epub->getSpineItemsCount()) currentSpineIndex = epub->getSpineItemsCount();
+  if (currentSpineIndex == epub->getSpineItemsCount()) {
+    return;  // end of book — isAtEndOfBook() drives the end-of-book menu
+  }
+
+  // Render-path heap gate (§3.5): a low DRAM floor postpones the raster to
+  // the next loop pass rather than fragmenting the hot path.
+  if (ESP.getFreeHeap() < RENDER_MIN_FREE_HEAP) {
+    requestUpdate();
+    return;
+  }
+
+  // 1) Layout params + generation for the current geometry/settings state.
+  freeink::book::LayoutParams params;
+  ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+  if (params.font == nullptr) {
+    showBuildError();
+    return;
+  }
+  const uint32_t generation = freeink::book::layoutGenerationHash(params, freeink::book::fontLoader.fontFingerprint());
+  ttfGeneration = generation;
+  ttfGenerationValid = true;
+
+  // 2) Chapter transition. A running session for the chapter we enter (a
+  // prefetch build) keeps laying out; anything else aborts (partial commit).
+  if (ttfSpine != currentSpineIndex) {
+    ttfPrefetchActive = false;
+    ttf_->dropPrefetch();
+    if (!ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+      ttf_->abortSession();
+    }
+    ttf_->closeChapterCache();
+    ttfSpine = currentSpineIndex;
+    ttfPage = -1;
+    ttfPageCount = 0;
+    if (!ttfReflowJumpPending) {
+      // A settings/orientation reflow still needs the displayed page's char
+      // anchor — dropping it here would resolve the reflow to offset 0.
+      ttfCurrentCharStart = 0;
+    }
+    const freeink::book::BookStatus st = ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    if (st == freeink::book::BookStatus::Stale) {
+      LOG_DBG("ERS", "Stale TTF cache for spine %d — rebuilding", currentSpineIndex);
+    } else if (st == freeink::book::BookStatus::Ok && ttf_->cachePartial()) {
+      LOG_DBG("ERS", "Partial TTF cache (%u pages) — resuming build",
+              ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex)));
+    }
+  }
+
+  ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+
+  // 3) Resolve the target page (jump states may need more build first).
+  bool needFullBuild = false;
+  int target = -1;
+  const bool resolved = ttfResolveTargetPage(target, params, needFullBuild);
+
+  // 4) Build toward the target, synchronously like the legacy path. The heap
+  // gate can defer the remainder to the background ticks.
+  bool wasBuilding = false;
+  if ((needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount))) &&
+      !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+    const uint32_t spineBytes = ttf_->catalog().spineSize(static_cast<size_t>(currentSpineIndex));
+    if (!ttf_->cacheReady() && (spineBytes > BUILD_POPUP_BYTE_THRESHOLD || target > BUILD_POPUP_PAGE_THRESHOLD)) {
+      GUI.drawPopup(renderer, tr(STR_INDEXING));
+      pagesUntilFullRefresh = 1;
+    }
+    const freeink::book::BookStatus st =
+        ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, generation);
+    if (st != freeink::book::BookStatus::Ok) {
+      LOG_ERR("ERS", "TTF session begin failed: %s", bookStatusName(st));
+      showBuildError();
+      return;
+    }
+    wasBuilding = true;
+  }
+  wasBuilding = wasBuilding || ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
+
+  if (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+    while (ttf_->sessionActive() &&
+           (needFullBuild ? true
+                          : (resolved && target >= static_cast<int>(ttf_->availablePageCount(
+                                                       static_cast<uint16_t>(currentSpineIndex)))))) {
+      if (!buildTickHeapGate()) break;
+      const freeink::book::BookStatus st = ttf_->stepBuild(BUILD_PAGES_PER_CHUNK);
+      if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone() &&
+          !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+        LOG_ERR("ERS", "TTF build failed: %s", bookStatusName(st));
+        showBuildError();
+        return;
+      }
+    }
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+  }
+  if (wasBuilding && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+    // The build finished (or aborted) during this pass — reopen the cache so
+    // serving switches from the writer index to the committed file.
+    ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+  }
+
+  if (!resolved) {
+    // Target not derivable yet (full build in flight). Background ticks keep
+    // going; jump states stay pending for the next pass.
+    requestUpdate();
+    return;
+  }
+
+  if (ttfPageCount == 0) {
+    LOG_DBG("ERS", "TTF: no pages in chapter");
+    renderer.clearScreen();
+    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_CHAPTER), true, EpdFontFamily::BOLD);
+    nextPageNumber = 0;
+    cachedChapterTotalPageCount = 0;
+    renderStatusBar();
+    renderer.displayBuffer();
+    automaticPageTurnActive = false;
+    showPendingSyncSaveError();
+    return;
+  }
+
+  if (target < 0) target = ttfPage >= 0 ? ttfPage : 0;
+  if (target >= static_cast<int>(ttfPageCount)) {
+    if (ttf_->sessionActive()) {
+      requestUpdate();  // build will cover it
+      return;
+    }
+    target = static_cast<int>(ttfPageCount) - 1;
+  }
+  ttfPage = target;
+
+  updateBookmarkFlag();
+
+  // 5) Read + rasterize the page. Run text lives in the runtime's scratch
+  // arena for exactly this block.
+  const size_t scratchMark = ttf_->scratch().mark();
+  freeink::book::Page page{};
+  if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
+    ttf_->scratch().release(scratchMark);
+    LOG_ERR("ERS", "TTF page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
+    requestUpdate();  // transient SD failure; retry on the next pass
+    return;
+  }
+  ttfCurrentCharStart = page.charStart;
+
+  renderer.clearScreen(0xFF);
+  const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
+  freeink::book::PageRenderer::renderText(page, *static_cast<freeink::book::FontChain*>(params.font), frameTarget,
+                                          nullptr);
+  freeink::book::PageRenderer::renderRules(page, frameTarget);
+  if (page.imageCount > 0 && SETTINGS.imageRendering != CrossPointSettings::IMAGES_SUPPRESS) {
+    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
+        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), frameTarget);
+    if (st != freeink::book::BookStatus::Ok) {
+      LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
+    }
+  }
+#ifdef READING_STATS_ENABLED
+  // Reading-stats approximation: whitespace-token count over the page runs
+  // (§3.5 v1 parity note — engine runs carry no per-word data). Must run
+  // before the scratch release: the run pointers live in the arena.
+  {
+    uint16_t words = 0;
+    bool inWord = false;
+    for (uint16_t r = 0; r < page.runCount; ++r) {
+      const char* p = page.runs[r].text;
+      for (uint16_t i = 0; i < page.runs[r].len; ++i) {
+        const bool ws = p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r';
+        if (!ws && !inWord) {
+          ++words;
+          inWord = true;
+        } else if (ws) {
+          inWord = false;
+        }
+      }
+    }
+    currentPageWordsOnPage = words;
+  }
+#endif
+  ttf_->scratch().release(scratchMark);
+
+  // 6) Chrome after the page: keep the legacy position mirrors in sync so
+  // renderStatusBar/KOReader/bookmark code reads the same values.
+  nextPageNumber = ttfPage;
+  cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
+  renderStatusBar();
+
+  const bool canAsyncDisplay = renderer.supportsAsyncRefresh();
+  ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, canAsyncDisplay);
+  if (canAsyncDisplay) {
+    // E-ink refresh is running: overlap background work with it (legacy
+    // renderContents pattern).
+    prefetchNextChapterDuringDisplay();
+    if (ttf_->sessionActive() && buildTickHeapGate()) {
+      // Route through the tick so session completion reopens the committed
+      // cache (a raw stepBuild would leave the reader without a source).
+      ttfBackgroundBuildTick();
+    }
+    renderer.waitRefreshComplete();
+  }
+  lastRenderCompleteMs = millis();
+#ifdef READING_STATS_ENABLED
+  pageShownAtMs = millis();
+#endif
+
+  ttfSaveProgress();
+  showPendingSyncSaveError();
+
+  if (pendingScreenshot) {
+    pendingScreenshot = false;
+    ScreenshotUtil::takeScreenshot(renderer);
+  }
+  if (showBookmarkMessage) {
+    GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
+  }
+  if (showDictionaryMessage) {
+    GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+  }
+  if (overlay != Overlay::None && usesToolbarMenu()) {
+    if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
+    renderOverlay();
+    if (overlayPopup.isActive()) overlayPopup.render(renderer);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
+}
+
+void EpubReaderActivity::ttfBackgroundBuildTick() {
+  if (!ttf_) return;
+  if (ttf_->sessionActive()) {
+    const uint16_t spine = ttf_->sessionSpine();
+    const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+    if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone()) {
+      LOG_ERR("ERS", "Background TTF build failed: %s", bookStatusName(st));
+      ttfPrefetchActive = false;
+      return;
+    }
+    if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
+      if (spine == static_cast<uint16_t>(currentSpineIndex)) {
+        ttf_->openChapterCache(spine, ttfGeneration);
+        ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+        requestUpdate();
+      } else {
+        ttfPrefetchActive = false;
+        // The committed cache replaced the partial file the prefetch reader
+        // describes — drop it so the next tick reopens the complete cache
+        // instead of restarting a rebuild from the stale partial.
+        ttf_->dropPrefetch();
+      }
+    }
+    return;
+  }
+  // Partial cache below the read watermark: resume the extension build.
+  if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
+      !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
+      ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
+    freeink::book::LayoutParams params;
+    ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+    if (ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
+        freeink::book::BookStatus::Ok) {
+      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+    }
+  }
+}
+
+void EpubReaderActivity::ttfPrefetchTick() {
+  if (!ttf_ || !epub || buildHeapPaused) return;
+  if (ttf_->sessionActive()) return;  // the current chapter's build wins
+
+  const int nextSpine = currentSpineIndex + 1;
+  if (nextSpine >= epub->getSpineItemsCount()) return;
+
+  // Warm the next chapter's cache-reader index (cheap; serves nothing else).
+  if (ttfGenerationValid) {
+    ttf_->openPrefetch(static_cast<uint16_t>(nextSpine), ttfGeneration);
+  }
+
+  if (ttf_->sessionFor(static_cast<uint16_t>(nextSpine))) {
+    if (ttf_->sessionActive()) {
+      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+    } else {
+      ttfPrefetchActive = false;
+    }
+    return;
+  }
+
+  // Start building the next chapter only while the current one is fully
+  // served from its cache AND the next spine has no complete cache yet —
+  // otherwise a warm prefetch reader would be rewritten on every idle tick.
+  // A suspended partial next-chapter cache still earns a build (§3.5).
+  if (!ttfPrefetchActive && !(ttf_->prefetchFor(nextSpine) && !ttf_->prefetchPartial()) && ttf_->cacheReady() &&
+      !ttf_->cachePartial() && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+    freeink::book::LayoutParams params;
+    ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+    if (ttf_->beginChapterSession(static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
+        freeink::book::BookStatus::Ok) {
+      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+      ttfPrefetchActive = true;
+    }
+  }
+}
+
+bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
+  if (!ttf_ || !epub) return false;
+
+#ifdef READING_STATS_ENABLED
+  uint32_t dwellSeconds = 0;
+  const bool haveDwell = currentPageReadingSecondsForStats(dwellSeconds);
+  if (SETTINGS.shouldTrackReadingStats()) {
+    recordCurrentPageReadingTime();
+    if (isForwardTurn && haveDwell) {
+      recordForwardPagePaceSample(dwellSeconds, currentPageWordsOnPage);
+      if (stats.totalPagesTurned < UINT32_MAX) stats.totalPagesTurned++;
+      if (globalStats.totalPagesTurned < UINT32_MAX) globalStats.totalPagesTurned++;
+      if (sessionPageTurns < UINT16_MAX) sessionPageTurns++;
+    }
+  }
+#endif
+
+  if (isForwardTurn) {
+    if (ttfPage + 1 < static_cast<int>(ttfPageCount) ||
+        (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive())) {
+      ttfPage++;
+      lastPageTurnTime = millis();
+    } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
+      RenderLock lock;
+      nextPageNumber = 0;
+      currentSpineIndex++;
+      ttfPage = 0;
+      ttfRestoreLastPage = false;
+      lastPageTurnTime = millis();
+    } else {
+      currentSpineIndex = epub->getSpineItemsCount();
+      lastPageTurnTime = millis();
+    }
+  } else {
+    if (ttfPage > 0) {
+      ttfPage--;
+      lastPageTurnTime = millis();
+    } else if (currentSpineIndex > 0) {
+      RenderLock lock;
+      nextPageNumber = 0;
+      currentSpineIndex--;
+      ttfPage = 0;
+      ttfRestoreLastPage = true;
+      lastPageTurnTime = millis();
+    } else {
+      return false;
+    }
+  }
+
+#ifdef READING_STATS_ENABLED
+  pageShownAtMs = millis();
+#endif
+  logMemAt("page_turn");
+  return true;
+}
+
+#endif  // CROSSPOINT_TTF_READER
 
 void EpubReaderActivity::onEndOfBookRendered() {
   automaticPageTurnActive = false;
@@ -2280,8 +2992,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 }
 
 void EpubReaderActivity::renderStatusBar() const {
-  const int currentPage = section ? section->currentPage + 1 : 1;
-  const float pageCount = section ? section->estimatedTotalPages() : 1;
+  // Legacy path reads the Section; the TTF path keeps nextPageNumber /
+  // cachedChapterTotalPageCount in sync as its mirrors.
+  const int currentPage = section ? section->currentPage + 1 : nextPageNumber + 1;
+  const float pageCount =
+      section ? section->estimatedTotalPages() : (cachedChapterTotalPageCount > 0 ? cachedChapterTotalPageCount : 1);
   const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
   const float bookProgress = epub ? (epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100) : 0;
 
@@ -2312,9 +3027,17 @@ void EpubReaderActivity::renderStatusBar() const {
   char chapterTimeLeftBuf[24];
   const char* chapterTimeLeft = nullptr;
   if (sb.showChapterTimeLeft) {
-    if (SETTINGS.shouldTrackReadingStats() && section && section->estimatedTotalPages() > 0) {
-      const int pagesRemaining =
-          std::max(0, static_cast<int>(section->estimatedTotalPages()) - section->currentPage - 1);
+    if (SETTINGS.shouldTrackReadingStats() &&
+        (section
+#if defined(CROSSPOINT_TTF_READER)
+         || ttf_
+#endif
+         ) &&
+        (section ? section->estimatedTotalPages() > 0 : cachedChapterTotalPageCount > 0)) {
+      const int chapterTotalPages =
+          section ? static_cast<int>(section->estimatedTotalPages()) : cachedChapterTotalPageCount;
+      const int chapterCurrentPage = section ? section->currentPage : nextPageNumber;
+      const int pagesRemaining = std::max(0, chapterTotalPages - chapterCurrentPage - 1);
       auto timeLeft = estimateChapterTimeLeftSeconds(stats, globalStats, static_cast<uint16_t>(pagesRemaining));
       if (timeLeft) {
         formatChapterTimeLeft(*timeLeft, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
@@ -2536,7 +3259,11 @@ void EpubReaderActivity::closeOverlayToPage() {
 }
 
 void EpubReaderActivity::renderOverlay() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (!epub || !toolbarUi || (!section && !ttf_)) return;
+#else
   if (!epub || !section || !toolbarUi) return;
+#endif
 
   ReaderToolbarUi::Model model;
   // The toolbar's tool pill is the button-navigation cursor: tap-first (same
@@ -2548,11 +3275,13 @@ void EpubReaderActivity::renderOverlay() {
 
   if (overlay == Overlay::Toolbar) {
     chapterTitle = currentChapterTitle();
-    const int pageCount = section->estimatedTotalPages();
+    // Legacy reads the Section; the TTF path reads its position mirrors.
+    const int pageCount = section ? section->estimatedTotalPages() : cachedChapterTotalPageCount;
+    const int chapterCurrentPage = section ? section->currentPage + 1 : nextPageNumber + 1;
     const float chapterProgress =
-        pageCount > 0 ? static_cast<float>(section->currentPage + 1) / static_cast<float>(pageCount) : 0.0f;
+        pageCount > 0 ? static_cast<float>(chapterCurrentPage) / static_cast<float>(pageCount) : 0.0f;
     const float bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress);
-    pageInfo = std::to_string(section->currentPage + 1) + "/" + std::to_string(pageCount) + "   " +
+    pageInfo = std::to_string(chapterCurrentPage) + "/" + std::to_string(pageCount) + "   " +
                std::to_string(clampPercent(static_cast<int>(bookProgress * 100.0f + 0.5f))) + "%";
     model.chapterTitle = chapterTitle.c_str();
     model.pageInfo = pageInfo.c_str();
@@ -2944,6 +3673,26 @@ void EpubReaderActivity::paintOverlayPopup() {
 }
 
 void EpubReaderActivity::applyReaderTextSettings() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    SETTINGS.saveToFile();
+    RenderLock lock;
+    // Reflow in place: drop the caches; the new generation produces a fresh
+    // build and the position restores through the page's char offset (§3.5).
+    if (ttfCurrentCharStart > 0) {
+      ttfReflowJumpPending = true;
+    }
+    ttf_->abortSession();
+    ttf_->dropPrefetch();
+    ttf_->closeChapterCache();
+    ttfPrefetchActive = false;
+    ttfSpine = -1;
+    ttfPage = -1;
+    ttfPageCount = 0;
+    ttfGenerationValid = false;
+    return;
+  }
+#endif
   SETTINGS.saveToFile();
   // (Re)load or unload the selected SD-card font for the current family/size.
   // The reader otherwise only loads SD fonts on book open, so without this an
@@ -3141,6 +3890,57 @@ void EpubReaderActivity::loadCachedBookmarks() {
 }
 
 void EpubReaderActivity::addBookmark() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    if (!epub || ttfPage < 0 || ttfPage >= static_cast<int>(ttfPageCount)) return;
+    LOG_DBG("ERS", "Toggle TTF bookmark at spine %d, page %d", currentSpineIndex, ttfPage);
+    const int currentPage = ttfPage;
+    const int pageCount = static_cast<int>(ttfPageCount);
+    // Page-text summary from the cached page runs (cold path).
+    std::string pageText;
+    {
+      const size_t mark = ttf_->scratch().mark();
+      freeink::book::Page page{};
+      if (ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(currentPage), &page)) {
+        for (uint16_t r = 0; r < page.runCount; ++r) {
+          pageText.append(page.runs[r].text, page.runs[r].len);
+        }
+      }
+      ttf_->scratch().release(mark);
+    }
+    SavedProgressPosition progress = ProgressMapper::toSavedProgress(epub, getCurrentPosition());
+    const ProgressRange pageRange = getPageProgressRange(epub, currentSpineIndex, currentPage, pageCount);
+    const size_t bookmarkCountBeforeToggle = cachedBookmarks.size();
+    cachedBookmarks.erase(std::remove_if(cachedBookmarks.begin(), cachedBookmarks.end(),
+                                         [&](const BookmarkEntry& b) {
+                                           return bookmarkMatchesProgress(b, currentSpineIndex, currentPage, pageCount,
+                                                                          pageRange);
+                                         }),
+                          cachedBookmarks.end());
+    if (cachedBookmarks.size() != bookmarkCountBeforeToggle) {
+      bookmarkRemoved = true;
+      currentPageBookmarked = false;
+    } else {
+      // Bookmarks keep spine + page under the TTF path (no visible-text
+      // offset substrate in v1, §3.5).
+      BookmarkEntry entry;
+      entry.percentage = progress.percentage;
+      entry.xpath = progress.xpath;
+      entry.summary = BookmarkUtil::sanitizeBookmarkSummary(pageText);
+      entry.computedSpineIndex = currentSpineIndex;
+      entry.computedChapterPageCount = pageCount;
+      entry.computedChapterProgress = currentPage;
+      cachedBookmarks.insert(cachedBookmarks.begin(), entry);
+      bookmarkRemoved = false;
+      currentPageBookmarked = true;
+    }
+    if (!BookmarkFile::save(epub->getPath(), cachedBookmarks)) {
+      LOG_ERR("ERS", "Failed to save bookmarks");
+    }
+    requestUpdate();
+    return;
+  }
+#endif
   if (!section || !epub) return;
   LOG_DBG("ERS", "Toggle bookmark at spine %d, page %d", currentSpineIndex, section ? section->currentPage : -1);
   int currentPage;
@@ -3197,6 +3997,20 @@ void EpubReaderActivity::addBookmark() {
 }
 
 void EpubReaderActivity::updateBookmarkFlag() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    if (!epub || cachedBookmarks.empty() || ttfPage < 0 || ttfPageCount == 0) {
+      currentPageBookmarked = false;
+      return;
+    }
+    const int pageCount = static_cast<int>(ttfPageCount);
+    const ProgressRange pageRange = getPageProgressRange(epub, currentSpineIndex, ttfPage, pageCount);
+    currentPageBookmarked = std::any_of(cachedBookmarks.begin(), cachedBookmarks.end(), [&](const BookmarkEntry& b) {
+      return bookmarkMatchesProgress(b, currentSpineIndex, ttfPage, pageCount, pageRange);
+    });
+    return;
+  }
+#endif
   if (!section || !epub || cachedBookmarks.empty()) {
     currentPageBookmarked = false;
     return;
@@ -3215,6 +4029,20 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
     snprintf(info.title, sizeof(info.title), "%s", epub->getTitle().c_str());
     info.spineIndex = currentSpineIndex;
   }
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    info.currentPage = ttfPage + 1;
+    info.totalPages = static_cast<int>(ttfPageCount);
+    if (epub && epub->getBookSize() > 0 && info.totalPages > 0 && ttfPage >= 0) {
+      const float chapterProgress = static_cast<float>(ttfPage) / static_cast<float>(info.totalPages);
+      int pct = static_cast<int>(epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f + 0.5f);
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      info.progressPercent = pct;
+    }
+    return info;
+  }
+#endif
   if (section) {
     info.currentPage = section->currentPage + 1;
     info.totalPages = section->estimatedTotalPages();
