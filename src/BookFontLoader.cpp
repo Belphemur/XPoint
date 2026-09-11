@@ -217,12 +217,17 @@ FontChain* BookFontLoader::builtinFallback() {
       LOG_ERR("BFNT", "OOM: %u bytes for builtin fallback fonts", static_cast<unsigned>(kFallbackBytes));
       return &fallback;  // empty chain (coverage 0); caller falls back further
     }
-    auto* base = reinterpret_cast<freeink::ui::BitmapBookFont* const>(backing.get());
-    // No destructor call — see singleton note above.
-    auto* r = new (base + 0) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* b = new (base + 1) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* i = new (base + 2) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* bi = new (base + 3) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    // Slot addresses as byte offsets from the pool block: placement-new takes
+    // void*, so do the byte arithmetic on char* (defined; void* arithmetic is
+    // not — cppcheck portability gate) and let it implicitly convert to void*.
+    // No typed pointer variable (cppcheck constVariablePointer), no destructor
+    // call (see singleton note).
+    auto* slots = reinterpret_cast<char*>(backing.get());
+    constexpr auto faceSize = sizeof(freeink::ui::BitmapBookFont);
+    auto* r = new (slots + 0 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* b = new (slots + 1 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* i = new (slots + 2 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* bi = new (slots + 3 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
     fallback.add(r, StyleNone);
     fallback.add(b, StyleBold);
     fallback.add(i, StyleItalic);
