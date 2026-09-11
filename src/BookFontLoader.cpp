@@ -217,7 +217,7 @@ FontChain* BookFontLoader::builtinFallback() {
       LOG_ERR("BFNT", "OOM: %u bytes for builtin fallback fonts", static_cast<unsigned>(kFallbackBytes));
       return &fallback;  // empty chain (coverage 0); caller falls back further
     }
-    auto* base = reinterpret_cast<freeink::ui::BitmapBookFont*>(backing.get());
+    auto* base = reinterpret_cast<freeink::ui::BitmapBookFont* const>(backing.get());
     // No destructor call — see singleton note above.
     auto* r = new (base + 0) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
     auto* b = new (base + 1) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
