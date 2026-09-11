@@ -1777,6 +1777,8 @@ void EpubReaderActivity::renderBook() {
     // One call per render: the manager keeps the in-memory position current
     // and gates the disk write itself (changed + interval, or low battery —
     // §4.2/§4.5). Unchanged renders are no-ops inside the manager.
+    LOG_DBG("PRG", "caller: save spine=%u page=%u/%u offset=%d", currentSpineIndex, section->currentPage,
+            section->estimatedTotalPages(), currentPageVisibleOffset.has_value() ? 1 : 0);
     progressManager.save(currentSpineIndex, section->currentPage, section->estimatedTotalPages(),
                          currentPageVisibleOffset.has_value(), currentPageVisibleOffset.value_or(0));
   }

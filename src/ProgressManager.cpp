@@ -14,7 +14,12 @@ namespace {
 // NOTE: this ESP-IDF build passes usStackDepth in BYTES (the render task
 // passes 8192 directly), not FreeRTOS words.
 constexpr UBaseType_t WORKER_PRIORITY = 1;
-constexpr size_t WORKER_STACK_BYTES = 2048;
+// The flush path reaches deep into SdFat (write + flush + remove + rename
+// through HalStorage), which needs well over 2 KB — 2048 B overflowed the
+// stack canary on the first real flush (Guru Meditation on progress_mgr).
+// 4096 keeps a comfortable margin; track it with the high-water-mark log in
+// the worker loop.
+constexpr size_t WORKER_STACK_BYTES = 4096;
 constexpr char WORKER_TASK_NAME[] = "progress_mgr";
 constexpr char MUTEX_TAG[] = "PRG";
 }  // namespace
@@ -22,12 +27,13 @@ constexpr char MUTEX_TAG[] = "PRG";
 ProgressManager progressManager;
 
 void ProgressManager::begin() {
-  if (mutex_ != nullptr) return;  // idempotent
-  mutex_ = xSemaphoreCreateMutex();
-  if (mutex_ == nullptr) {
-    LOG_ERR(MUTEX_TAG, "OOM: progress mutex");
+  if (diskMutex_ != nullptr) return;  // idempotent
+  diskMutex_ = xSemaphoreCreateMutex();
+  if (diskMutex_ == nullptr) {
+    LOG_ERR(MUTEX_TAG, "OOM: progress disk mutex");
     return;
   }
+  LOG_DBG(MUTEX_TAG, "begin(): disk mutex created");
   // Dynamic allocation via the pool (user directive): PSRAM-backed on
   // BOARD_HAS_PSRAM boards, DRAM otherwise. Null on OOM = every operation
   // becomes a safe no-op (fail closed).
@@ -52,11 +58,13 @@ void ProgressManager::begin() {
               // FLUSH_INTERVAL_MS so a queued write also fires within one
               // interval even if its notification raced a flush.
               if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(FLUSH_INTERVAL_MS)) == 0 && !self->writeQueued_) {
+                LOG_DBG(MUTEX_TAG, "worker: %lus elapsed, nothing owed", FLUSH_INTERVAL_MS / 1000);
                 continue;  // interval elapsed with nothing owed
               }
-              xSemaphoreTake(self->mutex_, portMAX_DELAY);
-              const bool ok = self->flushChangedLocked();
-              xSemaphoreGive(self->mutex_);
+              LOG_INF(MUTEX_TAG, "worker: wake (queued=%d)", self->writeQueued_ ? 1 : 0);
+              const bool ok = self->flushChanged();
+              LOG_DBG(MUTEX_TAG, "worker: stack high-water=%u bytes",
+                      static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
               if (!ok) {
                 LOG_ERR(MUTEX_TAG, "Worker flush failed (queued retry on next save)");
               }
@@ -76,25 +84,29 @@ ProgressManager::~ProgressManager() {
     poolFree(lastFlushed_);
     lastFlushed_ = nullptr;
   }
-  if (mutex_ != nullptr) {
-    vSemaphoreDelete(mutex_);
+  if (diskMutex_ != nullptr) {
+    vSemaphoreDelete(diskMutex_);
   }
 }
 
 bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber, uint16_t& pageCount,
                                uint32_t& visibleTextOffset) {
-  if (mutex_ == nullptr || current_ == nullptr) return false;
-  xSemaphoreTake(mutex_, portMAX_DELAY);
+  if (diskMutex_ == nullptr || current_ == nullptr) {
+    LOG_DBG(MUTEX_TAG, "openBook(): unavailable (disk mutex/state null)");
+    return false;
+  }
+  LOG_DBG(MUTEX_TAG, "openBook(): path=%s", cachePath ? cachePath : "null");
   // Full reset: a previous book's state must never seed this book's gate.
   *current_ = ProgressManager::Record{};
   *lastFlushed_ = ProgressManager::Record{};
   writeQueued_ = false;
-  lastFlushMs_ = millis();
+  lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
+  LOG_DBG(MUTEX_TAG, "openBook(): prior state reset");
 
   if (cachePath == nullptr || cachePath[0] == '\0') {
     cachePath_[0] = '\0';
     bookOpen_ = false;
-    xSemaphoreGive(mutex_);
+    LOG_DBG(MUTEX_TAG, "openBook(): empty path, disabled");
     return false;
   }
   const int written = snprintf(cachePath_, sizeof(cachePath_), "%s", cachePath);
@@ -102,14 +114,18 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
     // Truncated path would scatter progress.bin into a wrong directory;
     // disable rather than write there (Copilot, PR #107).
     LOG_ERR(MUTEX_TAG, "Cache path too long: %s", cachePath);
+    LOG_DBG(MUTEX_TAG, "openBook(): aborted (path too long)");
     cachePath_[0] = '\0';
     bookOpen_ = false;
-    xSemaphoreGive(mutex_);
     return false;
   }
   bookOpen_ = true;
 
+  // Disk read under the same lock as the writes: a flush's rename must
+  // never interleave with this read of progress.bin.
+  xSemaphoreTake(diskMutex_, portMAX_DELAY);
   const size_t size = load(cachePath_, spineIndex, pageNumber, pageCount, visibleTextOffset);
+  xSemaphoreGive(diskMutex_);
   if (size > 0) {
     const bool hasOffset = (size == RECORD_SIZE_OFFSET);
     current_->spineIndex = spineIndex;
@@ -119,17 +135,28 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
     current_->visibleTextOffset = visibleTextOffset;
     *lastFlushed_ = *current_;  // disk state IS the baseline
     LOG_INF(MUTEX_TAG, "Progress loaded: spine=%u page=%u/%u", spineIndex, pageNumber, pageCount);
+  } else {
+    LOG_DBG(MUTEX_TAG, "openBook(): no existing progress record (size=%u)", size);
   }
-  xSemaphoreGive(mutex_);
   return size > 0;
 }
 
 void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber, const uint16_t pageCount,
                            const bool hasOffset, const uint32_t visibleTextOffset) {
-  if (mutex_ == nullptr || current_ == nullptr || !bookOpen_) return;
+  if (diskMutex_ == nullptr || current_ == nullptr || !bookOpen_) {
+    LOG_DBG(MUTEX_TAG, "save(): DROPPED (diskMutex=%d state=%d bookOpen=%d)", diskMutex_ != nullptr,
+            current_ != nullptr, bookOpen_ ? 1 : 0);
+    return;
+  }
+  // No lock here: this runs on the render task in the page-turn path and
+  // must never block on SD/battery I/O. The battery read (HAL I2C) happens
+  // before touching any shared state so a stall can't corrupt the record.
+  const bool lowBat = lowBattery();
   bool due = false;
   {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
+    // Lock-free state update: native-width field writes are atomic on this
+    // core; the worker may read them mid-update and only ever persists a
+    // slightly stale, self-correcting record.
     current_->spineIndex = spineIndex;
     current_->pageNumber = pageNumber;
     current_->pageCount = pageCount;
@@ -137,13 +164,19 @@ void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber,
     current_->visibleTextOffset = visibleTextOffset;
 
     // Gate (design §4.2): write only when the position changed since the
-    // last flush AND the interval elapsed — unless low battery, which
-    // persists every change (§4.5). The battery is queried at gate time
-    // (HAL caches it at BATTERY_POLL_MS); no flag feeding needed.
+    // last flush AND the interval elapsed — unless low battery or a write
+    // is already owed (§4.5).
     const bool changed = !(*current_ == *lastFlushed_);
-    const bool intervalElapsed = (millis() - lastFlushMs_) >= FLUSH_INTERVAL_MS;
-    due = changed && (intervalElapsed || lowBattery() || writeQueued_);
+    const uint32_t sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
+    const bool intervalElapsed = sinceFlushSec >= (FLUSH_INTERVAL_MS / 1000);
+    due = changed && (intervalElapsed || lowBat || writeQueued_);
     if (due) writeQueued_ = true;
+    LOG_INF(MUTEX_TAG,
+            "save(): spine=%u page=%u/%u offset=%u changed=%d sinceFlush=%lus/%lus lowbat=%d queued=%d "
+            "due=%d",
+            spineIndex, pageNumber, pageCount, visibleTextOffset, changed ? 1 : 0,
+            static_cast<unsigned long>(sinceFlushSec), static_cast<unsigned long>(FLUSH_INTERVAL_MS / 1000),
+            lowBat ? 1 : 0, writeQueued_ ? 1 : 0, due ? 1 : 0);
   }
   if (due && worker_ != nullptr) {
     // Wake the worker now: it performs the write on core 0, off the reader
@@ -154,9 +187,12 @@ void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber,
 
 bool ProgressManager::saveNow(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
                               const uint16_t pageCount, const bool hasOffset, const uint32_t visibleTextOffset) {
-  if (mutex_ == nullptr || current_ == nullptr) return false;
-  xSemaphoreTake(mutex_, portMAX_DELAY);
-  const bool ok = saveRecord(cachePath, spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
+  if (diskMutex_ == nullptr || current_ == nullptr) {
+    LOG_DBG(MUTEX_TAG, "saveNow(): unavailable (disk mutex/state null)");
+    return false;
+  }
+  LOG_DBG(MUTEX_TAG, "saveNow(): spine=%u page=%u/%u offset=%u", spineIndex, pageNumber, pageCount, visibleTextOffset);
+  const bool ok = saveRecordLocked(cachePath, spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
   if (ok) {
     // Only update the in-memory baseline when THIS is the open book's file;
     // a bypass save for another path must not mark our book as flushed.
@@ -167,46 +203,56 @@ bool ProgressManager::saveNow(const char* cachePath, const uint16_t spineIndex, 
       current_->hasOffset = hasOffset;
       current_->visibleTextOffset = visibleTextOffset;
       *lastFlushed_ = *current_;
-      lastFlushMs_ = millis();
+      lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
       writeQueued_ = false;
     }
+  } else {
+    LOG_DBG(MUTEX_TAG, "saveNow(): write failed");
   }
-  xSemaphoreGive(mutex_);
   return ok;
 }
 
 void ProgressManager::closeBook() {
-  if (mutex_ == nullptr || current_ == nullptr) return;
-  xSemaphoreTake(mutex_, portMAX_DELAY);
-  flushChangedLocked();
+  if (diskMutex_ == nullptr || current_ == nullptr) {
+    LOG_DBG(MUTEX_TAG, "closeBook(): unavailable (disk mutex/state null)");
+    return;
+  }
+  LOG_DBG(MUTEX_TAG, "closeBook(): flushing pending progress");
+  flushChanged();
   *current_ = ProgressManager::Record{};
   *lastFlushed_ = ProgressManager::Record{};
   cachePath_[0] = '\0';
   bookOpen_ = false;
   writeQueued_ = false;
-  xSemaphoreGive(mutex_);
   LOG_DBG(MUTEX_TAG, "Book closed, progress state reset");
 }
 
 bool ProgressManager::flushNow() {
-  if (mutex_ == nullptr || current_ == nullptr) return true;
-  xSemaphoreTake(mutex_, portMAX_DELAY);
-  const bool ok = flushChangedLocked();
-  xSemaphoreGive(mutex_);
-  return ok;
+  if (diskMutex_ == nullptr || current_ == nullptr) {
+    LOG_DBG(MUTEX_TAG, "flushNow(): unavailable (disk mutex/state null)");
+    return true;
+  }
+  LOG_DBG(MUTEX_TAG, "flushNow(): forcing flush");
+  return flushChanged();
 }
 
-bool ProgressManager::flushChangedLocked() {
-  // Mutex held. Write current_ only when it differs from what is on disk.
+bool ProgressManager::flushChanged() {
+  // No lock: write current_ only when it differs from what is on disk. The
+  // record fields are native-width reads; a concurrent save() may tear the
+  // snapshot, which only ever yields a stale, self-correcting record.
   if (!bookOpen_ || cachePath_[0] == '\0' || *current_ == *lastFlushed_) {
     writeQueued_ = false;
+    LOG_DBG(MUTEX_TAG, "flushChanged(): nothing to flush");
     return true;  // nothing to do
   }
-  const bool ok = saveRecord(cachePath_, current_->spineIndex, current_->pageNumber, current_->pageCount,
-                             current_->hasOffset, current_->visibleTextOffset);
+  LOG_INF(MUTEX_TAG, "flushChanged(): flushing spine=%u page=%u/%u sinceFlush=%lus", current_->spineIndex,
+          current_->pageNumber, current_->pageCount,
+          static_cast<unsigned long>(static_cast<uint32_t>(millis() / 1000) - lastFlushSec_));
+  const bool ok = saveRecordLocked(cachePath_, current_->spineIndex, current_->pageNumber, current_->pageCount,
+                                   current_->hasOffset, current_->visibleTextOffset);
   if (ok) {
     *lastFlushed_ = *current_;
-    lastFlushMs_ = millis();
+    lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
     LOG_INF(MUTEX_TAG, "Progress saved: spine=%u page=%u/%u", current_->spineIndex, current_->pageNumber,
             current_->pageCount);
   } else {
@@ -215,6 +261,15 @@ bool ProgressManager::flushChangedLocked() {
             current_->pageNumber, current_->pageCount);
   }
   writeQueued_ = false;
+  return ok;
+}
+
+bool ProgressManager::saveRecordLocked(const char* cachePath, const uint16_t spineIndex, const uint16_t pageNumber,
+                                       const uint16_t pageCount, const bool hasOffset,
+                                       const uint32_t visibleTextOffset) {
+  xSemaphoreTake(diskMutex_, portMAX_DELAY);
+  const bool ok = saveRecord(cachePath, spineIndex, pageNumber, pageCount, hasOffset, visibleTextOffset);
+  xSemaphoreGive(diskMutex_);
   return ok;
 }
 
@@ -232,11 +287,13 @@ size_t ProgressManager::load(const char* cachePath, uint16_t& spineIndex, uint16
                              uint32_t& visibleTextOffset) {
   HalFile f;
   if (!Storage.openFileForRead(MUTEX_TAG, std::string(cachePath) + "/progress.bin", f)) {
+    LOG_DBG(MUTEX_TAG, "load(): no progress.bin at %s", cachePath);
     return 0;
   }
   uint8_t data[RECORD_SIZE_OFFSET];
   const int n = f.read(data, sizeof(data));
   if (n != static_cast<int>(RECORD_SIZE_BASE) && n != static_cast<int>(RECORD_SIZE_OFFSET)) {
+    LOG_DBG(MUTEX_TAG, "load(): malformed record (read=%d)", n);
     return 0;  // missing / garbage / short record
   }
   spineIndex = static_cast<uint16_t>(data[0] + (data[1] << 8));

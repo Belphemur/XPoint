@@ -22,9 +22,15 @@
 // — the reader may release the epub before teardown (KOReader sync path),
 // so a raw pointer would dangle. No book open = writes are no-ops.
 //
-// One mutex guards all state AND each disk write (single writer by
-// construction: the worker and the synchronous flush paths can never run
-// two writeAtomic() calls against the same file concurrently).
+// Locking: NOTHING guards the in-memory state — the reader reports every
+// page change via save() on the render task lock-free (native-width fields
+// are atomic on the RISC-V core; a torn multi-field snapshot can only yield
+// a stale, self-correcting flush baseline, never a crash). A single
+// diskMutex_ serializes ALL progress.bin disk access: the load in
+// openBook() (read) and every flush path's writeAtomic() (write) — the
+// worker plus the synchronous flush/saveNow paths can never interleave two
+// disk operations on the same file. save() never takes a lock, so an SD
+// stall can only block the flusher, never the render task.
 class ProgressManager {
  public:
   static constexpr unsigned long FLUSH_INTERVAL_MS = 120000;
@@ -90,10 +96,15 @@ class ProgressManager {
   // convenience wrapper route through here).
   static bool saveRecord(const char* cachePath, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount,
                          bool hasOffset, uint32_t visibleTextOffset);
+  // diskMutex_ held: encode + write; callers of the public flush paths use
+  // this so a read (openBook) and a write can never race on progress.bin.
+  bool saveRecordLocked(const char* cachePath, uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount,
+                        bool hasOffset, uint32_t visibleTextOffset);
 
-  // Mutex held: write current_ when it differs from lastFlushed_. Returns
-  // true when nothing needed writing or the write succeeded.
-  bool flushChangedLocked();
+  // Lock-free state reader: write current_ when it differs from
+  // lastFlushed_; the disk write itself goes through saveRecordLocked().
+  // Returns true when nothing needed writing or the write succeeded.
+  bool flushChanged();
 
   // Low-battery threshold (design §4.5): below this (gauge HEALTHY, not
   // charging) save() stops gating on the interval — every change is
@@ -103,16 +114,16 @@ class ProgressManager {
   // cadence) makes this cheap; reads only the battery singleton — static.
   static bool lowBattery();
 
-  SemaphoreHandle_t mutex_ = nullptr;
-  // Heap-allocated state (poolMalloc: PSRAM-backed on BOARD_HAS_PSRAM
-  // boards, DRAM otherwise). Null = uninitialized (begin() failed): all
-  // ops no-op.
+  // Serializes every progress.bin disk access (load and saveRecord): an
+  // openBook() read must never interleave with a flush's writeAtomic().
+  // Null = begin() failed: all ops no-op (fail closed).
+  SemaphoreHandle_t diskMutex_ = nullptr;
   // Heap-allocated state (poolMalloc: PSRAM-backed on BOARD_HAS_PSRAM
   // boards, DRAM otherwise). Null = uninitialized (begin() failed): all
   // ops no-op.
   Record* current_ = nullptr;
   Record* lastFlushed_ = nullptr;
-  unsigned long lastFlushMs_ = 0;  // last successful disk flush (millis())
+  uint32_t lastFlushSec_ = 0;  // last successful disk flush (seconds since boot)
   char cachePath_[160] = {0};
   bool bookOpen_ = false;
   bool writeQueued_ = false;  // worker owes a write
