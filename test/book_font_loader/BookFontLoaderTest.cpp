@@ -263,9 +263,25 @@ TEST(ScanFontsTest, SingleFileFamilyPromotesRegular) {
   ASSERT_EQ(count, 1u);
   EXPECT_EQ(fams[0].faceCount, 1u);
   EXPECT_EQ(fams[0].faces[0].styleFlags, freeink::book::StyleNone);
+  // The promoted face carries a canonical stem, not the extension-bearing filename.
+  EXPECT_STREQ(fams[0].faces[0].name, "solo-head");
   // The promoted face must carry the lone candidate's size, or
   // tryLoadFace() would read zero bytes and reject the family.
   EXPECT_EQ(fams[0].faces[0].fileSize, 1234u);
+}
+
+TEST(ScanFontsTest, DuplicateStyleComparesCanonicalStems) {
+  resetStorage();
+  seedFile("/fonts/Dupe/Face-Bold.ttf");
+  seedFile("/fonts/Dupe/Face-Bold-Extra.otf");
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  ASSERT_EQ(fams[0].faceCount, 1u);
+  EXPECT_STREQ(fams[0].faces[0].name, "face-bold");
+  EXPECT_STREQ(fams[0].faces[0].file, "/fonts/Dupe/Face-Bold.ttf");
 }
 
 TEST(ScanFontsTest, SkipsJunkFilesAndFolders) {
@@ -305,6 +321,17 @@ TEST(ScanFontsTest, OtfExtensionAccepted) {
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
   EXPECT_STREQ(fams[0].faces[0].file, "/fonts/Otf/Otf-Regular.otf");
+}
+
+TEST(ScanFontsTest, TruncatedFamilyNameIsSkipped) {
+  resetStorage();
+  const std::string longName(47, 'L');
+  seedFile("/fonts/" + longName + "/Long-Regular.ttf");
+
+  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  EXPECT_EQ(count, 0u);
 }
 
 TEST(ScanFontsTest, MissingRootIsQuietNoop) {

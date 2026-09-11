@@ -22,15 +22,12 @@
 // — the reader may release the epub before teardown (KOReader sync path),
 // so a raw pointer would dangle. No book open = writes are no-ops.
 //
-// Locking: NOTHING guards the in-memory state — the reader reports every
-// page change via save() on the render task lock-free (native-width fields
-// are atomic on the RISC-V core; a torn multi-field snapshot can only yield
-// a stale, self-correcting flush baseline, never a crash). A single
-// diskMutex_ serializes ALL progress.bin disk access: the load in
-// openBook() (read) and every flush path's writeAtomic() (write) — the
-// worker plus the synchronous flush/saveNow paths can never interleave two
-// disk operations on the same file. save() never takes a lock, so an SD
-// stall can only block the flusher, never the render task.
+// Locking: stateMutex_ protects the in-memory record, book path, and flush
+// bookkeeping. save() takes it only long enough to update native-width fields,
+// never while touching SD. diskMutex_ separately serializes progress.bin I/O.
+// A flush snapshots state, releases stateMutex_, then takes diskMutex_; after
+// a successful write it advances lastFlushed_ only if current_ still matches
+// that snapshot, so a concurrent save is retried instead of being overwritten.
 class ProgressManager {
  public:
   static constexpr uint32_t FLUSH_INTERVAL_MS = 120000;
@@ -140,6 +137,9 @@ class ProgressManager {
   // cadence) makes this cheap; reads only the battery singleton — static.
   static bool lowBattery();
 
+  // Protects current_, lastFlushed_, cachePath_, bookOpen_, writeQueued_,
+  // and lastFlushSec_. This mutex is never held across disk I/O.
+  SemaphoreHandle_t stateMutex_ = nullptr;
   // Serializes every progress.bin disk access (load and saveRecord): an
   // openBook() read must never interleave with a flush's writeAtomic().
   // Null = begin() failed: all ops no-op (fail closed).
