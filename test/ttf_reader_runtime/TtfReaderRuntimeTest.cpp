@@ -73,8 +73,8 @@ TEST(ProgressRecordTest, GenerationShapeRoundTrip) {
 
 TEST(ProgressRecordTest, GenerationShapePreservesZeroGeneration) {
   uint8_t buf[progress_record::kSizeGeneration] = {};
-  const size_t n = progress_record::encode(/*hasOffset=*/false, /*hasGeneration=*/true, 2, 5, 33, 0, 0xABCDEF,
-                                           0, buf, sizeof(buf));
+  const size_t n =
+      progress_record::encode(/*hasOffset=*/false, /*hasGeneration=*/true, 2, 5, 33, 0, 0xABCDEF, 0, buf, sizeof(buf));
   ASSERT_EQ(n, progress_record::kSizeGeneration);
 
   ProgressRecord rec;

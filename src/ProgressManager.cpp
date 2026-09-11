@@ -163,9 +163,8 @@ bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, u
   if (Storage.openFileForRead(MUTEX_TAG, std::string(cachePath) + "/progress.bin", f)) {
     const uint64_t fileSize = f.fileSize64();
     uint8_t data[progress_record::kSizeGeneration + 1];
-    const size_t bytesToRead =
-        fileSize > progress_record::kSizeGeneration ? progress_record::kSizeGeneration + 1
-                                                     : static_cast<size_t>(fileSize);
+    const size_t bytesToRead = fileSize > progress_record::kSizeGeneration ? progress_record::kSizeGeneration + 1
+                                                                           : static_cast<size_t>(fileSize);
     const int n = f.read(data, bytesToRead);
     ProgressRecord rec;
     if (n == static_cast<int>(bytesToRead) &&
@@ -412,14 +411,12 @@ size_t ProgressManager::load(const char* cachePath, uint16_t& spineIndex, uint16
     return 0;
   }
   uint8_t data[progress_record::kSizeGeneration + 1];
-  const size_t bytesToRead =
-      fileSize > progress_record::kSizeGeneration ? progress_record::kSizeGeneration + 1
-                                                   : static_cast<size_t>(fileSize);
+  const size_t bytesToRead = fileSize > progress_record::kSizeGeneration ? progress_record::kSizeGeneration + 1
+                                                                         : static_cast<size_t>(fileSize);
   const int n = f.read(data, bytesToRead);
   ProgressRecord rec;
-  const size_t size = n == static_cast<int>(bytesToRead)
-                          ? progress_record::decode(data, static_cast<size_t>(n), rec)
-                          : 0;
+  const size_t size =
+      n == static_cast<int>(bytesToRead) ? progress_record::decode(data, static_cast<size_t>(n), rec) : 0;
   if (size == 0) {
     LOG_DBG(MUTEX_TAG, "load(): malformed record (read=%d)", n);
     return 0;  // missing / garbage / short record
