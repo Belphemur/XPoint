@@ -426,9 +426,9 @@ bool EpubReaderActivity::loadBook() {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     bool ttfHasGeneration = false;
-    const bool progressLoaded = progressManager.openBookTtf(epub->getCachePath().c_str(), savedSpine, savedPage,
-                                                            savedPageCount, ttfSavedCharOffset, ttfSavedGeneration,
-                                                            ttfHasGeneration);
+    const bool progressLoaded =
+        progressManager.openBookTtf(epub->getCachePath().c_str(), savedSpine, savedPage, savedPageCount,
+                                    ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
       if (spineCount <= 0 || savedSpine >= static_cast<uint16_t>(spineCount) ||
@@ -2044,14 +2044,13 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   const uint16_t currentSpine = static_cast<uint16_t>(currentSpineIndex);
   const bool buildRunning = ttf_->sessionFor(currentSpine) && ttf_->sessionActive();
   const bool cacheMatchesGeneration = ttf_->cacheReady() && ttf_->cacheGeneration() == ttfGeneration;
-  const bool sessionHasTotal = ttf_->sessionFor(currentSpine) && ttf_->sessionDone() &&
-                               ttf_->sessionMatchesGeneration(ttfGeneration);
+  const bool sessionHasTotal =
+      ttf_->sessionFor(currentSpine) && ttf_->sessionDone() && ttf_->sessionMatchesGeneration(ttfGeneration);
   const bool completeCache = cacheMatchesGeneration && !ttf_->cachePartial() && !buildRunning;
   const bool haveTotal = sessionHasTotal || completeCache;
   const auto offsetIsAvailable = [this, haveTotal, sessionHasTotal, completeCache](uint32_t offset) {
     if (!haveTotal) return false;
-    return sessionHasTotal ? ttf_->sessionTotalChars() > offset
-                           : (completeCache && ttf_->cacheTotalChars() > offset);
+    return sessionHasTotal ? ttf_->sessionTotalChars() > offset : (completeCache && ttf_->cacheTotalChars() > offset);
   };
   const bool sessionCanMap = ttf_->sessionFor(currentSpine) && ttf_->sessionMatchesGeneration(ttfGeneration);
   const bool cacheCanMap = cacheMatchesGeneration;
@@ -2116,8 +2115,7 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     // offset only maps once the chapter's page index is COMPLETE — a partial
     // prefix clamps beyond-watermark offsets and would lose the position.
     uint32_t page = 0;
-    if (canMapCompleteOffset(ttfCurrentCharStart) &&
-        ttf_->pageForChar(currentSpine, ttfCurrentCharStart, &page)) {
+    if (canMapCompleteOffset(ttfCurrentCharStart) && ttf_->pageForChar(currentSpine, ttfCurrentCharStart, &page)) {
       if (haveTotal) {
         ttfReflowJumpPending = false;
         targetOut = static_cast<int>(page);
@@ -2146,8 +2144,7 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     // prefix, so a provisional (prefix) result must not consume the saved
     // position — accept it only under haveTotal.
     uint32_t page = 0;
-    if (canMapCompleteOffset(ttfSavedCharOffset) &&
-        ttf_->pageForChar(currentSpine, ttfSavedCharOffset, &page)) {
+    if (canMapCompleteOffset(ttfSavedCharOffset) && ttf_->pageForChar(currentSpine, ttfSavedCharOffset, &page)) {
       if (haveTotal) {
         ttfHasSavedPosition = false;
         targetOut = static_cast<int>(page);
@@ -2483,8 +2480,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     if (ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
       const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
-      if (st == freeink::book::BookStatus::Ok &&
-          !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+      if (st == freeink::book::BookStatus::Ok && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
         ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration);
       }
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
