@@ -172,19 +172,20 @@ void TtfBookRuntime::closeChapterCache() {
 
 uint32_t TtfBookRuntime::availablePageCount(const uint16_t spineIndex) const {
   if (sessionFor(spineIndex)) return writer_.pageCount();
-  return cacheReady_ ? cacheReader_.pageCount() : 0;
+  // The open cache reader answers only its own chapter.
+  return (cacheReady_ && cacheSpine_ == spineIndex) ? cacheReader_.pageCount() : 0;
 }
 
 uint32_t TtfBookRuntime::pageCharStart(const uint16_t spineIndex, const uint16_t pageIndex) const {
   if (sessionFor(spineIndex)) return writer_.charStart(pageIndex);
-  return cacheReady_ ? cacheReader_.charStart(pageIndex) : 0;
+  return (cacheReady_ && cacheSpine_ == spineIndex) ? cacheReader_.charStart(pageIndex) : 0;
 }
 
 bool TtfBookRuntime::readPage(const uint16_t spineIndex, const uint16_t pageIndex, Page* out) {
   if (sessionFor(spineIndex) && pageIndex < writer_.pageCount()) {
     return writer_.readPage(pageIndex, scratch_, out) == BookStatus::Ok;
   }
-  if (cacheReady_ && pageIndex < cacheReader_.pageCount()) {
+  if (cacheReady_ && cacheSpine_ == spineIndex && pageIndex < cacheReader_.pageCount()) {
     return cacheReader_.readPage(pageIndex, scratch_, out) == BookStatus::Ok;
   }
   return false;
@@ -195,14 +196,14 @@ bool TtfBookRuntime::pageForChar(const uint16_t spineIndex, const uint32_t charO
     *pageOut = writer_.pageForChar(charOffset);
     return writer_.pageCount() > 0;
   }
-  if (!cacheReady_) return false;
+  if (!cacheReady_ || cacheSpine_ != spineIndex) return false;
   *pageOut = cacheReader_.pageForChar(charOffset);
   return cacheReader_.pageCount() > 0;
 }
 
 bool TtfBookRuntime::charForAnchor(const uint16_t spineIndex, const uint32_t idHash, uint32_t* charOut) const {
   if (sessionFor(spineIndex)) return writer_.charForAnchor(idHash, charOut);
-  return cacheReady_ && cacheReader_.charForAnchor(idHash, charOut);
+  return cacheReady_ && cacheSpine_ == spineIndex && cacheReader_.charForAnchor(idHash, charOut);
 }
 
 // ---- chapter build session ----

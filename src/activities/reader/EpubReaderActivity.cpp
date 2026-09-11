@@ -2090,12 +2090,18 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
       return true;
     }
     // Generation still matches: wait for a cache that can actually map the
-    // offset (a missing file or a partial prefix would degrade the restore).
+    // offset. pageForChar() clamps beyond-watermark offsets on a partial
+    // prefix, so a provisional (prefix) result must not consume the saved
+    // position — accept it only under haveTotal.
     uint32_t page = 0;
     if (ttf_->pageForChar(static_cast<uint16_t>(currentSpineIndex), ttfSavedCharOffset, &page)) {
-      ttfHasSavedPosition = false;
-      targetOut = static_cast<int>(page);
-      return true;
+      if (haveTotal) {
+        ttfHasSavedPosition = false;
+        targetOut = static_cast<int>(page);
+        return true;
+      }
+      needFullBuild = true;
+      return false;
     }
     if (haveTotal) {
       ttfHasSavedPosition = false;
