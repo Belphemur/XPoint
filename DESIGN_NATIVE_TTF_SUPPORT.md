@@ -393,6 +393,24 @@ Phased, each ending in a verifiable gate. `pio run` (default C3 env) must pass a
 - Gate: `pio run`; on-device page render visible; heap delta logged via `ESP.getFreeHeap()`/`ESP.getFreePsram()` before/after.
 
 **Phase 2 — Reader integration behind `-DCROSSPOINT_TTF_READER=1`**
+
+> **Status: Phase 2a SHIPPED (2026-09-10).** Reader integration merged behind the
+> flag on the nine PSRAM-class envs (see §14.1): `TtfBookRuntime`
+> (catalog + `ChapterLayoutSession` + FIBP reader/writer + next-spine prefetch,
+> all PSRAM arenas), the separate `renderBookTtf()` path, generation-tagged
+> progress records (16-byte shape, load-side degrade — see
+> `activities/reader/ProgressRecord.h` and docs/file-formats.md), and the
+> Atkinson `EpdBookFont` fallback chain. The legacy `Section` path stays intact
+> (kill switch: runtime open failure falls back to it).
+>
+> **Phase 2b handoff (not in 2a):** TextSettings TTF UX (family/size rows,
+> §3.6 resolver), dictionary/footnote parity (word hit-testing, footnotes,
+> links — surfaced as v1 losses in 2a), extract-to-stored chapterSource
+> optimization (parse arena stays 64KB), CSS padding fold (§3.5 item 10),
+> hyphenator wiring, `TxtReaderActivity` migration, chapter-time-left/stats
+> parity polish. Flag stays OFF on C3/sticky; PSRAM-less binaries are
+> byte-identical to `develop`.
+
 - `EpubReaderActivity`: FIBP reader/writer paths, `ChapterLayoutSession`, progress mapping, prefetch — all inside `#if CROSSPOINT_TTF_READER` alongside the existing `Section` code (build-flag kill switch, §10).
 - Night-mode + chrome-over-page ordering verified (§8 R8).
 - Gate: full read of a Latin EPUB end-to-end on C3 with `LOG_LEVEL=2`: cache write → reopen hits cache → position restore → live font-size change re-flows in place.
@@ -684,6 +702,14 @@ Discrepancies found in the previous draft, all corrected above:
   NotoSansHebrew/NotoSansArabic glyph data, but CJK ideographs are NOT covered
   and render as missing glyphs. No SD-`.cpfont` font is wired into the reader
   chain (§3.6).
+- **Flag scope (Phase 2a shipped).** `CROSSPOINT_TTF_READER=1` is defined
+  exactly on the nine PSRAM-class envs: `x4pro`, `x4pro_profile`, `x4c`,
+  `x4c-gh_release`, `x4pro-gh_release`, `x4pro-gh_release_rc`, `papermono`,
+  `papermono-gh_release`, `papermono-gh_release_rc`. It is absent from every
+  C3 and sticky env, so PSRAM-less binaries stay byte-identical to `develop`
+  (zero flash/RAM cost; verified by `pio run -e default`). During Phase 2 both
+  render paths still coexist in PSRAM binaries (the legacy reader is the
+  build-flag kill switch); the legacy reader is compiled out only in Phase 4.
 
 ### 14.2 Font size UX
 

@@ -32,8 +32,18 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
 
 ## 3. Non-Goals
 
-- Changing the `progress.bin` on-disk format (stays the 10-byte record of
-  EpubReaderUtils.h; load path in `loadBook()` is untouched).
+- Changing the `progress.bin` on-disk format for the legacy paths (stays the
+  10-byte record of EpubReaderUtils.h; load path in `loadBook()` is untouched).
+  **Phase 2a amendment (native-TTF reader, design
+  DESIGN_NATIVE_TTF_SUPPORT.md §3.5):** the TTF reader path appends a
+  generation-tagged 16-byte record shape
+  (`{u16 spine, u16 page, u16 pageCount, u32 charOffset, u32 generation,
+  u16 reserved}`), encoded/decoded solely by
+  `activities/reader/ProgressRecord.h`. The manager's flush/queue machinery is
+  unchanged; load-side migration decodes by exact length and degrades unknown
+  sizes to the 6-byte base shape. Downgrading from a TTF build misrestores the
+  charOffset as a visibleTextOffset on pre-change firmware (no crash,
+  self-healing on the next save) — see docs/file-formats.md.
 - Migrating TXT/XTC readers to the same manager (follow-up PR).
 - A user-facing settings row for the interval (KISS: constexpr only).
 

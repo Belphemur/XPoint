@@ -15,6 +15,9 @@ class SdCardBookSource : public BookSource {
   SdCardBookSource() = default;
   explicit SdCardBookSource(const char* path);
   ~SdCardBookSource() override = default;
+  // Reopenable in place: defaulted move-assign (the user-declared destructor
+  // suppresses the implicit one).
+  SdCardBookSource& operator=(SdCardBookSource&&) = default;
 
   bool isValid() const { return file_.isOpen(); }
 
