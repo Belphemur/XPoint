@@ -103,20 +103,24 @@ void TtfRenderDebugActivity::onEnter() {
 #endif
 
   // Seed the debug chapter once. The settings dir may not exist on a fresh
-  // card; openFileForWrite does not create parent directories.
+  // card; openFileForWrite does not create parent directories. The seed is
+  // written to a temp file and renamed into place, so a power loss mid-write
+  // can never leave a torn file that exists() would accept as a valid seed.
   if (!Storage.exists(kDebugTextPath)) {
     Storage.ensureDirectoryExists("/.crosspoint");
+    constexpr char kSeedTmpPath[] = "/.crosspoint/ttf_debug.txt.tmp";
     HalFile f;
-    if (!Storage.openFileForWrite("TTFDBG", kDebugTextPath, f)) {
-      LOG_ERR("TTFDBG", "text seed write failed: %s", kDebugTextPath);
+    if (!Storage.openFileForWrite("TTFDBG", kSeedTmpPath, f)) {
+      LOG_ERR("TTFDBG", "text seed write failed: %s", kSeedTmpPath);
       showFatal();
       return;
     }
-    if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText)) {
-      // A partial file must not count as a valid seed on the next boot.
+    if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText) || !f.close() ||
+        !Storage.rename(kSeedTmpPath, kDebugTextPath)) {
+      // A partial or unpublishable seed must not count as valid next boot.
       f.close();
-      Storage.remove(kDebugTextPath);
-      LOG_ERR("TTFDBG", "text seed short write: %s", kDebugTextPath);
+      Storage.remove(kSeedTmpPath);
+      LOG_ERR("TTFDBG", "text seed short write: %s", kSeedTmpPath);
       showFatal();
       return;
     }

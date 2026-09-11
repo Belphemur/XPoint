@@ -108,7 +108,13 @@ bool SdCardCacheStorage::endWrite() {
     writeHandle_.close();
     return false;
   }
-  writeHandle_.close();
+  // close() flushes the last sector; a failure here means the .tmp is not a
+  // faithful copy — treat it as a failed write and leave it for retry rather
+  // than deleting a good cache we then cannot replace.
+  if (!writeHandle_.close()) {
+    LOG_ERR("TTFB", "endWrite: close failed: %s", writeTmpPath_);
+    return false;
+  }
   // SdFat's rename does not overwrite an existing destination, so drop the old
   // file first (pattern from ProgressFile::writeAtomic,
   // src/activities/reader/ProgressFile.h). Unlike writeAtomic, a failed remove
