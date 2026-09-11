@@ -272,6 +272,29 @@ book::Page makePage(const uint32_t charStart, const uint32_t index, const char* 
 
 }  // namespace
 
+TEST(PageCacheWriterFailureTest, FailedMidBuildCloseAllowsSameNameRetry) {
+  const auto arenaBuf = std::make_unique<uint8_t[]>(64 * 1024);
+  book::Arena arena(arenaBuf.get(), 64 * 1024);
+  MemCacheStorage storage;
+
+  book::PageCacheWriter writer;
+  ASSERT_TRUE(writer.begin(storage, "s2-fail.fibp", 1, arena));
+  // Arm the failure AFTER begin() (which streams the header): the next write
+  // then fails mid-build, and finish() must close/remove the active temp and
+  // return the storage to a writable state.
+  storage.failNextWrite = true;
+  EXPECT_FALSE(writer.onPage(makePage(0, 0, "first")));
+  EXPECT_FALSE(writer.finish());
+  EXPECT_TRUE(writer.failed());
+  EXPECT_FALSE(storage.exists("s2-fail.fibp"));
+
+  book::PageCacheWriter retry;
+  ASSERT_TRUE(retry.begin(storage, "s2-fail.fibp", 2, arena));
+  ASSERT_TRUE(retry.onPage(makePage(0, 0, "retry")));
+  ASSERT_TRUE(retry.finish());
+  EXPECT_TRUE(storage.exists("s2-fail.fibp"));
+}
+
 TEST(PageCacheRestoreTest, PageForCharOverSyntheticCharStartTable) {
   const auto arenaBuf = std::make_unique<uint8_t[]>(64 * 1024);
   const auto scratchBuf = std::make_unique<uint8_t[]>(64 * 1024);

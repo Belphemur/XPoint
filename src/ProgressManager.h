@@ -154,6 +154,11 @@ class ProgressManager {
   bool bookOpen_ = false;
   bool writeQueued_ = false;  // worker owes a write
   TaskHandle_t worker_ = nullptr;
+  // Destructor handshake: set before waking the worker; the worker exits and
+  // acknowledges on the semaphore below, so its loop can never touch freed
+  // state after the destructor returns.
+  SemaphoreHandle_t workerExit_ = nullptr;
+  volatile bool workerStopping_ = false;
 };
 
 // Global instance (created at boot, fed by the EPUB reader activity).
