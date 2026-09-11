@@ -62,6 +62,14 @@ void ProgressManager::begin() {
   // Ownership released to the raw members; the destructor poolFree()s them.
   (void)cur.release();
   (void)last.release();
+  // Exit handshake; see workerStopping_/workerExit_.
+  SemaphoreHandle_t workerExit_ = xSemaphoreCreateBinary();
+  if (workerExit_ == nullptr) {
+    LOG_ERR(MUTEX_TAG, "OOM: progress worker exit semaphore");
+    // Without the handshake the worker must not run: a later destructor
+    // could otherwise free state it still reads.
+    return;
+  }
   if (xTaskCreatePinnedToCore(
           [](void* ctx) {
             auto* self = static_cast<ProgressManager*>(ctx);
@@ -71,11 +79,13 @@ void ProgressManager::begin() {
               // interval even if its notification raced a flush.
               bool owed = false;
               if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(FLUSH_INTERVAL_MS)) == 0) {
+                if (self->workerStopping_) break;
                 xSemaphoreTake(self->stateMutex_, portMAX_DELAY);
                 owed = self->writeQueued_;
                 xSemaphoreGive(self->stateMutex_);
                 if (!owed) continue;  // interval elapsed with nothing owed
               }
+              if (self->workerStopping_) break;
               LOG_INF(MUTEX_TAG, "worker: wake (queued=%d)", owed ? 1 : 0);
               const bool ok = self->flushChanged();
               LOG_DBG(MUTEX_TAG, "worker: stack high-water=%u bytes",
@@ -84,6 +94,8 @@ void ProgressManager::begin() {
                 LOG_ERR(MUTEX_TAG, "Worker flush failed (queued retry on next save)");
               }
             }
+            xSemaphoreGive(self->workerExit_);
+            vTaskDelete(nullptr);
           },
           WORKER_TASK_NAME, WORKER_STACK_BYTES, this, WORKER_PRIORITY, &worker_, 0) != pdPASS) {
     LOG_ERR(MUTEX_TAG, "Failed to create progress worker task");
@@ -91,6 +103,19 @@ void ProgressManager::begin() {
 }
 
 ProgressManager::~ProgressManager() {
+  // Quiesce the worker BEFORE releasing the state it reads. It acknowledges
+  // exactly once: after its loop leaves either a blocked wake (notification
+  // below) or an in-flight flush, and before vTaskDelete().
+  if (worker_ != nullptr) {
+    workerStopping_ = true;
+    xTaskNotifyGive(worker_);
+    if (workerExit_ != nullptr) {
+      // A flush can take several seconds on slow SD; waiting here is safe in
+      // the only teardown path (global static destruction after loop()).
+      xSemaphoreTake(workerExit_, portMAX_DELAY);
+    }
+    worker_ = nullptr;
+  }
   if (current_ != nullptr) {
     poolFree(current_);
     current_ = nullptr;
@@ -105,6 +130,11 @@ ProgressManager::~ProgressManager() {
   }
   if (diskMutex_ != nullptr) {
     vSemaphoreDelete(diskMutex_);
+    diskMutex_ = nullptr;
+  }
+  if (workerExit_ != nullptr) {
+    vSemaphoreDelete(workerExit_);
+    workerExit_ = nullptr;
   }
 }
 

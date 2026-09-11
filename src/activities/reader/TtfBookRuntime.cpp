@@ -316,6 +316,13 @@ void TtfBookRuntime::abortSession() {
   } else if (session_.done()) {
     finishSession();
     return;
+  } else {
+    // A layout-step failure can deactivate the session while the writer is
+    // still open. finish() closes/removes its .tmp handle (or commits nothing
+    // after a storage failure), so the storage can accept beginWrite again.
+    if (!writer_.finish()) {
+      LOG_ERR("TTFB", "Discarding failed build write for %s", cacheName_);
+    }
   }
   session_.abort();
   writer_ = PageCacheWriter{};
