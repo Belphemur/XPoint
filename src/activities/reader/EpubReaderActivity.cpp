@@ -1601,7 +1601,9 @@ void EpubReaderActivity::onReturnFromEndOfBook() {
 
 bool EpubReaderActivity::skipLoopDelay() {
 #if defined(CROSSPOINT_TTF_READER)
-  if (ttf_) return ttf_->sessionActive() && !buildHeapPaused;
+  if (ttf_) {
+    return ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive() && !buildHeapPaused;
+  }
 #endif
   return section && section->isBuilding() && !buildHeapPaused &&
          (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
@@ -2195,7 +2197,11 @@ void EpubReaderActivity::renderBookTtf() {
     ttfSpine = currentSpineIndex;
     ttfPage = -1;
     ttfPageCount = 0;
-    ttfCurrentCharStart = 0;
+    if (!ttfReflowJumpPending) {
+      // A settings/orientation reflow still needs the displayed page's char
+      // anchor — dropping it here would resolve the reflow to offset 0.
+      ttfCurrentCharStart = 0;
+    }
     const freeink::book::BookStatus st = ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     if (st == freeink::book::BookStatus::Stale) {
       LOG_DBG("ERS", "Stale TTF cache for spine %d — rebuilding", currentSpineIndex);
@@ -2349,7 +2355,9 @@ void EpubReaderActivity::renderBookTtf() {
     // renderContents pattern).
     prefetchNextChapterDuringDisplay();
     if (ttf_->sessionActive() && buildTickHeapGate()) {
-      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+      // Route through the tick so session completion reopens the committed
+      // cache (a raw stepBuild would leave the reader without a source).
+      ttfBackgroundBuildTick();
     }
     renderer.waitRefreshComplete();
   }
@@ -2396,6 +2404,10 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
         requestUpdate();
       } else {
         ttfPrefetchActive = false;
+        // The committed cache replaced the partial file the prefetch reader
+        // describes — drop it so the next tick reopens the complete cache
+        // instead of restarting a rebuild from the stale partial.
+        ttf_->dropPrefetch();
       }
     }
     return;
@@ -2468,7 +2480,8 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
 #endif
 
   if (isForwardTurn) {
-    if (ttfPage + 1 < static_cast<int>(ttfPageCount) || ttf_->sessionActive()) {
+    if (ttfPage + 1 < static_cast<int>(ttfPageCount) ||
+        (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive())) {
       ttfPage++;
       lastPageTurnTime = millis();
     } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
