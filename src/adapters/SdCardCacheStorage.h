@@ -53,6 +53,8 @@ class SdCardCacheStorage : public CacheStorage {
   // (allocation failed) makes every path-based operation fail.
   std::unique_ptr<char[]> pathBuf_;
   HalFile writeHandle_;  // the open .tmp between beginWrite()/endWrite()
+  bool writeFailed_ = false;
+  bool endWriteFailed_ = false;
 };
 
 }  // namespace book

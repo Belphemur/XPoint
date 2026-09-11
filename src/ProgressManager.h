@@ -81,7 +81,7 @@ class ProgressManager {
   // record fields when the 16-byte layout is on disk. Legacy (6/10-byte)
   // records degrade to a chapter-start restore (charOffset 0, generation 0).
   bool openBookTtf(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber, uint16_t& pageCount,
-                   uint32_t& charOffset, uint32_t& generation);
+                   uint32_t& charOffset, uint32_t& generation, bool& hasGeneration);
   // TTF reader position report: page.charStart + the generation it was laid
   // out under (same single-writer flush machinery as save()).
   void saveTtf(uint16_t spineIndex, uint16_t pageNumber, uint16_t pageCount, uint32_t charOffset, uint32_t generation);

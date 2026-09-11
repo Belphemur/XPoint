@@ -22,6 +22,7 @@ class SdCardCacheStorageTest : public ::testing::Test {
     Storage.failOnRenameCall = 0;
     Storage.renameCallCount = 0;
     HalFile::testFailClose = false;
+    HalFile::testFailWrite = false;
   }
 };
 
@@ -167,6 +168,35 @@ TEST_F(SdCardCacheStorageTest, BeginWriteRemovesStaleOld) {
 
   EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
   EXPECT_TRUE(Storage.exists("/cache/page1.fibp"));
+}
+
+TEST_F(SdCardCacheStorageTest, BeginWriteRestoresOldWhenFinalIsMissing) {
+  Storage.files["/cache/page1.fibp.old"] = "last-good-cache";
+  SdCardCacheStorage s(kDir);
+  EXPECT_TRUE(s.beginWrite("page1.fibp"));
+
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "last-good-cache");
+  EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
+  EXPECT_TRUE(Storage.exists("/cache/page1.fibp.tmp"));
+}
+
+TEST_F(SdCardCacheStorageTest, WriteFailurePreservesFinalDuringCleanup) {
+  Storage.files["/cache/page1.fibp"] = "last-good-cache";
+  SdCardCacheStorage s(kDir);
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  HalFile::testFailWrite = true;
+  EXPECT_FALSE(s.write("bad", 3));
+  HalFile::testFailWrite = false;
+
+  EXPECT_FALSE(s.endWrite());
+  EXPECT_TRUE(s.remove("page1.fibp"));
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "last-good-cache");
+  EXPECT_TRUE(Storage.exists("/cache/page1.fibp.tmp"));
+
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("retry", 5));
+  ASSERT_TRUE(s.endWrite());
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "retry");
 }
 
 // ── write/readBack basics over the write handle ─────────────────────────────

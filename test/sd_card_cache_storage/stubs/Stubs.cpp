@@ -5,6 +5,7 @@
 #include "HalStorage.h"
 
 bool HalFile::testFailClose = false;
+bool HalFile::testFailWrite = false;
 
 HalStorage HalStorage::instance;
 
