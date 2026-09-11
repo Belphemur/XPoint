@@ -1,0 +1,30 @@
+#pragma once
+
+#include <BookStorage.h>
+#include <HalStorage.h>
+
+namespace freeink {
+namespace book {
+
+// BookSource over one SD file through HalStorage (mutex-wrapped HalFile; SdFat
+// is never touched directly). The size is cached at open — the book file does
+// not change while the source is open. A failed open leaves the source
+// invalid: readAt() returns -1 and size() 0 instead of crashing.
+class SdCardBookSource : public BookSource {
+ public:
+  SdCardBookSource() = default;
+  explicit SdCardBookSource(const char* path);
+  ~SdCardBookSource() override = default;
+
+  bool isValid() const { return file_.isOpen(); }
+
+  int32_t readAt(uint64_t offset, void* dst, uint32_t len) override;
+  uint64_t size() const override { return isValid() ? sizeBytes_ : 0; }
+
+ private:
+  HalFile file_;
+  uint64_t sizeBytes_ = 0;
+};
+
+}  // namespace book
+}  // namespace freeink

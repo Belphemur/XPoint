@@ -1,0 +1,215 @@
+#include "TtfRenderDebugActivity.h"
+
+#if defined(CROSSPOINT_TTF_DEBUG)
+
+#include <Arduino.h>  // ESP heap counters
+#include <BookFontLoader.h>
+#include <GfxRenderer.h>
+#include <HalDisplay.h>
+#include <HalStorage.h>
+#include <I18n.h>
+#include <Logging.h>
+#include <Memory.h>
+#include <render/PageRenderer.h>
+
+#include <cstdint>
+#include <cstring>
+
+#include "CrossPointSettings.h"
+#include "adapters/FrameTargetFactory.h"
+#include "adapters/SdCardBookSource.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+
+namespace book = freeink::book;
+
+namespace {
+
+constexpr char kDebugTextPath[] = "/.crosspoint/ttf_debug.txt";
+constexpr uint16_t kBaseSizePx = 29;  // 14pt at 150 DPI
+
+// Hard-coded plain-text chapter (flash); paragraphs split on blank lines.
+const char kDebugText[] =
+    "It was a bright cold day in April, and the clocks were striking "
+    "thirteen. Winston Smith, his chin nuzzled into his breast in an effort "
+    "to escape the vile wind, slipped quickly through the glass doors of "
+    "Victory Mansions, though not quickly enough to prevent a swirl of "
+    "gritty dust from entering along with him.\n\n"
+    "The hallway smelt of boiled cabbage and old rag mats. At one end of it "
+    "a coloured poster, too large for indoor display, had been tacked to the "
+    "wall. It depicted simply an enormous face, more than a metre wide: the "
+    "face of a man of about forty-five, with a heavy black moustache and "
+    "ruggedly handsome features.\n\n"
+    "There were no windows in the room at all. On either side of it there "
+    "were shelves, and the shelves were crowded with books — reference "
+    "volumes, dictionaries, atlases, and the faded spines of novels nobody "
+    "had opened in years. The single lamp on the desk cast a pool of yellow "
+    "light across the open page, and outside the wind kept worrying the loose "
+    "tiles on the roof next door.\n\n"
+    "He had the feeling that he had seen this room before, or one exactly "
+    "like it, in some earlier fragment of his life: the same low ceiling, "
+    "the same humming radiator, the same small clock whose second hand "
+    "ticked with the patience of something that had all the time in the "
+    "world. He sat down, unfolded the paper, and began, at last, to read.\n";
+
+// PSRAM-only directive (design §3.3/§14.1): the native-TTF path — including
+// this rig — runs exclusively on PSRAM boards; every buffer (layout scratch
+// included) comes from PSRAM. PSRAM-less boards log a fatal screen and never
+// attempt layout. BookFontLoader itself is PSRAM-clean as of 7b9479d0 (glyph
+// arenas + fallback chain moved off DRAM BSS); the remaining Phase 2 debt is
+// the PSRAM-only compile-out + DRAM-tier deletion (kanban t_f7a102a2).
+#if defined(BOARD_HAS_PSRAM)
+// The engine's STANDARD profile (env:x4pro defines no FREEINK_BOOK_SMALL) has
+// a ~152KB fixture peak for ChapterLayout::layoutPlainText (freeink-book.md
+// "Memory profiles") — Standard kParTextCap=8192 x3 (24KB) + span/run/line
+// arrays + styleText (12KB) + CSS rule table (16 rules) + page arena (24KB) +
+// the 4KB read buffer — hence the design §3.3 256KB budget (headroom over
+// 152KB; failure is a clean OutOfMemory with failedAllocSize() logged).
+constexpr size_t kScratchBytes = 256 * 1024;
+#endif
+
+// Renders page 0 as it arrives, then stops layout. Runs are consumed in the
+// callback — they are valid only while onPage() executes.
+struct DebugSink : book::PageSink {
+  book::FontChain& fonts;
+  const book::FrameTarget& target;
+  bool rendered = false;
+
+  DebugSink(book::FontChain& f, const book::FrameTarget& t) : fonts(f), target(t) {}
+
+  bool onPage(const book::Page& page) override {
+    if (!rendered && page.runCount > 0) {
+      rendered = true;
+      book::PageRenderer::renderText(page, fonts, target);
+    }
+    return false;  // first page only
+  }
+};
+
+}  // namespace
+
+void TtfRenderDebugActivity::onEnter() {
+  Activity::onEnter();
+
+  // The ActivityManager render loop applies SETTINGS.screenInverted for other
+  // activities; this rig draws directly in onEnter, so apply polarity here too
+  // (pattern: SleepActivity::onEnter) or night-mode leaves the screen inverted.
+  display.setInverted(SETTINGS.screenInverted != 0);
+  const uint32_t heapBefore = ESP.getFreeHeap();
+  const uint32_t psramBefore = ESP.getFreePsram();
+  LOG_INF("TTFDBG", "heap before: %u psram: %u", heapBefore, psramBefore);
+
+#if !defined(BOARD_HAS_PSRAM)
+  LOG_ERR("TTFDBG", "native TTF unavailable (no PSRAM)");
+  renderer.clearScreen();
+  const Rect screenRect = UITheme::getInstance().getScreenSafeArea(renderer);
+  UITheme::drawCenteredText(renderer, screenRect, UI_10_FONT_ID, renderer.getScreenHeight() / 2,
+                            tr(STR_TTF_DEBUG_RENDER));
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  requestUpdate();
+  return;
+#else
+  const auto showFatal = [this]() {
+    renderer.clearScreen();
+    const Rect screenRect = UITheme::getInstance().getScreenSafeArea(renderer);
+    UITheme::drawCenteredText(renderer, screenRect, UI_10_FONT_ID, renderer.getScreenHeight() / 2,
+                              tr(STR_TTF_DEBUG_RENDER));
+    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+    requestUpdate();
+  };
+
+  // Seed the debug chapter once. The settings dir may not exist on a fresh
+  // card; openFileForWrite does not create parent directories. The seed is
+  // written to a temp file and renamed into place, so a power loss mid-write
+  // can never leave a torn file that exists() would accept as a valid seed.
+  if (!Storage.exists(kDebugTextPath)) {
+    Storage.ensureDirectoryExists("/.crosspoint");
+    constexpr char kSeedTmpPath[] = "/.crosspoint/ttf_debug.txt.tmp";
+    HalFile f;
+    if (!Storage.openFileForWrite("TTFDBG", kSeedTmpPath, f)) {
+      LOG_ERR("TTFDBG", "text seed write failed: %s", kSeedTmpPath);
+      showFatal();
+      return;
+    }
+    if (f.write(kDebugText, strlen(kDebugText)) != strlen(kDebugText)) {
+      // A partial or unpublishable seed must not count as valid next boot.
+      f.close();
+      Storage.remove(kSeedTmpPath);
+      LOG_ERR("TTFDBG", "text seed short write: %s", kSeedTmpPath);
+      showFatal();
+      return;
+    }
+    if (!f.close()) {
+      Storage.remove(kSeedTmpPath);
+      LOG_ERR("TTFDBG", "text seed close failed: %s", kSeedTmpPath);
+      showFatal();
+      return;
+    }
+    if (!Storage.rename(kSeedTmpPath, kDebugTextPath)) {
+      Storage.remove(kSeedTmpPath);
+      LOG_ERR("TTFDBG", "text seed publish (rename) failed: %s", kDebugTextPath);
+      showFatal();
+      return;
+    }
+  }
+
+  book::fontLoader.ensureLoaded();
+  book::FontChain* fonts = book::fontLoader.getReaderFont();
+  book::SdCardBookSource source(kDebugTextPath);
+  if (!source.isValid()) {
+    LOG_ERR("TTFDBG", "debug text source unavailable: %s", kDebugTextPath);
+    showFatal();
+    return;
+  }
+
+  book::LayoutParams params;
+  params.pageWidth = renderer.getScreenWidth();
+  params.pageHeight = renderer.getScreenHeight();
+  int viewTop, viewRight, viewBottom, viewLeft;
+  renderer.getOrientedViewableTRBL(&viewTop, &viewRight, &viewBottom, &viewLeft);
+  params.marginTop = static_cast<int16_t>(viewTop + SETTINGS.screenMargin);
+  params.marginRight = static_cast<int16_t>(viewRight + SETTINGS.screenMargin);
+  params.marginBottom = static_cast<int16_t>(viewBottom + SETTINGS.screenMargin);
+  params.marginLeft = static_cast<int16_t>(viewLeft + SETTINGS.screenMargin);
+  params.baseSizePx = kBaseSizePx;
+  params.language = "en";
+  params.font = fonts;
+
+  PoolBytes scratchBytes = poolMakeBytes(kScratchBytes);
+  if (!scratchBytes) {
+    LOG_ERR("TTFDBG", "OOM: %u bytes PSRAM scratch", static_cast<unsigned>(kScratchBytes));
+    showFatal();
+    return;
+  }
+  uint8_t* scratchBase = scratchBytes.get();
+
+  book::Arena scratch;
+  scratch.init(scratchBase, kScratchBytes);
+
+  book::FrameTarget target = makeFrameTarget(renderer);
+  renderer.clearScreen(0xFF);  // white background; PageRenderer inks glyphs only
+
+  DebugSink sink(*fonts, target);
+  uint32_t pageCount = 0;
+  const book::BookStatus status = book::ChapterLayout::layoutPlainText(source, params, scratch, sink, &pageCount);
+
+  LOG_INF("TTFDBG", "status=%s pages=%u scratchHigh=%u failedAlloc=%u heap %u->%u psram %u->%u", bookStatusName(status),
+          pageCount, scratch.highWater(), scratch.failedAllocSize(), heapBefore, ESP.getFreeHeap(), psramBefore,
+          ESP.getFreePsram());
+
+  renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  requestUpdate();
+#endif  // BOARD_HAS_PSRAM
+}
+
+void TtfRenderDebugActivity::loop() {
+  mappedInput.update();
+  using B = MappedInputManager::Button;
+  if (mappedInput.wasReleased(B::Back) || mappedInput.wasReleased(B::Confirm) || mappedInput.wasReleased(B::Left) ||
+      mappedInput.wasReleased(B::Right) || mappedInput.wasReleased(B::Up) || mappedInput.wasReleased(B::Down) ||
+      mappedInput.wasReleased(B::PageBack) || mappedInput.wasReleased(B::PageForward)) {
+    finish();
+  }
+}
+
+#endif  // CROSSPOINT_TTF_DEBUG

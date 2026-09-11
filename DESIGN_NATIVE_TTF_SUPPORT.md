@@ -130,7 +130,7 @@ FreeInkUI is already linked (`platformio.ini:133`) and is used for reader toolba
 
 Heap pressure data points: `~380KB` usable DRAM on C3 (project constraint), the wolfSSL memory comment cites *"the ~50KB free heap a reading session leaves"* (platformio.ini:60-62), and `EpubReaderActivity` gates builds at 32KB free / 16KB max-alloc (EpubReaderActivity.h:149-150). The `firmware_tuned` core rebuild reclaims ~32–37KB (:158-183).
 
-**Consequence for this design:** the brief's "8 MB PSRAM on ESP32-C3" assumption is **not true for this repo's build matrix**. `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` returns `nullptr` on every C3 environment. The font system must therefore be a **two-tier design** (§3.3): a PSRAM tier for X4 Pro/X4C/Paper Mono (S3), and a PSRAM-less tier for X4/Sticky that fits inside the existing heap-gate discipline. FreeInkBook's `FREEINK_BOOK_SMALL` profile and `ChapterLayoutSession`'s parse-scratch splitting exist precisely for the second tier.
+**Consequence for this design:** the brief's "8 MB PSRAM on ESP32-C3" assumption is **not true for this repo's build matrix**. `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` returns `nullptr` on every C3 environment. **Per the round-2 directive (§3.3), the native-TTF feature is PSRAM-ONLY**: it is available on X4 Pro/X4C/Paper Mono (S3) and **unavailable on X4/Sticky**, where the built-in bitmap fallback chain is the only reader font and no font bytes are ever allocated.
 
 ---
 
@@ -213,41 +213,45 @@ extern BookFontLoader fontLoader;   // defined in main.cpp, beside sdFontSystem 
 
 **Built-in fallback**: a singleton `book::FontChain` wrapping `BitmapBookFont` instances over the built-in bitmap font data (one `BitmapBookFont` per *style* — the type's metrics ignore `sizePx` but its `coverage_[64*64]` (FreeInkUIBookFont.h:86) is a 4KB mutable per-instance buffer: 4 styles = 16KB, accounted in the C3 budget as static BSS — this cost was missing from the 104KB arena figure and is added here). When `SETTINGS` selects a built-in family, or a TTF load fails, `getReaderFont()` returns this chain. This keeps the reader functional on day one with **zero** TTFs on the card, and gives the release builds a safety net.
 
-### 3.3 Memory strategy (two tiers, PSRAM probe at runtime)
+### 3.3 Memory strategy (PSRAM-only, per round-2 directive)
 
-**The critical correction:** C3 builds have no PSRAM (§2.4), so `MALLOC_CAP_SPIRAM` is a *PSRAM-present tier*, not a universal strategy. Tier selection at `begin()`:
+> **P1 transitional (see §14.1):** on PSRAM-less builds this loader exists in the binary for the `CROSSPOINT_TTF_DEBUG` rig only; Phase 2 compile-outs it per §14.1. The fallback chain below is `BitmapBookFont` in the P1 interim; Phase 2 swaps it to `EpdBookFont` per §14.5.
+
+**USER DIRECTIVE (round-2): the native-TTF feature is PSRAM-ONLY. There is no DRAM tier for font bytes.** On boards without `BOARD_HAS_PSRAM` (ESP32-C3 X4/Sticky) the feature is **not available**: `getReaderFont()` returns the built-in `BitmapBookFont` fallback chain (`BookFontLoader::builtinFallback()`, `src/BookFontLoader.cpp` — the P1a reference implementation), font families stay listed-but-unavailable, and `begin()` logs once "native TTF fonts unavailable (no PSRAM)". The former DRAM-tier machinery (framebuffer-loan `loadFaceBytes`, `initBudget`/`remainingBudget_`, `kMaxDramFontBytes`) is **REMOVED BY DIRECTIVE**; in the merged P1a loader that logic is legacy and will be deleted in Phase 2. PSRAM-less builds must never allocate font bytes.
+
+On PSRAM boards (X4 Pro / X4C / Paper Mono, 8MB), font file bytes load via `poolMakeBytes` (`PoolBytes` → `poolMalloc` → `heap_caps_malloc(MALLOC_CAP_SPIRAM)`, `lib/Memory/Memory.h`) and stay **resident for the face's lifetime** — `TtfFont::init` borrows the buffer (stb_truetype holds pointers into it; TtfFont.h "must outlive the font"), so a transient load-and-release model is not an option. A per-face size guard (2MB) precedes the allocation (CWE-400). Presence is the discriminator at `begin()`:
 
 ```cpp
-// Presence (total capacity, not free) is the tier discriminator.
+// Presence (total capacity, not free) is the discriminator.
 // heap_caps_get_free_size(MALLOC_CAP_SPIRAM) returns currently free bytes —
-// an S3 with low free PSRAM would wrongly select DramC3. Use esp_psram_size()
-// (0 when no PSRAM) or heap_caps_get_total_size(MALLOC_CAP_SPIRAM).
-const size_t psramTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);  // 0 on C3/X4/Sticky
-tier_ = (psramTotal >= 4u * 1024 * 1024) ? Tier::PsramS3 : Tier::DramC3;
+// an S3 with low free PSRAM must not be treated as no-PSRAM.
+// esp_psram_size() is 0 when no PSRAM is fitted.
+const size_t psramTotal = esp_psram_size();  // 0 on C3/X4/Sticky
+const bool nativeTtfAvailable = psramTotal >= 4u * 1024 * 1024;
 ```
 
-Arena allocation always via `heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` when tier is PsramS3 (explicit capability — plain `malloc()` does not reliably place large blocks in PSRAM, and on the C3 there is no PSRAM to place into), else `makeUniqueNoThrow<uint8_t[]>(cap)` into DRAM (`lib/Memory/Memory.h`; bare `new` aborts under `-fno-exceptions`).
+Arena allocation always goes to PSRAM via `heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` (explicit capability — plain `malloc()` does not reliably place large blocks in PSRAM). On PSRAM-less boards no native-TTF arenas are ever allocated; the bitmap fallback needs none.
 
-**Tier budgets** (caller-provided arenas; `Arena` never allocates internally):
+**Arena budgets** (caller-provided arenas; `Arena` never allocates internally). The C3/Sticky column is historical P1 sizing kept for reference only — the `CROSSPOINT_TTF_DEBUG` rig is PSRAM-only too (§14.1 compile-time split), so on PSRAM-less boards **no native-TTF arena is ever allocated** — layout scratch included — and the path is bitmap-fallback only per the directive:
 
-| Arena | Purpose | C3 / Sticky (DRAM) | X4 Pro / X4C / Paper Mono (PSRAM) |
+| Arena | Purpose | C3 / Sticky (debug rig only) | X4 Pro / X4C / Paper Mono (PSRAM) |
 |---|---|---|---|
-| Font file bytes | `TtfFont::init` borrows the **already-loaded** buffer | **gate: loaded into a 48KB scratch buffer** borrowed from the framebuffer loan during `loadFaceBytes`, parsed by stb_truetype into `glyphArena`-resident glyph data, then the raw buffer is released; ≤ 256KB files fit one-at-a-time (see font-size gate below) | resident per loaded face, `heap_caps_malloc` in `MALLOC_CAP_SPIRAM`; target ≤ 4MB/file |
+| Font file bytes | `TtfFont::init` borrows the buffer for the face's lifetime | **n/a — native TTF unavailable (no PSRAM, directive §3.3)** | resident per loaded face in `PoolBytes` (`poolMakeBytes`, `heap_caps_malloc` in `MALLOC_CAP_SPIRAM`); 2MB per-face guard |
 | `bookArena` | `Book::open` container data (catalog, toc, manifest) | 32KB | 512KB |
-| `scratch` (layout) | `ChapterLayoutSession` block flow, line breaking, `Page` emission | 40KB | 256KB |
+| `scratch` (layout) | `ChapterLayoutSession` block flow, line breaking, `Page` emission | **n/a — never allocated** (debug rig is PSRAM-only) | 256KB (PSRAM via `poolMakeBytes`; STANDARD profile fixture peak ~152KB — see §13 item 6) |
 | `parseScratch` | inflate window + decompressor + XML | **4KB peak** during build ticks (loaned from framebuffer via `FrameBufferLoan`, not resident) | 46KB (drops to ~8KB resident when `chapterSource` extraction is used) |
 | `glyphArena` (per active chain) | `TtfFont` direct-mapped advance+glyph cache | 24KB | 64KB |
 | FIBP writer index arena | `PageCacheWriter::begin` index chunks (~1KB per 128 pages) | 8KB | 8KB |
 | Engine parser heap (Expat) | transient `XmlSaxSession::open()` — `XmlSax.h:11` states Expat's internal pools use the **system allocator**, bounded to the chapter XML size | accounted as transient, ≤ 16KB measured on OPF/NCX | same |
 | framebuffer | existing `GfxRenderer` 48KB single buffer | unchanged | unchanged |
 
-C3 steady state during a build tick ≈ 32 + 40 + 24 + 8 = **104KB of caller arenas**, plus the borrowed framebuffer, a transient ~16KB Expat heap, and 16KB static BSS for `BitmapBookFont` coverage buffers (4 styles × 4KB). Font file bytes are NOT resident (they pass through the loaned framebuffer buffer during `loadFaceBytes` and are released). Total static+transient DRAM ≈ 104KB + 16KB + 48KB framebuffer = ~168KB resident + ~16KB Expat, leaving ~150KB for activity state, stacks, WiFi, and the 32KB/16KB heap gates on C3.
+Debug-rig steady state on PSRAM boards ≈ **256KB of PSRAM layout scratch** (`poolMakeBytes`) plus the 16KB static BSS for `BitmapBookFont` coverage buffers (4 styles × 4KB — P1a DRAM debt, deleted in Phase 2, kanban t_f7a102a2). Per the directive (§3.3), native-TTF arenas and resident font bytes exist **only on PSRAM boards**; PSRAM-less boards never allocate them and keep the bitmap fallback.
 
-1. The reader **already** loans the 48KB framebuffer to builders via `GfxRenderer::releaseFrameBufferForBuild()` / `FrameBufferLoan` (GfxRenderer.h:405-424; used at EpubReaderActivity.cpp:1509). Phase 2 keeps this idiom: during `ChapterLayoutSession::step()` windows, `parseScratch` is served from the loaned framebuffer region (published through `buildscratch::claim()`), exactly as `InflateStream` consumes it today.
+1. The reader **already** loans the 48KB framebuffer to builders via `GfxRenderer::releaseFrameBufferForBuild()` / `FrameBufferLoan` (GfxRenderer.h:405-424; used at EpubReaderActivity.cpp:1509). This idiom remains for the existing EPUB builder; the native-TTF path itself is PSRAM-only (directive, §3.3), so TTF layout windows on PSRAM boards draw `parseScratch` from PSRAM rather than the loaned region. Font bytes never use the loan — they are PSRAM-resident for the face lifetime.
 2. Existing heap gates carry over verbatim: `buildTickHeapGate()` (EpubReaderActivity.cpp:471-476) pauses builds below `BACKGROUND_BUILD_MIN_FREE_HEAP` (32KB) / `BACKGROUND_BUILD_MIN_MAX_ALLOC` (16KB).
 3. `-DFREEINK_BOOK_SMALL=1` on the C3 environments selects the engine's small capacities (advance slots 256 / glyph slots 64, `kMaxPages 4096`, `kMaxAnchors 192`), matching the ~200KB-free-heap class the profile was built for. S3 environments use the default (STANDARD) profile. **Flag name check: the draft's `-DFREEINK_BOOK_PROFILE=1` does not exist.**
 
-**Font size gate (C3):** font file bytes are loaded into a borrowable scratch buffer (the framebuffer loan, §3.3) during `loadFaceBytes`, not kept resident. The gate: `fileSize ≤ kMaxDramFontBytes` where the constant is **derived in Phase 2** from `ESP.getFreeHeap()` and `ESP.getMaxAllocHeap()` measured after all arenas are allocated (preserving the 32KB/16KB gate floors) — not a hardcoded 256KB. If a file exceeds the measured limit, the loader logs `LOG_ERR("BFNT", "Font %s too large for DRAM tier (%u > %u)", ...)` and keeps the family listed but greyed out in the Font tab (§12). A 700KB Latin serif will fail this gate on C3. On the PSRAM tier the gate is free-PSRAM availability instead. stb_truetype requires the **font file addressable in memory** during `init()` (to build the `stbtt_fontinfo`), but only the parsed glyph data stays resident in the glyph arena — the raw file bytes are released after `init()` returns. This keeps stb_truetype's requirement honest until a streaming (FreeType) backend arrives behind the same `BookFont` interface (`freeink-sdk/docs/freeink-book.md`). **Malformed-font safety**: stb_truetype warns against untrusted fonts (offsets not range-checked). `TtfFont::init` only checks `len < 12` (TtfFont.cpp:36) — `BookFontLoader` must add a validation boundary before `init()`: basic `sfnt` header sanity (table directory bounds, `numTables` sanity), and on failure skip the face with a `LOG_ERR`. Phase 2 corpus includes 2 deliberately malformed fonts to verify the boundary.
+**Font size gate (PSRAM-only):** with the DRAM tier removed by directive (§3.3), there is no `kMaxDramFontBytes` budget and no framebuffer-loan load path. The gate on the PSRAM tier is the 2MB per-face guard plus free-PSRAM availability at scan time; a face that fails keeps the family listed but greyed out in the Font tab (§12). stb_truetype requires the **font file addressable in memory** during `init()` (to build the `stbtt_fontinfo`) — satisfied by the PSRAM-resident `PoolBytes`, which must outlive the face. A streaming (FreeType) backend may later replace this behind the same `BookFont` interface (`freeink-sdk/docs/freeink-book.md`). **Malformed-font safety**: stb_truetype warns against untrusted fonts (offsets not range-checked). `TtfFont::init` only checks `len < 12` (TtfFont.cpp:36) — `BookFontLoader` must add a validation boundary before `init()`: basic `sfnt` header sanity (table directory bounds, `numTables` sanity), and on failure skip the face with a `LOG_ERR`. Phase 2 corpus includes 2 deliberately malformed fonts to verify the boundary.
 
 **Glyph cache behavior note:** when the glyph arena fills, `TtfFont` flushes the entire cache and rebuilds (no LRU). At C3 sizes (24KB) on a book mixing scripts this can thrash; the mitigation is the same as today's `.cpfont` prewarm economics — one active size, per-page codepoint sets, and FIBP so cached pages skip **layout** but still **rasterize glyphs** on every display (cache hits call `PageRenderer::renderText`, not just reuse stored pixels; the glyph arena is not checkpointed in FIBP). `renderText`'s `fontFor` + `rasterize` hit the direct-mapped advance cache first. Measured via `Arena::highWater()` / `failedAllocSize()` logging in Phase 2 (§9). Note: a single glyph arena backs all faces in a chain — when `TtfFont::flushGlyphs()` calls `glyphArena_->release(glyphBase_)` (TtfFont.cpp:133), it rewinds to that face's init mark, invalidating glyphs cached by later-initialized faces. The initial design uses one shared arena; Phase 2 must verify that alternating styles does not trigger cross-face cache invalidation storms, with per-face arenas as the fix if it does.
 
@@ -352,7 +356,7 @@ Size handling: `readerFontPointSizes()` (ReaderFontSizes.h:21) gains a TTF branc
 
 Point→pixel conversion (the one place the two unit systems meet): `baseSizePx = roundf(pointSize * 150.0f / 72.0f)` — 150 DPI is the existing convention of the SD-font converter and the built-in UI sizes (`kUiFontSizes` SMALL=8pt / UI_10=10pt / UI_12=12pt, SdCardFontSystem.cpp:31-35, comment "at 150 DPI, matching the SD-font converter"). So 14pt → 29px `baseSizePx`. This keeps TTF optical sizes visually consistent with the bitmap families users already know.
 
-**CJK fallback in the TTF chain**: Phase 4 removes `SdCardFontSystem` from the reader path, but retains it for UI CJK. A `BookFont` adapter (`src/adapters/SdCardBookFontAdapter.{h,cpp}`) wraps an `SdCardFont` as a `book::RenderFont` so the TTF chain's `FontChain::fontFor(cp, styleFlags, &faceFlagsOut)` can fall back to the SD font for CJK codepoints. The adapter calls `sdFont_->getEpdFont(style)->getGlyph(cp)` (SdCardFont.h:104 → EpdFont.h:13) to obtain the `EpdGlyph*`, then reads the 2-bit bitmap from `EpdFontData::bitmap` at `EpdGlyph.dataOffset` (EpdFontData.h:138) and upscales tone 0→0, tone 3→255 to 8-bit coverage, returning a `GlyphBitmap` for the current `sizePx`. If the SD font lacks the glyph, the adapter returns `nullptr` to let the engine's replacement-glyph path handle it. This keeps oversized CJK TTFs (which fail the 256KB C3 DRAM gate) readable via the existing SD-card CJK `.cpfont` path.
+**CJK in the reader chain (v1: none)**: Phase 4 removes `SdCardFontSystem` from the reader path, but retains it for UI CJK. No SD-`.cpfont` fallback is wired into the reader chain: there is no `SdCardBookFontAdapter`, and under directive §3.3/§14.4 the PSRAM-less device class never loads font bytes at all, so an SD-font CJK adapter would have no data source there. On PSRAM-less boards the reader chain is the `BitmapBookFont` fallback only (§14.1); CJK text renders only as far as the builtin bitmap families' coverage goes — their Atkinson HN glyph data already merges `NotoSansHebrew`/`NotoSansArabic` (see the `fontconvert.py` command lines in `lib/EpdFont/builtinFonts/*.h`), but **CJK ideographs are NOT covered** and render as missing glyphs. This is a documented v1 limitation (risk R2); the FreeType streaming upgrade behind the `BookFont` interface is the revisit path, not an `.cpfont` reader fallback.
 
 ### 3.7 Font manifest: scan + optional manifest (decision)
 
@@ -361,7 +365,11 @@ Point→pixel conversion (the one place the two unit systems meet): `baseSizePx 
 - SD is user-writable; any manifest can rot (renamed/deleted files, manual copies). `SdCardFontRegistry::discover()` already proves scan-first works well in this codebase and drives `VISIBLE_BUILTIN_FONT_COUNT + N` UI lists (TextSettingsActivity.cpp:81-91).
 - The engine cannot derive family/style identity from a bare file reliably — `TtfFont::init` exposes no name table API, and FreeInkBook does not parse `name` tables. So identity needs *either* a manifest or a filename convention.
 
-Decision: `/fonts/` is scanned for `*.ttf`/`*.otf` (non-recursive). Family grouping uses **filename convention**: `Family-Regular.ttf`, `Family-Bold.ttf`, `Family-Italic.ttf`, `Family-BoldItalic.ttf` (suffix match, case-insensitive); a file with no recognized suffix is a single-style `Regular` family named by its stem. `free-fonts.json` (same directory) is *optional* and only enriches: `{"families":[{"name":"Literata","display":"Literata","faces":{"regular":"literata-regular.ttf","bold":"literata-bold.ttf","italic":"literata-italic.ttf","boldItalic":"literata-bolditalic.ttf"}}]}` — it may also pin display names and license strings for the future download UI. When manifest and disk disagree, disk wins and the stale entry is dropped with a `LOG_DBG`.
+Decision: `/fonts/` directory layout follows the authoritative §14.4 contract — one subfolder per family, reusing the SAME folders as the legacy bitmap registry, both roots (`/fonts` + hidden `/.fonts`), `.ttf`/`.otf` accepted only inside family folders. The details of the walk, filtering, and one-level depth are specified in §14.4 and are not repeated here. What §3.7 still contributes beyond §14.4:
+
+- **`free-fonts.json` semantics**: the root-level manifest is *optional* and only enriches: `{"families":[{"name":"Literata","display":"Literata","faces":{"regular":"literata-regular.ttf","bold":"literata-bold.ttf","italic":"literata-italic.ttf","boldItalic":"literata-bolditalic.ttf"}}]}` — it may also pin display names and license strings for the future download UI. When manifest and disk disagree, disk wins and the stale entry is dropped with a `LOG_DBG`.
+- **Disk-wins rule**: scanning is the source of truth (SD is user-writable; any manifest can rot); `SdCardFontRegistry::discover()` already proves scan-first works well in this codebase (TextSettingsActivity.cpp:81-91).
+- **Style inference**: per-file style detection follows §14.4's priority table; the style-availability behavior below applies unchanged.
 
 Style availability is honest: a family whose chain registers only `Regular` still works — `FontChain::fontFor(cp, StyleBold, &faceFlagsOut)` falls back to the regular face and reports the shortfall via `faceFlagsOut`; the fingerprint includes `styleCoverage()` so installing the real bold file later triggers correct re-layout (§3.4). `PageRenderer::renderText` already stroke-simulates the missing bold face: it double-strikes glyphs +1px when the selected face is not bold (PageRenderer.cpp:183-195, verified in this worktree), so bold needs no upstream ask; italic shortfall degrades to regular glyphs with no synthetic slant (§8 R7).
 
@@ -377,7 +385,7 @@ Phased, each ending in a verifiable gate. `pio run` (default C3 env) must pass a
 - Gate: `pio run` links clean; `bookStatusName()` reachable in a `LOG_DBG`.
 
 **Phase 1 — Font loading + storage adapters (no reader changes)**
-- `src/BookFontLoader.{h,cpp}`: scan, manifest, two-tier allocation, `FontChain`, `fontFingerprint()`, builtin `BitmapBookFont` fallback.
+- `src/BookFontLoader.{h,cpp}`: scan, manifest, PSRAM-only font-byte loading (round-2 directive: the P1a two-tier allocation is legacy and its DRAM machinery is deleted in Phase 2), `FontChain`, `fontFingerprint()`, builtin `BitmapBookFont` fallback.
 - `src/adapters/SdCardBookSource.{h,cpp}`: `BookSource` over `HalFile` (`Storage.openFileForRead`, mutex-wrapped — SdFat must never be touched directly per AGENTS.md).
 - `src/adapters/SdCardCacheStorage.{h,cpp}`: `CacheStorage` over `HalFile` with temp-file + rename `endWrite()` (torn-file safety the interface docs require).
 - `src/adapters/FrameTargetFactory.{h,cpp}`: orientation → `FrameRotation` table (§3.5).
@@ -436,8 +444,8 @@ Phased, each ending in a verifiable gate. `pio run` (default C3 env) must pass a
 
 | # | Decision | Rationale (evidence-based) |
 |---|---|---|
-| 1 | **stb_truetype via `TtfFont`, not FreeType.** Whole-file residency accepted; 256KB DRAM gate on C3, ~1MB PSRAM budget on S3. | Zero new dependencies (engine vendors stb); FreeType streaming for multi-MB CJK is the documented upgrade path in `freeink-sdk/docs/freeink-book.md` behind the same `BookFont` interface — swapping later costs no call-site changes. |
-| 2 | **Explicit two-tier memory strategy with runtime PSRAM presence probe.** | `platformio.ini` proves C3 envs ship PSRAM-less (§2.4); `heap_caps_get_total_size(MALLOC_CAP_SPIRAM)` (not `get_free_size`, which returns free bytes not total capacity — see §3.3) is the tier discriminator. Plain `malloc` is not a PSRAM strategy. `-DFREEINK_BOOK_SMALL=1` on C3 aligns the engine's internal capacities with the same tier. |
+| 1 | **stb_truetype via `TtfFont`, not FreeType.** Whole-file residency in PSRAM only (directive §3.3 — no DRAM tier); 2MB per-face guard. | Zero new dependencies (engine vendors stb); FreeType streaming for multi-MB CJK is the documented upgrade path in `freeink-sdk/docs/freeink-book.md` behind the same `BookFont` interface — swapping later costs no call-site changes. |
+| 2 | **PSRAM-only font-byte residency with a runtime PSRAM presence probe.** | `platformio.ini` proves C3 envs ship PSRAM-less (§2.4); `esp_psram_size()` (0 when no PSRAM — not `heap_caps_get_free_size`, which returns free bytes, see §3.3) is the availability discriminator; PSRAM-less boards get no TTF path at all per the directive. Plain `malloc` is not a PSRAM strategy. |
 | 3 | **FIBP + `layoutGenerationHash(params, fontFingerprint)` replaces the Section `.bin` cache.** | Generalizes the proven `spec`-validation design (Section.cpp:195) to settings the engine owns; partial-file suspend matches the existing partial-`.bin` UX; `pageForChar`/`charForAnchor` cover progress restore without a parallel index. |
 | 4 | **Keep `GfxRenderer` + EpdFont for UI chrome.** | ~80 global font objects and every menu/settings/popup draw path are id-currency; rewriting chrome is high-risk/zero reader value. `BitmapBookFont` bridges the two worlds for the reader's fallback chain. |
 | 5 | **Engine consumed as submodule symlink, unmodified except gated extensions.** | `platformio.ini` already uses this pattern for FreeInkUI (:133). Engine-side changes stay narrow and flagged upstream: (a) letter-spacing field on `LayoutParams` (§5.7); (b) the Phase 3.5 parity asks — strikethrough flag+arm+CSS, per-run char offset, synthetic-hyphen flag, drawn `<hr>`, ruby. Synthetic bold needs no ask: `PageRenderer::renderText` already double-strikes +1px on a style shortfall (PageRenderer.cpp:183-195). |
@@ -454,7 +462,7 @@ Phased, each ending in a verifiable gate. `pio run` (default C3 env) must pass a
 
 | File | Purpose |
 |---|---|
-| `src/BookFontLoader.{h,cpp}` | TTF discovery, two-tier loading, `FontChain` ownership, fingerprints (§3.2) |
+| `src/BookFontLoader.{h,cpp}` | TTF discovery, PSRAM-only loading (§3.3), `FontChain` ownership, fingerprints (§3.2) |
 | `src/adapters/SdCardBookSource.{h,cpp}` | `book::BookSource` over `HalFile` |
 | `src/adapters/SdCardCacheStorage.{h,cpp}` | `book::CacheStorage` over `HalFile`, temp+rename |
 | `src/adapters/FrameTargetFactory.{h,cpp}` | `GfxRenderer` state → `book::FrameTarget` (§3.5 table) |
@@ -493,7 +501,7 @@ Aligned with the project pattern hierarchy (LOG_ERR + return false dominant; `as
 | Failure | Detection | Response |
 |---|---|---|
 | `heap_caps_malloc`/`makeUniqueNoThrow` OOM (arena or font bytes) | `nullptr` | `LOG_ERR("BFNT", "OOM: %u bytes (tier=%s)", ...)`; fall back to the builtin `BitmapBookFont` chain; reader stays functional |
-| Font file too large for DRAM tier | `fileSize > kMaxDramFontBytes` at scan time | family listed but disabled in UI with a size hint; selection refused |
+| Font file too large / PSRAM exhausted | 2MB per-face guard or free-PSRAM unavailable at scan time (PSRAM-only, §3.3) | family listed but disabled in UI with a size hint; selection refused |
 | `TtfFont::init` failure (corrupt/unsupported) | `ready() == false` | family dropped from the active list, `LOG_ERR`; fall back |
 | Arena exhaustion mid-layout | `Arena::alloc` `nullptr` / `failedAllocSize()` | `ChapterLayout` returns `OutOfMemory` → activity shows the existing build-error popup (the `showBuildError` lambda inside `renderBook()`, EpubReaderActivity.cpp:1427), keeps prior page displayed |
 | Missing glyphs (CJK in a Latin-only chain) | `renderText` `firstMissingOut` / return count | logged once per page (`LOG_DBG("BFNT", "missing=%u first=U+%04X", ...)`); visible gaps like today's tofu, no crash |
@@ -510,8 +518,8 @@ All allocations go through `makeUniqueNoThrow`/`heap_caps_malloc` with explicit 
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| R1 | **C3 PSRAM-less budget insufficient** (arenas + transient Expat heap + activity state + stacks) | Medium | High | Two-tier design (§3.3); SMALL profile; framebuffer-loaned `parseScratch`; font bytes not resident (loaded via framebuffer loan, §3.3); heap gates carried over; per-page FIBP so cached pages skip **layout** (but still rasterize glyphs — see R4). Font-size gate derived from measured free/max-alloc heap after resident arenas (§3.3). Measured gates in Phase 2; descope slider = smaller `glyphArena` first, then `scratch`. |
-| R2 | **CJK/very large TTF cannot meet the DRAM-tier loading path** on C3 | High (eventually) | Medium | Hard size gate (§3.3: ≤ 256KB files load one-at-a time via framebuffer loan; larger files refused on C3 with a UI hint); CJK readable via bitmap fallback chain (retained `SdCardFontSystem` CJK path); FreeType streaming upgrade documented behind `BookFont` for PSRAM-tier. |
+| R1 | **C3 PSRAM-less budget insufficient** (arenas + transient Expat heap + activity state + stacks) | Medium | High | **Resolved by directive (§3.3)**: native TTF is unavailable on PSRAM-less boards — no font bytes and no TTF arenas are ever allocated there; the reader uses the built-in bitmap fallback chain, so the historical 32KB/16KB heap gates are the only C3 cost. The legacy DRAM budget machinery in the merged P1a loader is deleted in Phase 2. On PSRAM boards the SMALL/default profile and FIBP (cached pages skip **layout**, still rasterize glyphs — see R4) carry over. |
+| R2 | **CJK/very large TTF cannot meet the DRAM-tier loading path** on C3 | High (eventually) | Medium | **Resolved by directive (§3.3)**: no DRAM tier exists, so C3 never attempts TTF loading — CJK/very-large TTFs are readable only on PSRAM boards (subject to the 2MB guard and free-PSRAM availability), while PSRAM-less boards keep the `BitmapBookFont` fallback chain (§14.1). FreeType streaming upgrade documented behind `BookFont` for the PSRAM tier. **PSRAM-less CJK is a documented v1 limitation**: the reader chain has no SD-`.cpfont` CJK fallback (§3.6), and the builtin bitmap families cover Latin/Greek/Cyrillic plus Hebrew/Arabic (merged NotoSansHebrew/NotoSansArabic glyph data) but NOT CJK ideographs. |
 | R3 | **Feature-parity gaps block the migration** (strikethrough, ruby, selection groups, synthetic-hyphen flag, drawn `<hr>`, run-granular dictionary hit-testing, footnote list assembly, style-bit translation) | Certain — gap inventory verified (Phase 3.5) | High | **Blocking, not deferrable**: Phase 4 deletion cannot start until the Phase 3.5 checklist is green. Engine already covers focus reading per-word (ChapterLayout.cpp:498-523) and synthetic bold (PageRenderer.cpp:183-195); the rest closes via CrossPoint adapters where the engine substrate suffices (dictionary hit-testing, footnote list, style-bit table, CSS padding fold) and via upstream asks where it does not (strikethrough, ruby, selection-group keys, hyphen flag, drawn rule). Anything left open must be an explicit, documented v1 loss — no silent drop. |
 | R4 | **Glyph-arena thrash** (flush-and-rebuild, no LRU) on mixed-script pages at C3 sizes | Medium | Medium | FIBP skips layout on cache hits, but cached pages still rasterize glyphs (§3.3). Monitor `Arena::highWater()/failedAllocSize()` in Phase 2 logs; the one-shared-arena design (TtfFont.cpp:133 `flushGlyphs` — see §3.3) may need per-face arenas if alternating-style tests show cross-face invalidation storms; raise `glyphArena` budget if logs show rebuild storms. |
 | R5 | **Cache-version migration**: old `.bin` sections + new `.fibp` coexist | Certain (transition) | Low | Separate `ficache/` dir; old files simply go stale and are swept in Phase 4; `docs/file-formats.md` gains the FIBP chapter when Phase 2 lands. |
@@ -530,7 +538,7 @@ All allocations go through `makeUniqueNoThrow`/`heap_caps_malloc` with explicit 
 
 1. *Heap telemetry*: log `ESP.getFreeHeap()`, `ESP.getMaxAllocHeap()`, `ESP.getFreePsram()`, and each `Arena`'s `used()/highWater()/failedAllocSize()` at: activity enter, cache hit, cold-build start/end, settings change, exit. Regression rule: no phase leaves the reader with <24KB free heap (the existing `RENDER_MIN_FREE_HEAP`).
 2. *Cache invalidation matrix*: for each of {family, size, lineSpacing, alignment, margin, orientation, style-file install, firmware relayout} → expect exactly the affected spines' `.fibp` to go stale (`Stale` log) and rebuild, others untouched.
-3. *Corpus*: Latin serif (Liberation/Literata ~400KB), Latin sans (Atkinson TTF), small font (<256KB, C3-DRAM tier), oversized font (700KB, expect gate refusal on C3 + acceptance on X4 Pro), CJK font (expect gate + bitmap fallback), Arabic text (engine `arab_shaping` — visual check only), .txt book (`layoutPlainText`).
+3. *Corpus*: Latin serif (Liberation/Literata ~400KB), Latin sans (Atkinson TTF), small font (well under the 2MB PSRAM guard), oversized font (700KB: accepted on X4 Pro; PSRAM-less boards run the bitmap fallback per directive §3.3), CJK font (expect the 2MB guard to reject it on PSRAM boards; PSRAM-less boards run the `BitmapBookFont` fallback per directive §3.3, which does NOT cover CJK ideographs — missing glyphs are the expected v1 result), Arabic text (engine `arab_shaping` — visual check only), .txt book (`layoutPlainText`).
 4. *Settings soak*: 50 rapid font/size toggles in-session; verify no heap drift, session never leaves the book, position preserved within ±1 paragraph.
 5. *Power-loss*: cut power during a cold build; reopen → if a prior final cache exists for the generation, use it (no crash); else rebuild from scratch. Orphaned temp file reaped on next `onEnter`. Full mid-build checkpoint/resume is out of scope (§7).
 6. *Orientations*: all 4 modes × {page render, status bar overlay, toolbar overlay, dictionary popup} — verifies the `FrameRotation` table (§3.5) against `GfxRenderer` chrome.
@@ -556,7 +564,7 @@ All allocations go through `makeUniqueNoThrow`/`heap_caps_malloc` with explicit 
 3. **Ruby + per-word focus splits — RESOLVED into the Phase 3.5 gate; "defer" is no longer an available answer.** Focus splits are engine-covered per-word (`markFocusWords` bolds each word's first ~45%, same 1..9-codepoint clamp as `ParsedText::addWord`, ChapterLayout.cpp:498-523, runs split at focus boundaries :1505-1587) — the earlier "paragraph-level `focusReading` interim" framing was wrong and is corrected in §2.3/§3.5/§12. Ruby has no engine counterpart at all (old: `rubyTexts` + `RUBY_CONTINUE` groups + `ascender/2` line lift, TextBlock.cpp:140-310, TextBlock.h:73/:113) and is the largest remaining engine gap: it must be either implemented upstream before Phase 4 or explicitly accepted as a documented v1 loss with the upstream ask filed (Phase 3.5 item 15).
 4. **UI chrome TTF migration timing**: keep bitmap chrome indefinitely, or follow-up phase binds `TtfGlyphSource` via FreeInkUI's `DisplayTarget::setGlyphFallback`? (Cost: the ~4KB-per-instance coverage buffers and a sizing policy.)
 5. **Dictionary/Txt migration order**: migrate `TxtReaderActivity` to `layoutPlainText` and dictionary rendering to the chain **before** Phase 4 deletion (recommended), or hold Phase 4 until both are done?
-6. **Exact C3 arena floor**: do real-book measurements (§9.1) confirm the 104KB steady-state figure, or does the `scratch` budget need to drop to 32KB with smaller `ChapterLayoutSession` steps?
+6. **Exact C3 arena floor**: *Superseded by the round-2 directive (§3.3) — native TTF (and its arenas) never allocates on PSRAM-less boards; the reader path there is bitmap-fallback only, and the `CROSSPOINT_TTF_DEBUG` rig is PSRAM-only as well (no DRAM scratch). The engine docs' STANDARD-profile `layoutPlainText` fixture peak is ~152KB (freeink-book.md "Memory profiles"; Standard `kParTextCap`=8192×3 + span/run/image/link/rule/line arrays + `styleText` 12KB + CSS rule table + page arena 24KB + 4KB read buffer) — covered by the rig's 256KB PSRAM scratch with headroom.*
 7. **AA format for TTF pages**: v1 ships `Mono1Dithered`/`Mono1Sharp` (§5 D9). **Investigation conclusion (verified against this worktree): the engine already supports AA natively** — `stbtt_MakeGlyphBitmap` produces true 8-bit coverage (TtfFont.cpp:165; `GlyphBitmap.pixels`, BookFont.h:26-27) and `inkPixel` consumes it for all three `FrameFormat`s including Gray8 (PageRenderer.cpp:68-95). The only gap is last-mile plane packing: no `FrameFormat` emits CrossPoint's dual LSB/MSB 1bpp planes. That packing is CrossPoint-side — **no engine change is required**; the upstream dual-plane `FrameFormat` ask is downgraded to optional (it would merely let `PageRenderer::renderText` emit planes directly, saving PagePaint's run-loop replication). Remaining question: does the panel's 4-level AA waveform (UC8279 XTF_AA LUT bank, SSD1677 external AA LUT + dual DTM planes) visibly beat dithered coverage at 12–18 pt reader sizes on X4/X3 panels? If not, `Mono1Dithered` is final and the parity pass is dropped.
 
 **Concrete fix path (no engine change required), corrected mechanics.** CrossPoint's 4-level gray lives in `GfxRenderer`'s `grayplanes` system (`GrayPlanes.h`; `renderCharImpl` GRAYSCALE_DUAL at GfxRenderer.cpp:540-545), driven by 2-bit glyph tones from `EpdFont`, and the reader's tiled gray pass (`beginStripTarget` 80-row bands, EpubReaderActivity.cpp:1982-2012) flags plane bands via `drawGrayDualPixel` (GfxRenderer.cpp:1715-1737). The naive formulation — "call `renderText` with `FrameFormat::Gray8` into a `beginStripTarget` band" — does **not** work as written, for two reasons: (i) `beginStripTarget` bands are 1bpp plane strips (`panelWidthBytes` per row — declaration + geometry doc GfxRenderer.h:231-239, strip state members :74-88), not the 8bpp geometry Gray8 needs (`width` bytes per row, PageRenderer.h:48) — and `PageRenderer` writes through its own `FrameTarget`, never through `GfxRenderer`'s strip state; (ii) `FrameTarget` has no band window — `toPanel` bounds-checks against full logical dims (PageRenderer.cpp:32-58), so `renderText` cannot clip to a band, and pointing it at a band-sized buffer would write runs above the band out of bounds. Two viable CrossPoint-side constructions:
@@ -589,7 +597,7 @@ Current screens (from `TextSettingsActivity` code and the three provided screens
 └──────────────────────────────┘
 ```
 
-`*` = DRAM-tier size gate (§3.3): row drawn dithered/disabled with a one-line reason on Confirm. Confirm applies: writes `readerFontEngine=READER_ENGINE_TTF`, `ttfFontFamilyName`, snaps size, persists once (`saveToFile()`), then the preview re-flows via the chain.
+`*` = PSRAM-only size gate (§3.3): row drawn dithered/disabled with a one-line reason on Confirm. Confirm applies: writes `readerFontEngine=READER_ENGINE_TTF`, `ttfFontFamilyName`, snaps size, persists once (`saveToFile()`), then the preview re-flows via the chain.
 
 **Size tab (Tab::Size)** — today: discrete rows from `readerFontPointSizes()` ("12 pt"…, `snapToNearestPointSize` in `rebuildSizeList`, TextSettingsActivity.cpp:150). Proposed: when the active family is TTF, a **continuous picker**: a row pager 8→72 pt stepping 1 (or 2) pt with wrap, live numeric label, preview re-layout debounced per stop (the e-ink refresh is the debounce). Built-in/bitmap families keep the discrete list unchanged.
 
@@ -643,3 +651,149 @@ Discrepancies found in the previous draft, all corrected above:
 28. Synthetic bold "must be verified in Phase 2" (§3.7) / "optional upstream ask" (§5 D5b) → already implemented upstream: `PageRenderer::renderText` double-strikes +1px on a bold shortfall (PageRenderer.cpp:183-195); §3.7/§5 D5/§8 R7 corrected.
 29. "Style bits map 1:1 / mapping is a cast" → only BOLD/ITALIC/UNDERLINE coincide; the old STRIKETHROUGH=8/SUP=16/SUB=32/RUBY_CONTINUE=64 bits (EpdFontFamily.h:10-21) collide with `StyleSuperscript=8`/`StyleSubscript=16` (BookFont.h:17-24) — a cast would render strikethrough as superscript; §2.1/§2.3/§5 D8 corrected.
 30. **Phase 3.5 added (§4)**: the §3.5 feature-parity note previously deferred ruby + per-word focus splits (and mis-cited §8 R6) — replaced by the blocking Phase 3.5 parity-enforcement gate with the full verified feature ledger (engine-covered items, CrossPoint adapter work, genuine engine gaps), §8 R3 rewritten as a blocking risk, §11 Q3 resolved into the gate, and Phase 4 deletion gated on the checklist.
+
+
+---
+
+## 14. Font architecture & UX split (round-3 directive)
+
+> **Status: USER DIRECTIVE, 2026-09-10.** Supersedes any earlier wording in this
+> document about a mixed/dual-font UX or a DRAM font tier (§3.3 directive stands:
+> PSRAM-only). This section is the authoritative font-architecture plan for Phase 2+.
+
+### 14.1 Two device classes, one font stack each
+
+| Device class | Builds | Font engine | Reader activity | Font UX |
+|---|---|---|---|---|
+| **PSRAM** (X4 Pro, X4C, Paper Mono; `BOARD_HAS_PSRAM`) | `CROSSPOINT_TTF_READER=1` (default ON) | FreeInkBook native TTF (`FontChain`) | New reader activity only | Family picker + continuous size |
+| **PSRAM-less** (X4, Sticky; C3 / no-PSRAM S3) | flag absent | Legacy EpdFont bitmap path | Existing `EpubReaderActivity` unchanged | Existing bitmap font picker, no size slider |
+
+- **Compile-time split, not runtime.** On PSRAM-less builds none of the TTF stack
+  links at all (`BookFontLoader`, adapters, `ChapterLayout`/`PageRenderer` path,
+  font/size settings UI) — zero flash/RAM cost, zero new UX. On PSRAM builds the
+  legacy reader activity, `FontCacheManager`, and the old font-settings tab are
+  **compiled out**; the two render paths never coexist in one binary.
+- **No runtime toggle, no dual-mode testing.** A device is one class or the
+  other for its whole life.
+- **UI chrome stays bitmap on every device** (`GfxRenderer` + `EpdFont`):
+  menus, settings, dialogs are crisp at fixed sizes and need no scaling. "TTF
+  devices" differ only in the book-reading surface.
+- **CJK on PSRAM-less is a documented v1 limitation.** The PSRAM-less reader
+  chain is the `BitmapBookFont` fallback only; CJK text renders only as far as
+  the builtin bitmap families' coverage goes — they already include
+  NotoSansHebrew/NotoSansArabic glyph data, but CJK ideographs are NOT covered
+  and render as missing glyphs. No SD-`.cpfont` font is wired into the reader
+  chain (§3.6).
+
+### 14.2 Font size UX
+
+Continuous size control exists **only on the TTF device class** — bitmap fonts
+are baked at fixed sizes (`BitmapBookFont` metrics ignore `sizePx`), so a size
+control over the legacy engine is meaningless. Consequences:
+
+- PSRAM builds: the reader font settings show family + size (8..72 pt,
+  `ttfFontPointSize`) because TTF makes size real. One settings shape, no
+  conditional widgets.
+- PSRAM-less builds: the classic fixed-size list, exactly as today.
+- We do **not** ship a mode-dependent settings screen that mixes both — that
+  would cost code *and* confuse users (bitmap + size = no-op).
+
+### 14.3 Fallback font: Atkinson Hyperlegible Next (round-3 directive)
+
+The always-present chain-tail fallback for PSRAM builds is **Atkinson
+Hyperlegible Next, served from the bitmap font data already baked in flash**
+(`lib/EpdFont/builtinFonts/atkinson_hn_*.h`) — no new font payload, no
+`gen_font.py` run. Consumed through a CrossPoint-side `EpdBookFont :
+book::RenderFont` adapter over `EpdFontData` (see §14.5 for the full design
+and rationale; `BitmapBookFont`'s contiguous-range/1-4bpp assumptions do not
+fit the compressed 2-bit interval-based builtin data).
+
+### 14.4 SD layout & file expectations (normative for Phase 2)
+
+**Round-3 directives: (a) one subfolder per family; (b) reuse the SAME font
+folders as the legacy bitmap system.** The TTF scanner walks the roots the
+legacy registry already uses and simply ignores the files it does not care
+about — one folder tree hosts both engines, no migration, no duplication.
+
+```
+/fonts/                            ← visible root (legacy: /fonts)
+  Literata/
+    Literata-Regular.ttf           ← TTF: style inferred from the name (below)
+    Literata-Bold.ttf
+    Bookerly_14.cpfont             ← legacy file: IGNORED by the TTF scanner
+  Bookerly-SD/
+    Bookerly-SD_14.cpfont          ← legacy .cpfont bundle, untouched
+  SomeFamily/
+    regular.otf                    ← .otf works too
+  /.fonts/                         ← hidden root (legacy-preferred, SdCardFontRegistry.h:33-34)
+  free-fonts.json                  OPTIONAL, at root level (display names,
+                                   license); disk scan always wins
+```
+
+**Folder = family; extension filtering is the only gate.** Both roots
+(`/fonts` and the hidden `/.fonts`) are scanned — hidden-root families win,
+exactly as `SdCardFontRegistry::scanRoot()` de-duplicates today
+(SdCardFontRegistry.cpp:201-202). Within a family folder the TTF scanner
+accepts only `.ttf`/`.otf`; `.cpfont` (legacy bundles), `.tmp`, `~` backups,
+`.json`, and macOS `._*`/hidden files are skipped without a log. The legacy
+`SdCardFontRegistry` in turn ignores `.ttf`/`.otf` (it only accepts
+`<name>_<size>.cpfont`, SdCardFontRegistry.cpp:62-95) — the two scanners
+coexist on the same folders with zero interference.
+
+**Folder name = family display name** (case preserved). Nested folders inside
+a family folder are ignored (one level deep only).
+
+**Style inference (per accepted file).** Match the filename
+(case-insensitive, extension stripped, word-boundary so `SemiBold` never
+matches `Bold`) against, in priority order:
+
+1. `bolditalic` / `bold_italic` / `bold-italic` → BoldItalic
+2. `italic`, `oblique`, `ital` → Italic
+3. `bold` → Bold
+4. `regular`, `normal`, `book`, `roman`, `text` → Regular
+5. No match → heuristics: `semibold`/`demibold`/`medium`/`black`/`heavy`/
+   `extrabold` → Bold; `light`/`thin` → Regular; folder with exactly one file
+   → Regular regardless of its name; otherwise the file is skipped with
+   `LOG_DBG` (unknown style). Duplicate style resolution: lexicographically
+   first wins, rest logged. A family with no Regular match but ≥1 file
+   promotes its first file to Regular.
+
+- One file = one face; up to 4 faces per family (regular/bold/italic/
+  bold-italic); 32-family cap (`kMaxDiscoveredFamilies`).
+- Per-face size guard: 2MB (CWE-400) on the PSRAM tier; fonts are loaded
+  whole-file into PSRAM and stay resident while the face is live (§3.3).
+- Enumeration: `HalStorage::listFiles()` on each root +
+  `HalFile::openNextFile()`/`isDirectory()` per family folder — the same
+  two-level walk `SdCardFontRegistry::scanDirectory()` already performs
+  (SdCardFontRegistry.cpp:98-142). No new HAL surface needed.
+- `free-fonts.json` stays optional metadata; when it and the disk disagree,
+  disk wins (§3.7).
+- PSRAM-less boards: the TTF scanner does not run at all; the legacy
+  registry keeps the folders to itself (§3.3 directive).
+
+### 14.5 Fallback font: Atkinson Hyperlegible Next from EXISTING bitmap data (round-3 directive)
+
+The always-present chain-tail fallback for PSRAM builds is **Atkinson
+Hyperlegible Next reusing the bitmap data already shipped in flash** — no new
+font payload is added:
+
+- The repo already bakes Atkinson Hyperlegible Next at 4 sizes × 4 styles as
+  compressed 2-bit `EpdFontData` (`lib/EpdFont/builtinFonts/atkinson_hn_*.h`,
+  generated by `fontconvert.py` with `--2bit --compress`; families wired in
+  `src/main.cpp:118-146`).
+- The SDK's `BitmapBookFont` cannot consume that data directly (it assumes a
+  contiguous codepoint range and raw 1/4-bit glyphs; `EpdFontData` uses
+  unicode intervals, optional DEFLATE groups, and 2-bit packing). Phase 2
+  therefore adds a small **`EpdBookFont : book::RenderFont`** adapter
+  (CrossPoint-side, alongside `src/adapters/`) that wraps one
+  `EpdFontData*`: interval lookup → `FontDecompressor` → 2-bit expansion to
+  8-bit coverage → `GlyphBitmap`, mapping `EpdGlyph.left/top` to
+  `xoff/yoff` and `fp4::toPixel(advanceX)` to `advance`. The four
+  atkinson_hn14 style faces register as the fallback chain in place of the
+  four `kNotoSansFont` instances (BookFontLoader.cpp:208-211).
+- Rationale: the fallback is the same typeface the bitmap reader already
+  uses; zero additional flash; kern/ligature tables come along for free.
+- Fallback semantics unchanged: end-of-chain, never a selectable family,
+  covers glyphs/styles a chosen TTF family lacks; single baked size
+  (headings render at body size under fallback). `kNotoSansFont` stays
+  UI-chrome only.

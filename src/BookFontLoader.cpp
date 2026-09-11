@@ -14,8 +14,9 @@
 // FontChain assembly (<=8 faces, styleCoverage()). fontFingerprint() = FNV-1a
 // over the LOADED font bytes xor styleCoverage — content-based, never path/mtime.
 //
-// Builtin fallback: singleton FontChain over 4 static BitmapBookFont instances
-// (16KB static BSS — accounted in the C3 budget).
+// Builtin fallback: singleton FontChain over 4 BitmapBookFont instances
+// placement-new'ed into PSRAM (each embeds coverage_[64*64]; formerly 16KB
+// static BSS).
 //
 // sfnt VALIDATION BOUNDARY before TtfFont::init: table-directory bounds +
 // numTables sanity; on failure LOG_ERR + skip the face. TtfFont::init only
@@ -96,8 +97,8 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
 BookFontLoader::BookFontLoader() = default;
 
 BookFontLoader::~BookFontLoader() {
-  // Delete loaded faces and release their byte owners; the static backing
-  // for the glyph arenas needs no release (static storage duration).
+  // Delete loaded faces and release their byte/arena owners (glyphBacking_
+  // releases its pool blocks via reset() in releaseResidentCaches()).
   releaseResidentCaches();
 }
 
@@ -132,6 +133,7 @@ void BookFontLoader::ensureLoaded() {
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
     arenas_[i] = Arena{};
+    glyphBacking_[i].reset();
   }
   chain_ = FontChain{};
   if (familyCount_ == 0) return;
@@ -173,6 +175,7 @@ void BookFontLoader::releaseResidentCaches() {
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
     arenas_[i] = Arena{};
+    glyphBacking_[i].reset();
   }
   chain_ = FontChain{};
   fingerprint_ = 0;
@@ -198,21 +201,42 @@ uint32_t BookFontLoader::computeFingerprint() const {
 }
 
 FontChain* BookFontLoader::builtinFallback() {
-  // Singleton FontChain over 4 static BitmapBookFont instances (4 styles,
-  // 16KB static BSS). The faces have static storage duration so FontChain
-  // entries remain valid after this function returns.
+  // Singleton FontChain over 4 BitmapBookFont instances (4 styles),
+  // placement-new'ed into a pool block so their coverage_[64*64] payloads
+  // live in PSRAM instead of static BSS (PSRAM-only directive):
+  // 4 * sizeof(BitmapBookFont) ≈ 16.4KB total.
+  // The faces are intentional device-lifetime singletons: destructors are
+  // never run so FontChain entries remain valid after this function returns.
   static FontChain fallback;
+  static PoolBytes backing;  // PoolBytes object itself is only a pointer of BSS
   static bool init = false;
   if (!init) {
+    static constexpr size_t kFallbackBytes = 4 * sizeof(freeink::ui::BitmapBookFont);
+    backing = poolMakeBytes(kFallbackBytes);
+    if (!backing) {
+      LOG_ERR("BFNT", "OOM: %u bytes for builtin fallback fonts", static_cast<unsigned>(kFallbackBytes));
+      return &fallback;  // empty chain (coverage 0); caller falls back further
+    }
+    // Slot addresses as byte offsets from the pool block: placement-new takes
+    // void*, so do the byte arithmetic on char* (defined; void* arithmetic is
+    // not — cppcheck portability gate) and let it implicitly convert to void*.
+    // No typed pointer variable (cppcheck constVariablePointer), no destructor
+    // call (see singleton note).
+    // cppcheck-suppress constVariablePointer ; placement-new writes through these addresses
+    auto* slots = reinterpret_cast<char*>(backing.get());
+    constexpr auto faceSize = sizeof(freeink::ui::BitmapBookFont);
+    auto* r = new (slots + 0 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* b = new (slots + 1 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* i = new (slots + 2 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    auto* bi = new (slots + 3 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    fallback.add(r, StyleNone);
+    fallback.add(b, StyleBold);
+    fallback.add(i, StyleItalic);
+    fallback.add(bi, StyleBold | StyleItalic);
+    // Mark built only after full construction: a transient PSRAM failure
+    // above must leave init false so the next call retries, instead of
+    // permanently serving the empty chain.
     init = true;
-    static freeink::ui::BitmapBookFont r(freeink::ui::kNotoSansFont);
-    static freeink::ui::BitmapBookFont b(freeink::ui::kNotoSansFont);
-    static freeink::ui::BitmapBookFont i(freeink::ui::kNotoSansFont);
-    static freeink::ui::BitmapBookFont bi(freeink::ui::kNotoSansFont);
-    fallback.add(&r, StyleNone);
-    fallback.add(&b, StyleBold);
-    fallback.add(&i, StyleItalic);
-    fallback.add(&bi, StyleBold | StyleItalic);
   }
   return &fallback;
 }
@@ -367,10 +391,22 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // tables alone need 4.6KB (SMALL), 9.2KB (STANDARD), 36.9KB (LARGE)
   // before any glyph bitmap — 8KB fails STANDARD at TtfFont::init.
   // Maximal alignment: Arena::allocArray aligns the OFFSET from base_, and
-  // TtfFont allocates GlyphSlot (uint64_t key) through it — an 4-aligned
-  // base would misalign the uint64_t and fault on ESP32-C3.
-  alignas(alignof(max_align_t)) static uint8_t glyphBufs[4][kGlyphArenaBytes];
-  arenas_[faceIdx] = Arena(glyphBufs[faceIdx], kGlyphArenaBytes);
+  // TtfFont allocates GlyphSlot (uint64_t key) through it. Pool blocks come
+  // from heap_caps_malloc (≥4-byte aligned), which covers GlyphSlot's
+  // uint64_t key on ESP32 (its natural alignment is 4 on this 32-bit ABI).
+  if (!glyphBacking_[faceIdx]) {
+    glyphBacking_[faceIdx] = poolMakeBytes(kGlyphArenaBytes);
+    if (!glyphBacking_[faceIdx]) {
+      LOG_ERR("BFNT", "Glyph arena OOM for %s (%u bytes)", fi.file, static_cast<unsigned>(kGlyphArenaBytes));
+      if (isPsram) {
+        fontPsramBytes_[faceIdx].reset();
+      } else {
+        localDram.reset();
+      }
+      return false;
+    }
+  }
+  arenas_[faceIdx] = Arena(glyphBacking_[faceIdx].get(), kGlyphArenaBytes);
 
   TtfFont* face = new (std::nothrow) TtfFont();
   if (!face) {
@@ -380,6 +416,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     } else {
       localDram.reset();
     }
+    glyphBacking_[faceIdx].reset();
+    arenas_[faceIdx] = Arena{};
     return false;
   }
   if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, arenas_[faceIdx])) {
@@ -390,6 +428,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     } else {
       localDram.reset();
     }
+    glyphBacking_[faceIdx].reset();
+    arenas_[faceIdx] = Arena{};
     return false;
   }
 
@@ -401,6 +441,8 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     } else {
       localDram.reset();
     }
+    glyphBacking_[faceIdx].reset();
+    arenas_[faceIdx] = Arena{};
     return false;
   }
 

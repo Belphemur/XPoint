@@ -4,6 +4,7 @@
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -25,6 +26,9 @@
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#if defined(CROSSPOINT_TTF_DEBUG)
+#include "activities/debug/TtfRenderDebugActivity.h"
+#endif
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
@@ -92,6 +96,12 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
+#if defined(CROSSPOINT_TTF_DEBUG)
+  // Hidden engine bring-up row; compiled out of release builds.
+  // CROSSPOINT_TTF_DEBUG is intentionally enabled for the default, x4pro, and
+  // x4pro_profile development environments (see platformio.ini).
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_TTF_DEBUG_RENDER, SettingAction::TtfDebugRender));
+#endif
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
   readerSettings.insert(readerSettings.begin() + 1,
@@ -365,6 +375,21 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
         break;
+#if defined(CROSSPOINT_TTF_DEBUG)
+      // Intentionally enabled for the default, x4pro, and x4pro_profile
+      // development environments (see platformio.ini).
+      case SettingAction::TtfDebugRender: {
+        auto activity = makeUniqueNoThrow<TtfRenderDebugActivity>(renderer, mappedInput);
+        if (!activity) {
+          LOG_ERR("SET", "OOM: TtfRenderDebugActivity");
+          break;
+        }
+        // The debug activity changes no settings, so skip the generic
+        // resultHandler's SETTINGS.saveToFile(). Capture-less lambda: no dangling.
+        startActivityForResult(std::move(activity), [](const ActivityResult&) {});
+        break;
+      }
+#endif
       case SettingAction::Language:
         // Row labels are translated once in rebuildRowItems() and don't
         // re-run on Pop (see ActivityManager::loop()), so a language switch
