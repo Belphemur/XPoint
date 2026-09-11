@@ -156,6 +156,23 @@ TEST_F(SdCardCacheStorageTest, CloseFailureLeavesTmpForRetry) {
   EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
 }
 
+TEST_F(SdCardCacheStorageTest, CloseFailureRetriesRetainedTmp) {
+  Storage.files["/cache/page1.fibp"] = "old-generation";
+  SdCardCacheStorage s(kDir);
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("new-generation", 14));
+
+  HalFile::testFailClose = true;
+  EXPECT_FALSE(s.endWrite());
+  HalFile::testFailClose = false;
+
+  // beginWrite retries the close, then truncates the retained temporary file.
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("retry", 5));
+  ASSERT_TRUE(s.endWrite());
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "retry");
+}
+
 // ── stale .old cleanup at beginWrite ────────────────────────────────────────
 
 TEST_F(SdCardCacheStorageTest, BeginWriteRemovesStaleOld) {

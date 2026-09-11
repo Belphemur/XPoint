@@ -839,8 +839,8 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
 void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
-    // Phase 2a: word hit-testing has no engine substrate (§3.5 v1 loss);
-    // surface the same popup the no-dictionary path uses.
+    // Native TTF word hit-testing is not available; keep the configured
+    // dictionary case distinct from the legacy no-dictionary message.
     (void)mode;
     (void)touchX;
     (void)touchY;
@@ -1783,7 +1783,7 @@ bool EpubReaderActivity::skipPages(int amount) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex--;
-      ttfRestoreLastPage = true;
+      ttfRestoreLastPage = false;
       return true;
     }
     return false;
@@ -2219,7 +2219,11 @@ void EpubReaderActivity::renderBook() {
   }
 
   if (showDictionaryMessage) {
+#if defined(CROSSPOINT_TTF_READER)
+    GUI.drawPopup(renderer, ttf_ ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
+#else
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+#endif
   }
 
   // Toolbar menu: overlay the toolbar / panel on top of the freshly rendered page.
@@ -2670,7 +2674,11 @@ void EpubReaderActivity::renderBookTtf() {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
   if (showDictionaryMessage) {
+#if defined(CROSSPOINT_TTF_READER)
+    GUI.drawPopup(renderer, ttf_ ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
+#else
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+#endif
   }
   if (overlay != Overlay::None && usesToolbarMenu()) {
     if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
@@ -3976,6 +3984,7 @@ void EpubReaderActivity::applyReaderTextSettings() {
   if (ttf_) {
     SETTINGS.saveToFile();
     RenderLock lock;
+    freeink::book::fontLoader.markDirty();
     // Reflow in place: drop the caches; the new generation produces a fresh
     // build and the position restores through the page's char offset.
     ttfInvalidateCaches();

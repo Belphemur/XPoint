@@ -60,7 +60,11 @@ bool SdCardCacheStorage::remove(const char* name) {
   if (matchesActiveFinal && (writeHandle_.isOpen() || writeFailed_ || endWriteFailed_)) {
     // PageCacheWriter uses remove() as failure cleanup. Keep the last good
     // final cache when a .tmp write failed; the next beginWrite reuses/truncates it.
-    writeHandle_.close();
+    if (writeHandle_.isOpen() && !writeHandle_.close()) {
+      LOG_ERR("TTFB", "remove: close failed: %s", writeTmpPath_);
+      endWriteFailed_ = true;
+      return false;
+    }
     writeFailed_ = false;
     endWriteFailed_ = false;
     return true;
@@ -88,8 +92,16 @@ int32_t SdCardCacheStorage::readAt(const char* name, uint32_t offset, void* dst,
 bool SdCardCacheStorage::beginWrite(const char* name) {
   if (dir_[0] == '\0' || !validName(name)) return false;
   if (writeHandle_.isOpen()) {
-    LOG_ERR("TTFB", "beginWrite: a write is already active");
-    return false;
+    if (!endWriteFailed_) {
+      LOG_ERR("TTFB", "beginWrite: a write is already active");
+      return false;
+    }
+    // A failed close may have left the .tmp handle open. Retry the close
+    // before truncating the retained temporary file.
+    if (!writeHandle_.close()) {
+      LOG_ERR("TTFB", "beginWrite: failed-write handle still open: %s", writeTmpPath_);
+      return false;
+    }
   }
   if (!buildPath(name, ".tmp", writeTmpPath_, sizeof(writeTmpPath_))) return false;
   if (!buildPath(name, "", writeFinalPath_, sizeof(writeFinalPath_))) return false;
@@ -134,13 +146,13 @@ bool SdCardCacheStorage::endWrite() {
   }
   if (writeFailed_) {
     LOG_ERR("TTFB", "endWrite: skipped publish after write failure");
-    writeHandle_.close();
+    if (writeHandle_.isOpen() && !writeHandle_.close()) endWriteFailed_ = true;
     endWriteFailed_ = true;
     return false;
   }
   if (!writeHandle_.sync()) {
     LOG_ERR("TTFB", "endWrite: sync failed");
-    writeHandle_.close();
+    if (writeHandle_.isOpen() && !writeHandle_.close()) endWriteFailed_ = true;
     endWriteFailed_ = true;
     return false;
   }
@@ -203,6 +215,7 @@ int32_t SdCardCacheStorage::readBackAt(uint32_t offset, void* dst, uint32_t len)
     // wrong position into what would become the final file.
     LOG_ERR("TTFB", "readBackAt: cursor restore failed");
     writeHandle_.close();
+    writeFailed_ = true;
     return -1;
   }
   return bytesRead;
