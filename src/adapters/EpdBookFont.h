@@ -45,7 +45,7 @@ class EpdBookFont : public RenderFont {
   const EpdFontData* data_;
   EpdFont font_;  // borrows data_; owns no memory
   FontDecompressor decomp_;
-  PoolBytes coverage_;      // lazily-sized rasterize() scratch (PSRAM-backed)
+  PoolBytes coverage_;  // lazily-sized rasterize() scratch (PSRAM-backed)
   uint32_t coverageSize_ = 0;
   GlyphBitmap glyph_ = {};
 };

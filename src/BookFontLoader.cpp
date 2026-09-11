@@ -101,8 +101,6 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
   return sz;
 }
 
-
-
 // ── scanFonts — per-family TTF discovery (design §14.4) ──────────────────
 
 namespace {
@@ -117,8 +115,7 @@ bool endsWithIgnoreCase(const char* s, const char* suffix) {
   const size_t sufLen = strlen(suffix);
   if (sLen < sufLen) return false;
   for (size_t i = 0; i < sufLen; ++i) {
-    if (tolower(static_cast<unsigned char>(s[sLen - sufLen + i])) !=
-        tolower(static_cast<unsigned char>(suffix[i]))) {
+    if (tolower(static_cast<unsigned char>(s[sLen - sufLen + i])) != tolower(static_cast<unsigned char>(suffix[i]))) {
       return false;
     }
   }
@@ -157,13 +154,13 @@ bool inferStyleFlags(const char* lower, uint8_t& styleOut) {
     styleOut = StyleBold;
     return true;
   }
-  if (hasWord(lower, "regular") || hasWord(lower, "normal") || hasWord(lower, "book") ||
-      hasWord(lower, "roman") || hasWord(lower, "text")) {
+  if (hasWord(lower, "regular") || hasWord(lower, "normal") || hasWord(lower, "book") || hasWord(lower, "roman") ||
+      hasWord(lower, "text")) {
     styleOut = StyleNone;
     return true;
   }
-  if (hasWord(lower, "semibold") || hasWord(lower, "demibold") || hasWord(lower, "medium") ||
-      hasWord(lower, "black") || hasWord(lower, "heavy") || hasWord(lower, "extrabold")) {
+  if (hasWord(lower, "semibold") || hasWord(lower, "demibold") || hasWord(lower, "medium") || hasWord(lower, "black") ||
+      hasWord(lower, "heavy") || hasWord(lower, "extrabold")) {
     styleOut = StyleBold;
     return true;
   }
@@ -444,9 +441,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
 
       FontFaceInfo& face = fam.faces[slot];
       face = {};
-      strncpy(face.name, lower, sizeof(face.name) - 1);
-      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, fileName) >=
-          static_cast<int>(sizeof(face.file))) {
+      snprintf(face.name, sizeof(face.name), "%s", lower);
+      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, fileName) >= static_cast<int>(sizeof(face.file))) {
         --fam.faceCount;
         LOG_DBG("BFNT", "Path too long for %s/%s", fam.name, fileName);
         continue;
@@ -478,7 +474,6 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     LOG_DBG("BFNT", "Family %s: %u faces from %s", fam.name, fam.faceCount, rootPath);
   }
 }
-
 
 // ── tryLoadFace — single face into the live chain ────────────────────────────
 // Member of BookFontLoader so it can access private members (faces_,

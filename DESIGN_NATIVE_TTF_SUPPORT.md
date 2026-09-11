@@ -393,6 +393,24 @@ Phased, each ending in a verifiable gate. `pio run` (default C3 env) must pass a
 - Gate: `pio run`; on-device page render visible; heap delta logged via `ESP.getFreeHeap()`/`ESP.getFreePsram()` before/after.
 
 **Phase 2 — Reader integration behind `-DCROSSPOINT_TTF_READER=1`**
+
+> **Status: Phase 2a SHIPPED (2026-09-10).** Reader integration merged behind the
+> flag on the nine PSRAM-class envs (see §14.1): `TtfBookRuntime`
+> (catalog + `ChapterLayoutSession` + FIBP reader/writer + next-spine prefetch,
+> all PSRAM arenas), the separate `renderBookTtf()` path, generation-tagged
+> progress records (16-byte shape, load-side degrade — see
+> `activities/reader/ProgressRecord.h` and docs/file-formats.md), and the
+> Atkinson `EpdBookFont` fallback chain. The legacy `Section` path stays intact
+> (kill switch: runtime open failure falls back to it).
+>
+> **Phase 2b handoff (not in 2a):** TextSettings TTF UX (family/size rows,
+> §3.6 resolver), dictionary/footnote parity (word hit-testing, footnotes,
+> links — surfaced as v1 losses in 2a), extract-to-stored chapterSource
+> optimization (parse arena stays 64KB), CSS padding fold (§3.5 item 10),
+> hyphenator wiring, `TxtReaderActivity` migration, chapter-time-left/stats
+> parity polish. Flag stays OFF on C3/sticky; PSRAM-less binaries are
+> byte-identical to `develop`.
+
 - `EpubReaderActivity`: FIBP reader/writer paths, `ChapterLayoutSession`, progress mapping, prefetch — all inside `#if CROSSPOINT_TTF_READER` alongside the existing `Section` code (build-flag kill switch, §10).
 - Night-mode + chrome-over-page ordering verified (§8 R8).
 - Gate: full read of a Latin EPUB end-to-end on C3 with `LOG_LEVEL=2`: cache write → reopen hits cache → position restore → live font-size change re-flows in place.
