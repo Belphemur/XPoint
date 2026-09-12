@@ -54,6 +54,20 @@ class BookFontLoader {
   // Content-based fingerprint: FNV-1a over loaded font bytes xor styleCoverage.
   uint32_t fontFingerprint() const;
 
+  // Phase 3 family selection (design §3.6/§14.2): the reader and the settings
+  // preview call this from SETTINGS before getReaderFont(). An empty name is
+  // an explicit "built-in fallback" selection; a never-selected loader keeps
+  // the legacy families_[0] default (debug rig).
+  void selectFamily(const char* name);
+  // Case-insensitive manifest lookup (§14.4 display name); nullptr when absent.
+  const FamilyInfo* findFamily(const char* name) const;
+  // Static picker gates: PSRAM present AND every face within the per-face
+  // size guard. Load failures (corrupt fonts) are runtime — they degrade to
+  // the fallback chain instead of greying the row.
+  bool isFamilyAvailable(const FamilyInfo& fam) const;
+  // Per-face PSRAM size guard (CWE-400); picker rows above it are greyed out.
+  static constexpr uint32_t kMaxFaceBytes = 2u * 1024u * 1024u;
+
   const FamilyInfo* families() const { return families_.data(); }
   uint8_t familyCount() const { return familyCount_; }
 
@@ -85,6 +99,9 @@ class BookFontLoader {
  private:
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
+  // Selection state (see selectFamily()).
+  char selectedFamily_[48] = {};
+  bool familySelected_ = false;
 
   TtfFont* faces_[4] = {};
   FontChain chain_;

@@ -17,6 +17,11 @@
 #include "TextSettingsPreview.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#if defined(CROSSPOINT_TTF_READER)
+#include <BookFontLoader.h>
+
+#include "activities/util/IntervalSelectionActivity.h"
+#endif
 
 namespace fui = freeink::ui;
 
@@ -29,6 +34,7 @@ constexpr StrId LAYOUT_ROW_NAME_IDS[] = {StrId::STR_LINE_SPACING, StrId::STR_EXT
 constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_FOCUS_READING, StrId::STR_HYPHENATION, StrId::STR_EMBEDDED_STYLE,
                                         StrId::STR_TEXT_AA};
 
+#if !defined(CROSSPOINT_TTF_READER)
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName, uint8_t fontFamily) {
   if (sdFontFamilyName[0] != '\0' && registry) {
     const auto& families = registry->getFamilies();
@@ -53,6 +59,7 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
   // NOTOSERIF (0) maps to UI index 0; NOTOSANS (1) is already handled above.
   return 0;
 }
+#endif  // !CROSSPOINT_TTF_READER
 
 constexpr StrId LINE_SPACING_IDS[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
 constexpr StrId ALIGNMENT_IDS[] = {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, StrId::STR_CENTER, StrId::STR_ALIGN_RIGHT,
@@ -60,6 +67,44 @@ constexpr StrId ALIGNMENT_IDS[] = {StrId::STR_JUSTIFY, StrId::STR_ALIGN_LEFT, St
 constexpr int MARGIN_MIN = CrossPointSettings::SCREEN_MARGIN_MIN;
 constexpr int MARGIN_MAX = CrossPointSettings::SCREEN_MARGIN_MAX;
 constexpr int MARGIN_STEP = CrossPointSettings::SCREEN_MARGIN_STEP;
+#if defined(CROSSPOINT_TTF_READER)
+// Style-coverage suffix for TTF family rows (§12): the availability is shown
+// honestly — "Name · Regular Bold Italic" — so a Regular-only family reads as
+// synthetic-bold/italic in the reader.
+std::string ttfCoverageSuffix(const freeink::book::FamilyInfo& fam) {
+  bool regular = false, bold = false, italic = false, boldItalic = false;
+  for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
+    switch (fam.faces[i].styleFlags & (freeink::book::StyleBold | freeink::book::StyleItalic)) {
+      case freeink::book::StyleBold | freeink::book::StyleItalic:
+        boldItalic = true;
+        break;
+      case freeink::book::StyleBold:
+        bold = true;
+        break;
+      case freeink::book::StyleItalic:
+        italic = true;
+        break;
+      default:
+        regular = true;
+        break;
+    }
+  }
+  std::string suffix;
+  const auto append = [&suffix](bool& first, std::string label) {
+    suffix += first ? " · " : " ";
+    first = false;
+    suffix += label;
+  };
+  bool first = true;
+  if (regular) append(first, I18N.get(StrId::STR_STYLE_REGULAR));
+  if (bold) append(first, I18N.get(StrId::STR_STYLE_BOLD));
+  if (italic) append(first, I18N.get(StrId::STR_STYLE_ITALIC));
+  if (boldItalic) {
+    append(first, std::string(I18N.get(StrId::STR_STYLE_BOLD)) + "/" + I18N.get(StrId::STR_STYLE_ITALIC));
+  }
+  return suffix;
+}
+#endif
 }  // namespace
 
 TextSettingsActivity::TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -78,23 +123,50 @@ void TextSettingsActivity::onEnter() {
   previewHeight = usableHeight * metrics_.previewHeightPercent / 100;
 
   fonts_.clear();
+#if defined(CROSSPOINT_TTF_READER)
+  // §14.1/§14.2: TTF builds show the native family picker (built-in + §14.4
+  // families); the legacy bitmap rows and the SD .cpfont list belong to the
+  // legacy class's tab (the #else branch below).
+  freeink::book::fontLoader.begin();  // rescan: pick up fonts added since boot
+  fonts_.reserve(1 + static_cast<size_t>(freeink::book::fontLoader.familyCount()));
+  fonts_.push_back({I18N.get(StrId::STR_BUILTIN_FONT), true, 0, true});
+  for (uint8_t i = 0; i < freeink::book::fontLoader.familyCount(); ++i) {
+    const auto& fam = freeink::book::fontLoader.families()[i];
+    fonts_.push_back(
+        {std::string(fam.name) + ttfCoverageSuffix(fam), false, i, freeink::book::fontLoader.isFamilyAvailable(fam)});
+  }
+
+  // Current selection: index 0 = built-in fallback; families follow in scan
+  // order. A settings name the scanner no longer finds falls back to built-in.
+  currentFamilyIndex_ = 0;
+  if (SETTINGS.ttfFontFamilyName[0] != '\0') {
+    const auto* fam = freeink::book::fontLoader.findFamily(SETTINGS.ttfFontFamilyName);
+    if (fam != nullptr) {
+      currentFamilyIndex_ = 1 + static_cast<int>(fam - freeink::book::fontLoader.families());
+    }
+  }
+  rebuildSizeList();
+#else
   constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
   fonts_.reserve(VISIBLE_BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
   // Built-in fonts: NOTOSERIF (0) + ATKINSON_HN (2). NOTOSANS (1) is deprecated
   // — migrated to ATKINSON_HN on settings load — and is NOT shown as a separate
   // menu entry to avoid a duplicate "Atkinson Hyperlegible Next" row.
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, static_cast<uint8_t>(CrossPointSettings::NOTOSERIF)});
-  fonts_.push_back({I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::ATKINSON_HN)});
+  fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, static_cast<uint8_t>(CrossPointSettings::NOTOSERIF), true});
+  fonts_.push_back(
+      {I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::ATKINSON_HN), true});
   if (registry_) {
     const auto& families = registry_->getFamilies();
     for (int i = 0; i < static_cast<int>(families.size()); i++) {
-      fonts_.push_back({families[i].name, false, static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i)});
+      fonts_.push_back(
+          {families[i].name, false, static_cast<uint8_t>(CrossPointSettings::BUILTIN_FONT_COUNT + i), true});
     }
   }
 
   rebuildSizeList();
 
   currentFamilyIndex_ = findCurrentFontIndex(registry_, SETTINGS.sdFontFamilyName, SETTINGS.fontFamily);
+#endif
   // Per-tab ring positions (0 = tab bar, 1..N = row). The base reset each
   // tab's nav with followOnBuild armed, so each tab's first build shows its
   // remembered selection (Family/Size open on the current item).
@@ -133,6 +205,11 @@ void TextSettingsActivity::rebuildRowItems() {
         break;
     }
     item.actionValue = static_cast<int16_t>(i);
+#if defined(CROSSPOINT_TTF_READER)
+    // §12: families failing the static gates stay visible but disabled; a
+    // Confirm/tap shows the one-line reason instead of applying.
+    if (tab_ == Tab::Family && !fonts_[i].available) item.enabled = false;
+#endif
     rowItems_.push_back(item);
   }
 }
@@ -142,6 +219,17 @@ void TextSettingsActivity::rebuildRowItems() {
 // which snaps SETTINGS.fontPointSize into the new family's set — but entry does
 // not, so the highlight is resolved by snapping rather than by exact match.
 void TextSettingsActivity::rebuildSizeList() {
+#if defined(CROSSPOINT_TTF_READER)
+  // §14.2: TTF builds carry ONE continuous point size — the Size tab is a
+  // single row that opens the slider; there is no per-family discrete set.
+  sizes_.clear();
+  sizes_.reserve(1);
+  char label[12];
+  snprintf(label, sizeof(label), "%u pt", SETTINGS.ttfFontPointSize);
+  sizes_.push_back({label, SETTINGS.ttfFontPointSize});
+  currentSizeIndex_ = 0;
+  return;
+#endif
   const std::vector<uint8_t> points = readerFontPointSizes(registry_, SETTINGS.sdFontFamilyName);
 
   // The stored size can still sit outside this family's set — e.g. the family
@@ -313,6 +401,29 @@ void TextSettingsActivity::render(RenderLock&&) {
 // arrays out from under prewarmStyle() (crash: null s.miniGlyphs mid-read/sort).
 void TextSettingsActivity::applyFamily(int listIndex) {
   RenderLock lock;
+#if defined(CROSSPOINT_TTF_READER)
+  {
+    const auto& font = fonts_[listIndex];
+    if (font.isBuiltin) {
+      // §14.3: built-in = the Atkinson fallback chain (end-of-chain tail),
+      // never a scanned family — clearing the selection returns to it.
+      SETTINGS.ttfFontFamilyName[0] = '\0';
+    } else {
+      if (!font.available) return;  // disabled rows: ListItem gates taps too
+      const auto& fam = freeink::book::fontLoader.families()[font.settingIndex];
+      strncpy(SETTINGS.ttfFontFamilyName, fam.name, sizeof(SETTINGS.ttfFontFamilyName) - 1);
+      SETTINGS.ttfFontFamilyName[sizeof(SETTINGS.ttfFontFamilyName) - 1] = '\0';
+    }
+    SETTINGS.readerFontEngine = CrossPointSettings::READER_ENGINE_TTF;
+    // Load the selection now: the preview pane's next render calls getReaderFont
+    // (ensureLoaded inside), and the reader picks the same family on relayout.
+    freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+    currentFamilyIndex_ = listIndex;
+    rebuildSizeList();
+    tabNavs[static_cast<int>(Tab::Size)].selected = 1;
+    return;
+  }
+#endif
   const auto& font = fonts_[listIndex];
   if (font.isBuiltin) {
     SETTINGS.fontFamily = font.settingIndex;
@@ -356,6 +467,25 @@ void TextSettingsActivity::activateRow(int row) {
       }
       break;
     case Tab::Size:
+#if defined(CROSSPOINT_TTF_READER)
+      // §14.2: continuous point size — the slider dialog (IntervalSelection)
+      // applies on OK; the e-ink refresh between stops is the debounce.
+      startActivityForResult(
+          std::make_unique<IntervalSelectionActivity>(
+              renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
+              CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
+              StrId::STR_FONT_SIZE_VALUE),
+          [this](const ActivityResult& result) {
+            if (result.isCancelled || !std::holds_alternative<IntervalResult>(result.data)) return;
+            const auto size = std::get<IntervalResult>(result.data).value;
+            SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
+                size, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
+            SETTINGS.saveToFile();
+            rebuildSizeList();
+            requestUpdate();
+          });
+      break;
+#endif
       if (row != currentSizeIndex_) {
         applySize(row);
         SETTINGS.saveToFile();

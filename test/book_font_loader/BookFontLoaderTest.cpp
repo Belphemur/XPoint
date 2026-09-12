@@ -383,3 +383,62 @@ TEST(ScanFontsTest, MissingRootIsQuietNoop) {
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   EXPECT_EQ(count, 0u);
 }
+
+// ── Phase 3: family selection + picker availability gates ───────────────────
+
+TEST(BookFontLoaderSelection, FindFamilyMatchesExactly) {
+  testSetPsramHeap({0, 0, 0, 0});
+  freeink::book::BookFontLoader loader;
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Literata");
+  fam.faceCount = 1;
+  fam.faces[0].fileSize = 100;
+  loader.setFamilyCountForTest(1);
+
+  EXPECT_NE(loader.findFamily("Literata"), nullptr);
+  EXPECT_EQ(loader.findFamily("literata"), nullptr);  // exact case, not ci
+  EXPECT_EQ(loader.findFamily("Other"), nullptr);
+  EXPECT_EQ(loader.findFamily(""), nullptr);
+  EXPECT_EQ(loader.findFamily(nullptr), nullptr);
+}
+
+TEST(BookFontLoaderSelection, SelectFamilyRejectsSameAndAcceptsChange) {
+  testSetPsramHeap({0, 0, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.selectFamily("Alpha");
+  loader.selectFamily("Alpha");  // same selection: no reload churn
+  loader.selectFamily("Beta");
+  loader.selectFamily("");  // explicit fallback
+  SUCCEED();
+}
+
+TEST(BookFontLoaderSelection, AvailabilityRequiresPsramAndFaceGuard) {
+  freeink::book::BookFontLoader loader;
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Small");
+  fam.faceCount = 1;
+  fam.faces[0].fileSize = 100;
+  auto& big = loader.editFamily(1);
+  std::snprintf(big.name, sizeof(big.name), "%s", "Big");
+  big.faceCount = 1;
+  big.faces[0].fileSize = loader.kMaxFaceBytes + 1;
+  loader.setFamilyCountForTest(2);
+
+  testSetPsramHeap({0, 0, 0, 0});  // PSRAM-less: the whole class is unavailable
+  EXPECT_FALSE(loader.isFamilyAvailable(fam));
+  EXPECT_FALSE(loader.isFamilyAvailable(big));
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  EXPECT_TRUE(loader.isFamilyAvailable(fam));
+  EXPECT_FALSE(loader.isFamilyAvailable(big));  // per-face 2MB gate (§3.3)
+}
+
+TEST(BookFontLoaderSelection, ClearedSelectionServesFallbackChain) {
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.selectFamily("");  // §14.3: built-in = fallback chain, never a family
+  loader.markDirty();
+  loader.getReaderFont();
+  EXPECT_EQ(loader.fontFingerprint(), 0u);
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+}
