@@ -38,6 +38,9 @@ class ProgressManager {
   // still counts as progress.
   static constexpr size_t RECORD_SIZE_BASE = 6;
   static constexpr size_t RECORD_SIZE_OFFSET = 10;
+  // Retry budget for flushChanged(): how many times one call rewrites the
+  // file when a racing save or a transient SD error leaves newer state owed.
+  static constexpr uint8_t kMaxFlushAttempts = 4;
 
   // Decoded progress.bin record. The TTF reader (CROSSPOINT_TTF_READER
   // builds only) extends it with the FIBP generation tag; on PSRAM-less
@@ -160,9 +163,6 @@ class ProgressManager {
   char cachePath_[160] = {0};
   bool bookOpen_ = false;
   bool writeQueued_ = false;  // worker owes a write
-  // Repair budget for flushChanged(): how many times a single call rewrites
-  // the file when a racing save leaves newer state owed.
-  static constexpr uint8_t kMaxFlushAttempts = 4;
   TaskHandle_t worker_ = nullptr;
   // Destructor handshake: set before waking the worker; the worker exits and
   // acknowledges on the semaphore below, so its loop can never touch freed

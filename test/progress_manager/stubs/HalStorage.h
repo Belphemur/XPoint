@@ -25,6 +25,11 @@ class HalStorage {
   }
   bool openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
     (void)moduleName;
+    // Test control: transient write failure (final file stays untouched).
+    if (failWriteCount > 0) {
+      --failWriteCount;
+      return false;
+    }
     file.data = &files[path];  // creates or opens
     file.markOpen(true);
     // Truncate like SdFat's open-for-write.
@@ -47,6 +52,8 @@ class HalStorage {
 
   // Test control: path -> bytes.
   std::map<std::string, std::string> files;
+  // Open-for-write failure counter (transient SD error simulation).
+  int failWriteCount = 0;
 
  private:
   HalStorage() = default;
