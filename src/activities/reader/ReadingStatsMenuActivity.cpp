@@ -54,9 +54,8 @@ void ReadingStatsMenuActivity::rebuildRowItems() {
 
 void ReadingStatsMenuActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
-      static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   fui::ListProps props;
@@ -90,9 +89,9 @@ void ReadingStatsMenuActivity::activateIndex(const int index) {
 
 void ReadingStatsMenuActivity::openThisBook() {
   if (!bookStats) return;
-  auto statsActivity = makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, bookTitle, *bookStats, bookCachePath,
-                                                            bookCachePath.empty() ? GlobalReadingStats{}
-                                                                                  : GlobalReadingStats::load());
+  auto statsActivity =
+      makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, bookTitle, *bookStats, bookCachePath,
+                                           bookCachePath.empty() ? GlobalReadingStats{} : GlobalReadingStats::load());
   if (!statsActivity) {
     LOG_ERR("RSM", "OOM: BookStatsActivity");
     return;

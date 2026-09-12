@@ -49,9 +49,8 @@ void FinishedBooksActivity::onExit() {
 }
 
 void FinishedBooksActivity::render(RenderLock&&) {
-  const size_t pageCount =
-      std::max<size_t>(1, (finishedBooks.size() + FINISHED_BOOKS_ENTRIES_PER_PAGE - 1) /
-                              FINISHED_BOOKS_ENTRIES_PER_PAGE);
+  const size_t pageCount = std::max<size_t>(
+      1, (finishedBooks.size() + FINISHED_BOOKS_ENTRIES_PER_PAGE - 1) / FINISHED_BOOKS_ENTRIES_PER_PAGE);
   const bool hasPreviousPage = finishedBooksPage > 0;
   const bool hasNextPage = finishedBooksPage + 1 < pageCount;
 

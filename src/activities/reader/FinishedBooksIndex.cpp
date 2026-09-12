@@ -13,6 +13,7 @@
 #ifndef READING_STATS_TEST
 #include <Epub.h>
 #include <Xtc.h>
+
 #include "RecentBooksStore.h"
 #endif
 
@@ -62,8 +63,8 @@ bool isNewer(const FinishedBookEntry& a, const FinishedBookEntry& b) {
 size_t encodedEntrySize(const FinishedBookEntry& entry) {
   const size_t titleLength = std::min(entry.title.size(), static_cast<size_t>(MAX_TITLE_BYTES));
   const size_t authorLength = std::min(entry.author.size(), static_cast<size_t>(MAX_AUTHOR_BYTES));
-  return sizeof(uint64_t) + sizeof(uint32_t) + (sizeof(uint16_t) + sizeof(uint8_t) * 2) * 2 +
-         sizeof(uint16_t) + titleLength + sizeof(uint16_t) + authorLength;
+  return sizeof(uint64_t) + sizeof(uint32_t) + (sizeof(uint16_t) + sizeof(uint8_t) * 2) * 2 + sizeof(uint16_t) +
+         titleLength + sizeof(uint16_t) + authorLength;
 }
 
 size_t encodedIndexSize(const std::vector<FinishedBookEntry>& entries) {
@@ -122,9 +123,8 @@ bool writeIndex(const std::vector<FinishedBookEntry>& entries) {
   }
 
   std::vector<FinishedBookEntry> verifiedEntries;
-  const bool verified = loadPath(INDEX_TMP_PATH, verifiedEntries) &&
-                        verifiedEntries.size() == count && Storage.exists(INDEX_TMP_PATH) &&
-                        [&]() {
+  const bool verified = loadPath(INDEX_TMP_PATH, verifiedEntries) && verifiedEntries.size() == count &&
+                        Storage.exists(INDEX_TMP_PATH) && [&]() {
                           HalFile verifyFile;
                           return Storage.openFileForRead("FBI", INDEX_TMP_PATH, verifyFile) &&
                                  verifyFile.fileSize() == encodedIndexSize(entries);
