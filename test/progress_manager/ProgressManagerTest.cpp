@@ -36,6 +36,7 @@ class ProgressManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
     Storage.files.clear();
+    Storage.failWriteCount = 0;
     testClockMs = 0;
     progressManager.begin();
     seedLegacyRecord("/cache/book/progress.bin", 1, 2, 20, 100);
@@ -104,6 +105,62 @@ TEST_F(ProgressManagerTest, SaveNowForOtherBookDoesNotAdopt) {
   EXPECT_EQ(book.spineIndex, 4);
   EXPECT_EQ(book.pageNumber, 10);
   EXPECT_FALSE(book.hasOffset);
+}
+
+// A single transient write failure is absorbed by the bounded retry loop.
+TEST_F(ProgressManagerTest, FlushRetriesTransientWriteFailure) {
+  uint16_t spine = 0, page = 0, count = 0;
+  uint32_t offset = 0;
+  ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
+  progressManager.save(4, 10, 20, false, 0);
+
+  Storage.failWriteCount = 1;
+  EXPECT_TRUE(progressManager.flushNow());
+  const ProgressRecord rec = decodeDiskRecord(Storage.files.at("/cache/book/progress.bin"));
+  EXPECT_EQ(rec.spineIndex, 4);
+  EXPECT_EQ(rec.pageNumber, 10);
+}
+
+// A persistent write failure must (a) exhaust the retry budget and (b) report
+// false — never a success verdict with the record uncommitted.
+TEST_F(ProgressManagerTest, FlushFailureReportsFailure) {
+  uint16_t spine = 0, page = 0, count = 0;
+  uint32_t offset = 0;
+  ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
+  progressManager.save(4, 10, 20, false, 0);
+
+  Storage.failWriteCount = ProgressManager::kMaxFlushAttempts;
+  EXPECT_FALSE(progressManager.flushNow());
+  // The old record is still on disk (writeAtomic never touched it).
+  const ProgressRecord before = decodeDiskRecord(Storage.files.at("/cache/book/progress.bin"));
+  EXPECT_EQ(before.spineIndex, 1);
+  EXPECT_EQ(before.pageNumber, 2);
+
+  // Transient error gone: the retry writes the newest position.
+  EXPECT_TRUE(progressManager.flushNow());
+  const ProgressRecord after = decodeDiskRecord(Storage.files.at("/cache/book/progress.bin"));
+  EXPECT_EQ(after.spineIndex, 4);
+  EXPECT_EQ(after.pageNumber, 10);
+}
+
+// closeBook() must preserve the owed state when the flush fails, so a later
+// flushNow() (enterPowerOff path) can still persist the newest position.
+TEST_F(ProgressManagerTest, CloseBookPreservesOwedStateAfterFlushFailure) {
+  uint16_t spine = 0, page = 0, count = 0;
+  uint32_t offset = 0;
+  ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
+  progressManager.save(5, 12, 20, true, 900);
+
+  Storage.failWriteCount = ProgressManager::kMaxFlushAttempts;
+  EXPECT_FALSE(progressManager.flushNow());
+  progressManager.closeBook();
+
+  // The preserved state flushes once the SD error clears.
+  EXPECT_TRUE(progressManager.flushNow());
+  const ProgressRecord rec = decodeDiskRecord(Storage.files.at("/cache/book/progress.bin"));
+  EXPECT_EQ(rec.spineIndex, 5);
+  EXPECT_EQ(rec.pageNumber, 12);
+  EXPECT_EQ(rec.visibleTextOffset, 900u);
 }
 
 TEST_F(ProgressManagerTest, FlushWritesMirrorAfterIntervalGate) {
