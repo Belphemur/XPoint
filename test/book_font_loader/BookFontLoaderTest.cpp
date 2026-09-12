@@ -131,6 +131,48 @@ TEST(BookFontLoaderBasics, FingerprintIsContentBased) {
   EXPECT_EQ(loader.fontFingerprint(), 0u);
 }
 
+// The Atkinson fallback faces must ride ALONG a selected TTF family as the
+// chain tail (§14.5): a family whose faces all fail to load still serves a
+// glyph-bearing chain through the live chain_, not just the standalone
+// fallback singleton.
+TEST(BookFontLoaderBasics, FallbackTailAppendedToSelectedChain) {
+  testSetPsramHeap({0, 0, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+
+  // A selected family whose only face fails sfnt validation.
+  writeFaceFile("/fonts/Failing/Failing-Regular.ttf", "garbage");
+  auto& fam = loader.editFamily(0);
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = 7;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Failing/Failing-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+  loader.markDirty();
+
+  freeink::book::FontChain* font = loader.getReaderFont();
+  ASSERT_NE(font, nullptr);
+  // The live chain itself carries the tail: full None|Bold|Italic coverage.
+  EXPECT_EQ(font->styleCoverage(), 0x07);
+  EXPECT_EQ(font, &loader.chainForTest());
+
+  // A missing glyph resolves through the tail, never nullptr.
+  const uint32_t cpNoOneHas = 0x1F600;  // emoji — no face covers it
+  uint8_t faceFlags = 0xFF;
+  EXPECT_NE(font->fontFor(cpNoOneHas, freeink::book::StyleNone, &faceFlags), nullptr);
+}
+
+// The tail is a non-selectable addition: with NO family selected the chain
+// stays empty and the builtin fallback singleton serves the reader.
+TEST(BookFontLoaderBasics, NoFamilyStillUsesFallbackSingleton) {
+  testSetPsramHeap({0, 0, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+  // chainForTest() is still empty: the singleton answered, not the live chain.
+  EXPECT_EQ(loader.chainForTest().styleCoverage(), 0u);
+}
+
 TEST(FontFaceInfoTest, DefaultMembers) {
   freeink::book::FontFaceInfo faceInfo;
   EXPECT_EQ(faceInfo.name[0], '\0');

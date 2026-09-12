@@ -44,6 +44,14 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
   sizes to the 6-byte base shape. Downgrading from a TTF build misrestores the
   charOffset as a visibleTextOffset on pre-change firmware (no crash,
   self-healing on the next save) — see docs/file-formats.md.
+  **Phase 2b amendment (KOReader remote accept):** a remote-accept save via
+  `saveNowTtf(..., charOffset=0, generation)` keeps the 16-byte shape with a
+  page-anchored restore — the TTF reader maps `charOffset == 0` records
+  through the record's page number (clamped to the chapter's page count)
+  instead of the char-offset index. A genuine chapter-start save (page 0,
+  charOffset 0) is indistinguishable and restores identically. A generation
+  mismatch (settings/layout changed since the sync) still degrades to
+  chapter start per §7.
 - Migrating TXT/XTC readers to the same manager (follow-up PR).
 - A user-facing settings row for the interval (KISS: constexpr only).
 
