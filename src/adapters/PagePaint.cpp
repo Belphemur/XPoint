@@ -60,8 +60,8 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
       const GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, run.sizePx) : nullptr;
       if (glyph != nullptr) {
         if (glyphFilter != nullptr &&
-            !glyphFilter(ctx, penX + glyph->xoff, run.baselineY + glyph->yoff,
-                         penX + glyph->xoff + glyph->width, run.baselineY + glyph->yoff + glyph->height)) {
+            !glyphFilter(ctx, penX + glyph->xoff, run.baselineY + glyph->yoff, penX + glyph->xoff + glyph->width,
+                         run.baselineY + glyph->yoff + glyph->height)) {
           // Outside the active plane band: skip the pixel walk, keep metrics.
           penX += fonts.advance(cp, run.sizePx, run.styleFlags);
           prev = cp;
@@ -140,13 +140,12 @@ void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRendere
   PlaneCtx ctx{&renderer};
   // Band culling mirrors the legacy tiled walk (GfxRenderer.cpp): glyphs
   // entirely outside the active strip skip their rasterize entirely.
-  walkText(
-      page, fonts, &ctx, plotPlanes,
-      [](void* c, const int32_t x0, const int32_t y0, const int32_t x1, const int32_t y1) {
-        auto* self = static_cast<PlaneCtx*>(c);
-        return self->renderer->glyphIntersectsStrip(static_cast<int>(x0), static_cast<int>(y0),
-                                                    static_cast<int>(x1), static_cast<int>(y1));
-      });
+  walkText(page, fonts, &ctx, plotPlanes,
+           [](void* c, const int32_t x0, const int32_t y0, const int32_t x1, const int32_t y1) {
+             auto* self = static_cast<PlaneCtx*>(c);
+             return self->renderer->glyphIntersectsStrip(static_cast<int>(x0), static_cast<int>(y0),
+                                                         static_cast<int>(x1), static_cast<int>(y1));
+           });
 }
 
 }  // namespace book

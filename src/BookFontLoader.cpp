@@ -304,13 +304,12 @@ const FamilyInfo* BookFontLoader::findFamily(const char* name) const {
   if (name == nullptr || name[0] == '\0') return nullptr;
   // Exact match: the selection stores the scanner's own display name, so the
   // same case round-trips; a renamed family on SD degrades to the fallback.
-  for (uint8_t i = 0; i < familyCount_; ++i) {
-    if (strcmp(families_[i].name, name) == 0) return &families_[i];
-  }
-  return nullptr;
+  const auto match = [name](const FamilyInfo& fam) { return strcmp(fam.name, name) == 0; };
+  const auto it = std::find_if(families_.begin(), families_.begin() + familyCount_, match);
+  return it != families_.begin() + familyCount_ ? &*it : nullptr;
 }
 
-bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) const {
+bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) {
   if (HalMemory::getPsramHeap().totalBytes == 0) return false;
   for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
     if (fam.faces[i].fileSize > kMaxFaceBytes) return false;
