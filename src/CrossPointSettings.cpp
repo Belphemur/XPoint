@@ -96,6 +96,12 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   if (sdFontFamilyName[0] != '\0') {
     doc["sdFontFamilyName"] = sdFontFamilyName;
   }
+  // Native-TTF font selection (design §3.6) — not in SettingsList, save manually.
+  doc["readerFontEngine"] = readerFontEngine;
+  if (ttfFontFamilyName[0] != '\0') {
+    doc["ttfFontFamilyName"] = ttfFontFamilyName;
+  }
+  doc["ttfFontPointSize"] = ttfFontPointSize;
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, save manually
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
@@ -213,6 +219,30 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);
   sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
+  // Native-TTF font selection (design §3.6/§14.1). Engine default follows the
+  // device class; unknown stored values fall back to it.
+  const uint8_t defaultEngine =
+#if defined(CROSSPOINT_TTF_READER)
+      READER_ENGINE_TTF;
+#else
+      READER_ENGINE_BITMAP;
+#endif
+  const uint8_t storedEngine = doc["readerFontEngine"] | defaultEngine;
+  if (storedEngine <= READER_ENGINE_TTF) {
+    readerFontEngine = storedEngine;
+  } else {
+    readerFontEngine = defaultEngine;
+    needsResave = true;
+  }
+  const char* ttfFamily = doc["ttfFontFamilyName"] | "";
+  copyToField(ttfFontFamilyName, ttfFamily, sizeof(ttfFontFamilyName));
+  const uint8_t storedTtfPointSize = doc["ttfFontPointSize"] | DEFAULT_TTF_FONT_POINT_SIZE;
+  if (storedTtfPointSize >= TTF_FONT_POINT_SIZE_MIN && storedTtfPointSize <= TTF_FONT_POINT_SIZE_MAX) {
+    ttfFontPointSize = storedTtfPointSize;
+  } else {
+    ttfFontPointSize = DEFAULT_TTF_FONT_POINT_SIZE;
+    needsResave = true;
+  }
   if (storedFontFamily == LEGACY_OPENDYSLEXIC && sdFontFamilyName[0] == '\0') {
     fontFamily = NOTOSERIF;
     strncpy(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName) - 1);

@@ -10,11 +10,19 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <utility>
 
 #include "CrossPointSettings.h"
 #include "fontIds.h"
+#if defined(CROSSPOINT_TTF_READER)
+#include <BookFontLoader.h>
+#include <Memory.h>
+
+#include "layout/ChapterLayout.h"
+#include "render/TtfFont.h"
+#endif
 
 namespace textsettings {
 
@@ -57,6 +65,195 @@ void relayout(PreviewLayout& layout, const GfxRenderer& renderer, int fontId, in
       [&layout](std::shared_ptr<TextBlock> line, uint32_t) { layout.lines.push_back(std::move(line)); });
 }
 
+#if defined(CROSSPOINT_TTF_READER)
+
+// Scratch budget for the preview's ChapterLayout pass. The engine's STANDARD
+// profile peaks ~152KB on full chapters; the two-paragraph sample is tiny, so
+// the fixed paragraph buffers + span tables dominate — same size class as the
+// reader runtime's scratch, transient (freed when relayoutTtf returns).
+constexpr size_t kPreviewScratchBytes = 256 * 1024;
+
+// Run cap: the pane is a few lines tall; two paragraphs never exceed this.
+constexpr size_t kMaxPreviewRuns = 24;
+
+// RAM-backed BookSource over the sample text (layoutPlainText reads it whole).
+class SampleBookSource final : public freeink::book::BookSource {
+ public:
+  explicit SampleBookSource(const std::string& data) : data_(data) {}
+  int32_t readAt(const uint64_t offset, void* dst, const uint32_t len) override {
+    if (offset >= data_.size()) return 0;
+    const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(len, data_.size() - offset));
+    memcpy(dst, data_.data() + offset, n);
+    return static_cast<int32_t>(n);
+  }
+  uint64_t size() const override { return data_.size(); }
+
+ private:
+  const std::string& data_;
+};
+
+// Collects the engine's runs (copied — PageTextRun text points into scratch
+// and dies with it).
+class RunCollector final : public freeink::book::PageSink {
+ public:
+  std::vector<PreviewRun> runs;
+
+  bool onPage(const freeink::book::Page& page) override {
+    for (uint16_t r = 0; r < page.runCount && runs.size() < kMaxPreviewRuns; ++r) {
+      const auto& run = page.runs[r];
+      if (run.len == 0) continue;
+      PreviewRun copy;
+      copy.text.assign(run.text, run.len);
+      copy.x = run.x;
+      copy.baselineY = run.baselineY;
+      copy.sizePx = run.sizePx;
+      copy.styleFlags = run.styleFlags;
+      runs.push_back(std::move(copy));
+    }
+    return runs.size() < kMaxPreviewRuns;  // false stops layout early
+  }
+};
+
+// Lays the two-paragraph sample through the real engine with the pane's
+// geometry; replaces layout.ttfRuns. On scratch OOM the previous runs are
+// kept (stale preview for one frame, no crash).
+void relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHeight) {
+  std::vector<PreviewRun> collected;
+  do {
+    // Sample text twice: the engine splits paragraphs on blank lines, so the
+    // pane shows the real paragraph gap (the legacy preview drew twice).
+    const char* text = I18N.get(StrId::STR_FONT_PREVIEW_TEXT);
+    std::string sample;
+    sample.reserve(strlen(text) * 2 + 2);
+    sample += text;
+    sample += "\n\n";
+    sample += text;
+
+    freeink::book::LayoutParams params;
+    params.pageWidth = static_cast<int16_t>(textWidth);
+    params.pageHeight = static_cast<int16_t>(previewHeight);
+    params.marginLeft = 0;
+    params.marginRight = 0;
+    params.marginTop = 2;
+    params.marginBottom = 0;
+    params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.ttfFontPointSize) * 150.0f / 72.0f));
+    params.lineSpacingPct = 100;
+    switch (SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT) {
+      case CrossPointSettings::TIGHT:
+        params.lineSpacingPct = 95;
+        break;
+      case CrossPointSettings::WIDE:
+        params.lineSpacingPct = 110;
+        break;
+      case CrossPointSettings::EXTRA_WIDE:
+        params.lineSpacingPct = 120;
+        break;
+      default:
+        break;
+    }
+    params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 130 : 100;
+    switch (SETTINGS.paragraphAlignment % CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT) {
+      case CrossPointSettings::LEFT_ALIGN:
+        params.defaultAlign = freeink::book::TextAlign::Left;
+        break;
+      case CrossPointSettings::CENTER_ALIGN:
+        params.defaultAlign = freeink::book::TextAlign::Center;
+        break;
+      case CrossPointSettings::RIGHT_ALIGN:
+        params.defaultAlign = freeink::book::TextAlign::Right;
+        break;
+      case CrossPointSettings::JUSTIFIED:
+      case CrossPointSettings::BOOK_STYLE:
+      default:
+        params.defaultAlign = freeink::book::TextAlign::Justify;
+        break;
+    }
+    params.focusReading = SETTINGS.focusReadingEnabled != 0;
+    params.embeddedStyles = true;
+    params.hyphenator = nullptr;
+    freeink::book::FontChain* chain = freeink::book::fontLoader.getReaderFont();
+    if (chain == nullptr || chain->styleCoverage() == 0) break;
+    params.font = chain;
+
+    const auto scratch = poolMakeBytes(kPreviewScratchBytes);
+    if (!scratch) break;  // OOM: keep the previous runs
+    freeink::book::Arena arena(scratch.get(), kPreviewScratchBytes);
+
+    SampleBookSource source(sample);
+    RunCollector sink;
+    (void)freeink::book::ChapterLayout::layoutPlainText(source, params, arena, sink, nullptr, nullptr);
+    collected = std::move(sink.runs);
+  } while (false);
+
+  layout.ttfRuns = std::move(collected);
+}
+
+// UTF-8 decode (mirror of PageRenderer's TU-local decoder).
+uint32_t decodeUtf8(const char* text, const uint32_t len, uint32_t& i) {
+  const auto b0 = static_cast<uint8_t>(text[i]);
+  uint32_t cp = b0;
+  uint32_t extra = 0;
+  if (b0 >= 0xF0) {
+    cp = b0 & 0x07;
+    extra = 3;
+  } else if (b0 >= 0xE0) {
+    cp = b0 & 0x0F;
+    extra = 2;
+  } else if (b0 >= 0xC0) {
+    cp = b0 & 0x1F;
+    extra = 1;
+  }
+  ++i;
+  while (extra > 0 && i < len && (static_cast<uint8_t>(text[i]) & 0xC0) == 0x80) {
+    cp = (cp << 6) | (static_cast<uint8_t>(text[i]) & 0x3F);
+    ++i;
+    --extra;
+  }
+  return cp;
+}
+
+// Plots the laid-out runs into the preview pane at logical (textLeft, top):
+// the glyph walk mirrors PageRenderer::renderText (kerning, synthetic-bold
+// double-strike), but coverage lands through GfxRenderer::drawPixel so the
+// renderer's orientation transform applies — a Phase 3.5 PagePaint preview.
+void drawTtfRuns(const GfxRenderer& renderer, const std::vector<PreviewRun>& runs, const int textLeft, const int top,
+                 const int bottom) {
+  freeink::book::FontChain* fonts = freeink::book::fontLoader.getReaderFont();
+  if (fonts == nullptr) return;
+  for (const auto& run : runs) {
+    int32_t penX = run.x;
+    uint32_t i = 0;
+    uint32_t prev = 0;
+    while (i < run.text.size()) {
+      const uint32_t cp = decodeUtf8(run.text.data(), static_cast<uint32_t>(run.text.size()), i);
+      if (prev != 0) penX += fonts->kerning(prev, cp, run.sizePx, run.styleFlags);
+      uint8_t faceFlags = 0;
+      freeink::book::RenderFont* font = fonts->fontFor(cp, run.styleFlags, &faceFlags);
+      const freeink::book::GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, run.sizePx) : nullptr;
+      if (glyph != nullptr) {
+        const int strikes =
+            (run.styleFlags & freeink::book::StyleBold) != 0 && (faceFlags & freeink::book::StyleBold) == 0 ? 2 : 1;
+        for (int s = 0; s < strikes; ++s) {
+          for (uint16_t gy = 0; gy < glyph->height; ++gy) {
+            const int32_t y = top + run.baselineY + glyph->yoff + static_cast<int32_t>(gy);
+            if (y < top || y >= bottom) continue;
+            const uint8_t* srcRow = glyph->pixels + static_cast<uint32_t>(gy) * glyph->width;
+            for (uint16_t gx = 0; gx < glyph->width; ++gx) {
+              if (srcRow[gx] >= 96) {  // mid threshold: preview-grade ink
+                renderer.drawPixel(static_cast<int>(penX + glyph->xoff + static_cast<int32_t>(gx) + s),
+                                   static_cast<int>(y), true);
+              }
+            }
+          }
+        }
+      }
+      penX += fonts->advance(cp, run.sizePx, run.styleFlags);
+      prev = cp;
+    }
+  }
+}
+#endif  // CROSSPOINT_TTF_READER
+
 }  // namespace
 
 void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previewPadding, int labelGap, int top,
@@ -73,15 +270,44 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
   const int labelY = top + height - previewPadding - labelH;
   renderer.drawText(UI_10_FONT_ID, left, labelY, labelBuf);
 
+  const int textLeft = left + SETTINGS.screenMargin;
+  const int textWidth = width - 2 * SETTINGS.screenMargin;
+  if (textWidth <= 0) return;
+
+#if defined(CROSSPOINT_TTF_READER)
+  if (SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF) {
+    // Native-TTF pane: the sample is laid out and rasterized through the
+    // active FontChain (§3.6). The engine chain is the preview's identity,
+    // so the key carries the content fingerprint + continuous point size.
+    const PreviewKey key{.fontId = -1,
+                         .fontPointSize = -1,
+                         .screenMargin = SETTINGS.screenMargin,
+                         .textWidth = textWidth,
+                         .lineCompression = SETTINGS.getReaderLineCompression(),
+                         .alignment = SETTINGS.paragraphAlignment,
+                         .extraParagraphSpacing = SETTINGS.extraParagraphSpacing != 0,
+                         .focusReading = SETTINGS.focusReadingEnabled != 0,
+                         .hyphenation = SETTINGS.hyphenationEnabled != 0,
+                         .engine = SETTINGS.readerFontEngine,
+                         .fingerprint = freeink::book::fontLoader.fontFingerprint(),
+                         .ttfPointSize = SETTINGS.ttfFontPointSize,
+                         .previewHeight = height};
+    if (key != layout.key) {
+      relayoutTtf(layout, textWidth, height);
+      layout.key = key;
+    }
+    const int top2 = top + previewPadding;
+    const int bottom = top + height - labelReserved;
+    drawTtfRuns(renderer, layout.ttfRuns, textLeft, top2, bottom);
+    return;
+  }
+#endif
+
   const int fontId = SETTINGS.getReaderFontId();
   if (fontId == 0) return;
 
   const int lineH = renderer.getTextHeight(fontId);
   if (lineH <= 0) return;
-
-  const int textLeft = left + SETTINGS.screenMargin;
-  const int textWidth = width - 2 * SETTINGS.screenMargin;
-  if (textWidth <= 0) return;
 
   const float compression = SETTINGS.getReaderLineCompression();
   const int lineAdvance = std::max(1, renderer.getLineHeight(fontId, compression));
@@ -122,5 +348,4 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
     y += paragraphGap;
   }
 }
-
 }  // namespace textsettings

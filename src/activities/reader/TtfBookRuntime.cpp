@@ -404,7 +404,7 @@ void TtfBookRuntime::applyReaderLayoutParams(LayoutParams& params) {
   params.focusReading = SETTINGS.focusReadingEnabled != 0;
   params.embeddedStyles = true;
   params.hyphenator = nullptr;  // Phase 2b
-  params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.fontPointSize) * 150.0f / 72.0f));
+  params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.ttfFontPointSize) * 150.0f / 72.0f));
 }
 
 void TtfBookRuntime::makeLayoutParams(GfxRenderer& renderer, LayoutParams& out, const bool autoTurnActive) const {
@@ -433,6 +433,11 @@ void TtfBookRuntime::makeLayoutParams(GfxRenderer& renderer, LayoutParams& out, 
 
   const char* lang = catalog_.metadata().language;
   out.language = (lang != nullptr && lang[0] != '\0') ? lang : "en";
+  // Phase 3 family selection (design §3.6): the loader loads the family the
+  // settings name; empty selection = built-in fallback chain. Bitmap-engine
+  // rollback never selects a TTF family.
+  fontLoader.selectFamily(
+      SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF ? SETTINGS.ttfFontFamilyName : "");
   FontChain* chain = fontLoader.getReaderFont();
   if (chain == nullptr || chain->styleCoverage() == 0) {
     // builtinFallback() can serve an empty chain when its PSRAM backing

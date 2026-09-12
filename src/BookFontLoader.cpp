@@ -64,10 +64,6 @@ namespace book {
 // allocated; this constant is the current placeholder (128KB floor).
 static constexpr uint32_t kMaxDramFontBytes = 128 * 1024;
 
-// PSRAM-tier per-face size guard (CWE-400): fonts live resident in PSRAM for
-// the face's lifetime; bound each file well below the 8MB PSRAM pool.
-static constexpr uint32_t kMaxPsramFontBytes = 2 * 1024 * 1024;
-
 // Device-lifetime fallback faces (owned by builtinFallback()'s singleton pool
 // block). builtinFace() hands these out so appendFallbackTail() can register
 // them as an active chain's tail without transferring ownership.
@@ -260,9 +256,23 @@ void BookFontLoader::ensureLoaded() {
   // faces' bytes, so a reload must not inherit the previously spent budget.
   initBudget();
 
-  const FamilyInfo& fam = families_[0];
-  for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
-    if (!tryLoadFace(i, fam.faces[i], chain_)) {
+  // Phase 3 family selection (design §3.6): the SETTINGS-driven reader and
+  // preview call selectFamily() first; an empty selection means the built-in
+  // fallback chain. An unselected loader keeps the legacy families_[0]
+  // default so the debug rig (and any pre-settings consumer) still works.
+  const FamilyInfo* famPtr = nullptr;
+  if (!familySelected_) {
+    famPtr = &families_[0];
+  } else if (selectedFamily_[0] != '\0') {
+    famPtr = findFamily(selectedFamily_);
+    if (famPtr == nullptr) {
+      LOG_DBG("BFNT", "Selected family '%s' not found — built-in fallback", selectedFamily_);
+    }
+  }  // explicit fallback selection: famPtr stays null
+  if (famPtr == nullptr) return;  // chain stays empty; getReaderFont() serves the fallback
+
+  for (uint8_t i = 0; i < famPtr->faceCount && i < 4; ++i) {
+    if (!tryLoadFace(i, famPtr->faces[i], chain_)) {
       // Face skipped (too large, invalid sfnt, OOM); continue with fewer faces.
     }
   }
@@ -280,6 +290,33 @@ FontChain* BookFontLoader::getReaderFont() {
 uint32_t BookFontLoader::fontFingerprint() const { return fingerprint_; }
 
 void BookFontLoader::markDirty() { dirty_.store(true, std::memory_order_relaxed); }
+
+void BookFontLoader::selectFamily(const char* name) {
+  const char* clean = name != nullptr ? name : "";
+  if (familySelected_ && strncmp(selectedFamily_, clean, sizeof(selectedFamily_)) == 0) return;
+  strncpy(selectedFamily_, clean, sizeof(selectedFamily_) - 1);
+  selectedFamily_[sizeof(selectedFamily_) - 1] = '\0';
+  familySelected_ = true;
+  markDirty();
+}
+
+const FamilyInfo* BookFontLoader::findFamily(const char* name) const {
+  if (name == nullptr || name[0] == '\0') return nullptr;
+  // Exact match: the selection stores the scanner's own display name, so the
+  // same case round-trips; a renamed family on SD degrades to the fallback.
+  for (uint8_t i = 0; i < familyCount_; ++i) {
+    if (strcmp(families_[i].name, name) == 0) return &families_[i];
+  }
+  return nullptr;
+}
+
+bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) const {
+  if (HalMemory::getPsramHeap().totalBytes == 0) return false;
+  for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
+    if (fam.faces[i].fileSize > kMaxFaceBytes) return false;
+  }
+  return true;
+}
 
 void BookFontLoader::releaseResidentCaches() {
   // Same release discipline as ensureLoaded(): RAII owners own the bytes.
@@ -592,8 +629,9 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
       LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file, fi.fileSize, remainingBudget_);
       return false;
     }
-  } else if (fi.fileSize > kMaxPsramFontBytes) {
-    LOG_ERR("BFNT", "Font %s too large for PSRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxPsramFontBytes);
+  } else if (fi.fileSize > kMaxFaceBytes) {
+    LOG_ERR("BFNT", "Font %s too large for PSRAM tier (%u > %u)", fi.file, fi.fileSize,
+            static_cast<unsigned>(kMaxFaceBytes));
     return false;
   }
 

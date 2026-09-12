@@ -29,6 +29,7 @@
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
 #include "activities/ActivityResult.h"
+#include "activities/util/IntervalSelectionActivity.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
 #include "activities/settings/GlobalStatsActivity.h"
@@ -3198,6 +3199,24 @@ std::string EpubReaderActivity::textRowName(int row) const {
 
 std::string EpubReaderActivity::textRowValue(int row) const {
   static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN};
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    switch (row) {
+      case 0:
+        return SETTINGS.ttfFontFamilyName[0] != '\0' ? SETTINGS.ttfFontFamilyName : tr(STR_BUILTIN_FONT);
+      case 1:
+        return std::to_string(SETTINGS.ttfFontPointSize) + " pt";
+      case 2:
+        return I18N.get(kSpacingIds[SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT]);
+      case 3:
+        return I18N.get(kAlignIds[SETTINGS.paragraphAlignment % CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT]);
+      case 4:
+        return SETTINGS.focusReadingEnabled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+      default:
+        return "";
+    }
+  }
+#endif
   switch (row) {
     case 0:
       if (SETTINGS.sdFontFamilyName[0] != '\0') return SETTINGS.sdFontFamilyName;
@@ -3226,6 +3245,47 @@ void EpubReaderActivity::applyTextSettingLive() {
 // Settings-style option pickers for the Text panel's enum rows. Every
 // selection applies immediately to the page under the sheet.
 void EpubReaderActivity::showTextRowPopup(const int row) {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_ && row == 0) {
+    // Native family picker (built-in + §14.4 families, live preview) — the
+    // same screen the Settings entry uses; a popup cannot scroll the list.
+    overlay = Overlay::None;
+    overlayPopup.dismiss();
+    discardOverlayPage();
+    startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
+                                                                  TextSettingsActivity::Tab::Family),
+                           [this](const ActivityResult&) {
+                             applyReaderTextSettings();
+                             overlay = Overlay::Text;  // back to the Text panel
+                             panelIndex = 0;
+                             if (toolbarUi) toolbarUi->begin();  // the picker drew its own FUI screen
+                             requestUpdate();                    // re-render page + Text panel
+                           });
+    return;
+  }
+  if (ttf_ && row == 1) {
+    // §14.2: continuous size — same slider as the settings Size tab.
+    startActivityForResult(
+        std::make_unique<IntervalSelectionActivity>(
+            renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
+            CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
+            StrId::STR_FONT_SIZE_VALUE, /*readerActivity=*/true),
+        [this](const ActivityResult& result) {
+          if (!result.isCancelled && std::holds_alternative<IntervalResult>(result.data)) {
+            SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
+                std::get<IntervalResult>(result.data).value, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN,
+                CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
+            applyTextSettingLive();
+          }
+          // Reopen the Text panel over the restored page.
+          overlay = Overlay::Text;
+          panelIndex = 1;
+          if (toolbarUi) toolbarUi->begin();
+          requestUpdate();
+        });
+    return;
+  }
+#endif
   switch (row) {
     case 1: {
       // The point sizes the active family actually ships.
