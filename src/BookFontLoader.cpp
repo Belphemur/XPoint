@@ -256,6 +256,7 @@ void BookFontLoader::ensureLoaded() {
     // family's caches; dirty stays clear until the next begin()/selectFamily.
     fingerprint_ = 0;
     dirty_.store(false, std::memory_order_relaxed);
+    loaded_ = true;  // a load attempt completed — the short-circuit must hold
     return;
   }
 
@@ -282,7 +283,8 @@ void BookFontLoader::ensureLoaded() {
     // generation from it.
     fingerprint_ = 0;
     dirty_.store(false, std::memory_order_relaxed);
-    return;  // chain stays empty; getReaderFont() serves the fallback
+    loaded_ = true;  // a load attempt completed — the short-circuit must hold
+    return;          // chain stays empty; getReaderFont() serves the fallback
   }
 
   for (uint8_t i = 0; i < famPtr->faceCount && i < 4; ++i) {
