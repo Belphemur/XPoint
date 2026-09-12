@@ -6,6 +6,7 @@
 
 bool HalFile::testFailClose = false;
 bool HalFile::testFailWrite = false;
+bool HalFile::testFailSync = false;
 
 HalStorage HalStorage::instance;
 

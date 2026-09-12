@@ -23,6 +23,7 @@ class SdCardCacheStorageTest : public ::testing::Test {
     Storage.renameCallCount = 0;
     HalFile::testFailClose = false;
     HalFile::testFailWrite = false;
+    HalFile::testFailSync = false;
   }
 };
 
@@ -167,6 +168,34 @@ TEST_F(SdCardCacheStorageTest, CloseFailureRetriesRetainedTmp) {
   HalFile::testFailClose = false;
 
   // beginWrite retries the close, then truncates the retained temporary file.
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("retry", 5));
+  ASSERT_TRUE(s.endWrite());
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "retry");
+}
+
+// A failed sync followed by a successful close must still mark the write as
+// failed: PageCacheWriter's finish-cleanup calls remove() after the handle
+// closes, and remove() only retains the last good final while a failed write
+// is visible. Without the flag the good cache would be deleted.
+TEST_F(SdCardCacheStorageTest, SyncFailurePreservesFinalDuringCleanup) {
+  Storage.files["/cache/page1.fibp"] = "old-generation";
+  SdCardCacheStorage s(kDir);
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("new-generation", 14));
+
+  HalFile::testFailSync = true;
+  EXPECT_FALSE(s.endWrite());
+  HalFile::testFailSync = false;
+
+  // The close succeeded, so the .tmp handle is closed — but the failed-write
+  // state must keep remove() from deleting the active final.
+  EXPECT_TRUE(s.remove("page1.fibp"));
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "old-generation");
+  EXPECT_TRUE(Storage.exists("/cache/page1.fibp.tmp"));
+  EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
+
+  // The retained .tmp is retryable on the next beginWrite.
   ASSERT_TRUE(s.beginWrite("page1.fibp"));
   ASSERT_TRUE(s.write("retry", 5));
   ASSERT_TRUE(s.endWrite());

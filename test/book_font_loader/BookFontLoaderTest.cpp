@@ -200,7 +200,7 @@ TEST(ScanFontsTest, DiscoversFamiliesAndStyles) {
   seedFile("/fonts/Bookerly/Bookerly-BoldItalic.ttf");
   seedFile("/fonts/Bookerly/Bookerly-SemiBold.ttf", "");  // weight heuristic → Bold
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
@@ -219,7 +219,7 @@ TEST(ScanFontsTest, HiddenRootWinsFamilyDedupe) {
   seedFile("/.fonts/Bookerly/Bookerly-Light.ttf");
   seedFile("/fonts/Bookerly/Bookerly-Regular.ttf");
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   // Hidden root first (the begin() order), so its family claims the name.
   BookFontLoader::scanFontsForTest("/.fonts", fams, count);
@@ -237,7 +237,7 @@ TEST(ScanFontsTest, StylePriorityAndWordBoundaries) {
   seedFile("/fonts/Mix/Mix-Italic.ttf");    // Italic
   seedFile("/fonts/Mix/Mix-ExtraBold.ttf", "x");
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
@@ -257,7 +257,7 @@ TEST(ScanFontsTest, SingleFileFamilyPromotesRegular) {
   resetStorage();
   seedFile("/fonts/Solo/Solo-Head.ttf", std::string(1234, 'f'));
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
@@ -275,7 +275,7 @@ TEST(ScanFontsTest, DuplicateStyleComparesCanonicalStems) {
   seedFile("/fonts/Dupe/Face-Bold.ttf");
   seedFile("/fonts/Dupe/Face-Bold-Extra.otf");
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
@@ -294,7 +294,7 @@ TEST(ScanFontsTest, SkipsJunkFilesAndFolders) {
   seedFile("/fonts/_private/x-Regular.ttf", "");      // underscore folder
   seedFile("/fonts/Loose-Regular.ttf", "");           // root-level: ignored
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
@@ -307,7 +307,7 @@ TEST(ScanFontsTest, FamilyCapAt32) {
   for (int i = 0; i < BookFontLoader::kMaxDiscoveredFamilies + 4; ++i) {
     seedFile(std::string("/fonts/Fam") + static_cast<char>('A' + i % 26) + std::to_string(i) + "/F-Regular.ttf");
   }
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   EXPECT_EQ(count, BookFontLoader::kMaxDiscoveredFamilies);
@@ -316,7 +316,7 @@ TEST(ScanFontsTest, FamilyCapAt32) {
 TEST(ScanFontsTest, OtfExtensionAccepted) {
   resetStorage();
   seedFile("/fonts/Otf/Otf-Regular.otf");
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   ASSERT_EQ(count, 1u);
@@ -328,7 +328,7 @@ TEST(ScanFontsTest, TruncatedFamilyNameIsSkipped) {
   const std::string longName(47, 'L');
   seedFile("/fonts/" + longName + "/Long-Regular.ttf");
 
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   EXPECT_EQ(count, 0u);
@@ -336,7 +336,7 @@ TEST(ScanFontsTest, TruncatedFamilyNameIsSkipped) {
 
 TEST(ScanFontsTest, MissingRootIsQuietNoop) {
   resetStorage();
-  book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   EXPECT_EQ(count, 0u);

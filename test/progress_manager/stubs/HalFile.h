@@ -1,4 +1,4 @@
-// Host-test stub of HalFile — backed by HalStorage's in-memory file map.
+// Host-test stub of HalFile — backed by the HalStorage stub's in-memory map.
 #pragma once
 
 #include <cstddef>
@@ -21,7 +21,6 @@ class HalFile {
   }
   uint64_t fileSize64() { return data ? data->size() : 0; }
   size_t position() const { return cursor; }
-  bool seek(size_t pos) { return seek64(pos); }
   bool seek64(uint64_t pos) {
     if (!data || pos > data->size()) return false;
     cursor = static_cast<size_t>(pos);
@@ -34,9 +33,7 @@ class HalFile {
     cursor += n;
     return static_cast<int>(n);
   }
-  int read() { return -1; }
   size_t write(const void* buf, size_t count) {
-    if (testFailWrite) return 0;
     if (!data) return 0;
     const auto* b = static_cast<const char*>(buf);
     if (cursor + count > data->size()) data->resize(cursor + count);
@@ -44,22 +41,12 @@ class HalFile {
     cursor += count;
     return count;
   }
-  size_t write(uint8_t b) { return write(&b, 1); }
-  bool sync() {
-    if (testFailSync) return false;  // injection point: sync stays open
-    return open_;
-  }
+  bool flush() { return isOpen(); }
   bool close() {
     if (!open_) return false;
-    if (testFailClose) return false;  // injection point: close stays open
     open_ = false;
     return true;
   }
-
-  // Test control (defined in Stubs.cpp).
-  static bool testFailClose;
-  static bool testFailWrite;
-  static bool testFailSync;
 
  private:
   bool open_ = false;

@@ -398,22 +398,11 @@ bool ProgressManager::saveNowRecord(const char* cachePath, const Record& rec) {
     LOG_DBG(MUTEX_TAG, "saveNow(): unavailable (disk mutex/state null)");
     return false;
   }
-  const bool ok = saveRecordLocked(cachePath, rec);
-  if (ok) {
-    // Only update the in-memory baseline when THIS is the open book's file
-    // and no newer state update raced the synchronous write.
-    xSemaphoreTake(stateMutex_, portMAX_DELAY);
-    const bool sameBook = bookOpen_ && strncmp(cachePath_, cachePath, sizeof(cachePath_)) == 0;
-    if (sameBook && *current_ == rec) {
-      *lastFlushed_ = rec;
-      lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
-      writeQueued_ = false;
-    }
-    xSemaphoreGive(stateMutex_);
-  } else {
-    LOG_DBG(MUTEX_TAG, "saveNow(): write failed");
-  }
-  return ok;
+  // Bypass saves (KOReader sync, cache-clear backup, footnote origin) are
+  // authoritative: commitRecord adopts the record as the live mirror when it
+  // differs from current_, so a worker or closeBook() flush cannot overwrite
+  // the just-saved record with a different snapshot (Copilot, PR #112).
+  return commitRecord(cachePath, rec, /*adopt=*/true);
 }
 
 void ProgressManager::closeBook() {
@@ -443,60 +432,95 @@ bool ProgressManager::flushNow() {
 }
 
 bool ProgressManager::flushChanged() {
-  Record snapshot = {};
-  char cachePath[sizeof(cachePath_)] = {};
-  uint32_t sinceFlushSec = 0;
-  bool hasWork = false;
-  {
-    xSemaphoreTake(stateMutex_, portMAX_DELAY);
-    if (!bookOpen_ || cachePath_[0] == '\0') {
-      writeQueued_ = false;
-    } else if (*current_ == *lastFlushed_) {
-      writeQueued_ = false;
-    } else {
-      snapshot = *current_;
-      memcpy(cachePath, cachePath_, sizeof(cachePath));
-      sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
-      hasWork = true;
-    }
-    xSemaphoreGive(stateMutex_);
-  }
-  if (!hasWork) {
-    LOG_DBG(MUTEX_TAG, "flushChanged(): nothing to flush");
-    return true;  // nothing to do
-  }
-
-  LOG_INF(MUTEX_TAG, "flushChanged(): flushing spine=%u page=%u/%u sinceFlush=%lus", snapshot.spineIndex,
-          snapshot.pageNumber, snapshot.pageCount, static_cast<unsigned long>(sinceFlushSec));
-  const bool ok = saveRecordLocked(cachePath, snapshot);
-  if (ok) {
-    bool committed = false;
+  // Bounded repair loop: a save() racing the write leaves newer state owed
+  // and the file momentarily behind the mirror — rewrite it immediately
+  // instead of waiting for the next interval gate (Copilot, PR #112).
+  for (int attempt = 0; attempt < kMaxFlushAttempts; ++attempt) {
+    Record snapshot = {};
+    char cachePath[sizeof(cachePath_)] = {};
+    uint32_t sinceFlushSec = 0;
+    bool hasWork = false;
     {
       xSemaphoreTake(stateMutex_, portMAX_DELAY);
-      const bool sameBook = bookOpen_ && strncmp(cachePath_, cachePath, sizeof(cachePath_)) == 0;
-      if (sameBook && *current_ == snapshot) {
-        *lastFlushed_ = snapshot;
-        lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
+      if (!bookOpen_ || cachePath_[0] == '\0') {
         writeQueued_ = false;
-        committed = true;
-      } else if (sameBook) {
-        // A save raced with this write. Keep it owed even if its interval
-        // gate had not elapsed when save() observed the old baseline.
-        writeQueued_ = true;
+      } else if (*current_ == *lastFlushed_) {
+        writeQueued_ = false;
+      } else {
+        snapshot = *current_;
+        memcpy(cachePath, cachePath_, sizeof(cachePath));
+        sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
+        hasWork = true;
       }
       xSemaphoreGive(stateMutex_);
     }
-    if (committed) {
+    if (!hasWork) {
+      LOG_DBG(MUTEX_TAG, "flushChanged(): nothing to flush");
+      return true;  // nothing to do
+    }
+
+    LOG_INF(MUTEX_TAG, "flushChanged(): flushing spine=%u page=%u/%u sinceFlush=%lus", snapshot.spineIndex,
+            snapshot.pageNumber, snapshot.pageCount, static_cast<unsigned long>(sinceFlushSec));
+    const bool ok = commitRecord(cachePath, snapshot, /*adopt=*/false);
+    if (!ok) {
+      // Keep writeQueued_ set: the next save() (any page change) retries.
+      LOG_ERR(MUTEX_TAG, "Progress save FAILED: spine=%u page=%u/%u (will retry)", snapshot.spineIndex,
+              snapshot.pageNumber, snapshot.pageCount);
+      return false;
+    }
+    bool caughtUp = false;
+    {
+      xSemaphoreTake(stateMutex_, portMAX_DELAY);
+      caughtUp = !bookOpen_ || *current_ == *lastFlushed_;
+      xSemaphoreGive(stateMutex_);
+    }
+    if (caughtUp) {
       LOG_INF(MUTEX_TAG, "Progress saved: spine=%u page=%u/%u", snapshot.spineIndex, snapshot.pageNumber,
               snapshot.pageCount);
-    } else {
-      LOG_INF(MUTEX_TAG, "Progress saved; newer state remains queued");
+      return true;
     }
-  } else {
-    // Keep writeQueued_ set: the next save() (any page change) retries.
-    LOG_ERR(MUTEX_TAG, "Progress save FAILED: spine=%u page=%u/%u (will retry)", snapshot.spineIndex,
-            snapshot.pageNumber, snapshot.pageCount);
+    // A save raced the write: loop to repair the file with the newest state
+    // before declaring the flush complete.
   }
+  // Retry budget exhausted with newer state still owed: writeQueued_ is set,
+  // so closeBook()/flushNow() callers and the next save() converge.
+  LOG_INF(MUTEX_TAG, "flushChanged(): newer state remains queued");
+  return true;
+}
+
+bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, const bool adopt) {
+  // Lock order diskMutex_ → stateMutex_ (no path holds stateMutex_ across a
+  // diskMutex_ acquire, so no inversion). Holding diskMutex_ across the
+  // baseline commit makes "disk write + memory baseline" indivisible: two
+  // concurrent writers finish in a total order, and disk + memory end up
+  // describing the same record.
+  xSemaphoreTake(diskMutex_, portMAX_DELAY);
+  const bool ok = saveRecord(cachePath, rec);
+  if (ok) {
+    xSemaphoreTake(stateMutex_, portMAX_DELAY);
+    const bool sameBook = bookOpen_ && strncmp(cachePath_, cachePath, sizeof(cachePath_)) == 0;
+    if (sameBook) {
+      if (*current_ == rec) {
+        *lastFlushed_ = rec;
+        lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
+        writeQueued_ = false;
+      } else if (adopt) {
+        // Authoritative bypass save: adopt the record as the live mirror so a
+        // later flush cannot overwrite the just-written file with an older
+        // position (KOReader sync / cache-clear guarantee).
+        *current_ = rec;
+        *lastFlushed_ = rec;
+        lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
+        writeQueued_ = false;
+      } else {
+        // Stale worker snapshot: a newer save raced the write. Keep the newer
+        // state owed; flushChanged()'s repair loop writes it immediately.
+        writeQueued_ = true;
+      }
+    }
+    xSemaphoreGive(stateMutex_);
+  }
+  xSemaphoreGive(diskMutex_);
   return ok;
 }
 
