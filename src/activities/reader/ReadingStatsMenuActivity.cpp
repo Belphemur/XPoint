@@ -105,6 +105,12 @@ void ReadingStatsMenuActivity::openThisBook() {
       finish();
       return;
     }
+    // BookStatsActivity::saveStats() persists date edits to disk; refresh the
+    // menu's snapshot so reopening ThisBook shows the saved dates instead of
+    // the stale constructor copy.
+    if (bookStats && !bookCachePath.empty()) {
+      *bookStats = BookReadingStats::load(bookCachePath);
+    }
     requestUpdate();
   });
 }

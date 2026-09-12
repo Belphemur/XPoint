@@ -295,9 +295,10 @@ void ActivityManager::goToGlobalStats() {
 }
 
 void ActivityManager::goToReadingStats(std::optional<BookReadingStats> bookStats, std::string bookTitle,
-                                       std::string bookCachePath) {
-  auto activity = makeUniqueNoThrow<ReadingStatsMenuActivity>(renderer, mappedInput, std::move(bookStats),
-                                                              std::move(bookTitle), std::move(bookCachePath));
+                                       std::string bookCachePath, std::string bookAuthor) {
+  auto activity =
+      makeUniqueNoThrow<ReadingStatsMenuActivity>(renderer, mappedInput, std::move(bookStats), std::move(bookTitle),
+                                                  std::move(bookCachePath), std::move(bookAuthor));
   if (!activity) {
     LOG_ERR("ACT", "OOM: ReadingStatsMenuActivity");
     return;

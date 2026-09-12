@@ -350,6 +350,12 @@ void EpubReaderActivity::applyBookStatsEditsFromDisk() {
 }
 
 void EpubReaderActivity::syncFinishedBookIndex() {
+  // An entry without a title can never be loaded back (loadPath() skips it),
+  // and would break the whole index rewrite's verify pass.
+  if (epub && epub->getTitle().empty()) {
+    LOG_ERR("ERS", "Skipping finished-book entry: empty title");
+    return;
+  }
   if (!epub || !FinishedBooksIndex::recordCanonical(epub->getPath(), epub->getCachePath(), epub->getTitle(),
                                                     epub->getAuthor(), stats)) {
     LOG_ERR("ERS", "Failed to synchronize finished-book entry");
@@ -825,7 +831,7 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (atEndOfBook) {
+  if (atEndOfBook || stats.isCompleted) {
     pendingReadFolderMove = SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath());
   } else {
     pendingReadFolderMove = false;

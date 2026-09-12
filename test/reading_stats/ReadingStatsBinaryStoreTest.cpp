@@ -720,6 +720,30 @@ TEST_F(ReadingStatsBinaryStoreTest, BookNewerFormatBlocksSaves) {
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, CorruptCurrentFileDoesNotLatchGuard) {
+  (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
+  // A corrupt current-version record (garbage version byte) must be skipped,
+  // not treated as a forward-format file: only stats_v9.bin may latch the
+  // destructive-save guard.
+  std::vector<uint8_t> corrupt(135, 0);
+  corrupt[0] = 10;  // > STATS_FILE_VERSION in a v8-named file
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 8), f));
+    f.write(corrupt.data(), corrupt.size());
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 0u);  // not decodable — fresh stats
+
+  BookReadingStats fresh;
+  fresh.sessionCount = 7;
+  fresh.save(BOOK_DIR);
+  // The save went through (no latch) and wrote the current version.
+  const BookReadingStats saved = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(saved.sessionCount, 7u);
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRoundTripAndWireSize) {
   BookReadingStats stats;
   stats.isCompleted = true;

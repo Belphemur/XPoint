@@ -231,6 +231,7 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
   // corrupt current-version file must not shadow a valid older record. No
   // rename happens here — the next save() writes the current version in place;
   // the LOG_DBG lines only record which legacy source was picked up.
+  const std::string forwardName = statsFileNameForVersion(STATS_FILE_VERSION + 1);
   for (const std::string& name : openCandidateNames()) {
     HalFile f;
     if (!Storage.openFileForRead("STATS", cachePath + "/" + name, f)) continue;
@@ -239,9 +240,10 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     f.close();
 
     // A version beyond this build means a forward firmware owns this book's
-    // history. Do not decode it as fresh data, and do not let the next save
-    // overwrite the still-recognized legacy files while that record exists.
-    if (n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
+    // history. Only the forward-format candidate latches the destructive-save
+    // guard: a corrupt current/legacy record with a garbage version byte is
+    // skipped by the decoders, never fatal.
+    if (name == forwardName && n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
       LOG_ERR("STATS", "On-disk book stats are from a newer build (v%u, %d bytes); refusing to overwrite", data[0], n);
       s_blockDestructiveSavePaths.insert(cachePath);
       return BookReadingStats{};

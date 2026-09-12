@@ -2,6 +2,7 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cstring>
@@ -166,6 +167,15 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   StatsLoadOutcome outcome;
   outcome.fileSize = f.fileSize();
 
+  // One heap wire buffer shared by all version branches: a 407-byte array
+  // would crowd the ESP32-C3 task stack (AGENTS.md: locals < 256 bytes).
+  const auto wire = makeUniqueNoThrow<uint8_t[]>(GLOBAL_STATS_FILE_SIZE);
+  if (!wire) {
+    LOG_ERR("GSTATS", "OOM: global stats wire buffer");
+    return outcome;
+  }
+  uint8_t* const data = wire.get();
+
   // Peek at the version byte up front. A version strictly greater than
   // GLOBAL_STATS_VERSION belongs to a forward build and must never be
   // clobbered: latch the destructive-save guard. The peek is only honored
@@ -194,7 +204,6 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   // session window, and v5 the trailing daily-minutes array — legacy branches
   // parse the missing windows empty and backfill v6 minutes from read bits.
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {
-    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE_V3) != GLOBAL_STATS_FILE_SIZE_V3) return outcome;
     outcome.version = data[0];
     if (outcome.version != 3) return outcome;
@@ -215,7 +224,6 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     return outcome;
   }
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V4)) {
-    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE_V4) != GLOBAL_STATS_FILE_SIZE_V4) return outcome;
     outcome.version = data[0];
     // Same-size record with a different version is either a torn write (older)
@@ -228,7 +236,6 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     return outcome;
   }
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V5)) {
-    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE_V5) != GLOBAL_STATS_FILE_SIZE_V5) return outcome;
     outcome.version = data[0];
     if (outcome.version != GLOBAL_STATS_VERSION_V5) return outcome;
@@ -245,7 +252,6 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     return outcome;
   }
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE)) {
-    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE) != GLOBAL_STATS_FILE_SIZE) return outcome;
     outcome.version = data[0];
     // Same-size record with a different version is either a torn write (older)
@@ -284,9 +290,14 @@ bool saveToFile(const GlobalReadingStats& stats, const char* path, const char* b
     return false;
   }
 
-  uint8_t data[GLOBAL_STATS_FILE_SIZE];
-  serializeStats(stats, data);
-  if (f.write(data, GLOBAL_STATS_FILE_SIZE) != GLOBAL_STATS_FILE_SIZE) {
+  const auto data = makeUniqueNoThrow<uint8_t[]>(GLOBAL_STATS_FILE_SIZE);
+  if (!data) {
+    LOG_ERR("GSTATS", "OOM: global stats wire buffer");
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+  serializeStats(stats, data.get());
+  if (f.write(data.get(), GLOBAL_STATS_FILE_SIZE) != GLOBAL_STATS_FILE_SIZE) {
     LOG_ERR("GSTATS", "Short write for stats temp file %s", tmpPath.c_str());
     f.close();
     Storage.remove(tmpPath.c_str());
@@ -340,44 +351,49 @@ bool saveToFile(const GlobalReadingStats& stats, const char* path, const char* b
 }  // namespace
 
 GlobalReadingStats GlobalReadingStats::load() {
-  GlobalReadingStats stats;
+  // ~400 B with the daily-minutes array — heap, not the ESP32-C3 task stack.
+  auto stats = makeUniqueNoThrow<GlobalReadingStats>();
+  if (!stats) {
+    LOG_ERR("GSTATS", "OOM: GlobalReadingStats");
+    return GlobalReadingStats{};
+  }
   StatsLoadOutcome primary{};
   {
     HalFile f;
     if (Storage.openFileForRead("GSTATS", GLOBAL_STATS_PATH, f)) {
-      primary = loadFromOpenFile(f, stats);
+      primary = loadFromOpenFile(f, *stats);
       f.close();
     }
   }
-  if (primary.result == StatsLoadResult::Ok) return stats;
+  if (primary.result == StatsLoadResult::Ok) return std::move(*stats);
   if (primary.result == StatsLoadResult::NewerFormat) {
     LOG_ERR("GSTATS", "On-disk stats are from a newer build (v%u, %u bytes); refusing to overwrite", primary.version,
             static_cast<unsigned>(primary.fileSize));
     s_blockDestructiveSave = true;
-    return stats;
+    return std::move(*stats);
   }
 
   StatsLoadOutcome backup{};
   {
     HalFile f;
     if (Storage.openFileForRead("GSTATS", GLOBAL_STATS_BAK_PATH, f)) {
-      backup = loadFromOpenFile(f, stats);
+      backup = loadFromOpenFile(f, *stats);
       f.close();
     }
   }
   if (backup.result == StatsLoadResult::Ok) {
     LOG_DBG("GSTATS", "Recovered global stats from backup");
-    return stats;
+    return std::move(*stats);
   }
   if (backup.result == StatsLoadResult::NewerFormat) {
     LOG_ERR("GSTATS", "Backup stats are from a newer build (v%u, %u bytes); refusing to overwrite", backup.version,
             static_cast<unsigned>(backup.fileSize));
     s_blockDestructiveSave = true;
-    return stats;
+    return std::move(*stats);
   }
 
   LOG_DBG("GSTATS", "Global stats missing or corrupt, starting fresh");
-  return stats;
+  return std::move(*stats);
 }
 
 void GlobalReadingStats::save() const {

@@ -13,9 +13,8 @@ same codebase we ported the card grid from (crossink), so the port is
 structurally close — but YACP and our fork diverged in the meantime:
 
 | Area | YACP v1.6.2 | Our fork (develop, v7/v5 record) |
-|---|---|Design column |
 |---|---|---|
-| Book record | 73-byte "v5" record, legacy pace fields (bytes 12–15) live, **no WPM/Session windows** | 150-byte v7 with `WpmWindow` + `SessionWindow` (trimmed means), legacy pace fields retired to reserved |
+| Book record | 73-byte "v5" record, legacy pace fields (bytes 12–15) live, **no WPM/Session windows** | 134-byte v7 with `WpmWindow` + `SessionWindow` (trimmed means), legacy pace fields retired to reserved |
 | Global record | 159-byte v3, streak/history present, no windows | 225-byte v5 with windows |
 | Stats UI entry | Single `BookStatsActivity` with **6 pages** (Summary, ReadingRhythm, FinishedBooks, Achievement, AllDevices, EditDates) | `BookStatsActivity` (single page, Clear-pace flow) + `GlobalStatsActivity` (single page, clear-global flow) |
 | Daily history | Separate `DailyReadingHistory` class (own `daily_reading.bin`) | Reading-history bits already live **inside** global v5 record (bytes 71–162) |
@@ -150,7 +149,7 @@ YACP's `FinishedBooksIndex.{h,cpp}` ports with minimal changes:
 - **Record migration is unaffected**: `finished_books.bin` is a new
   standalone file, no v7/v5 bump.
 
-### 2.4 Persistence: the two record bumps (resolved, see §2.6)
+### 2.4 Persistence: the two record bumps (resolved, see §2.7)
 
 The user approved Option B (§3 Q1) and the ride-along completion flags
 (§3 Q2), so both records were bumped once in the record-bump commit:
@@ -166,29 +165,20 @@ The user approved Option B (§3 Q1) and the ride-along completion flags
 Load candidates, forward guards, and per-version decode constants follow the
 binary-store conventions in `2026-08-25-binary-files.md`.
 
-### 2.5 Reading Rhythm data gap — minutes-per-day
+### 2.5 Reading Rhythm data gap — minutes-per-day (resolved: Option B)
 
 YACP's Recent Activity dot intensity + weekly chart use **minutes per day**;
-our v5 record stores only a read/not-read **bitfield**. Options:
+our v5 record stored only a read/not-read **bitfield**. The approved fix bumps
+global v5→v6, adding a 91-day `uint16` minutes array (182 B, record 225→407 B)
+alongside the bitfield; rhythm charts render real minutes. Backward/forward
+migration follows the standard in-place rules (v5 loads as v6 with
+bitfield-only rendering; v6 files load on older builds → the destructive-save
+guard).
 
-- **Option A (chosen):** derive per-day minutes from the bitfield, rendered
-  at two intensity levels only (read / not read) — YACP's dot-size ladder
-  (1/15/30+ minutes) needs per-day minutes we don't have. Weekly Reading
-  Time bars need per-week minutes: we can approximate weekly minutes from
-  `totalReadingSeconds` over... no — the totals are all-time, not per-week.
-  Weekly bars need real data.
-- **Option B:** bump global v5→v6, adding a 91-day `uint16` minutes array
-  (182 B, record 225→407 B) alongside the bitfield; rhythm charts render
-  real minutes. Backward/forward migration follows the standard in-place
-  rules (v5 loads as v6 with bitfield-only rendering; v6 files load on older
-  builds → the destructive-save guard).
-
-**Decision required from user:** intensity levels vs record bump.
-**Recommendation: Option B** — the rhythm screen is the centerpiece of the
-port, and two-level dots would look visibly degraded next to YACP's
-screenshot. The bump is mechanical (per-version decode constants, one new
-array at bytes 225–406, doc §3, wire-offset tests) and the destructive-save
-guard already handles future-format detection.
+Rejected alternative — Option A (derive per-day minutes from the bitfield at
+two intensity levels): YACP's dot-size ladder (1/15/30+ minutes) needs per-day
+minutes the bitfield cannot provide, and the weekly Reading Time bars need
+per-week minutes which the all-time totals cannot supply either.
 
 ### 2.6 Files touched
 
@@ -207,18 +197,18 @@ guard already handles future-format detection.
 | `XtcReaderActivity` | none — the fork has no XTC stats menu/action to hang the flow on |
 | `english.yaml` + regenerated `I18nKeys.h` | ~25 new strings |
 | `test/reading_stats/` | FinishedBooksIndex round-trip/migration tests; rhythm data derivation tests; wire-offset pins for v8 |
-### 2.6 The two record bumps (conditional on the answers to §3)
+### 2.7 The two record bumps (approved, see §2.4)
 
-- **Global v5→v6** (only if Option B, §3 Q1): append a 91-day `uint16`
+- **Global v5→v6**: append a 91-day `uint16`
   minutes array (182 B, record 225→407 B) after the session window. One-hop
   in-place migration; v5 loads as v6 with bitfield-only rendering; per-version
   decode constants mandatory; wire-offset tests + doc §3 in the same commit.
-- **Book v7→v8** (only if ride-along, §3 Q2): pack the two completion-flow
+- **Book v7→v8**: pack the two completion-flow
   flags (`completionAchievementPending`, `completionPromptDismissedAtHundred`)
   into one reserved byte at 134 (record stays 135 B). Without them the
   achievement flow can't survive a reboot mid-flow.
 
-### 2.7 Risks / constraints
+### 2.8 Risks / constraints
 
 - RAM: `FinishedBooksActivity` holding 32 entries ≈ 10 KB heap — fine on all
   boards (C3 has ~380 KB DRAM; activity is heap-allocated and deleted on exit).
@@ -237,18 +227,15 @@ guard already handles future-format detection.
 - i18n: all new strings via `tr(STR_*)`, printf-style formats only.
 - `requestUpdate()` in every new activity's `onEnter()` (blank-screen pitfall).
 
-## 3. Open questions for the user
+## 3. Resolved decisions (2026-09-11)
 
-1. **Rhythm data:** Option A (bitfield-only, 2 intensity levels, no bump) or
-   Option B (global v5→v6 bump with 91-day minutes array, real minutes)? Recommend B.
+1. **Rhythm data:** Option B — global v5→v6 bump with 91-day minutes array,
+   real minutes (Option A's two-intensity bitfield rendering rejected, §2.5).
 2. **Book-record v8 for the two completion flags:** ride along in this PR
-   (single PR, two bumps) or a follow-up PR (achievement flow lands without
-   the flags first, flags+flow in a second PR)? Recommend ride-along.
+   (single PR, two bumps).
 3. **Menu structure:** as drafted (This Book / This Device / Reading Rhythm /
-   Finished Books; reader adds Edit Dates and Achievement context) — or a
-   flatter structure?
-4. **Upstream-worthiness:** keep fork-only, or plan to upstream this (would
-   change how aggressively we bump records)?
+   Finished Books; reader adds Edit Dates and Achievement context).
+4. **Upstream-worthiness:** keep fork-only.
 
 ## 4. Implementation plan (post-approval)
 
@@ -257,7 +244,7 @@ Ordered tasks for the pi implementation run:
 1. `FinishedBooksIndex` port + host tests (round-trip, recover-from-recent, migration from legacy).
 2. `BookStatsView` rhythm/finished/achievement/edit-dates renderers (port from YACP, adapt to our helpers).
 3. `ReadingRhythmActivity` + `FinishedBooksActivity` + `ReadingStatsMenuActivity` + wiring (Home, reader toolbar).
-4. Completion flow + achievement (v7→v8 flags if ride-along) + tests.
+4. Completion flow + achievement (book v7→v8 flags) + tests.
 5. Full gate: host tests (56/56 baseline + new), `pio run -e x4pro` fresh build + `default`/`sticky`/`papermono`, clang-format, cppcheck.
 6. PR with `feat(reading-stats): ...`, review-thread triage loop, squash merge.
 

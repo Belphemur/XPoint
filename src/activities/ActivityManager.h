@@ -104,7 +104,7 @@ class ActivityManager {
 #ifdef READING_STATS_ENABLED
   void goToGlobalStats();
   void goToReadingStats(std::optional<BookReadingStats> bookStats = std::nullopt, std::string bookTitle = {},
-                        std::string bookCachePath = {});
+                        std::string bookCachePath = {}, std::string bookAuthor = {});
 #endif
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE, bool cleanInitialRefresh = false);
 

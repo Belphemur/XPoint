@@ -15,6 +15,7 @@ target_include_directories(ReadingStatsStoreTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../minibidi_arabic/stubs
   ${CMAKE_CURRENT_SOURCE_DIR}/../fs_helpers/stubs
   ${REPO_ROOT}/lib/FsHelpers
+  ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/src/activities/reader
 )
 
