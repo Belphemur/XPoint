@@ -2447,36 +2447,7 @@ void EpubReaderActivity::renderBookTtf() {
   }
 
   renderer.clearScreen(0xFF);
-  // §11 Q7 construction (a): with text AA on a strip-capable panel the base
-  // paints via PagePaint (threshold at the tone-1 boundary, >=48) and a dual
-  // plane walk supplies the two gray tones through the panel's AA waveform —
-  // the same 4-level pipeline the bitmap reader uses. Images keep the
-  // 1bpp engine path (no plane bits for image pixels, like legacy dualPlane).
-  const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.supportsStripGrayscale();
-  if (grayParity) {
-    freeink::book::PagePaint::paintText(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
-  } else {
-    const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
-    freeink::book::PageRenderer::renderText(page, *static_cast<freeink::book::FontChain*>(params.font), frameTarget,
-                                            nullptr);
-  }
-  freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
-  if (pageHasImages) {
-    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), makeFrameTarget(renderer));
-    if (st != freeink::book::BookStatus::Ok) {
-      LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
-    }
-  } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
-    // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
-    // the engine's reserved geometry as an outline instead of decoding.
-    for (uint16_t m = 0; m < page.imageCount; ++m) {
-      const auto& image = page.images[m];
-      if (image.width <= 0 || image.height <= 0) continue;
-      renderer.drawRect(image.x, image.y, image.width, image.height);
-    }
-  }
+  paintTtfPage(page, params.font);
 #ifdef READING_STATS_ENABLED
   // Reading-stats approximation: whitespace-token count over the page runs
   // (§3.5 v1 parity note — engine runs carry no per-word data). Must run
@@ -2598,6 +2569,63 @@ void EpubReaderActivity::renderBookTtf() {
     if (overlayPopup.isActive()) overlayPopup.render(renderer);
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
+}
+
+void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
+  // §11 Q7 construction (a): with text AA on a strip-capable panel the base
+  // paints via PagePaint (threshold at the tone-1 boundary, >=48) and a dual
+  // plane walk supplies the two gray tones through the panel's AA waveform —
+  // the same 4-level pipeline the bitmap reader uses. Images keep the
+  // 1bpp engine path (no plane bits for image pixels, like legacy dualPlane).
+  const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.supportsStripGrayscale();
+  auto* chain = static_cast<freeink::book::FontChain*>(font);
+  if (grayParity) {
+    freeink::book::PagePaint::paintText(page, *chain, renderer);
+  } else {
+    const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
+    freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr);
+    // Ruby annotations are engine records — the same pass the engine's own
+    // render() runs; no CrossPoint layout involvement.
+    if (page.rubyCount > 0) {
+      freeink::book::PageRenderer::renderRubies(page, *chain, frameTarget);
+    }
+  }
+  freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
+  if (pageHasImages) {
+    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
+        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), makeFrameTarget(renderer));
+    if (st != freeink::book::BookStatus::Ok) {
+      LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
+    }
+  } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
+    // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
+    // the engine's reserved geometry as an outline instead of decoding.
+    for (uint16_t m = 0; m < page.imageCount; ++m) {
+      const auto& image = page.images[m];
+      if (image.width <= 0 || image.height <= 0) continue;
+      renderer.drawRect(image.x, image.y, image.width, image.height);
+    }
+  }
+}
+
+void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer) {
+  auto* self = static_cast<EpubReaderActivity*>(ctx);
+  if (!self->ttf_) return;
+  const size_t scratchMark = self->ttf_->scratch().mark();
+  freeink::book::Page page{};
+  if (!self->ttf_->readPage(static_cast<uint16_t>(self->currentSpineIndex), static_cast<uint16_t>(self->ttfPage),
+                            &page)) {
+    self->ttf_->scratch().release(scratchMark);
+    LOG_ERR("ERS", "TTF selector page read failed (spine %d page %d)", self->currentSpineIndex, self->ttfPage);
+    return;
+  }
+  freeink::book::LayoutParams params;
+  self->ttf_->makeLayoutParams(renderer, params, false);
+  if (params.font != nullptr) {
+    self->paintTtfPage(page, params.font);
+  }
+  self->ttf_->scratch().release(scratchMark);
 }
 
 void EpubReaderActivity::ttfBackgroundBuildTick() {

@@ -171,6 +171,13 @@ class EpubReaderActivity final : public ReaderActivity {
   bool ttfPrefetchActive = false;     // session building the NEXT spine
   bool ttfReflowJumpPending = false;  // position restore via char offset
   void renderBookTtf();
+  // Rasterizes an engine page through the active render mode (gray parity or
+  // 1bpp): text + rubies + rules + images/placeholder. Shared by the reader's
+  // own page render and the TTF dictionary selector's repaint hook.
+  void paintTtfPage(const freeink::book::Page& page, void* font);
+  // Render hook handed to DictionaryWordSelectActivity: repaints the page the
+  // selector was opened on (same spine/page members, reader frozen beneath).
+  static void renderTtfSelectorPage(void* ctx, GfxRenderer& renderer);
   bool ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params, bool& needFullBuild);
   void ttfBackgroundBuildTick();
   void ttfPrefetchTick();

@@ -100,6 +100,43 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
   }
 }
 
+// Ruby annotations: same glyph walk the engine's PageRenderer::renderRubies
+// does (StyleNone, kerning, no underline/strike arms) but routed through the
+// caller's tone sink so the gray-parity pipeline covers annotations too.
+void walkRubies(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter) {
+  for (uint16_t r = 0; r < page.rubyCount; ++r) {
+    const PageRuby& ruby = page.rubies[r];
+    const uint32_t tLen = static_cast<uint32_t>(strlen(ruby.text));
+    int32_t penX = ruby.x;
+    uint32_t i = 0;
+    uint32_t prev = 0;
+    while (i < tLen) {
+      const uint32_t cp = decodeUtf8(ruby.text, tLen, i);
+      if (prev != 0) penX += fonts.kerning(prev, cp, ruby.sizePx, StyleNone);
+      RenderFont* font = fonts.fontFor(cp, StyleNone, nullptr);
+      const GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, ruby.sizePx) : nullptr;
+      if (glyph != nullptr) {
+        if (glyphFilter != nullptr &&
+            !glyphFilter(ctx, penX + glyph->xoff, ruby.baselineY + glyph->yoff, penX + glyph->xoff + glyph->width,
+                         ruby.baselineY + glyph->yoff + glyph->height)) {
+          penX += fonts.advance(cp, ruby.sizePx, StyleNone);
+          prev = cp;
+          continue;
+        }
+        for (uint16_t gy = 0; gy < glyph->height; ++gy) {
+          const uint8_t* srcRow = glyph->pixels + static_cast<uint32_t>(gy) * glyph->width;
+          const int32_t dy = ruby.baselineY + glyph->yoff + static_cast<int32_t>(gy);
+          for (uint16_t gx = 0; gx < glyph->width; ++gx) {
+            sink(ctx, penX + glyph->xoff + static_cast<int32_t>(gx), dy, srcRow[gx]);
+          }
+        }
+      }
+      penX += fonts.advance(cp, ruby.sizePx, StyleNone);
+      prev = cp;
+    }
+  }
+}
+
 struct BaseCtx {
   const GfxRenderer* renderer;
   int width;
@@ -134,18 +171,20 @@ void plotPlanes(void* ctx, const int32_t x, const int32_t y, const uint8_t cover
 void PagePaint::paintText(const Page& page, FontChain& fonts, const GfxRenderer& renderer) {
   BaseCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight()};
   walkText(page, fonts, &ctx, plotBase, nullptr);
+  walkRubies(page, fonts, &ctx, plotBase, nullptr);
 }
 
 void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer) {
   PlaneCtx ctx{&renderer};
   // Band culling mirrors the legacy tiled walk (GfxRenderer.cpp): glyphs
   // entirely outside the active strip skip their rasterize entirely.
-  walkText(page, fonts, &ctx, plotPlanes,
-           [](void* c, const int32_t x0, const int32_t y0, const int32_t x1, const int32_t y1) {
-             auto* self = static_cast<PlaneCtx*>(c);
-             return self->renderer->glyphIntersectsStrip(static_cast<int>(x0), static_cast<int>(y0),
-                                                         static_cast<int>(x1), static_cast<int>(y1));
-           });
+  const auto filter = [](void* c, const int32_t x0, const int32_t y0, const int32_t x1, const int32_t y1) {
+    auto* self = static_cast<PlaneCtx*>(c);
+    return self->renderer->glyphIntersectsStrip(static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(x1),
+                                                static_cast<int>(y1));
+  };
+  walkText(page, fonts, &ctx, plotPlanes, filter);
+  walkRubies(page, fonts, &ctx, plotPlanes, filter);
 }
 
 }  // namespace book
