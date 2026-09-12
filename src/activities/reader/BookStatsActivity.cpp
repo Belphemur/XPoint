@@ -218,8 +218,23 @@ void BookStatsActivity::saveStats() {
     return;
   }
 
-  stats.save(bookCachePath);
-  globalStats.save();
+  // stats/globalStats can be inflated on-screen previews (the completion flow
+  // passes a copy that already includes the in-flight session, which the
+  // reader's onExit also records). Persist only the user-editable fields over
+  // the on-disk records so those counters are never written twice.
+  BookReadingStats diskStats = BookReadingStats::load(bookCachePath);
+  diskStats.isCompleted = stats.isCompleted;
+  diskStats.completionAchievementPending = stats.completionAchievementPending;
+  diskStats.completionPromptDismissedAtHundred = stats.completionPromptDismissedAtHundred;
+  diskStats.startDate = stats.startDate;
+  diskStats.finishedDate = stats.finishedDate;
+  diskStats.startDateManual = stats.startDateManual;
+  diskStats.finishedDateManual = stats.finishedDateManual;
+  diskStats.save(bookCachePath);
+
+  GlobalReadingStats diskGlobal = GlobalReadingStats::load();
+  diskGlobal.completedBooks = globalStats.completedBooks;
+  diskGlobal.save();
   didChangeStats = false;
 }
 

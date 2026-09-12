@@ -779,6 +779,42 @@ TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRecoversFromBackup) {
   EXPECT_EQ(entries[0].totalReadingSeconds, 100u);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRestoresBackupBeforeRotation) {
+  BookReadingStats first;
+  first.isCompleted = true;
+  first.totalReadingSeconds = 100;
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/first.epub", "First", "Author", first));
+
+  BookReadingStats second;
+  second.isCompleted = true;
+  second.totalReadingSeconds = 200;
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/second.epub", "Second", "Author", second));
+
+  // Corrupt the primary; the .bak still holds the first record.
+  HalFile corrupt;
+  ASSERT_TRUE(Storage.openFileForWrite("TEST", "/.crosspoint/finished_books.bin", corrupt));
+  const uint8_t garbage[] = {0, 1, 2};
+  ASSERT_EQ(corrupt.write(garbage, sizeof(garbage)), sizeof(garbage));
+
+  // The next record must restore the primary from the backup BEFORE the
+  // rotation deletes the backup, so the rotated .bak stays decodable.
+  BookReadingStats third;
+  third.isCompleted = true;
+  third.totalReadingSeconds = 300;
+  ASSERT_TRUE(FinishedBooksIndex::record("/books/third.epub", "Third", "Author", third));
+
+  const auto entries = FinishedBooksIndex::load();
+  ASSERT_EQ(entries.size(), 2u);
+  EXPECT_EQ(entries[0].title, "First");  // survived only in the backup
+  EXPECT_EQ(entries[1].title, "Third");
+
+  const auto bak = readFileBytes("/.crosspoint/finished_books.bin.bak");
+  ASSERT_GE(bak.size(), 6u);
+  EXPECT_EQ(bak[0], 'C');
+  EXPECT_EQ(bak[4], 3u);  // restored primary, not the corrupt bytes
+  EXPECT_EQ(bak[5], 1u);  // one entry (the pre-restore state)
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRecoversCompletedRecentBooks) {
   FinishedBooksIndex::setRecentBooksForTest({{"/books/epub.epub", "Epub", "Epub Author"},
                                              {"/books/xtc.xtc", "Xtc", "Xtc Author"},

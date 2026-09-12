@@ -146,6 +146,23 @@ bool writeIndex(const std::vector<FinishedBookEntry>& entries) {
     return false;
   }
 
+  // If the primary index is unreadable but the backup decodes, restore the
+  // primary from the backup BEFORE rotation: the rotation below deletes the
+  // backup, so a failed install would otherwise leave the card with no usable
+  // index.
+  if (Storage.exists(INDEX_PATH)) {
+    std::vector<FinishedBookEntry> probe;
+    if (!loadPath(INDEX_PATH, probe) && Storage.exists(INDEX_BACKUP_PATH) && loadPath(INDEX_BACKUP_PATH, probe)) {
+      LOG_ERR("FBI", "Restoring corrupt finished-books index from backup before rotation");
+      Storage.remove(INDEX_PATH);
+      if (!Storage.rename(INDEX_BACKUP_PATH, INDEX_PATH)) {
+        LOG_ERR("FBI", "Could not restore finished-books backup");
+        Storage.remove(INDEX_TMP_PATH);
+        return false;
+      }
+    }
+  }
+
   if (Storage.exists(INDEX_BACKUP_PATH) && !Storage.remove(INDEX_BACKUP_PATH)) {
     LOG_ERR("FBI", "Could not replace finished-books backup");
     Storage.remove(INDEX_TMP_PATH);
