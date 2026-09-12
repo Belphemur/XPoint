@@ -7,8 +7,10 @@
 // decompressor state is heap-allocated in the .cpp where the type is complete.
 struct tinfl_decompressor_tag;
 
-// Streaming deflate decompressor wrapping the ESP32 SoC ROM's tinfl on
-// firmware (the vendored miniz build is used by host tests only).
+// Streaming deflate decompressor wrapping the esp_full_miniz fork: the
+// ESP32 SoC ROM's v1.15-era tinfl on firmware (bound at link time via the
+// ROM's fixed symbol addresses), the same v1.15 cores compiled from source
+// on host builds.
 //
 // Replaces the uzlib-backed InflateReader on the throughput paths (EPUB zip
 // entries, PNG IDAT). tinfl decodes via lookup tables where uzlib walks the

@@ -2,3 +2,6 @@
 	path = freeink-sdk
 	url = https://github.com/Belphemur/freeink-sdk.git
 	branch = main
+[submodule "esp_full_miniz"]
+	path = esp_full_miniz
+	url = https://github.com/Belphemur/esp_full_miniz.git

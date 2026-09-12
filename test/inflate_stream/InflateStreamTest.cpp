@@ -27,7 +27,7 @@ void testFree(void* ptr) {
 // Intercept only InflateStream's allocations, leaving the test runner untouched.
 #define malloc testMalloc
 #define free testFree
-#include "../../lib/miniz/src/InflateStream.cpp"
+#include "../../lib/inflate/src/InflateStream.cpp"
 #undef free
 #undef malloc
 

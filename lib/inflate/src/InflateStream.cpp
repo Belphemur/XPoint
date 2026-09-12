@@ -7,15 +7,13 @@
 #include <cstdlib>
 #include <cstring>
 
-// Decompression core: on firmware, call the SoC ROM's precompiled tinfl
-// (fixed Espressif machine code; the vendored C build's output diverges under
-// the Xtensa toolchain for specific DEFLATE streams). Host tests keep the
-// vendored miniz (renamed so nothing binds to ROM symbols here).
-#if defined(ESP_PLATFORM)
-#include "RomTinfl.h"
-#else
-#include "MinizConfig.h"
-#endif
+// Decompression core: the esp_full_miniz fork. On firmware its header types
+// match the SoC ROM's v1.15-era tinfl exactly and the linker binds the core
+// calls to the ROM's precompiled machine code (the vendored miniz C build's
+// output diverges under the Xtensa toolchain for specific DEFLATE streams).
+// On host builds the fork compiles the same v1.15 cores from source
+// (src/miniz_cores.c), which is what the unit tests exercise.
+#include <full_miniz.h>
 
 namespace {
 // tinfl's window must be a power of two; TINFL_LZ_DICT_SIZE is 32768.
