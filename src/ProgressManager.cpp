@@ -11,11 +11,14 @@
 namespace {
 
 // Unsigned-safe seconds since the last flush: millis()/1000 wraps (~49.7
-// days); a wrapped 'now' must read as "interval not elapsed", not a huge
-// number that would force a spurious flush.
+// days). A wrapped 'now' must not read as a huge number (spurious flushes) —
+// nor as "not elapsed" forever (progress suppression until the epoch catches
+// up): the elapsed span is unknowable, so force the interval gate open once
+// and let timing resume from the new epoch on the flush that follows.
 uint32_t secsSinceFlush(const uint32_t lastSec) {
   const uint32_t now = static_cast<uint32_t>(millis() / 1000);
-  return now >= lastSec ? now - lastSec : 0;
+  if (now >= lastSec) return now - lastSec;
+  return ProgressManager::FLUSH_INTERVAL_MS / 1000;
 }
 // Low priority: progress persistence must never compete with rendering or
 // input. Pinned to core 0 on dual-core boards (the render task owns core 1,
