@@ -745,14 +745,16 @@ TEST_F(ReadingStatsBinaryStoreTest, CorruptCurrentFileDoesNotLatchGuard) {
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, RemoveKeepsGuardWhileForwardFileExists) {
-  (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
+  ASSERT_TRUE(BookReadingStats::remove(BOOK_DIR));  // clear a prior test's latch
   std::vector<uint8_t> future(136, 0);
   future[0] = 9;
   {
     HalFile f;
-    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 9), f));
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", (statsPath(BOOK_DIR, 9) + ".tmp").c_str(), f));
     f.write(future.data(), future.size());
   }
+  // Fixture setup only: publish the synthetic forward record with an atomic rename.
+  ASSERT_TRUE(Storage.rename((statsPath(BOOK_DIR, 9) + ".tmp").c_str(), statsPath(BOOK_DIR, 9).c_str()));
   (void)BookReadingStats::load(BOOK_DIR);  // latch the guard via the forward file
 
   // remove() deletes v8-v5 but the forward record remains: saves stay blocked,
