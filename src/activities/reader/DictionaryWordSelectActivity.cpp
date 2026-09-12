@@ -121,6 +121,12 @@ void DictionaryWordSelectActivity::onEnter() {
 }
 
 void DictionaryWordSelectActivity::extractWords() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    extractWordsTtf();
+    return;
+  }
+#endif
   const unsigned long extractStart = millis();
   LOG_DBG("DICT", "extractWords start: elements=%u", static_cast<unsigned>(page->elements.size()));
   words.clear();
@@ -169,6 +175,7 @@ void DictionaryWordSelectActivity::extractWords() {
       box.rawLength = static_cast<uint16_t>(block->wordTextLen(i));
       box.selectionGroup = block->selectionGroup(i);
       box.syntheticHyphen = block->hasSyntheticHyphen(i);
+      box.height = static_cast<int16_t>(lineHeight);
       words.push_back(box);
       rowHasWords = true;
 
@@ -207,6 +214,57 @@ void DictionaryWordSelectActivity::extractWords() {
           millis() - extractStart);
 }
 
+#if defined(CROSSPOINT_TTF_READER)
+// TTF path: boxes arrive prebuilt from engine run geometry (TtfWordSelect);
+// this only maps them into the selector's structures and groups fragments by
+// their engine-computed selection groups.
+void DictionaryWordSelectActivity::extractWordsTtf() {
+  words.clear();
+  selections.clear();
+  selectionSegments.clear();
+  words.reserve(ttfData.boxes.size());
+  selections.reserve(64);
+  selectionSegments.reserve(128);
+  rowCount = 0;
+
+  int16_t lastY = INT16_MIN;
+  for (const auto& tb : ttfData.boxes) {
+    if (tb.y != lastY) {
+      ++rowCount;
+      lastY = tb.y;
+    }
+    WordBox box;
+    box.x = tb.x;
+    box.y = tb.y;
+    box.width = tb.width;
+    box.row = static_cast<uint16_t>(rowCount - 1);
+    box.text = tb.text;
+    box.textOffset = tb.textOffset;
+    box.textLength = tb.textLength;
+    box.rawLength = tb.rawLength;
+    box.style = EpdFontFamily::REGULAR;  // TTF highlight repaint draws no text
+    box.selectionGroup = tb.selectionGroup;
+    box.syntheticHyphen = tb.syntheticHyphen;
+    box.height = tb.height;
+    words.push_back(box);
+  }
+
+  std::vector<uint32_t> sourceGroups;
+  sourceGroups.reserve(words.size());
+  std::transform(words.begin(), words.end(), std::back_inserter(sourceGroups),
+                 [](const auto& word) { return word.selectionGroup; });
+  const auto grouped = DictionarySelection::groupTokens(sourceGroups);
+  std::transform(grouped.groups.begin(), grouped.groups.end(), std::back_inserter(selections), [](const auto& group) {
+    return WordSelection{group.sourceGroup, static_cast<uint16_t>(group.segmentStart),
+                         static_cast<uint16_t>(group.segmentCount)};
+  });
+  std::transform(grouped.segments.begin(), grouped.segments.end(), std::back_inserter(selectionSegments),
+                 [](const size_t segment) { return static_cast<uint16_t>(segment); });
+  LOG_DBG("DICT", "extractWordsTtf complete: words=%u groups=%u", static_cast<unsigned>(words.size()),
+          static_cast<unsigned>(selections.size()));
+}
+#endif
+
 // Index of the word whose box (with finger-sized slop) contains the touch
 // point; -1 when the touch lands on no word. Boxes never overlap after the
 // slop grows them, at worst they touch, so first hit wins.
@@ -217,7 +275,7 @@ int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
     for (uint16_t i = 0; i < group.segmentCount; i++) {
       const WordBox& word = words[selectionSegments[group.segmentStart + i]];
       if (x >= word.x - SLOP && x < word.x + word.width + SLOP && y >= word.y - SLOP &&
-          y < word.y + lineHeight + SLOP) {
+          y < word.y + word.height + SLOP) {
         return selection;
       }
     }
@@ -269,6 +327,19 @@ std::string DictionaryWordSelectActivity::resolveFootnoteHref(const char* word) 
   normalizeMarker(word, normalized, sizeof(normalized));
   if (normalized[0] == '\0') return {};
 
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    // entry.number is already normalized by the TTF footnote collection —
+    // compare against it verbatim, same as the legacy page list.
+    const auto it = std::find_if(ttfData.footnotes.begin(), ttfData.footnotes.end(), [&](const FootnoteEntry& entry) {
+      return std::strcmp(entry.number, normalized) == 0;
+    });
+    if (it != ttfData.footnotes.end()) {
+      return std::string(it->href);
+    }
+    return {};
+  }
+#endif
   // entry.number is already normalized by the parser (whitespace + '['/'['
   // stripped, parentheses preserved), so compare against it verbatim.
   const auto it = std::find_if(page->footnotes.begin(), page->footnotes.end(),
@@ -583,7 +654,15 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
     const int wordX = std::max(0, static_cast<int>(word.x) - 2);
     const int wordY = std::max(0, static_cast<int>(word.y) - 2);
     const int wordRight = std::min(screenWidth, static_cast<int>(word.x) + word.width + 2);
-    const int wordBottom = std::min(screenHeight, static_cast<int>(word.y) + lineHeight + 2);
+    const int wordBottom = std::min(screenHeight, static_cast<int>(word.y) + word.height + 2);
+#if defined(CROSSPOINT_TTF_READER)
+    if (ttfMode) {
+      // Outline only: the engine font draws the page, and redrawing a token
+      // through GfxRenderer's SD-font drawText would paint the wrong glyphs.
+      renderer.drawRect(wordX, wordY, wordRight - wordX, wordBottom - wordY, true);
+      continue;
+    }
+#endif
     renderer.fillRect(wordX, wordY, wordRight - wordX, wordBottom - wordY, true);
     const std::string selectedText(word.text + word.textOffset, word.textLength);
     renderer.drawText(fontId, word.x, word.y, selectedText.c_str(), false, word.style);
@@ -598,6 +677,14 @@ void DictionaryWordSelectActivity::drawHighlightRange() const {
     const WordBox& word = words[selectionSegments[group.segmentStart + i]];
     const std::string selectedText(word.text + word.textOffset, word.textLength);
     if (word.width <= 0 || selectedText.empty()) continue;
+#if defined(CROSSPOINT_TTF_READER)
+    if (ttfMode) {
+      // Outline highlight — see drawHighlightWithSnapshot.
+      renderer.drawRect(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
+                        word.width + 4, word.height + 4, true);
+      continue;
+    }
+#endif
     renderer.fillRect(std::max(0, static_cast<int>(word.x) - 2), std::max(0, static_cast<int>(word.y) - 2),
                       word.width + 4, lineHeight + 4, true);
     renderer.drawText(fontId, word.x, word.y, selectedText.c_str(), false, word.style);
@@ -633,6 +720,7 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   // and push — skipping the two-pass page render entirely.
   if (popup == Popup::None && snapshotIdx >= 0 && !selections.empty() && selected != snapshotIdx) {
     renderer.writeFramebufferRegion(snapshotX, snapshotY, snapshotW, snapshotH, snapshot.get());
+#if !defined(CROSSPOINT_TTF_READER)
     // The full path's PrewarmScope cleared the glyph cache on exit; batch-load
     // just the highlighted word's glyphs before drawing them white-on-black.
     const auto& group = selections[selected];
@@ -641,6 +729,18 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
       renderer.getFontCacheManager()->prewarmCache(
           fontId, word.text, static_cast<uint8_t>(1u << (static_cast<uint8_t>(word.style) & 0x03)));
     }
+#else
+    if (!ttfMode) {
+      // The full path's PrewarmScope cleared the glyph cache on exit; batch-load
+      // just the highlighted word's glyphs before drawing them white-on-black.
+      const auto& group = selections[selected];
+      for (uint16_t i = 0; i < group.segmentCount; i++) {
+        const WordBox& word = words[selectionSegments[group.segmentStart + i]];
+        renderer.getFontCacheManager()->prewarmCache(
+            fontId, word.text, static_cast<uint8_t>(1u << (static_cast<uint8_t>(word.style) & 0x03)));
+      }
+    }
+#endif
     if (drawHighlightWithSnapshot()) {
       drawHints();
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -652,16 +752,25 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
   renderer.clearScreen();
   LOG_DBG("DICT", "Selector render cleared screen");
 
-  // Same prewarm-scan-then-render pass the reader uses, so SD-card fonts hit
-  // the in-RAM glyph cache during the real draw.
-  auto* fcm = renderer.getFontCacheManager();
-  auto scope = fcm->createPrewarmScope();
-  page->render(renderer, fontId, marginLeft, marginTop);
-  LOG_DBG("DICT", "Selector render first page pass complete in %lums", millis() - renderStart);
-  scope.endScanAndPrewarm();
-  LOG_DBG("DICT", "Selector render font prewarm complete in %lums", millis() - renderStart);
-  page->render(renderer, fontId, marginLeft, marginTop);
-  LOG_DBG("DICT", "Selector render second page pass complete in %lums", millis() - renderStart);
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttfMode) {
+    // Engine glyphs are RAM-cached by the FontChain — one pass, no SD-font
+    // prewarm scan.
+    ttfRender.renderPage(ttfRender.ctx, renderer);
+  } else
+#endif
+  {
+    // Same prewarm-scan-then-render pass the reader uses, so SD-card fonts hit
+    // the in-RAM glyph cache during the real draw.
+    auto* fcm = renderer.getFontCacheManager();
+    auto scope = fcm->createPrewarmScope();
+    page->render(renderer, fontId, marginLeft, marginTop);
+    LOG_DBG("DICT", "Selector render first page pass complete in %lums", millis() - renderStart);
+    scope.endScanAndPrewarm();
+    LOG_DBG("DICT", "Selector render font prewarm complete in %lums", millis() - renderStart);
+    page->render(renderer, fontId, marginLeft, marginTop);
+    LOG_DBG("DICT", "Selector render second page pass complete in %lums", millis() - renderStart);
+  }
 
   if (!selections.empty()) drawHighlightRange();
 
