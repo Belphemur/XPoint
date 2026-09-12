@@ -1525,6 +1525,11 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 #endif
 
   if (isForwardTurn) {
+#ifdef READING_STATS_ENABLED
+    // A declined 100%-completion prompt applies only until the reader moves
+    // forward again; otherwise it would suppress the prompt on a later exit.
+    stats.completionPromptDismissedAtHundred = false;
+#endif
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       lastPageTurnTime = millis();
@@ -1542,6 +1547,16 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       lastPageTurnTime = millis();
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
+#ifdef READING_STATS_ENABLED
+      // Crossing past the last readable page is definitive completion.
+      if (SETTINGS.shouldTrackReadingStats() && !stats.isCompleted) setBookCompleted(true);
+#endif
+      // The EOB screen bypasses the section render path, so persist the
+      // terminal position synchronously instead of waiting for the gate.
+      if (!progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false,
+                                   0)) {
+        LOG_ERR("ERS", "Failed to save end-of-book progress");
+      }
       lastPageTurnTime = millis();
     }
   } else {
@@ -1575,6 +1590,10 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 bool EpubReaderActivity::skipPages(int amount) {
   if (!section) return false;
   if (amount > 0) {
+#ifdef READING_STATS_ENABLED
+    // A forward skip is still a forward turn: clear a declined 100% prompt.
+    stats.completionPromptDismissedAtHundred = false;
+#endif
     RenderLock lock;
     nextPageNumber = 0;
     currentSpineIndex++;
@@ -1587,6 +1606,18 @@ bool EpubReaderActivity::skipPages(int amount) {
       nextSectionSpineIndex = -1;
     }
     section.reset();
+#ifdef READING_STATS_ENABLED
+    if (SETTINGS.shouldTrackReadingStats() && !stats.isCompleted && currentSpineIndex == epub->getSpineItemsCount())
+      setBookCompleted(true);
+#endif
+    if (currentSpineIndex == epub->getSpineItemsCount()) {
+      // The EOB screen bypasses the section render path, so persist the
+      // terminal position synchronously when a skip crosses it.
+      if (!progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false,
+                                   0)) {
+        LOG_ERR("ERS", "Failed to save end-of-book progress");
+      }
+    }
     return true;
   } else {
     if (section->currentPage > 0) {
