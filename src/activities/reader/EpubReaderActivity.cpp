@@ -2483,6 +2483,11 @@ void EpubReaderActivity::renderBookTtf() {
   renderStatusBar();
 
 #if defined(CROSSPOINT_TTF_READER)
+  // Same §11 Q7 predicate paintTtfPage used for the base pass above: images
+  // keep the 1bpp engine path (no plane bits), so the dual-plane strip block
+  // runs only for text-only AA pages on a strip-capable panel.
+  const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.supportsStripGrayscale();
   if (grayParity) {
     // §11 Q7 construction (a): dual-plane gray parity through the reader's
     // tiled strip machinery. Base refresh ordering mirrors the legacy AA
