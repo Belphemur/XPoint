@@ -78,7 +78,18 @@ size_t encodedIndexSize(const std::vector<FinishedBookEntry>& entries) {
 
 bool loadPath(const char* path, std::vector<FinishedBookEntry>& entries);
 
+bool loadPath(const char* path, std::vector<FinishedBookEntry>& entries);
+
+// Latched when a file written by a NEWER firmware is seen: all writes are
+// refused for this session so recordCanonical() can never clobber entries this
+// build cannot decode (same destructive-save convention as GlobalReadingStats).
+bool s_forwardIndexVersionSeen = false;
+
 bool writeIndex(const std::vector<FinishedBookEntry>& entries) {
+  if (s_forwardIndexVersionSeen) {
+    LOG_ERR("FBI", "Refusing to overwrite finished-books index from a newer firmware");
+    return false;
+  }
   if (Storage.exists(INDEX_TMP_PATH) && !Storage.remove(INDEX_TMP_PATH)) {
     LOG_ERR("FBI", "Could not remove stale finished-books temp file");
     return false;
@@ -169,8 +180,16 @@ bool loadPath(const char* path, std::vector<FinishedBookEntry>& entries) {
   bool ok = file.read(reinterpret_cast<uint8_t*>(magic), sizeof(magic)) == static_cast<int>(sizeof(MAGIC)) &&
             readPod(file, version) && readPod(file, count) && readPod(file, reserved) &&
             std::memcmp(magic, MAGIC, sizeof(MAGIC)) == 0 &&
-            (version == INDEX_VERSION || version == START_DATE_INDEX_VERSION || version == LEGACY_INDEX_VERSION) &&
-            count <= FinishedBooksIndex::MAX_ENTRIES;
+            // Any version > INDEX_VERSION is a forward-format file: it fails ok
+            // below but must first latch the destructive-save guard.
+            version >= LEGACY_INDEX_VERSION && count <= FinishedBooksIndex::MAX_ENTRIES;
+
+  if (ok && version > INDEX_VERSION) {
+    LOG_ERR("FBI", "Forward-version finished-books index (v%u > v%u), preserving file", version, INDEX_VERSION);
+    s_forwardIndexVersionSeen = true;
+    return false;
+  }
+  ok = ok && version <= INDEX_VERSION;
 
   if (ok) {
     entries.reserve(count);
@@ -358,4 +377,6 @@ void FinishedBooksIndex::setRecentBooksForTest(const std::vector<FinishedBookRec
 }
 
 void FinishedBooksIndex::clearRecentBooksForTest() { testRecentBooks.clear(); }
+
+void FinishedBooksIndex::resetForwardGuardForTest() { s_forwardIndexVersionSeen = false; }
 #endif

@@ -77,7 +77,8 @@ contain everything except the finished-books index; YACP's rhythm data
 read day, `timeOfDaySeconds`/`dayOfWeekSeconds` already persisted). We port
 the screens and wire a new **sub-menu**; we do NOT port YACP's `DailyReadingHistory`
 separate file (our global record already carries the 730-day bitfield) nor
-their 73-byte book format (we keep v7).
+their 73-byte book format (we keep our own record, now v8 after the ride-along
+completion-flags bump).
 
 YACP's `StatsBackup`, `NearbyStatsSync`, no-RTC single-screen layout, and
 simulator demo are **out of scope** (orthogonal features; our fork has its own
@@ -149,14 +150,21 @@ YACP's `FinishedBooksIndex.{h,cpp}` ports with minimal changes:
 - **Record migration is unaffected**: `finished_books.bin` is a new
   standalone file, no v7/v5 bump.
 
-### 2.4 Persistence unaffected: v7/v5 records untouched
+### 2.4 Persistence: the two record bumps (resolved, see §2.6)
 
-No record bumps. Everything the screens display comes from the current
-records:
+The user approved Option B (§3 Q1) and the ride-along completion flags
+(§3 Q2), so both records were bumped once in the record-bump commit:
 
-- Summary cards: unchanged (already ported, PR #52/#54).
-- Rhythm: global v5 bytes 71–162 (730-day bitfield) for read/not-read days;
-  `timeOfDaySeconds`/`dayOfWeekSeconds` for the existing card-grid charts.
+- **Global v5→v6** (225→407 B): 91-day `uint16` minutes array appended at
+  bytes 225–406 after the session window; prefix 0–224 unchanged. In-place
+  migration; backfill = existing read days become 1 minute; new days record
+  real minutes; the bitfield keeps being written in parallel (streaks).
+- **Book v7→v8** (134→135 B): flags byte at offset 134 packing
+  `completionAchievementPending` (bit0) and
+  `completionPromptDismissedAtHundred` (bit1).
+
+Load candidates, forward guards, and per-version decode constants follow the
+binary-store conventions in `2026-08-25-binary-files.md`.
 
 ### 2.5 Reading Rhythm data gap — minutes-per-day
 

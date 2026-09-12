@@ -38,5 +38,6 @@ class FinishedBooksIndex {
 #ifdef READING_STATS_TEST
   static void setRecentBooksForTest(const std::vector<FinishedBookRecoveryBook>& books);
   static void clearRecentBooksForTest();
+  static void resetForwardGuardForTest();
 #endif
 };

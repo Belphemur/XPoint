@@ -10,10 +10,12 @@
 #include "fontIds.h"
 
 BookStatsActivity::BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
-                                     const BookReadingStats& initialStats, std::string initialBookCachePath,
-                                     const GlobalReadingStats& initialGlobalStats, const InitialPage initialPage)
+                                     std::string author, const BookReadingStats& initialStats,
+                                     std::string initialBookCachePath, const GlobalReadingStats& initialGlobalStats,
+                                     const InitialPage initialPage)
     : Activity("BookStats", renderer, mappedInput),
       bookTitle(std::move(title)),
+      bookAuthor(std::move(author)),
       bookCachePath(std::move(initialBookCachePath)),
       stats(initialStats),
       globalStats(initialGlobalStats),
@@ -292,7 +294,7 @@ void BookStatsActivity::render(RenderLock&&) {
     return;
   }
   if (page == Page::Achievement) {
-    BookStatsView::renderReadingAchievementPage(renderer, &mappedInput, bookTitle, stats, globalStats,
+    BookStatsView::renderReadingAchievementPage(renderer, &mappedInput, bookTitle, bookAuthor, stats, globalStats,
                                                 /*showButtonHints=*/true);
     renderer.displayBuffer();
     return;

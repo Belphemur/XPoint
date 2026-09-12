@@ -153,6 +153,24 @@ uint16_t weeklyChartScaleMinutes(const uint16_t maxMinutes) {
   return static_cast<uint16_t>(((static_cast<uint32_t>(maxMinutes) + 119u) / 120u) * 120u);
 }
 
+// Minutes for the 12-month chart: real minutes inside the 91-day window, else
+// the 730-day history bit (counted as 1 minute) for older days so months
+// beyond the minutes window still show their recorded read days.
+uint16_t chartMinutesOnDay(const GlobalReadingStats& stats, const uint32_t dayIndex) {
+  if (dayIndex > stats.readingHistoryAnchorDay) {
+    return 0;
+  }
+  const uint32_t dayOffset = stats.readingHistoryAnchorDay - dayIndex;
+  if (dayOffset >= READING_HISTORY_DAYS) {
+    return 0;
+  }
+  const uint16_t minutes = readingMinutesForDay(stats.readingHistoryAnchorDay, stats.dailyReadingMinutes, dayIndex);
+  if (minutes > 0) {
+    return minutes;
+  }
+  return (stats.readingHistoryBits[dayOffset / 8] & static_cast<uint8_t>(1u << (dayOffset % 8))) != 0 ? 1u : 0u;
+}
+
 void formatRhythmMinutes(const uint16_t minutes, char* buf, const size_t len) {
   if (!buf || len == 0) {
     return;
@@ -909,7 +927,7 @@ void renderReadingRhythmPage(GfxRenderer& renderer, const MappedInputManager* ma
       const uint32_t monthStartDay = readingStatsDayIndex(monthDates[monthIndex]);
       const uint8_t monthDayCount = daysInMonth(monthDates[monthIndex].year, monthDates[monthIndex].month);
       for (uint8_t dayOffset = 0; dayOffset < monthDayCount; ++dayOffset) {
-        if (stats.readingMinutesOnDay(monthStartDay + dayOffset) > 0) {
+        if (chartMinutesOnDay(stats, monthStartDay + dayOffset) > 0) {
           ++monthlyReadingDays[monthIndex];
         }
       }
@@ -1032,7 +1050,8 @@ void renderFinishedBooksPage(GfxRenderer& renderer, const MappedInputManager* ma
     const int headerH = std::max(22, renderer.getLineHeight(SMALL_FONT_ID) + 8);
     const int titleLineH = renderer.getLineHeight(UI_10_FONT_ID);
     const int authorLineH = renderer.getLineHeight(SMALL_FONT_ID);
-    const int bookRowH = std::max(40, titleLineH + authorLineH + 8);
+    const int datesLineH = renderer.getLineHeight(SMALL_FONT_ID);
+    const int bookRowH = std::max(40, titleLineH + authorLineH + datesLineH + 10);
     int sectionCount = 0;
     for (int index = 0; index < visibleRows; ++index) {
       const auto& entry = finishedBooks[firstEntry + index];
@@ -1070,6 +1089,21 @@ void renderFinishedBooksPage(GfxRenderer& renderer, const MappedInputManager* ma
             renderer.truncatedText(SMALL_FONT_ID, entry.author.c_str(), cardW - metrics.contentSidePadding * 2);
         renderer.drawText(SMALL_FONT_ID, cardX + metrics.contentSidePadding, y + titleLineH + 4, author.c_str());
       }
+
+      char finishDate[20];
+      char rowDuration[24];
+      char dates[64];
+      formatReadingStatsShortDate(entry.finishedDate, finishDate, sizeof(finishDate));
+      BookReadingStats::formatDuration(entry.totalReadingSeconds, rowDuration, sizeof(rowDuration));
+      if (entry.startDate.isValid()) {
+        char startDate[20];
+        formatReadingStatsShortDate(entry.startDate, startDate, sizeof(startDate));
+        snprintf(dates, sizeof(dates), tr(STR_STATS_FINISHED_DATES_FMT), startDate, finishDate, rowDuration);
+      } else {
+        snprintf(dates, sizeof(dates), tr(STR_STATS_FINISHED_DATE_ONLY_FMT), finishDate, rowDuration);
+      }
+      const int datesTop = entry.author.empty() ? titleLineH + 4 : titleLineH + authorLineH + 6;
+      renderer.drawText(SMALL_FONT_ID, cardX + metrics.contentSidePadding, y + datesTop, dates);
       y += bookRowH + gap;
     }
   }
@@ -1146,8 +1180,9 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
 }
 
 void renderReadingAchievementPage(GfxRenderer& renderer, const MappedInputManager* mappedInput,
-                                  const std::string& bookTitle, const BookReadingStats& stats,
-                                  const GlobalReadingStats& globalStats, const bool showButtonHints) {
+                                  const std::string& bookTitle, const std::string& bookAuthor,
+                                  const BookReadingStats& stats, const GlobalReadingStats& globalStats,
+                                  const bool showButtonHints) {
   renderer.clearScreen();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -1179,13 +1214,21 @@ void renderReadingAchievementPage(GfxRenderer& renderer, const MappedInputManage
   renderer.drawCenteredText(UI_12_FONT_ID, celebrationY, tr(STR_ACHIEVEMENT_SUBTITLE), true, EpdFontFamily::BOLD);
   const std::string visibleTitle = renderer.truncatedText(
       UI_10_FONT_ID, bookTitle.c_str(), screenW - metrics.contentSidePadding * 4, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(UI_10_FONT_ID, celebrationY + renderer.getLineHeight(UI_12_FONT_ID) + 7,
-                            visibleTitle.c_str(), true, EpdFontFamily::BOLD);
+  const int titleY = celebrationY + renderer.getLineHeight(UI_12_FONT_ID) + 7;
+  renderer.drawCenteredText(UI_10_FONT_ID, titleY, visibleTitle.c_str(), true, EpdFontFamily::BOLD);
+
+  int authorShift = 0;
+  if (!bookAuthor.empty()) {
+    const auto visibleAuthor =
+        renderer.truncatedText(SMALL_FONT_ID, bookAuthor.c_str(), screenW - metrics.contentSidePadding * 4);
+    renderer.drawCenteredText(SMALL_FONT_ID, titleY + renderer.getLineHeight(UI_10_FONT_ID) + 4, visibleAuthor.c_str());
+    authorShift = renderer.getLineHeight(SMALL_FONT_ID) + 4;
+  }
 
   const int cardX = metrics.contentSidePadding;
   const int cardW = screenW - metrics.contentSidePadding * 2;
   const int cardY = celebrationY + renderer.getLineHeight(UI_12_FONT_ID) + renderer.getLineHeight(UI_10_FONT_ID) +
-                    (compact ? 14 : 24);
+                    authorShift + (compact ? 14 : 24);
   const int rowH = compact ? 74 : 94;
   const int cardH = rowH * 2;
   renderer.drawRoundedRect(cardX, cardY, cardW, cardH, 2, 12, true);

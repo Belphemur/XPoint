@@ -17,6 +17,7 @@ class BookStatsActivity final : public Activity {
   enum class Page : uint8_t { Summary, EditDates, Achievement };
 
   std::string bookTitle;
+  std::string bookAuthor;
   std::string bookCachePath;
   std::string truncatedTitle;  // cached in onEnter() after the orientation flip
   int titleX = 0;              // cached text origin (screenWidth - titleWidth) / 2
@@ -39,7 +40,7 @@ class BookStatsActivity final : public Activity {
 
  public:
   explicit BookStatsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string title,
-                             const BookReadingStats& stats, std::string bookCachePath = {},
+                             std::string author, const BookReadingStats& stats, std::string bookCachePath = {},
                              const GlobalReadingStats& initialGlobalStats = {},
                              InitialPage initialPage = InitialPage::Summary);
   void onEnter() override;

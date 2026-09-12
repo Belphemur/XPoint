@@ -436,8 +436,8 @@ void EpubReaderActivity::goHomeOrShowCompletionAchievement() {
   }
 
   auto achievement =
-      makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), achievementStats, "",
-                                           achievementGlobalStats, BookStatsActivity::InitialPage::Achievement);
+      makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), epub->getAuthor(), achievementStats,
+                                           "", achievementGlobalStats, BookStatsActivity::InitialPage::Achievement);
   if (!achievement) {
     LOG_ERR("ERS", "OOM: completion achievement screen");
     onGoHome();
@@ -1324,16 +1324,17 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       if (SETTINGS.shouldTrackReadingStats()) {
         displayStats.totalReadingSeconds += sessionReadingSeconds;
       }
-      startActivityForResult(std::make_unique<ReadingStatsMenuActivity>(renderer, mappedInput, displayStats,
-                                                                        epub->getTitle(), epub->getCachePath()),
-                             [this](const ActivityResult& result) {
-                               if (epub && SETTINGS.shouldTrackReadingStats()) handleBookStatsReturn();
-                               if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
-                                 stats.clearWpmStats();
-                                 stats.save(epub->getCachePath());
-                               }
-                               openReaderMenu();
-                             });
+      startActivityForResult(
+          std::make_unique<ReadingStatsMenuActivity>(renderer, mappedInput, displayStats, epub->getTitle(),
+                                                     epub->getCachePath(), epub->getAuthor()),
+          [this](const ActivityResult& result) {
+            if (epub && SETTINGS.shouldTrackReadingStats()) handleBookStatsReturn();
+            if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
+              stats.clearWpmStats();
+              stats.save(epub->getCachePath());
+            }
+            openReaderMenu();
+          });
       break;
     }
     case EpubReaderMenuActivity::MenuAction::DELETE_STATS: {
@@ -2937,8 +2938,8 @@ void EpubReaderActivity::handleOverlayInput() {
           displayStats.totalReadingSeconds += sessionReadingSeconds;
         }
 
-        auto statsMenu = makeUniqueNoThrow<ReadingStatsMenuActivity>(renderer, mappedInput, displayStats,
-                                                                     epub->getTitle(), epub->getCachePath());
+        auto statsMenu = makeUniqueNoThrow<ReadingStatsMenuActivity>(
+            renderer, mappedInput, displayStats, epub->getTitle(), epub->getCachePath(), epub->getAuthor());
         if (!statsMenu) {
           LOG_ERR("ERS", "OOM: ReadingStatsMenuActivity");
           return;

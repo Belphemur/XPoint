@@ -42,7 +42,8 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
                              const BookReadingStats& stats, int selectedField, bool showButtonHints);
 
 void renderReadingAchievementPage(GfxRenderer& renderer, const MappedInputManager* mappedInput,
-                                  const std::string& bookTitle, const BookReadingStats& stats,
-                                  const GlobalReadingStats& globalStats, bool showButtonHints);
+                                  const std::string& bookTitle, const std::string& bookAuthor,
+                                  const BookReadingStats& stats, const GlobalReadingStats& globalStats,
+                                  bool showButtonHints);
 
 }  // namespace BookStatsView

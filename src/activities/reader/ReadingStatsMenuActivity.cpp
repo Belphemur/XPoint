@@ -16,10 +16,12 @@ namespace fui = freeink::ui;
 
 ReadingStatsMenuActivity::ReadingStatsMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                    std::optional<BookReadingStats> initialBookStats,
-                                                   std::string initialBookTitle, std::string initialBookCachePath)
+                                                   std::string initialBookTitle, std::string initialBookCachePath,
+                                                   std::string initialBookAuthor)
     : UiListActivity("ReadingStatsMenu", renderer, mappedInput),
       bookStats(std::move(initialBookStats)),
       bookTitle(std::move(initialBookTitle)),
+      bookAuthor(std::move(initialBookAuthor)),
       bookCachePath(std::move(initialBookCachePath)) {
   rebuildRowItems();
 }
@@ -89,7 +91,7 @@ void ReadingStatsMenuActivity::activateIndex(const int index) {
 void ReadingStatsMenuActivity::openThisBook() {
   if (!bookStats) return;
   auto statsActivity =
-      makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, bookTitle, *bookStats, bookCachePath,
+      makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, bookTitle, bookAuthor, *bookStats, bookCachePath,
                                            bookCachePath.empty() ? GlobalReadingStats{} : GlobalReadingStats::load());
   if (!statsActivity) {
     LOG_ERR("RSM", "OOM: BookStatsActivity");

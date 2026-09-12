@@ -18,7 +18,8 @@ class ReadingStatsMenuActivity final : public UiListActivity {
 
   explicit ReadingStatsMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                     std::optional<BookReadingStats> bookStats = std::nullopt,
-                                    std::string bookTitle = {}, std::string bookCachePath = {});
+                                    std::string bookTitle = {}, std::string bookCachePath = {},
+                                    std::string bookAuthor = {});
   void onEnter() override;
   void onExit() override;
 
@@ -30,6 +31,7 @@ class ReadingStatsMenuActivity final : public UiListActivity {
 
   std::optional<BookReadingStats> bookStats;
   std::string bookTitle;
+  std::string bookAuthor;
   std::string bookCachePath;
   freeink::ui::ListItem menuRowItems[4]{};
 

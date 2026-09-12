@@ -77,6 +77,7 @@ class ReadingStatsBinaryStoreTest : public ::testing::Test {
   void SetUp() override {
     Storage.clear();
     FinishedBooksIndex::clearRecentBooksForTest();
+    FinishedBooksIndex::resetForwardGuardForTest();
     // Reset per-path forward-format latches left by earlier tests; the storage
     // backing those paths has just been cleared.
     (void)BookReadingStats::remove(BOOK_DIR);
@@ -851,4 +852,30 @@ TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksLegacyV2LoadsStartDate) {
   EXPECT_EQ(entries[0].finishedDate.day, 8u);
   EXPECT_EQ(entries[0].title, title);
   EXPECT_TRUE(entries[0].author.empty());
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksForwardVersionBlocksSaves) {
+  // A file written by a newer firmware: same magic, higher version.
+  std::vector<uint8_t> future(64, 0);
+  std::memcpy(future.data(), "CPFB", 4);
+  future[4] = 4;  // INDEX_VERSION + 1
+  future[5] = 1;
+  {
+    HalFile file;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", "/.crosspoint/finished_books.bin", file));
+    ASSERT_EQ(file.write(future.data(), future.size()), future.size());
+  }
+
+  // This build cannot decode it: nothing loads.
+  EXPECT_TRUE(FinishedBooksIndex::load().empty());
+
+  BookReadingStats stats;
+  stats.isCompleted = true;
+  EXPECT_FALSE(FinishedBooksIndex::record("/books/new.epub", "New", "Author", stats));
+
+  // The forward-version file is untouched and no legacy index shadows it.
+  const auto after = readFileBytes("/.crosspoint/finished_books.bin");
+  ASSERT_EQ(after.size(), future.size());
+  EXPECT_EQ(after[4], 4u);
+  EXPECT_FALSE(Storage.exists("/.crosspoint/finished_books.bin.tmp"));
 }
