@@ -280,7 +280,9 @@ void seedFromRecentBooks(std::vector<FinishedBookEntry>& entries) {
       continue;
     }
     const BookReadingStats stats = BookReadingStats::load(cachePath);
-    if (stats.isCompleted) {
+    // Empty-title entries can never be loaded back (loadPath() skips them) and
+    // would break the index rewrite's verify pass.
+    if (stats.isCompleted && !book.title.empty()) {
       entries.push_back({pathKey(book.path), book.title, book.author, stats.totalReadingSeconds, stats.startDate,
                          stats.finishedDate});
     }
