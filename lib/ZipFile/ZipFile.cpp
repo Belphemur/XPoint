@@ -228,6 +228,9 @@ long ZipFile::getDataOffset(const FileStatSlim& fileStat) {
   return fileOffset + localHeaderSize + filenameLength + extraOffset;
 }
 
+#if LOG_LEVEL >= 2
+// Development-only inflate-failure forensics; compiles out of production
+// firmware (LOG_LEVEL 0/1).
 void ZipFile::logInflateFailure(const FileStatSlim& fileStat, const long dataOffset) {
   // The read cursor shows how far the fill callback got before the inflater
   // gave up; useful to tell genuine truncation from a mid-stream error.
@@ -238,6 +241,7 @@ void ZipFile::logInflateFailure(const FileStatSlim& fileStat, const long dataOff
           static_cast<unsigned long long>(fileSize), static_cast<unsigned long long>(file.position()),
           dataEnd > fileSize ? "; DATA EXTENDS PAST EOF (truncated file on SD)" : "; span fully inside file");
 }
+#endif
 
 bool ZipFile::loadZipDetails() {
   if (zipDetails.isSet) {
@@ -448,6 +452,9 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
     if (!inflate.read(data, inflatedDataSize)) {
       LOG_ERR("ZIP", "Failed to inflate file");
+#if LOG_LEVEL >= 2
+      // Development-only forensics: SD raw-read CRC, DRAM one-shot A/B and
+      // PSRAM probe. Compiles out of production firmware.
       logInflateFailure(fileStat, fileOffset);
       // Raw-read integrity check: re-read the compressed bytes straight from
       // the SD card (bypassing tinfl) and CRC32 them. Host reference for the
@@ -543,7 +550,8 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
           poolFree(probe);
         }
       }
-#endif
+#endif  // BOARD_HAS_PSRAM
+#endif  // LOG_LEVEL >= 2
       free(fileReadBuffer);
       poolFree(data);
       return nullptr;
@@ -659,7 +667,9 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
       if (totalProduced > static_cast<size_t>(inflatedDataSize)) {
         LOG_ERR("ZIP", "Decompressed size exceeds expected (%zu > %zu)", totalProduced,
                 static_cast<size_t>(inflatedDataSize));
+#if LOG_LEVEL >= 2
         logInflateFailure(fileStat, fileOffset);
+#endif
         break;
       }
 
@@ -678,7 +688,9 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
         if (totalProduced != static_cast<size_t>(inflatedDataSize)) {
           LOG_ERR("ZIP", "Decompressed size mismatch (expected %zu, got %zu)", static_cast<size_t>(inflatedDataSize),
                   totalProduced);
+#if LOG_LEVEL >= 2
           logInflateFailure(fileStat, fileOffset);
+#endif
           break;
         }
         LOG_DBG("ZIP", "Decompressed %d bytes into %d bytes", deflatedDataSize, inflatedDataSize);
@@ -688,7 +700,9 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
 
       if (status == InflateStream::Status::Error) {
         LOG_ERR("ZIP", "Decompression failed");
+#if LOG_LEVEL >= 2
         logInflateFailure(fileStat, fileOffset);
+#endif
         break;
       }
       // InflateStream::Status::Ok: output buffer full, continue

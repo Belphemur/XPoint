@@ -51,10 +51,12 @@ class ZipFile {
   bool loadFileStatSlim(const char* filename, FileStatSlim* fileStat);
   long getDataOffset(const FileStatSlim& fileStat);
   bool loadZipDetails();
+#if LOG_LEVEL >= 2
   // Logs whether an entry's compressed data physically exists on the SD card.
   // Distinguishes a truncated/corrupt file from an entry the inflater cannot
   // handle: span extending past EOF means the file itself is incomplete.
   void logInflateFailure(const FileStatSlim& fileStat, long dataOffset);
+#endif
 
  public:
   explicit ZipFile(const std::string& filePath) : filePath(filePath) {}
