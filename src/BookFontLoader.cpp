@@ -250,7 +250,14 @@ void BookFontLoader::ensureLoaded() {
     glyphBacking_[i].reset();
   }
   chain_ = FontChain{};
-  if (familyCount_ == 0) return;
+  if (familyCount_ == 0) {
+    // No manifest: no real fingerprint exists. Zero it so a cache generation
+    // derived from the stale value can't collide with a previously loaded
+    // family's caches; dirty stays clear until the next begin()/selectFamily.
+    fingerprint_ = 0;
+    dirty_.store(false, std::memory_order_relaxed);
+    return;
+  }
 
   // Recompute the DRAM budget: the release loop above freed the previous
   // faces' bytes, so a reload must not inherit the previously spent budget.
@@ -269,7 +276,14 @@ void BookFontLoader::ensureLoaded() {
       LOG_DBG("BFNT", "Selected family '%s' not found — built-in fallback", selectedFamily_);
     }
   }  // explicit fallback selection: famPtr stays null
-  if (famPtr == nullptr) return;  // chain stays empty; getReaderFont() serves the fallback
+  if (famPtr == nullptr) {
+    // Fallback chain (explicit or renamed family): fingerprint_ would
+    // otherwise keep the previous family's value and derive a stale FIBP
+    // generation from it.
+    fingerprint_ = 0;
+    dirty_.store(false, std::memory_order_relaxed);
+    return;  // chain stays empty; getReaderFont() serves the fallback
+  }
 
   for (uint8_t i = 0; i < famPtr->faceCount && i < 4; ++i) {
     if (!tryLoadFace(i, famPtr->faces[i], chain_)) {
@@ -302,9 +316,10 @@ void BookFontLoader::selectFamily(const char* name) {
 
 const FamilyInfo* BookFontLoader::findFamily(const char* name) const {
   if (name == nullptr || name[0] == '\0') return nullptr;
-  // Exact match: the selection stores the scanner's own display name, so the
-  // same case round-trips; a renamed family on SD degrades to the fallback.
-  const auto match = [name](const FamilyInfo& fam) { return strcmp(fam.name, name) == 0; };
+  // Case-insensitive per the loader contract (§14.4 display names): settings
+  // can round-trip through the web UI/JSON with different casing, and a
+  // renamed family on SD still degrades to the fallback.
+  const auto match = [name](const FamilyInfo& fam) { return strcasecmp(fam.name, name) == 0; };
   const auto it = std::find_if(families_.begin(), families_.begin() + familyCount_, match);
   return it != families_.begin() + familyCount_ ? &*it : nullptr;
 }

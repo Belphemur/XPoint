@@ -396,7 +396,10 @@ TEST(BookFontLoaderSelection, FindFamilyMatchesExactly) {
   loader.setFamilyCountForTest(1);
 
   EXPECT_NE(loader.findFamily("Literata"), nullptr);
-  EXPECT_EQ(loader.findFamily("literata"), nullptr);  // exact case, not ci
+  // Case-insensitive per the loader contract (BookFontLoader.h §14.4 display
+  // name): settings round-trip through the web UI/JSON with any casing.
+  EXPECT_NE(loader.findFamily("literata"), nullptr);
+  EXPECT_NE(loader.findFamily("LITERATA"), nullptr);
   EXPECT_EQ(loader.findFamily("Other"), nullptr);
   EXPECT_EQ(loader.findFamily(""), nullptr);
   EXPECT_EQ(loader.findFamily(nullptr), nullptr);

@@ -5,9 +5,8 @@
 
 #include "TtfWordSelect.h"
 
-#include <Memory.h>
-
 #include <Logging.h>
+#include <Memory.h>
 
 #include <cstring>
 
@@ -23,6 +22,7 @@ inline bool isWsByte(const char c) { return c == ' ' || c == '\n' || c == '\t' |
 
 // Decodes the UTF-8 codepoint at text[i..to), advancing i past its bytes.
 inline uint32_t decodeCp(const char* text, const uint16_t to, uint16_t& i) {
+  if (i >= to) return 0;  // defensive: callers loop on i < to
   const auto b0 = static_cast<uint8_t>(text[i]);
   uint32_t cp = b0;
   uint32_t extra = 0;
@@ -102,6 +102,11 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
 
   bool carry = false;  // previous run's last token ends mid-word
   uint32_t carriedGroup = 0;
+  // Rolling pen position: each inter-token gap is measured once. Measuring
+  // from the run start for every token would be O(runLen·tokens) font
+  // metric work (kody, PR #113).
+  int32_t penX = 0;
+  uint16_t measuredTo = 0;
   for (size_t t = 0; t < tokens.size(); ++t) {
     const TokenRange& token = tokens[t];
     const PageTextRun& run = page.runs[token.run];
@@ -112,8 +117,17 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     const bool runFirst = t == 0 || tokens[t - 1].run != token.run;
     const bool runLast = t + 1 == tokens.size() || tokens[t + 1].run != token.run;
     const bool headFlag = runFirst && (run.layoutFlags & PageTextRun::LayoutFirstContinues) != 0;
-    const bool tailFlag = runLast && token.end == run.len &&
-                          (run.layoutFlags & PageTextRun::LayoutLastContinues) != 0;
+    const bool tailFlag = runLast && token.end == run.len && (run.layoutFlags & PageTextRun::LayoutLastContinues) != 0;
+
+    // Advance the rolling pen to this token's start (tokens are ordered by
+    // run, then start; a run switch resets the pen). Skipped tokens keep the
+    // pen correct for the next one — the next gap measure starts here.
+    if (runFirst) {
+      penX = run.x;
+      measuredTo = 0;
+    }
+    penX += measure(run.text, measuredTo, token.start, run.sizePx, run.styleFlags);
+    measuredTo = token.start;
 
     // Selection group: a continuation head joins the carried group; any
     // other token starts a fresh logical word. A pairing mismatch (head
@@ -136,7 +150,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     memcpy(write, rawView.data(), rawView.size());
     write[rawView.size()] = '\0';
     write += rawView.size() + 1;
-    box.x = static_cast<int16_t>(run.x + measure(run.text, 0, token.start, run.sizePx, run.styleFlags));
+    box.x = static_cast<int16_t>(penX);
     box.y = static_cast<int16_t>(run.baselineY - fonts.ascent(run.sizePx));
     box.height = fonts.lineHeight(run.sizePx);
     box.width = static_cast<int16_t>(measure(text, span.start, span.start + span.length, run.sizePx, run.styleFlags));
