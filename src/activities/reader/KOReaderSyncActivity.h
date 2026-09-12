@@ -24,7 +24,15 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
  public:
   explicit KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& epubPath,
                                 CrossPointPosition localPosition, SavedProgressPosition localKoPos,
-                                std::string localChapterName);
+                                std::string localChapterName
+#if defined(CROSSPOINT_TTF_READER)
+                                // The reader's live TTF layout generation: remote-accept saves
+                                // must keep the 16-byte record shape, or the next TTF open
+                                // degrades the synced position to chapter start.
+                                ,
+                                uint32_t ttfLayoutGeneration = 0, bool ttfLayoutValid = false
+#endif
+  );
 
   void onEnter() override;
   void onExit() override;
@@ -62,6 +70,12 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
 
   // Local progress as KOReader format (pre-computed before Epub was released)
   SavedProgressPosition localProgress;
+
+#if defined(CROSSPOINT_TTF_READER)
+  // The reader's live TTF layout generation at sync launch (see ctor comment).
+  uint32_t ttfLayoutGeneration = 0;
+  bool ttfLayoutValid = false;
+#endif
 
   // Selection in result screen (0=Apply, 1=Upload)
   int selectedOption = 0;
