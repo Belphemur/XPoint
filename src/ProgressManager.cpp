@@ -411,13 +411,22 @@ void ProgressManager::closeBook() {
     return;
   }
   LOG_DBG(MUTEX_TAG, "closeBook(): flushing pending progress");
-  flushChanged();
+  const bool flushed = flushChanged();
   xSemaphoreTake(stateMutex_, portMAX_DELAY);
-  *current_ = ProgressManager::Record{};
-  *lastFlushed_ = ProgressManager::Record{};
-  cachePath_[0] = '\0';
-  bookOpen_ = false;
-  writeQueued_ = false;
+  if (flushed) {
+    *current_ = ProgressManager::Record{};
+    *lastFlushed_ = ProgressManager::Record{};
+    cachePath_[0] = '\0';
+    bookOpen_ = false;
+    writeQueued_ = false;
+  } else {
+    // The flush reported an uncommitted record (CodeRabbit, PR #112):
+    // preserve the owed state so a later flushNow() (enterPowerOff) can
+    // retry the write if the SD error was transient. The next openBook()
+    // resets this state either way; clearing it here would silently lose
+    // the newest position.
+    LOG_ERR(MUTEX_TAG, "closeBook(): flush failed — progress state preserved for retry");
+  }
   xSemaphoreGive(stateMutex_);
   LOG_DBG(MUTEX_TAG, "Book closed, progress state reset");
 }
@@ -463,10 +472,12 @@ bool ProgressManager::flushChanged() {
             snapshot.pageNumber, snapshot.pageCount, static_cast<unsigned long>(sinceFlushSec));
     const bool ok = commitRecord(cachePath, snapshot, /*adopt=*/false);
     if (!ok) {
-      // Keep writeQueued_ set: the next save() (any page change) retries.
-      LOG_ERR(MUTEX_TAG, "Progress save FAILED: spine=%u page=%u/%u (will retry)", snapshot.spineIndex,
-              snapshot.pageNumber, snapshot.pageCount);
-      return false;
+      // Transient SD failures retry within the bounded loop (CodeRabbit,
+      // PR #112): writeQueued_ stays set either way, and the exit check
+      // below reports failure while the record remains uncommitted.
+      LOG_ERR(MUTEX_TAG, "Progress save FAILED: spine=%u page=%u/%u (attempt %d)", snapshot.spineIndex,
+              snapshot.pageNumber, snapshot.pageCount, attempt + 1);
+      continue;
     }
     bool caughtUp = false;
     {
@@ -482,10 +493,22 @@ bool ProgressManager::flushChanged() {
     // A save raced the write: loop to repair the file with the newest state
     // before declaring the flush complete.
   }
-  // Retry budget exhausted with newer state still owed: writeQueued_ is set,
-  // so closeBook()/flushNow() callers and the next save() converge.
-  LOG_INF(MUTEX_TAG, "flushChanged(): newer state remains queued");
-  return true;
+  // Exit state decides the verdict (CodeRabbit, PR #112): false while the
+  // newest record is still owed (persistent write failure, or retry budget
+  // exhausted with newer state queued). Callers closeBook()/flushNow() treat
+  // false as "not committed" instead of assuming success.
+  bool caughtUp = false;
+  {
+    xSemaphoreTake(stateMutex_, portMAX_DELAY);
+    caughtUp = !bookOpen_ || *current_ == *lastFlushed_;
+    xSemaphoreGive(stateMutex_);
+  }
+  if (caughtUp) {
+    LOG_INF(MUTEX_TAG, "flushChanged(): newer state remains queued (converged)");
+    return true;
+  }
+  LOG_INF(MUTEX_TAG, "flushChanged(): record remains uncommitted");
+  return false;
 }
 
 bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, const bool adopt) {
