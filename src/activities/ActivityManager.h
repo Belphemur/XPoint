@@ -7,12 +7,17 @@
 #include <atomic>
 #include <cassert>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
 #include "util/ScreenshotInfo.h"
+
+#ifdef READING_STATS_ENABLED
+#include "activities/reader/BookReadingStats.h"
+#endif
 
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
@@ -98,6 +103,8 @@ class ActivityManager {
   void goToCrashReport();
 #ifdef READING_STATS_ENABLED
   void goToGlobalStats();
+  void goToReadingStats(std::optional<BookReadingStats> bookStats = std::nullopt, std::string bookTitle = {},
+                        std::string bookCachePath = {});
 #endif
   void goHome(HomeMenuItem initialMenuItem = HomeMenuItem::NONE, bool cleanInitialRefresh = false);
 

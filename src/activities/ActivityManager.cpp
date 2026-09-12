@@ -14,6 +14,7 @@
 #include "CrossPointSettings.h"
 #include "OpdsServerStore.h"
 #ifdef READING_STATS_ENABLED
+#include "activities/reader/ReadingStatsMenuActivity.h"
 #include "settings/GlobalStatsActivity.h"
 #endif
 #include "boot_sleep/BootActivity.h"
@@ -288,6 +289,17 @@ void ActivityManager::goToGlobalStats() {
   auto activity = makeUniqueNoThrow<GlobalStatsActivity>(renderer, mappedInput);
   if (!activity) {
     LOG_ERR("ACT", "OOM: GlobalStatsActivity");
+    return;
+  }
+  pushActivity(std::move(activity));
+}
+
+void ActivityManager::goToReadingStats(std::optional<BookReadingStats> bookStats, std::string bookTitle,
+                                       std::string bookCachePath) {
+  auto activity = makeUniqueNoThrow<ReadingStatsMenuActivity>(renderer, mappedInput, std::move(bookStats),
+                                                              std::move(bookTitle), std::move(bookCachePath));
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: ReadingStatsMenuActivity");
     return;
   }
   pushActivity(std::move(activity));
