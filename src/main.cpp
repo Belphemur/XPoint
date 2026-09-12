@@ -75,10 +75,12 @@ BookFontLoader fontLoader;
 }  // namespace freeink
 
 // TTF Phase 0 wiring proof: a link-time reference to the FreeInkBook engine.
-// File scope + gnu::used defeats the optimizer on every build variant; the
-// LOG_DBG reference in setup() reaches it too. (gnu::retain is dropped: this
-// xtensa GCC rejects it with -Wattributes even at namespace scope — --gc-
-// sections still keeps the section via the gnu::used reference.)
+// File scope + gnu::used defeats the optimizer on every build variant (valid
+// for a namespace-scope variable on both the RISC-V and Xtensa GCC targets).
+// gnu::used alone does not guarantee retention under --gc-sections; gnu::retain
+// would, but the S3 framework's Xtensa GCC rejects it with -Wattributes at
+// namespace scope, so the LOG_DBG reference in setup() anchors the section
+// instead.
 using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
 [[gnu::used]] static const BookStatusProbe bookStatusProbe = &freeink::book::bookStatusName;
 
