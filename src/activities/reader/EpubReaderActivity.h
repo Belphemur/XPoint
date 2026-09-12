@@ -139,6 +139,17 @@ class EpubReaderActivity final : public ReaderActivity {
   bool currentPageReadingSecondsForStats(uint32_t& seconds) const;
   void recordCurrentPageReadingTime();
   void recordForwardPagePaceSample(uint32_t seconds, uint16_t wordsOnPage);
+  // Completion/achievement flow: real end auto-completes, while a final-page
+  // or 100% exit asks first and latches a declined prompt.
+  void onGoHomeRequested() override;
+  void setBookCompleted(bool completed);
+  void goHomeOrShowCompletionAchievement();
+  // Imports only user-editable completion state saved by BookStatsActivity;
+  // live session counters stay authoritative in memory.
+  void applyBookStatsEditsFromDisk();
+  void syncFinishedBookIndex();
+  void handleBookStatsReturn();
+  BookReadingStats achievementStatsPreview(uint32_t* pendingReadingSeconds = nullptr) const;
 #endif
 
   uint16_t buildViewportWidth = 0;

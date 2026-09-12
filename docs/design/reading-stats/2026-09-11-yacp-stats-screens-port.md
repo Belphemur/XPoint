@@ -196,7 +196,7 @@ guard already handles future-format detection.
 | `GlobalStatsActivity` | rendered page becomes the "This Device" page of the menu |
 | `HomeActivity::onReadingStatsOpen` | push the sub-menu |
 | `EpubReaderActivity` | stats toolbar → menu; port completion flow (`setBookCompleted`, 100% prompt, achievement push) |
-| `XtcReaderActivity` | same completion flow |
+| `XtcReaderActivity` | none — the fork has no XTC stats menu/action to hang the flow on |
 | `english.yaml` + regenerated `I18nKeys.h` | ~25 new strings |
 | `test/reading_stats/` | FinishedBooksIndex round-trip/migration tests; rhythm data derivation tests; wire-offset pins for v8 |
 ### 2.6 The two record bumps (conditional on the answers to §3)
