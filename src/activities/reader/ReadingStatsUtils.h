@@ -14,6 +14,10 @@ constexpr uint32_t MIN_GLOBAL_PACE_PAGE_TURNS = 50;
 constexpr size_t READING_DAY_OF_WEEK_COUNT = 7;
 constexpr size_t READING_HISTORY_DAYS = 730;
 constexpr size_t READING_HISTORY_BYTES = (READING_HISTORY_DAYS + 7) / 8;
+// Real minutes per day for the Reading Rhythm charts (global v6+). Index 0 is
+// the history anchor day; larger indexes are progressively older days.
+constexpr size_t READING_MINUTE_HISTORY_DAYS = 91;
+constexpr uint16_t READING_MINUTES_PER_DAY = 1440;
 
 constexpr size_t WPM_WINDOW_SIZE = 15;
 constexpr size_t WPM_TRIM_COUNT = 2;
@@ -150,7 +154,12 @@ void recordReadingSpanIntoBuckets(std::array<uint32_t, READING_TIME_BUCKET_COUNT
                                   const ReadingStatsDateTime& localStart, uint32_t seconds);
 void markReadingHistoryDay(uint32_t& anchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& bits, uint32_t dayIndex);
 void recordReadingSpanIntoHistory(uint32_t& anchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& bits,
+                                  std::array<uint16_t, READING_MINUTE_HISTORY_DAYS>& dailyMinutes,
                                   const ReadingStatsDateTime& localStart, uint32_t seconds);
+// Value for the given calendar day from the rolling 91-day minutes array;
+// returns 0 when the day is absent or outside the window.
+uint16_t readingMinutesForDay(uint32_t anchorDay, const std::array<uint16_t, READING_MINUTE_HISTORY_DAYS>& dailyMinutes,
+                              uint32_t dayIndex);
 void mergeReadingHistory(uint32_t& targetAnchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& targetBits,
                          uint32_t sourceAnchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& sourceBits);
 uint16_t computeReadingHistoryLongestStreak(uint32_t anchorDay, const std::array<uint8_t, READING_HISTORY_BYTES>& bits);

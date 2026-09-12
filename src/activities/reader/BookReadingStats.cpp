@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 
+std::set<std::string> BookReadingStats::s_blockDestructiveSavePaths;
+
 namespace {
 // Binary layout v5 (73 bytes) — byte-compatible with crossink's stats_v5.bin:
 //   [0]      version (= 5)
@@ -40,6 +42,10 @@ namespace {
 //   [113-132] sessionWindow.samples    uint16_t LE each
 //   [133]     sessionWindow.pos        uint8_t
 //
+// v8 (135 bytes) appends the completion-flow flags (v7 fields unchanged):
+//   [134]     completionFlags           bit0=achievementPending
+//                                       bit1=completionPromptDismissedAtHundred
+//
 // The record lives INSIDE the book cache dir, so its lifetime matches the
 // cache dir exactly (created/deleted/moved with the book — no orphan cleanup,
 // no key migration needed; move-to-/read renames the whole dir).
@@ -50,12 +56,18 @@ namespace {
 // per-book cache dir convention and have not been seen on shipped devices. A
 // v4 file left on a user's SD is silently treated as missing — the loader
 // finds no candidate and the book starts a fresh stat record on next save.
-constexpr uint8_t STATS_FILE_VERSION = 7;
-constexpr int STATS_FILE_SIZE = 134;
+constexpr uint8_t STATS_FILE_VERSION = 8;
+constexpr int STATS_FILE_SIZE = 135;
+constexpr int STATS_FILE_SIZE_V7 = 134;
 constexpr int STATS_FILE_SIZE_V6 = 109;
 constexpr int STATS_FILE_SIZE_V5 = 73;
+constexpr uint8_t STATS_FILE_VERSION_V7 = 7;
+constexpr uint8_t STATS_FILE_VERSION_V6 = 6;
+constexpr uint8_t STATS_FILE_VERSION_V5 = 5;
 constexpr uint8_t FLAG_START_DATE_MANUAL = 1u << 0;
 constexpr uint8_t FLAG_FINISHED_DATE_MANUAL = 1u << 1;
+constexpr uint8_t FLAG_COMPLETION_ACHIEVEMENT_PENDING = 1u << 0;
+constexpr uint8_t FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED = 1u << 1;
 
 std::string statsFileNameForVersion(const uint8_t version) {
   char buf[16];
@@ -63,15 +75,14 @@ std::string statsFileNameForVersion(const uint8_t version) {
   return std::string(buf);
 }
 
-// Recognized book-stat records, newest first. Only the current and the
-// immediately previous versioned name are loaded; older versions (v4 and
-// earlier, crossink unversioned stats.bin) were removed in this revision to
-// keep the loader simple — see the layout header for the explicit list of
-// supported versions and the migration comment for what happens to a v4
-// file if it is still on disk after the upgrade.
+// Recognized book-stat records, newest first. v5-v8 remain recognized so a
+// v5 record can still upgrade in one save hop; older formats are not loaded.
 std::vector<std::string> openCandidateNames() {
+  // STATS_FILE_VERSION + 1 is recognized on load only as a forward-format
+  // guard; it is never decoded as statistics data.
   return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
-          statsFileNameForVersion(STATS_FILE_VERSION - 2)};
+          statsFileNameForVersion(STATS_FILE_VERSION - 2), statsFileNameForVersion(STATS_FILE_VERSION - 3),
+          statsFileNameForVersion(STATS_FILE_VERSION + 1)};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
@@ -134,7 +145,7 @@ void readV5Fields(const uint8_t* data, BookReadingStats& stats) {
 
 // Decodes a v5 record (73 bytes). Returns false on size/version mismatch.
 bool decodeV5(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION - 2) return false;
+  if (n != STATS_FILE_SIZE_V5 || data[0] != STATS_FILE_VERSION_V5) return false;
   readV5Fields(data, stats);
   return true;
 }
@@ -169,10 +180,17 @@ void readSessionWindow(const uint8_t* data, SessionWindow& sessionWindow) {
   sessionWindow.normalize();
 }
 
+// Reads the v8-only completion flags. Unknown bits are ignored so a future
+// compatible extension can reuse the byte without failing this decode.
+void readCompletionFlags(const uint8_t flags, BookReadingStats& stats) {
+  stats.completionAchievementPending = (flags & FLAG_COMPLETION_ACHIEVEMENT_PENDING) != 0;
+  stats.completionPromptDismissedAtHundred = (flags & FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED) != 0;
+}
+
 // Decodes a v6 record (109 bytes = v5 plus the WPM window). Returns false on
 // size/version mismatch.
 bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE_V6 || data[0] != STATS_FILE_VERSION - 1) return false;
+  if (n != STATS_FILE_SIZE_V6 || data[0] != STATS_FILE_VERSION_V6) return false;
   // v5 fields are a prefix of the v6 record (same byte offsets 1-72), so the
   // v5 layout can be parsed directly without re-checking the version byte.
   readV5Fields(data, stats);
@@ -183,7 +201,7 @@ bool decodeV6(const uint8_t* data, const int n, BookReadingStats& stats) {
 // Decodes a v7 record (134 bytes = v6 plus the session window). Returns false
 // on size/version mismatch.
 bool decodeV7(const uint8_t* data, const int n, BookReadingStats& stats) {
-  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
+  if (n != STATS_FILE_SIZE_V7 || data[0] != STATS_FILE_VERSION_V7) return false;
   // The v6 fields are a byte-identical prefix of the v7 record, so the v6
   // layout is parsed directly without re-checking the version byte. Do NOT
   // route this through decodeV6 — it re-checks the version byte and would
@@ -191,6 +209,19 @@ bool decodeV7(const uint8_t* data, const int n, BookReadingStats& stats) {
   readV5Fields(data, stats);
   readWpmWindow(data, stats.wpm, stats.lastBookProgressPercent);
   readSessionWindow(data, stats.sessionWindow);
+  return true;
+}
+
+// Decodes a v8 record (135 bytes = v7 plus the completion flags). Returns
+// false on size/version mismatch.
+bool decodeV8(const uint8_t* data, const int n, BookReadingStats& stats) {
+  if (n != STATS_FILE_SIZE || data[0] != STATS_FILE_VERSION) return false;
+  // Same prefix rule as decodeV7: parse the shared fields directly and only
+  // check the v8 version/size here.
+  readV5Fields(data, stats);
+  readWpmWindow(data, stats.wpm, stats.lastBookProgressPercent);
+  readSessionWindow(data, stats.sessionWindow);
+  readCompletionFlags(data[134], stats);
   return true;
 }
 }  // namespace
@@ -207,8 +238,21 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     const int n = f.read(data, STATS_FILE_SIZE);
     f.close();
 
+    // A version beyond this build means a forward firmware owns this book's
+    // history. Do not decode it as fresh data, and do not let the next save
+    // overwrite the still-recognized legacy files while that record exists.
+    if (n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
+      LOG_ERR("STATS", "On-disk book stats are from a newer build (v%u, %d bytes); refusing to overwrite", data[0], n);
+      s_blockDestructiveSavePaths.insert(cachePath);
+      return BookReadingStats{};
+    }
+
     BookReadingStats candidate;
-    if (decodeV7(data, n, candidate)) return candidate;
+    if (decodeV8(data, n, candidate)) return candidate;
+    if (decodeV7(data, n, candidate)) {
+      LOG_DBG("STATS", "Loaded %s (older version); next save writes v%u", name.c_str(), STATS_FILE_VERSION);
+      return candidate;
+    }
     if (decodeV6(data, n, candidate)) {
       LOG_DBG("STATS", "Loaded %s (older version); next save writes v%u", name.c_str(), STATS_FILE_VERSION);
       return candidate;
@@ -223,6 +267,10 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
 }
 
 void BookReadingStats::save(const std::string& cachePath) const {
+  if (s_blockDestructiveSavePaths.count(cachePath) != 0) {
+    LOG_ERR("STATS", "Refusing to overwrite on-disk book stats after newer-format file was detected");
+    return;
+  }
   const std::string statsFileName = statsFileNameForVersion(STATS_FILE_VERSION);
   HalFile f;
   if (!Storage.openFileForWrite("STATS", cachePath + "/" + statsFileName, f)) {
@@ -271,11 +319,13 @@ void BookReadingStats::save(const std::string& cachePath) const {
     writeLe16(data, 113 + static_cast<int>(i) * 2, sessionWindow.samples[i]);
   }
   data[133] = sessionWindow.pos;
+  data[134] = (completionAchievementPending ? FLAG_COMPLETION_ACHIEVEMENT_PENDING : 0u) |
+              (completionPromptDismissedAtHundred ? FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED : 0u);
   const size_t written = f.write(data, STATS_FILE_SIZE);
   if (written != STATS_FILE_SIZE) {
-    // Do NOT delete the legacy file — the v6 write didn't land, and the
-    // v5 record is the only copy of the user's history. The next save
-    // will retry; until it succeeds the loader still finds the v5 file
+    // Do NOT delete the legacy files — the v8 write didn't land, and the
+    // v5/v6/v7 record is the only copy of the user's history. The next save
+    // will retry; until it succeeds the loader still finds the legacy file
     // and decodes it. A short write here is a serious condition (SD
     // error) that the LOG_ERR makes visible; silently destroying the
     // legacy on top of that would be unrecoverable data loss.
@@ -286,11 +336,10 @@ void BookReadingStats::save(const std::string& cachePath) const {
   }
   f.close();
 
-  // One-time v7 migration: delete the immediately-previous record now that
-  // the upgraded data is safely on disk, plus the v5 file when a two-hop
-  // (v5 → v7) upgrade just happened — it is no longer a load candidate and
-  // would otherwise linger in the cache dir forever.
-  for (const int legacyVersion : {STATS_FILE_VERSION - 1, STATS_FILE_VERSION - 2}) {
+  // One-time v8 migration: delete every still-recognized legacy record now
+  // that the upgraded data is safely on disk. A v5 record upgrades directly
+  // to v8 in one save, so all three legacy files are covered.
+  for (const int legacyVersion : {STATS_FILE_VERSION - 1, STATS_FILE_VERSION - 2, STATS_FILE_VERSION - 3}) {
     const std::string legacyPath = cachePath + "/" + statsFileNameForVersion(static_cast<uint8_t>(legacyVersion));
     if (Storage.exists(legacyPath.c_str())) {
       Storage.remove(legacyPath.c_str());
@@ -301,14 +350,14 @@ void BookReadingStats::save(const std::string& cachePath) const {
 
 bool BookReadingStats::remove(const std::string& cachePath) {
   bool ok = true;
-  // Remove the current record plus both still-recognized legacy versions so
+  // Remove the current record plus all still-recognized legacy versions so
   // a later load cannot resurrect old data. Very old v4 / crossink
   // unversioned files, if any, are not touched here — they are no longer
   // loaded and will simply be left in the cache dir until the next manual
   // cleanup.
-  const std::string names[] = {statsFileNameForVersion(STATS_FILE_VERSION),
-                               statsFileNameForVersion(STATS_FILE_VERSION - 1),
-                               statsFileNameForVersion(STATS_FILE_VERSION - 2)};
+  const std::string names[] = {
+      statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
+      statsFileNameForVersion(STATS_FILE_VERSION - 2), statsFileNameForVersion(STATS_FILE_VERSION - 3)};
   for (const std::string& name : names) {
     const std::string path = cachePath + "/" + name;
     if (!Storage.exists(path.c_str())) continue;
@@ -317,6 +366,9 @@ bool BookReadingStats::remove(const std::string& cachePath) {
       ok = false;
     }
   }
+  // No recognized record remains: saves are safe again even if a newer-format
+  // record had latched the guard earlier.
+  if (ok) s_blockDestructiveSavePaths.erase(cachePath);
   return ok;
 }
 

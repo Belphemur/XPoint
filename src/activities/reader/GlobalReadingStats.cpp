@@ -33,12 +33,19 @@ namespace {
 //   [197-198] sessionWindow.count    uint16_t LE, samples in window (0-10)
 //   [199-223] sessionWindow.samples  uint16_t LE each
 //   [224]     sessionWindow.pos      uint8_t
-// v4 (195 bytes) is the previous version; v5 (225 bytes) appends the
-// session-duration window. v1/v2 layouts are not supported here.
-constexpr uint8_t GLOBAL_STATS_VERSION = 5;
-constexpr int GLOBAL_STATS_FILE_SIZE = 225;
+//
+// v6 (407 bytes) appends 91 days of real reading minutes (v5 fields unchanged):
+//   [225-406] dailyReadingMinutes[91] uint16_t LE each; index 0 is the history
+//             anchor day, larger indexes are progressively older days. Legacy
+//             v3/v4/v5 loads backfill each set read-history bit to 1 minute.
+constexpr uint8_t GLOBAL_STATS_VERSION = 6;
+constexpr int GLOBAL_STATS_FILE_SIZE = 407;
+constexpr int GLOBAL_STATS_FILE_SIZE_V5 = 225;
 constexpr int GLOBAL_STATS_FILE_SIZE_V4 = 195;
 constexpr int GLOBAL_STATS_FILE_SIZE_V3 = 159;
+constexpr uint8_t GLOBAL_STATS_VERSION_V5 = 5;
+constexpr uint8_t GLOBAL_STATS_VERSION_V4 = 4;
+constexpr int GLOBAL_STATS_MINUTES_OFFSET = 225;
 
 // /.crosspoint/global_stats.bin aggregates every book; a torn write would lose
 // all history, so saves go through tmp -> verify -> rotate .bak -> rename.
@@ -104,6 +111,23 @@ void loadV4Fields(const uint8_t* data, GlobalReadingStats& out) {
   out.wpm.normalize();
 }
 
+// Legacy records carry only the read/not-read bitfield. Give the new minute
+// array a renderable value instead of leaving it empty: every read day in the
+// visible 91-day window becomes one minute.
+void backfillDailyMinutesFromHistory(GlobalReadingStats& stats) {
+  for (size_t dayOffset = 0; dayOffset < READING_MINUTE_HISTORY_DAYS; ++dayOffset) {
+    const bool wasRead = (stats.readingHistoryBits[dayOffset / 8] & static_cast<uint8_t>(1u << (dayOffset % 8))) != 0;
+    stats.dailyReadingMinutes[dayOffset] = wasRead ? 1 : 0;
+  }
+}
+
+void readAndNormalizeDailyMinutes(const uint8_t* data, GlobalReadingStats& out) {
+  for (size_t i = 0; i < out.dailyReadingMinutes.size(); ++i) {
+    const uint32_t minutes = readLe16(data, GLOBAL_STATS_MINUTES_OFFSET + static_cast<int>(i) * 2);
+    out.dailyReadingMinutes[i] = static_cast<uint16_t>(std::min<uint32_t>(READING_MINUTES_PER_DAY, minutes));
+  }
+}
+
 void serializeStats(const GlobalReadingStats& stats, uint8_t* data) {
   memset(data, 0, GLOBAL_STATS_FILE_SIZE);
   data[0] = GLOBAL_STATS_VERSION;
@@ -133,6 +157,9 @@ void serializeStats(const GlobalReadingStats& stats, uint8_t* data) {
     writeLe16(data, 199 + static_cast<int>(i) * 2, stats.sessionWindow.samples[i]);
   }
   data[224] = stats.sessionWindow.pos;
+  for (size_t i = 0; i < stats.dailyReadingMinutes.size(); ++i) {
+    writeLe16(data, GLOBAL_STATS_MINUTES_OFFSET + static_cast<int>(i) * 2, stats.dailyReadingMinutes[i]);
+  }
 }
 
 StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
@@ -162,9 +189,10 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
   }
 
   // v1/v2 (13/17 bytes) are not supported by this build: a fresh start is
-  // safer than decoding an outdated layout. v3 (159), v4 (195) and v5 (225)
-  // are recognized; v3 lacks the trailing WPM window and v4 the trailing
-  // session window — both parse with it empty.
+  // safer than decoding an outdated layout. v3 (159), v4 (195), v5 (225) and
+  // v6 (407) are recognized; v3 lacks the trailing WPM window, v4 the trailing
+  // session window, and v5 the trailing daily-minutes array — legacy branches
+  // parse the missing windows empty and backfill v6 minutes from read bits.
   if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V3)) {
     uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
     if (f.read(data, GLOBAL_STATS_FILE_SIZE_V3) != GLOBAL_STATS_FILE_SIZE_V3) return outcome;
@@ -181,6 +209,7 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     out.readingHistoryAnchorDay = readLe32(data, 61);
     memcpy(out.readingHistoryBits.data(), data + 65, out.readingHistoryBits.size());
     out.longestReadingStreak = readLe16(data, 157);
+    backfillDailyMinutesFromHistory(out);
     // v3 has no WPM window — wpm stays empty.
     outcome.result = StatsLoadResult::Ok;
     return outcome;
@@ -191,9 +220,27 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     outcome.version = data[0];
     // Same-size record with a different version is either a torn write (older)
     // or handled by the NewerFormat branch above (forward).
-    if (outcome.version != GLOBAL_STATS_VERSION - 1) return outcome;
+    if (outcome.version != GLOBAL_STATS_VERSION_V4) return outcome;
     loadV4Fields(data, out);
-    // v4 has no session window — sessionWindow stays empty.
+    // v4 has no session window or daily minutes — the latter is backfilled.
+    backfillDailyMinutesFromHistory(out);
+    outcome.result = StatsLoadResult::Ok;
+    return outcome;
+  }
+  if (outcome.fileSize == static_cast<size_t>(GLOBAL_STATS_FILE_SIZE_V5)) {
+    uint8_t data[GLOBAL_STATS_FILE_SIZE] = {};
+    if (f.read(data, GLOBAL_STATS_FILE_SIZE_V5) != GLOBAL_STATS_FILE_SIZE_V5) return outcome;
+    outcome.version = data[0];
+    if (outcome.version != GLOBAL_STATS_VERSION_V5) return outcome;
+    loadV4Fields(data, out);
+    out.sessionWindow.avg = readLe16(data, 195);
+    out.sessionWindow.count = static_cast<uint8_t>(readLe16(data, 197));
+    for (size_t i = 0; i < out.sessionWindow.samples.size(); ++i) {
+      out.sessionWindow.samples[i] = readLe16(data, 199 + static_cast<int>(i) * 2);
+    }
+    out.sessionWindow.pos = data[224];
+    out.sessionWindow.normalize();
+    backfillDailyMinutesFromHistory(out);
     outcome.result = StatsLoadResult::Ok;
     return outcome;
   }
@@ -212,6 +259,7 @@ StatsLoadOutcome loadFromOpenFile(HalFile& f, GlobalReadingStats& out) {
     }
     out.sessionWindow.pos = data[224];
     out.sessionWindow.normalize();
+    readAndNormalizeDailyMinutes(data, out);
     outcome.result = StatsLoadResult::Ok;
     return outcome;
   }
@@ -356,7 +404,7 @@ bool GlobalReadingStats::resetLocal() {
 
 void GlobalReadingStats::recordReadingSpan(const ReadingStatsDateTime& localStart, const uint32_t seconds) {
   recordReadingSpanIntoBuckets(timeOfDaySeconds, dayOfWeekSeconds, localStart, seconds);
-  recordReadingSpanIntoHistory(readingHistoryAnchorDay, readingHistoryBits, localStart, seconds);
+  recordReadingSpanIntoHistory(readingHistoryAnchorDay, readingHistoryBits, dailyReadingMinutes, localStart, seconds);
   const uint16_t historyLongest = computeReadingHistoryLongestStreak(readingHistoryAnchorDay, readingHistoryBits);
   if (historyLongest > longestReadingStreak) {
     longestReadingStreak = historyLongest;
@@ -381,4 +429,8 @@ uint16_t GlobalReadingStats::currentReadingStreakDays(const ReadingStatsDate* to
 uint16_t GlobalReadingStats::longestReadingStreakDays() const {
   return std::max(longestReadingStreak,
                   computeReadingHistoryLongestStreak(readingHistoryAnchorDay, readingHistoryBits));
+}
+
+uint16_t GlobalReadingStats::readingMinutesOnDay(const uint32_t dayIndex) const {
+  return readingMinutesForDay(readingHistoryAnchorDay, dailyReadingMinutes, dayIndex);
 }
