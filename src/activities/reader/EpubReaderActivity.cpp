@@ -1404,7 +1404,12 @@ bool EpubReaderActivity::launchKOReaderSync() {
   LOG_DBG("KOSync", "Epub released (heap after: %u)", (unsigned)ESP.getFreeHeap());
 
   activityManager.replaceActivity(std::make_unique<KOReaderSyncActivity>(
-      renderer, mappedInput, savedEpubPath, localPos, std::move(localKoPos), std::move(localChapterName)));
+      renderer, mappedInput, savedEpubPath, localPos, std::move(localKoPos), std::move(localChapterName)
+#if defined(CROSSPOINT_TTF_READER)
+                                                                                 ,
+      ttfGeneration, ttf_ != nullptr
+#endif
+      ));
   return true;
 }
 
@@ -2149,6 +2154,19 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
       ttfHasSavedPosition = false;
       targetOut = 0;  // generation/spine mismatch: chapter-start degrade (§7)
       return true;
+    }
+    // Page-anchored restore: a generation-tagged record with charOffset 0
+    // carries its position in the record's page number (the KOReader
+    // remote-accept save has no TTF char anchor for the remote position; a
+    // genuine chapter-start save of page 0 is indistinguishable and identical).
+    if (ttfSavedCharOffset == 0) {
+      if (haveTotal) {
+        ttfHasSavedPosition = false;
+        targetOut = std::clamp(static_cast<int>(nextPageNumber), 0, available - 1);
+        return true;
+      }
+      needFullBuild = true;
+      return false;
     }
     // Generation still matches: wait for a cache that can actually map the
     // offset. pageForChar() clamps beyond-watermark offsets on a partial

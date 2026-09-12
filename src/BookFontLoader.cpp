@@ -68,6 +68,11 @@ static constexpr uint32_t kMaxDramFontBytes = 128 * 1024;
 // the face's lifetime; bound each file well below the 8MB PSRAM pool.
 static constexpr uint32_t kMaxPsramFontBytes = 2 * 1024 * 1024;
 
+// Device-lifetime fallback faces (owned by builtinFallback()'s singleton pool
+// block). builtinFace() hands these out so appendFallbackTail() can register
+// them as an active chain's tail without transferring ownership.
+RenderFont* g_builtinFaces[4] = {};
+
 // SFNT minimum: 12-byte header + numTables * 16-byte entries.
 static constexpr uint32_t kMinSfntLen(uint16_t numTables) { return 12u + static_cast<uint32_t>(numTables) * 16u; }
 
@@ -262,6 +267,7 @@ void BookFontLoader::ensureLoaded() {
     }
   }
   fingerprint_ = computeFingerprint();
+  appendFallbackTail(chain_);
   loaded_ = true;
   dirty_.store(false, std::memory_order_relaxed);
 }
@@ -318,7 +324,9 @@ FontChain* BookFontLoader::builtinFallback() {
   // into a pool block so their payloads live in PSRAM instead of static BSS
   // (PSRAM-only directive). The faces are intentional device-lifetime
   // singletons: destructors are never run so FontChain entries remain valid
-  // after this function returns.
+  // after this function returns. The face pointers stay in a static table so
+  // appendFallbackTail() can register the same faces as an active chain's
+  // tail without owning them.
 #if defined(CROSSPOINT_TTF_READER)
   // Reader chain (§14.5): four RenderFont adapters over the baked Atkinson
   // fonts so the whole chain speaks the same rasterize protocol.
@@ -359,6 +367,10 @@ FontChain* BookFontLoader::builtinFallback() {
     fallback.add(b, StyleBold);
     fallback.add(i, StyleItalic);
     fallback.add(bi, StyleBold | StyleItalic);
+    g_builtinFaces[0] = r;
+    g_builtinFaces[1] = b;
+    g_builtinFaces[2] = i;
+    g_builtinFaces[3] = bi;
     // Mark built only after full construction: a transient PSRAM failure
     // above must leave init false so the next call retries, instead of
     // permanently serving the empty chain.
@@ -366,6 +378,25 @@ FontChain* BookFontLoader::builtinFallback() {
   }
   return &fallback;
 }
+
+RenderFont* BookFontLoader::builtinFace(const uint8_t idx) {
+  // Ensures the singleton is constructed, then hands out the device-lifetime
+  // face pointer (null only when the pool backing failed; FontChain::add
+  // treats a null font as a safe no-op).
+  builtinFallback();
+  return idx < 4 ? g_builtinFaces[idx] : nullptr;
+}
+
+void BookFontLoader::appendFallbackTail(FontChain& chain) {
+  chain.add(builtinFace(0), StyleNone);
+  chain.add(builtinFace(1), StyleBold);
+  chain.add(builtinFace(2), StyleItalic);
+  chain.add(builtinFace(3), StyleBold | StyleItalic);
+}
+
+#if defined(HOST_TEST)
+void BookFontLoader::forceFallbackTailForTest() { appendFallbackTail(chain_); }
+#endif
 #if defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)
 void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
   HalFile root = Storage.open(rootPath);
