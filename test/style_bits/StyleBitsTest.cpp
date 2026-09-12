@@ -22,8 +22,8 @@ TEST(StyleBits, CollidingOverlayBitsAreDropped) {
   // Legacy STRIKETHROUGH=8 == engine StyleSuperscript: leaking it would
   // superscript the text; the engine draws strikethrough from its own bit.
   EXPECT_EQ(legacyToEngine(EpdFontFamily::STRIKETHROUGH), 0);
-  EXPECT_EQ(legacyToEngine(EpdFontFamily::SUP), 0);                   // == StyleSubscript
-  EXPECT_EQ(legacyToEngine(EpdFontFamily::SUB), 0);                   // no engine counterpart
+  EXPECT_EQ(legacyToEngine(EpdFontFamily::SUP), 0);  // == StyleSubscript
+  EXPECT_EQ(legacyToEngine(EpdFontFamily::SUB), 0);  // no engine counterpart
   EXPECT_EQ(legacyToEngine(EpdFontFamily::RUBY_CONTINUE), 0);
   EXPECT_EQ(legacyToEngine(EpdFontFamily::STRIKETHROUGH | EpdFontFamily::UNDERLINE),
             freeink::book::StyleUnderline);  // the decoration survives, the collision does not

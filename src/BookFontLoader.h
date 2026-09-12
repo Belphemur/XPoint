@@ -64,7 +64,7 @@ class BookFontLoader {
   // Static picker gates: PSRAM present AND every face within the per-face
   // size guard. Load failures (corrupt fonts) are runtime — they degrade to
   // the fallback chain instead of greying the row.
-  bool isFamilyAvailable(const FamilyInfo& fam) const;
+  static bool isFamilyAvailable(const FamilyInfo& fam);
   // Per-face PSRAM size guard (CWE-400); picker rows above it are greyed out.
   static constexpr uint32_t kMaxFaceBytes = 2u * 1024u * 1024u;
 

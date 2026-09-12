@@ -7,11 +7,10 @@
 // StyleSubscript, so a cast would render strikethrough text as superscript.
 // The static_asserts pin the coinciding bits against engine drift.
 
-#include <cstdint>
-
 #include <BookFont.h>
-
 #include <EpdFontFamily.h>
+
+#include <cstdint>
 
 namespace freeink {
 namespace book {
