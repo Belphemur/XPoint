@@ -228,6 +228,17 @@ long ZipFile::getDataOffset(const FileStatSlim& fileStat) {
   return fileOffset + localHeaderSize + filenameLength + extraOffset;
 }
 
+void ZipFile::logInflateFailure(const FileStatSlim& fileStat, const long dataOffset) {
+  // The read cursor shows how far the fill callback got before the inflater
+  // gave up; useful to tell genuine truncation from a mid-stream error.
+  const uint64_t fileSize = file.size();
+  const uint64_t dataEnd = static_cast<uint64_t>(dataOffset) + fileStat.compressedSize;
+  LOG_ERR("ZIP", "Inflate failed; compressed=%u uncompressed=%u span=[%ld, %llu) fileSize=%llu readCursor=%llu%s",
+          fileStat.compressedSize, fileStat.uncompressedSize, dataOffset, static_cast<unsigned long long>(dataEnd),
+          static_cast<unsigned long long>(fileSize), static_cast<unsigned long long>(file.position()),
+          dataEnd > fileSize ? "; DATA EXTENDS PAST EOF (truncated file on SD)" : "; span fully inside file");
+}
+
 bool ZipFile::loadZipDetails() {
   if (zipDetails.isSet) {
     return true;
@@ -437,6 +448,102 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
     if (!inflate.read(data, inflatedDataSize)) {
       LOG_ERR("ZIP", "Failed to inflate file");
+      logInflateFailure(fileStat, fileOffset);
+      // Raw-read integrity check: re-read the compressed bytes straight from
+      // the SD card (bypassing tinfl) and CRC32 them. Host reference for the
+      // same file/span is part0035= a9f4ef0b / part0013= fd3de71b. A mismatch
+      // below means the SD read itself returned wrong bytes for the entry,
+      // before any decompressor ever touched them.
+      file.seek(fileOffset);
+      uint32_t crc = 0xFFFFFFFFu;
+      size_t remain = deflatedDataSize;
+      uint8_t firstWord[4] = {0, 0, 0, 0};
+      size_t firstN = 0;
+      while (remain > 0) {
+        const size_t take = remain < ctx.readBufSize ? remain : ctx.readBufSize;
+        const size_t got = file.read(ctx.readBuf, take);
+        if (got == 0) break;
+        for (size_t i = 0; i < got; i++) {
+          if (firstN < sizeof(firstWord)) firstWord[firstN++] = ctx.readBuf[i];
+          crc ^= ctx.readBuf[i];
+          for (int b = 0; b < 8; b++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+        remain -= got;
+      }
+      LOG_ERR("ZIP", "RAWREAD: crc=%08x read=%zu/%zu first4=%02x%02x%02x%02x", ~crc, deflatedDataSize - remain,
+              static_cast<size_t>(deflatedDataSize), firstWord[0], firstWord[1], firstWord[2], firstWord[3]);
+      // setSource decoy: re-read the whole entry contiguously into DRAM and
+      // inflate with the input back-ended by memory (no SD fill callbacks).
+      // Host reference succeeds; if this fails on-device, tinfl itself is the
+      // divergence (codegen/state memory), not the SD/fill plumbing.
+      if (deflatedDataSize <= 64 * 1024) {
+        auto* dramIn = static_cast<uint8_t*>(malloc(deflatedDataSize));
+        auto* dramOut = static_cast<uint8_t*>(malloc(inflatedDataSize));
+        if (dramIn && dramOut) {
+          file.seek(fileOffset);
+          const size_t got = file.read(dramIn, deflatedDataSize);
+          InflateStream mem;
+          bool memOk = false;
+          if (got == deflatedDataSize) {
+            memOk = mem.init(false);
+            if (memOk) {
+              mem.setSource(dramIn, deflatedDataSize);
+              memOk = mem.read(dramOut, inflatedDataSize);
+            }
+          }
+          LOG_ERR("ZIP", "A/B: setSource-mem one-shot=%d (got=%zu/%u)", memOk, got,
+                  static_cast<unsigned>(deflatedDataSize));
+        } else {
+          LOG_ERR("ZIP", "A/B: setSource decoy OOM in=%p out=%p", static_cast<void*>(dramIn),
+                  static_cast<void*>(dramOut));
+        }
+        free(dramIn);
+        free(dramOut);
+      }
+#ifdef BOARD_HAS_PSRAM
+      // Inflate failed with the one-shot output in PSRAM (poolMalloc). Probe
+      // three variables in one shot: (1) does the same stream succeed when the
+      // output lives in DRAM, (2) do PSRAM and DRAM outputs diverge, (3) does
+      // PSRAM itself read back what it was written. One of these isolates the
+      // failure so the deflate-vs-PSRAM layer question is settled definitively.
+      if (inflatedDataSize <= 128 * 1024) {
+        auto* dramOut = static_cast<uint8_t*>(malloc(inflatedDataSize));
+        if (dramOut) {
+          file.seek(fileOffset);
+          ZipInflateCtx dramCtx;
+          dramCtx.file = &file;
+          dramCtx.fileRemaining = deflatedDataSize;
+          dramCtx.readBuf = fileReadBuffer;
+          dramCtx.readBufSize = 1024;
+          InflateStream dramInflate;
+          bool dramOk = dramInflate.init(false);
+          if (dramOk) {
+            dramInflate.setFill(zipFillCallback, &dramCtx);
+            dramOk = dramInflate.read(dramOut, inflatedDataSize);
+          }
+          const size_t cmpLen = inflatedDataSize < 32 ? inflatedDataSize : 32;
+          size_t match = 0;
+          for (size_t i = 0; i < cmpLen; i++) {
+            if (dramOut[i] == data[i]) match++;
+          }
+          LOG_ERR("ZIP", "A/B: DRAM-one-shot=%d matchVPSRAM=%u/%u", dramOk, static_cast<unsigned>(match),
+                  static_cast<unsigned>(cmpLen));
+          free(dramOut);
+        }
+      }
+      {
+        uint8_t* probe = static_cast<uint8_t*>(poolMalloc(4096));
+        if (probe) {
+          for (size_t i = 0; i < 4096; i++) probe[i] = static_cast<uint8_t>(i * 31);
+          size_t bad = 0;
+          for (size_t i = 0; i < 4096; i++) {
+            if (probe[i] != static_cast<uint8_t>(i * 31)) bad++;
+          }
+          LOG_ERR("ZIP", "A/B: PSRAM rw probe mismatches=%u/4096", static_cast<unsigned>(bad));
+          poolFree(probe);
+        }
+      }
+#endif
       free(fileReadBuffer);
       poolFree(data);
       return nullptr;
@@ -552,6 +659,7 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
       if (totalProduced > static_cast<size_t>(inflatedDataSize)) {
         LOG_ERR("ZIP", "Decompressed size exceeds expected (%zu > %zu)", totalProduced,
                 static_cast<size_t>(inflatedDataSize));
+        logInflateFailure(fileStat, fileOffset);
         break;
       }
 
@@ -570,6 +678,7 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
         if (totalProduced != static_cast<size_t>(inflatedDataSize)) {
           LOG_ERR("ZIP", "Decompressed size mismatch (expected %zu, got %zu)", static_cast<size_t>(inflatedDataSize),
                   totalProduced);
+          logInflateFailure(fileStat, fileOffset);
           break;
         }
         LOG_DBG("ZIP", "Decompressed %d bytes into %d bytes", deflatedDataSize, inflatedDataSize);
@@ -579,6 +688,7 @@ bool ZipFile::readFileToStream(const FileStatSlim& fileStat, Print& out, const s
 
       if (status == InflateStream::Status::Error) {
         LOG_ERR("ZIP", "Decompression failed");
+        logInflateFailure(fileStat, fileOffset);
         break;
       }
       // InflateStream::Status::Ok: output buffer full, continue

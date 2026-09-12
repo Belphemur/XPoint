@@ -7,12 +7,13 @@
 // decompressor state is heap-allocated in the .cpp where the type is complete.
 struct tinfl_decompressor_tag;
 
-// Streaming deflate decompressor wrapping miniz's tinfl.
+// Streaming deflate decompressor wrapping the ESP32 SoC ROM's tinfl on
+// firmware (the vendored miniz build is used by host tests only).
 //
 // Replaces the uzlib-backed InflateReader on the throughput paths (EPUB zip
 // entries, PNG IDAT). tinfl decodes via lookup tables where uzlib walks the
 // Huffman tree bit-by-bit -- several times faster on this CPU -- at the cost
-// of a larger decompressor state (~8KB, transient for the scope of the
+// of a larger decompressor state (~11KB, transient for the scope of the
 // stream; taken from the lent framebuffer bytes via buildscratch::claim()
 // when a FrameBufferLoan is active, heap otherwise). FontDecompressor
 // intentionally stays on InflateReader:

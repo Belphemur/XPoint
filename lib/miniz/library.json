@@ -1,7 +1,7 @@
 {
   "name": "miniz",
   "version": "11.3.2",
-  "description": "Vendored miniz (tinfl inflate only) + InflateStream wrapper",
+  "description": "InflateStream wrapper over the SoC ROM tinfl (firmware) / vendored miniz tinfl (host tests)",
   "build": {
     "srcDir": "src",
     "includeDir": "src"

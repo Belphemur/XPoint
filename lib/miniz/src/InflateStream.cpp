@@ -7,7 +7,15 @@
 #include <cstdlib>
 #include <cstring>
 
+// Decompression core: on firmware, call the SoC ROM's precompiled tinfl
+// (fixed Espressif machine code; the vendored C build's output diverges under
+// the Xtensa toolchain for specific DEFLATE streams). Host tests keep the
+// vendored miniz (renamed so nothing binds to ROM symbols here).
+#if defined(ESP_PLATFORM)
+#include "RomTinfl.h"
+#else
 #include "MinizConfig.h"
+#endif
 
 namespace {
 // tinfl's window must be a power of two; TINFL_LZ_DICT_SIZE is 32768.
@@ -123,9 +131,9 @@ InflateStream::Status InflateStream::readAtMost(uint8_t* dest, const size_t maxL
       if (inAvail == 0) inputExhausted = true;
     }
 
-    const mz_uint32 flags = (zlibWrapped ? TINFL_FLAG_PARSE_ZLIB_HEADER : 0) |
-                            (inputExhausted ? 0 : TINFL_FLAG_HAS_MORE_INPUT) |
-                            (streaming ? 0 : TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    const uint32_t flags = (zlibWrapped ? TINFL_FLAG_PARSE_ZLIB_HEADER : 0) |
+                           (inputExhausted ? 0 : TINFL_FLAG_HAS_MORE_INPUT) |
+                           (streaming ? 0 : TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
 
     size_t inBytes = inAvail;
     tinfl_status status;

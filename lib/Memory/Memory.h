@@ -9,6 +9,7 @@
 #endif
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <new>
