@@ -65,6 +65,7 @@
 
 #include "activities/reader/ProgressRecord.h"
 #include "adapters/FrameTargetFactory.h"
+#include "adapters/PagePaint.h"
 #endif
 
 namespace {
@@ -206,15 +207,26 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   if (footnoteDepth > 0 && epub) {
     const SavedPosition& origin = savedPositions[0];
-    std::optional<uint32_t> offset;
-    if (section && origin.spineIndex == currentSpineIndex && origin.pageNumber >= 0 &&
-        origin.pageNumber < section->pageCount) {
-      offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(origin.pageNumber));
+#if defined(CROSSPOINT_TTF_READER)
+    if (ttf_) {
+      // Page-anchored TTF record (charOffset 0 + generation): the restore
+      // maps the record's page number (§3.5 item 8).
+      progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, 0,
+                                 ttfGeneration);
+    } else {
+#endif
+      std::optional<uint32_t> offset;
+      if (section && origin.spineIndex == currentSpineIndex && origin.pageNumber >= 0 &&
+          origin.pageNumber < section->pageCount) {
+        offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(origin.pageNumber));
+      }
+      // Single-writer rule (design §4.7): the footnote-origin save routes
+      // through the saver like every other synchronous save.
+      progressManager.saveNow(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, offset.has_value(),
+                              offset.value_or(0));
+#if defined(CROSSPOINT_TTF_READER)
     }
-    // Single-writer rule (design §4.7): the footnote-origin save routes
-    // through the saver like every other synchronous save.
-    progressManager.saveNow(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, offset.has_value(),
-                            offset.value_or(0));
+#endif
   }
 
   section.reset();
@@ -2395,16 +2407,74 @@ void EpubReaderActivity::renderBookTtf() {
   }
   ttfCurrentCharStart = page.charStart;
 
+  // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
+  // (resolvable) targets only — external URLs never enter the reader flow.
+  // The number label is the superscript run overlapping the link rect,
+  // falling back to the link's ordinal position.
+  currentPageFootnotes.clear();
+  currentPageFootnotes.reserve(page.linkCount);
+  for (uint16_t l = 0; l < page.linkCount; ++l) {
+    const auto& link = page.links[l];
+    std::string href = link.target;
+    if (link.fragment[0] != '\0') href += std::string("#") + link.fragment;
+    if (href.empty() || href.rfind("http", 0) == 0) continue;
+    if (link.target[0] != '\0' && epub->resolveHrefToSpineIndex(href) < 0) continue;
+
+    FootnoteEntry entry;
+    std::string number;
+    for (uint16_t r = 0; r < page.runCount; ++r) {
+      const auto& run = page.runs[r];
+      // Superscript marker runs are short; the label must sit inside the
+      // link's rect to be the marker for THIS link.
+      if (run.len == 0 || run.len > 4 || (run.styleFlags & freeink::book::StyleSuperscript) == 0) continue;
+      const bool withinY = run.baselineY >= link.y && run.baselineY <= link.y + static_cast<int32_t>(link.height);
+      const bool withinX = run.x >= link.x && run.x < link.x + static_cast<int32_t>(link.width);
+      if (withinY && withinX) {
+        number.assign(run.text, run.len);
+        break;
+      }
+    }
+    if (number.empty()) {
+      char ordinal[8];
+      snprintf(ordinal, sizeof(ordinal), "%u", static_cast<unsigned>(l + 1));
+      number = ordinal;
+    }
+    strncpy(entry.number, number.c_str(), FOOTNOTE_NUMBER_LEN - 1);
+    entry.number[FOOTNOTE_NUMBER_LEN - 1] = '\0';
+    strncpy(entry.href, href.c_str(), FOOTNOTE_HREF_LEN - 1);
+    entry.href[FOOTNOTE_HREF_LEN - 1] = '\0';
+    currentPageFootnotes.push_back(entry);
+  }
+
   renderer.clearScreen(0xFF);
-  const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
-  freeink::book::PageRenderer::renderText(page, *static_cast<freeink::book::FontChain*>(params.font), frameTarget,
-                                          nullptr);
-  freeink::book::PageRenderer::renderRules(page, frameTarget);
-  if (page.imageCount > 0 && SETTINGS.imageRendering != CrossPointSettings::IMAGES_SUPPRESS) {
+  // §11 Q7 construction (a): with text AA on a strip-capable panel the base
+  // paints via PagePaint (threshold at the tone-1 boundary, >=48) and a dual
+  // plane walk supplies the two gray tones through the panel's AA waveform —
+  // the same 4-level pipeline the bitmap reader uses. Images keep the
+  // 1bpp engine path (no plane bits for image pixels, like legacy dualPlane).
+  const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
+  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.supportsStripGrayscale();
+  if (grayParity) {
+    freeink::book::PagePaint::paintText(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+  } else {
+    const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
+    freeink::book::PageRenderer::renderText(page, *static_cast<freeink::book::FontChain*>(params.font), frameTarget,
+                                            nullptr);
+  }
+  freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
+  if (pageHasImages) {
     const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), frameTarget);
+        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), makeFrameTarget(renderer));
     if (st != freeink::book::BookStatus::Ok) {
       LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
+    }
+  } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
+    // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
+    // the engine's reserved geometry as an outline instead of decoding.
+    for (uint16_t m = 0; m < page.imageCount; ++m) {
+      const auto& image = page.images[m];
+      if (image.width <= 0 || image.height <= 0) continue;
+      renderer.drawRect(image.x, image.y, image.width, image.height);
     }
   }
 #ifdef READING_STATS_ENABLED
@@ -2436,6 +2506,56 @@ void EpubReaderActivity::renderBookTtf() {
   nextPageNumber = ttfPage;
   cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
   renderStatusBar();
+
+#if defined(CROSSPOINT_TTF_READER)
+  if (grayParity) {
+    // §11 Q7 construction (a): dual-plane gray parity through the reader's
+    // tiled strip machinery. Base refresh ordering mirrors the legacy AA
+    // path: cleanup cycle when due, otherwise the grayscale base waveform;
+    // then per-band plane walks, the gray display, and the baseline cleanup.
+    if (pagesUntilFullRefresh <= 1) {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      renderer.preconditionGrayscale();
+      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    } else {
+      renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+      pagesUntilFullRefresh--;
+    }
+
+    constexpr int STRIP_ROWS = 80;
+    const int gh = renderer.getDisplayHeight();
+    const int gwBytes = renderer.getDisplayWidthBytes();
+    const size_t bandBytes = static_cast<size_t>(gwBytes) * STRIP_ROWS;
+    auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
+    auto msbScratch = scratch ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS) : nullptr;
+    if (!scratch || !msbScratch) {
+      LOG_ERR("ERS", "OOM: TTF plane bands (%d bytes); displaying B/W page", gwBytes * STRIP_ROWS);
+      renderer.cleanupGrayscaleWithFrameBuffer();
+      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, /*async=*/false);
+    } else {
+      renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+      for (int y = 0; y < gh; y += STRIP_ROWS) {
+        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+        renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
+        renderer.clearScreen(0x00);
+        freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+        renderer.endStripTarget();
+        renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+        renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
+      }
+      renderer.setRenderMode(GfxRenderer::BW);
+      renderer.displayGrayBuffer();
+      renderer.cleanupGrayscaleWithFrameBuffer();
+    }
+    lastRenderCompleteMs = millis();
+#ifdef READING_STATS_ENABLED
+    pageShownAtMs = millis();
+#endif
+    ttfSaveProgress();
+    showPendingSyncSaveError();
+    return;
+  }
+#endif
 
   const bool canAsyncDisplay = renderer.supportsAsyncRefresh();
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, canAsyncDisplay);
@@ -3978,10 +4098,17 @@ void EpubReaderActivity::activateMoreRow(int row) {
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
   if (!epub) return;
 
-  if (savePosition && section && footnoteDepth < MAX_FOOTNOTE_DEPTH) {
-    savedPositions[footnoteDepth] = {currentSpineIndex, section->currentPage};
+  if (savePosition && footnoteDepth < MAX_FOOTNOTE_DEPTH) {
+#if defined(CROSSPOINT_TTF_READER)
+    // TTF mirror: ttfPage is the chapter-local page the origin save maps
+    // through (page-anchored restore, §3.5 item 8).
+    const int savedPage = ttf_ ? ttfPage : (section ? section->currentPage : 0);
+#else
+    const int savedPage = section ? section->currentPage : 0;
+#endif
+    savedPositions[footnoteDepth] = {currentSpineIndex, savedPage};
     footnoteDepth++;
-    LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, section->currentPage);
+    LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, savedPage);
   }
 
   std::string anchor;
