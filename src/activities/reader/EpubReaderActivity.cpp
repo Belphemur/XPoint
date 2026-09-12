@@ -366,6 +366,13 @@ void EpubReaderActivity::handleBookStatsReturn() {
   const bool wasCompleted = stats.isCompleted;
   applyBookStatsEditsFromDisk();
 
+  if (SETTINGS.removeReadBooksFromRecents) {
+    if (!wasCompleted && stats.isCompleted) {
+      RECENT_BOOKS.removeByPath(epub->getPath());
+    } else if (wasCompleted && !stats.isCompleted) {
+      RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+    }
+  }
   if (!wasCompleted && stats.isCompleted && SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath())) {
     pendingReadFolderMove = true;
   } else if (!stats.isCompleted) {
@@ -414,8 +421,9 @@ void EpubReaderActivity::goHomeOrShowCompletionAchievement() {
     auto prompt = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_MARK_FINISHED_PROMPT), "");
     if (!prompt) {
       LOG_ERR("ERS", "OOM: completion prompt");
-      setBookCompleted(true);
-      goHomeOrShowCompletionAchievement();
+      // Without a prompt the reader asked to leave, not to complete: do not
+      // silently record completion state they never confirmed.
+      onGoHome();
       return;
     }
     startActivityForResult(std::move(prompt), [this](const ActivityResult& result) {

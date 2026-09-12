@@ -103,8 +103,7 @@ void XtcReaderActivity::goHomeOrShowCompletionAchievement() {
     auto prompt = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_MARK_FINISHED_PROMPT), "");
     if (!prompt) {
       LOG_ERR("XTR", "OOM: completion prompt");
-      setBookCompleted(true);
-      goHomeOrShowCompletionAchievement();
+      onGoHome();
       return;
     }
     startActivityForResult(std::move(prompt), [this](const ActivityResult& result) {
