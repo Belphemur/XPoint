@@ -39,18 +39,16 @@ bool XtcReaderActivity::loadBook() {
   return true;
 }
 
+#ifdef READING_STATS_ENABLED
 void XtcReaderActivity::onEnter() {
   ReaderActivity::onEnter();
-#ifdef READING_STATS_ENABLED
   if (xtc && SETTINGS.shouldTrackReadingStats()) {
     stats = BookReadingStats::load(xtc->getCachePath());
     globalStats = GlobalReadingStats::load();
   }
-#endif
 }
 
 void XtcReaderActivity::onExit() {
-#ifdef READING_STATS_ENABLED
   if (xtc && SETTINGS.shouldTrackReadingStats()) {
     const uint32_t pageCount = xtc->getPageCount();
     if (pageCount > 0) {
@@ -64,11 +62,9 @@ void XtcReaderActivity::onExit() {
     globalStats.save();
     if (stats.isCompleted) syncFinishedBookIndex();
   }
-#endif
   ReaderActivity::onExit();
 }
 
-#ifdef READING_STATS_ENABLED
 void XtcReaderActivity::syncFinishedBookIndex() {
   if (xtc && xtc->getTitle().empty()) {
     LOG_ERR("XTR", "Skipping finished-book entry: empty title");

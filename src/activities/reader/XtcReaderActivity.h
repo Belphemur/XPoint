@@ -55,8 +55,10 @@ class XtcReaderActivity final : public ReaderActivity {
       : ReaderActivity("XtcReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
   ~XtcReaderActivity() override = default;
 
+#ifdef READING_STATS_ENABLED
   void onEnter() override;
   void onExit() override;
+#endif
 
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;
