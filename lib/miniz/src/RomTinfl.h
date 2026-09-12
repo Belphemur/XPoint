@@ -63,7 +63,8 @@ struct tinfl_huff_table {
 };
 
 struct tinfl_decompressor_tag {
-  uint32_t m_state, m_num_bits, m_zhdr0, m_zhdr1, m_z_adler32, m_final, m_type, m_check_adler32, m_dist, m_counter, m_num_extra;
+  uint32_t m_state, m_num_bits, m_zhdr0, m_zhdr1, m_z_adler32, m_final, m_type, m_check_adler32, m_dist, m_counter,
+      m_num_extra;
   uint32_t m_table_sizes[TINFL_MAX_HUFF_TABLES];
   uint32_t m_bit_buf;
   size_t m_dist_from_out_buf_start;
