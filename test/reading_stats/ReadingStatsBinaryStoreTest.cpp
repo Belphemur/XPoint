@@ -744,6 +744,26 @@ TEST_F(ReadingStatsBinaryStoreTest, CorruptCurrentFileDoesNotLatchGuard) {
   EXPECT_EQ(saved.sessionCount, 7u);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, RemoveKeepsGuardWhileForwardFileExists) {
+  (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
+  std::vector<uint8_t> future(136, 0);
+  future[0] = 9;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 9), f));
+    f.write(future.data(), future.size());
+  }
+  (void)BookReadingStats::load(BOOK_DIR);  // latch the guard via the forward file
+
+  // remove() deletes v8-v5 but the forward record remains: saves stay blocked,
+  // otherwise a fresh v8 record would shadow the newer firmware's data.
+  EXPECT_TRUE(BookReadingStats::remove(BOOK_DIR));
+  BookReadingStats blocked;
+  blocked.sessionCount = 55;
+  blocked.save(BOOK_DIR);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, FinishedBooksRoundTripAndWireSize) {
   BookReadingStats stats;
   stats.isCompleted = true;

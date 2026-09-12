@@ -368,9 +368,12 @@ bool BookReadingStats::remove(const std::string& cachePath) {
       ok = false;
     }
   }
-  // No recognized record remains: saves are safe again even if a newer-format
-  // record had latched the guard earlier.
-  if (ok) s_blockDestructiveSavePaths.erase(cachePath);
+  // Clear the latch only when no forward-format record remains either: while
+  // stats_v9.bin exists, save() must stay blocked — a fresh v8 record would
+  // shadow it (load() tries v8 before v9) and let this build overwrite data a
+  // newer firmware owns.
+  const std::string forwardPath = cachePath + "/" + statsFileNameForVersion(STATS_FILE_VERSION + 1);
+  if (ok && !Storage.exists(forwardPath.c_str())) s_blockDestructiveSavePaths.erase(cachePath);
   return ok;
 }
 
