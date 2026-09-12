@@ -384,7 +384,9 @@ void TtfBookRuntime::applyReaderLayoutParams(LayoutParams& params) {
       params.lineSpacingPct = 100;
       break;
   }
-  params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 130 : 100;
+  // §2.3 contract: 150 = the half-line extra gap (design line 284); mirrors
+  // the legacy preview/reader mapping, not an arbitrary 130.
+  params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 150 : 100;
   switch (SETTINGS.paragraphAlignment % CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT) {
     case CrossPointSettings::LEFT_ALIGN:
       params.defaultAlign = TextAlign::Left;
@@ -402,7 +404,10 @@ void TtfBookRuntime::applyReaderLayoutParams(LayoutParams& params) {
       break;
   }
   params.focusReading = SETTINGS.focusReadingEnabled != 0;
-  params.embeddedStyles = true;
+  // The reader setting is authoritative: the legacy Section path honors
+  // spec.embeddedStyle (CrossPointSettings.cpp), so the TTF path must too.
+  // layoutGenerationHash covers the flag, so toggling invalidates caches.
+  params.embeddedStyles = SETTINGS.embeddedStyle != 0;
   params.hyphenator = nullptr;  // Phase 2b
   params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.ttfFontPointSize) * 150.0f / 72.0f));
 }

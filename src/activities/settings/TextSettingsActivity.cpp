@@ -145,6 +145,13 @@ void TextSettingsActivity::onEnter() {
       currentFamilyIndex_ = 1 + static_cast<int>(fam - freeink::book::fontLoader.families());
     }
   }
+  // Sync the loader's chain with the persisted selection before the first
+  // preview render: the preview rasterizes via getReaderFont(), which uses
+  // the loader's current selection — boot can reach this screen before any
+  // reader call ever ran selectFamily.
+  if (SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF) {
+    freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+  }
   rebuildSizeList();
 #else
   constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;

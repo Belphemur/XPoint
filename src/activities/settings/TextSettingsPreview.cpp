@@ -117,8 +117,9 @@ class RunCollector final : public freeink::book::PageSink {
 // Lays the two-paragraph sample through the real engine with the pane's
 // geometry; replaces layout.ttfRuns. On scratch OOM the previous runs are
 // kept (stale preview for one frame, no crash).
-void relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHeight) {
+bool relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHeight) {
   std::vector<PreviewRun> collected;
+  bool ok = false;
   do {
     // Sample text twice: the engine splits paragraphs on blank lines, so the
     // pane shows the real paragraph gap (the legacy preview drew twice).
@@ -151,7 +152,8 @@ void relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
       default:
         break;
     }
-    params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 130 : 100;
+    // Same §2.3 mapping as the reader (TtfBookRuntime::makeLayoutParams).
+    params.paragraphSpacingPct = SETTINGS.extraParagraphSpacing != 0 ? 150 : 100;
     switch (SETTINGS.paragraphAlignment % CrossPointSettings::PARAGRAPH_ALIGNMENT_COUNT) {
       case CrossPointSettings::LEFT_ALIGN:
         params.defaultAlign = freeink::book::TextAlign::Left;
@@ -169,7 +171,9 @@ void relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
         break;
     }
     params.focusReading = SETTINGS.focusReadingEnabled != 0;
-    params.embeddedStyles = true;
+    // Mirrors the reader's mapping (TtfBookRuntime::makeLayoutParams) so the
+    // preview renders with the same chapter CSS policy.
+    params.embeddedStyles = SETTINGS.embeddedStyle != 0;
     params.hyphenator = nullptr;
     freeink::book::FontChain* chain = freeink::book::fontLoader.getReaderFont();
     if (chain == nullptr || chain->styleCoverage() == 0) break;
@@ -183,9 +187,16 @@ void relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
     RunCollector sink;
     (void)freeink::book::ChapterLayout::layoutPlainText(source, params, arena, sink, nullptr, nullptr);
     collected = std::move(sink.runs);
+    ok = true;
   } while (false);
 
-  layout.ttfRuns = std::move(collected);
+  // Only a complete relayout replaces the previous runs and lets the caller
+  // advance the key: a failed pass keeps both, so the next frame retries
+  // instead of blanking the preview.
+  if (ok) {
+    layout.ttfRuns = std::move(collected);
+  }
+  return ok;
 }
 
 // UTF-8 decode (mirror of PageRenderer's TU-local decoder).
@@ -279,6 +290,10 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
     // Native-TTF pane: the sample is laid out and rasterized through the
     // active FontChain (§3.6). The engine chain is the preview's identity,
     // so the key carries the content fingerprint + continuous point size.
+    // getReaderFont() first: it runs ensureLoaded, which recomputes the
+    // fingerprint when a family change marked the loader dirty — the key
+    // must be built from the fingerprint the relayout will render with.
+    (void)freeink::book::fontLoader.getReaderFont();
     const PreviewKey key{.fontId = -1,
                          .fontPointSize = -1,
                          .screenMargin = SETTINGS.screenMargin,
@@ -293,8 +308,12 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
                          .ttfPointSize = SETTINGS.ttfFontPointSize,
                          .previewHeight = height};
     if (key != layout.key) {
-      relayoutTtf(layout, textWidth, height);
-      layout.key = key;
+      // getReaderFont first: ensureLoaded may recompute the fingerprint (a
+      // family change marks the loader dirty), and the key must carry the
+      // fingerprint the relayout actually rendered with.
+      if (relayoutTtf(layout, textWidth, height)) {
+        layout.key = key;
+      }
     }
     const int top2 = top + previewPadding;
     const int bottom = top + height - labelReserved;

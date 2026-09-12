@@ -15,6 +15,7 @@ namespace {
 
 // Mirror of PageRenderer's TU-local decoder (PageRenderer.cpp:96).
 uint32_t decodeUtf8(const char* text, const uint32_t len, uint32_t& i) {
+  if (i >= len) return 0;  // defensive: callers loop on i < len
   const auto b0 = static_cast<uint8_t>(text[i]);
   uint32_t cp = b0;
   uint32_t extra = 0;
@@ -57,6 +58,22 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
       if (prev != 0) penX += fonts.kerning(prev, cp, run.sizePx, run.styleFlags);
       uint8_t faceFlags = 0;
       RenderFont* font = fonts.fontFor(cp, run.styleFlags, &faceFlags);
+      // Cull from cheap metrics before rasterizing: paintPlanes() walks the
+      // page once per strip, so a glyph the active band drops must not pay
+      // pixel generation first (Copilot, PR #113). Faces without a bounds
+      // implementation fall through to the rasterize-then-filter below.
+      if (font != nullptr && glyphFilter != nullptr) {
+        int16_t bx = 0;
+        int16_t by = 0;
+        uint16_t bw = 0;
+        uint16_t bh = 0;
+        if (font->glyphBounds(cp, run.sizePx, bx, by, bw, bh) &&
+            !glyphFilter(ctx, penX + bx, run.baselineY + by, penX + bx + bw, run.baselineY + by + bh)) {
+          penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+          prev = cp;
+          continue;
+        }
+      }
       const GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, run.sizePx) : nullptr;
       if (glyph != nullptr) {
         if (glyphFilter != nullptr &&
@@ -114,6 +131,19 @@ void walkRubies(const Page& page, FontChain& fonts, void* ctx, const ToneSink si
       const uint32_t cp = decodeUtf8(ruby.text, tLen, i);
       if (prev != 0) penX += fonts.kerning(prev, cp, ruby.sizePx, StyleNone);
       RenderFont* font = fonts.fontFor(cp, StyleNone, nullptr);
+      // Same pre-rasterize band cull as walkText (Copilot, PR #113).
+      if (font != nullptr && glyphFilter != nullptr) {
+        int16_t bx = 0;
+        int16_t by = 0;
+        uint16_t bw = 0;
+        uint16_t bh = 0;
+        if (font->glyphBounds(cp, ruby.sizePx, bx, by, bw, bh) &&
+            !glyphFilter(ctx, penX + bx, ruby.baselineY + by, penX + bx + bw, ruby.baselineY + by + bh)) {
+          penX += fonts.advance(cp, ruby.sizePx, StyleNone);
+          prev = cp;
+          continue;
+        }
+      }
       const GlyphBitmap* glyph = font != nullptr ? font->rasterize(cp, ruby.sizePx) : nullptr;
       if (glyph != nullptr) {
         if (glyphFilter != nullptr &&

@@ -9,6 +9,14 @@
 #include "activities/reader/ProgressRecord.h"
 
 namespace {
+
+// Unsigned-safe seconds since the last flush: millis()/1000 wraps (~49.7
+// days); a wrapped 'now' must read as "interval not elapsed", not a huge
+// number that would force a spurious flush.
+uint32_t secsSinceFlush(const uint32_t lastSec) {
+  const uint32_t now = static_cast<uint32_t>(millis() / 1000);
+  return now >= lastSec ? now - lastSec : 0;
+}
 // Low priority: progress persistence must never compete with rendering or
 // input. Pinned to core 0 on dual-core boards (the render task owns core 1,
 // ActivityManager.cpp); on single-core boards core 0 is the only core.
@@ -175,14 +183,18 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
     xSemaphoreGive(stateMutex_);
     return false;
   }
+  // Book activation + the baseline disk read hold diskMutex_ so a worker's
+  // commitRecord — which validates the session under the same lock before
+  // its disk write — can never land a stale record into this open (or be
+  // read by this load). The generation bump invalidates any snapshot the
+  // previous session's worker still carries.
+  xSemaphoreTake(diskMutex_, portMAX_DELAY);
   xSemaphoreTake(stateMutex_, portMAX_DELAY);
   memcpy(cachePath_, localPath, sizeof(localPath));
   bookOpen_ = true;
+  ++bookGeneration_;
   xSemaphoreGive(stateMutex_);
 
-  // Disk read under the same lock as the writes: a flush's rename must
-  // never interleave with this read of progress.bin.
-  xSemaphoreTake(diskMutex_, portMAX_DELAY);
   const size_t size = load(cachePath_, spineIndex, pageNumber, pageCount, visibleTextOffset);
   xSemaphoreGive(diskMutex_);
   if (size > 0) {
@@ -333,7 +345,7 @@ void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber,
       // last flush AND the interval elapsed — unless low battery or a write
       // is already owed (§4.5).
       changed = !(*current_ == *lastFlushed_);
-      sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
+      sinceFlushSec = secsSinceFlush(lastFlushSec_);
       const bool intervalElapsed = sinceFlushSec >= (FLUSH_INTERVAL_MS / 1000);
       due = changed && (intervalElapsed || lowBat || writeQueued_);
       if (due) writeQueued_ = true;
@@ -412,6 +424,10 @@ void ProgressManager::closeBook() {
   }
   LOG_DBG(MUTEX_TAG, "closeBook(): flushing pending progress");
   const bool flushed = flushChanged();
+  // Session state changes hold diskMutex_ too: a worker mid-commitRecord
+  // (which validates the session under the same lock before its disk write)
+  // can never land a stale record after this reset.
+  xSemaphoreTake(diskMutex_, portMAX_DELAY);
   xSemaphoreTake(stateMutex_, portMAX_DELAY);
   if (flushed) {
     *current_ = ProgressManager::Record{};
@@ -428,6 +444,7 @@ void ProgressManager::closeBook() {
     LOG_ERR(MUTEX_TAG, "closeBook(): flush failed — progress state preserved for retry");
   }
   xSemaphoreGive(stateMutex_);
+  xSemaphoreGive(diskMutex_);
   LOG_DBG(MUTEX_TAG, "Book closed, progress state reset");
 }
 
@@ -448,6 +465,7 @@ bool ProgressManager::flushChanged() {
     Record snapshot = {};
     char cachePath[sizeof(cachePath_)] = {};
     uint32_t sinceFlushSec = 0;
+    uint32_t generation = 0;
     bool hasWork = false;
     {
       xSemaphoreTake(stateMutex_, portMAX_DELAY);
@@ -458,7 +476,8 @@ bool ProgressManager::flushChanged() {
       } else {
         snapshot = *current_;
         memcpy(cachePath, cachePath_, sizeof(cachePath));
-        sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
+        generation = bookGeneration_;
+        sinceFlushSec = secsSinceFlush(lastFlushSec_);
         hasWork = true;
       }
       xSemaphoreGive(stateMutex_);
@@ -470,7 +489,7 @@ bool ProgressManager::flushChanged() {
 
     LOG_INF(MUTEX_TAG, "flushChanged(): flushing spine=%u page=%u/%u sinceFlush=%lus", snapshot.spineIndex,
             snapshot.pageNumber, snapshot.pageCount, static_cast<unsigned long>(sinceFlushSec));
-    const bool ok = commitRecord(cachePath, snapshot, /*adopt=*/false);
+    const bool ok = commitRecord(cachePath, snapshot, /*adopt=*/false, generation);
     if (!ok) {
       // Transient SD failures retry within the bounded loop (CodeRabbit,
       // PR #112): writeQueued_ stays set either way, and the exit check
@@ -511,13 +530,33 @@ bool ProgressManager::flushChanged() {
   return false;
 }
 
-bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, const bool adopt) {
+bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, const bool adopt,
+                                   const uint32_t generation) {
   // Lock order diskMutex_ → stateMutex_ (no path holds stateMutex_ across a
   // diskMutex_ acquire, so no inversion). Holding diskMutex_ across the
   // baseline commit makes "disk write + memory baseline" indivisible: two
   // concurrent writers finish in a total order, and disk + memory end up
   // describing the same record.
   xSemaphoreTake(diskMutex_, portMAX_DELAY);
+  // Session check BEFORE the disk write (Copilot, PR #113): a worker that
+  // snapshotted before closeBook() must not land a stale record on a file a
+  // reopened book may be about to read. Only the deferred flush path is
+  // validated — adopt=true bypass saves are synchronous and authoritative by
+  // contract, and may legitimately target a different book (KOReader sync of
+  // the previous book while reading). closeBook()/openBook() mutate session
+  // state under diskMutex_ too, so the verdict cannot go stale between here
+  // and the write.
+  if (!adopt) {
+    xSemaphoreTake(stateMutex_, portMAX_DELAY);
+    const bool active = bookOpen_ && strncmp(cachePath_, cachePath, sizeof(cachePath_)) == 0 &&
+                        (generation == 0 || bookGeneration_ == generation);
+    xSemaphoreGive(stateMutex_);
+    if (!active) {
+      xSemaphoreGive(diskMutex_);
+      LOG_DBG(MUTEX_TAG, "commitRecord(): session ended — dropping stale snapshot");
+      return true;  // nothing owed to the closed session
+    }
+  }
   const bool ok = saveRecord(cachePath, rec);
   if (ok) {
     xSemaphoreTake(stateMutex_, portMAX_DELAY);

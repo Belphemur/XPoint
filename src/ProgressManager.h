@@ -131,8 +131,11 @@ class ProgressManager {
   // worker's flush. `adopt` marks a synchronous bypass save (KOReader sync,
   // cache-clear backup, footnote origin) as authoritative: when the live
   // mirror differs, the record replaces it instead of being reverted by a
-  // later flush.
-  bool commitRecord(const char* cachePath, const Record& rec, bool adopt);
+  // later flush. `generation` is the bookGeneration_ the record was
+  // snapshotted under; 0 validates against the current session. A snapshot
+  // from a closed/replaced session is dropped BEFORE the disk write — a late
+  // worker write must never land on (or be read by) a reopened book.
+  bool commitRecord(const char* cachePath, const Record& rec, bool adopt, uint32_t generation = 0);
 
   // Lock-free state reader: write current_ when it differs from
   // lastFlushed_; the disk write itself goes through saveRecordLocked().
@@ -160,6 +163,9 @@ class ProgressManager {
   Record* current_ = nullptr;
   Record* lastFlushed_ = nullptr;
   uint32_t lastFlushSec_ = 0;  // last successful disk flush (seconds since boot)
+  // Bumped on every successful openBook(): lets a writer holding diskMutex_
+  // detect that its snapshot belongs to a session that already ended.
+  uint32_t bookGeneration_ = 0;
   char cachePath_[160] = {0};
   bool bookOpen_ = false;
   bool writeQueued_ = false;  // worker owes a write

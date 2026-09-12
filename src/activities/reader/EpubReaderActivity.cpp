@@ -421,9 +421,13 @@ bool EpubReaderActivity::loadBook() {
   epub->setupCacheDir();
 
 #if defined(CROSSPOINT_TTF_READER)
-  // Native-TTF page source (design §3.5). A failed open falls back to the
-  // legacy Section path — the build-flag kill switch.
-  ttf_ = makeUniqueNoThrow<freeink::book::TtfBookRuntime>();
+  // Native-TTF page source (design §3.5). readerFontEngine is the documented
+  // rollback switch (CrossPointSettings.h): BITMAP selects the legacy Section
+  // path, so the runtime is only created when TTF is selected. A failed open
+  // falls back to the legacy path too — second kill switch.
+  ttf_ = SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF
+             ? makeUniqueNoThrow<freeink::book::TtfBookRuntime>()
+             : nullptr;
   if (ttf_) {
     const std::string ttfCacheDir = epub->getCachePath() + "/ficache";
     if (!ttf_->open(bookPath.c_str(), ttfCacheDir.c_str())) {
@@ -671,6 +675,7 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
     (void)touchX;
     (void)touchY;
     showDictionaryMessage = true;
+    dictionaryMessageTtf = true;
     dictionaryMessageTime = millis();
     requestUpdate();
     return;
@@ -678,6 +683,7 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
 #endif
   if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
+    dictionaryMessageTtf = false;
     dictionaryMessageTime = millis();
     requestUpdate();
     return;
@@ -2006,7 +2012,7 @@ void EpubReaderActivity::renderBook() {
   }
 
   if (showDictionaryMessage) {
-    GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+    GUI.drawPopup(renderer, dictionaryMessageTtf ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
   }
 
   // Toolbar menu: overlay the toolbar / panel on top of the freshly rendered page.
@@ -2469,7 +2475,6 @@ void EpubReaderActivity::renderBookTtf() {
     currentPageWordsOnPage = words;
   }
 #endif
-  ttf_->scratch().release(scratchMark);
 
   // 6) Chrome after the page: keep the legacy position mirrors in sync so
   // renderStatusBar/KOReader/bookmark code reads the same values.
@@ -2517,6 +2522,9 @@ void EpubReaderActivity::renderBookTtf() {
       renderer.displayGrayBuffer();
       renderer.cleanupGrayscaleWithFrameBuffer();
     }
+    // The page's run text lives in the scratch arena: release only after
+    // the last plane pass has walked it.
+    ttf_->scratch().release(scratchMark);
     lastRenderCompleteMs = millis();
 #ifdef READING_STATS_ENABLED
     pageShownAtMs = millis();
@@ -2526,6 +2534,9 @@ void EpubReaderActivity::renderBookTtf() {
     return;
   }
 #endif
+
+  // 1bpp path: the page's run text was last touched by paintTtfPage above.
+  ttf_->scratch().release(scratchMark);
 
   const bool canAsyncDisplay = renderer.supportsAsyncRefresh();
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, canAsyncDisplay);
@@ -2556,7 +2567,7 @@ void EpubReaderActivity::renderBookTtf() {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
   if (showDictionaryMessage) {
-    GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
+    GUI.drawPopup(renderer, dictionaryMessageTtf ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
   }
   if (overlay != Overlay::None && usesToolbarMenu()) {
     if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
@@ -2654,6 +2665,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+    if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
       const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
@@ -2699,6 +2711,7 @@ void EpubReaderActivity::ttfPrefetchTick() {
       !ttf_->cachePartial() && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+    if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (ttf_->beginChapterSession(static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
       ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
