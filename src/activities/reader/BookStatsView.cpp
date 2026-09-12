@@ -1086,7 +1086,6 @@ void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* ma
                              const BookReadingStats& stats, const int selectedField, const bool showButtonHints) {
   renderer.clearScreen();
 
-  const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int cardW = pageWidth - 120;
   const int cardH = 250;

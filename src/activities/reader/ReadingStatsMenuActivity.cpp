@@ -35,7 +35,6 @@ void ReadingStatsMenuActivity::onExit() { Activity::onExit(); }
 int ReadingStatsMenuActivity::listCount() const { return bookStats ? 4 : 3; }
 
 void ReadingStatsMenuActivity::rebuildRowItems() {
-  const size_t count = bookStats ? 4 : 3;
   size_t index = 0;
   if (bookStats) {
     menuRowItems[index].label = tr(STR_STATS_THIS_BOOK);

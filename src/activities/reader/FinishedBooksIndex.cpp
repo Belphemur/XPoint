@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <iterator>
+#include <numeric>
 #include <utility>
 
 #include "FsHelpers.h"
@@ -69,11 +71,9 @@ size_t encodedEntrySize(const FinishedBookEntry& entry) {
 
 size_t encodedIndexSize(const std::vector<FinishedBookEntry>& entries) {
   const size_t count = std::min(entries.size(), FinishedBooksIndex::MAX_ENTRIES);
-  size_t size = sizeof(MAGIC) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t);
-  for (size_t i = 0; i < count; ++i) {
-    size += encodedEntrySize(entries[i]);
-  }
-  return size;
+  return sizeof(MAGIC) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) +
+         std::accumulate(entries.begin(), entries.begin() + static_cast<ptrdiff_t>(count), size_t{0},
+                         [](size_t size, const FinishedBookEntry& entry) { return size + encodedEntrySize(entry); });
 }
 
 bool loadPath(const char* path, std::vector<FinishedBookEntry>& entries);
@@ -229,9 +229,8 @@ std::vector<FinishedBookRecoveryBook> recoveryBooks() {
   std::vector<FinishedBookRecoveryBook> books;
   const auto& recentBooks = RECENT_BOOKS.getBooks();
   books.reserve(recentBooks.size());
-  for (const auto& book : recentBooks) {
-    books.push_back({book.path, book.title, book.author});
-  }
+  std::transform(recentBooks.begin(), recentBooks.end(), std::back_inserter(books),
+                 [](const auto& book) { return FinishedBookRecoveryBook{book.path, book.title, book.author}; });
   return books;
 }
 #endif
