@@ -831,7 +831,11 @@ void EpubReaderActivity::loop() {
     }
   }
 
+#ifdef READING_STATS_ENABLED
   if (atEndOfBook || stats.isCompleted) {
+#else
+  if (atEndOfBook) {
+#endif
     pendingReadFolderMove = SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath());
   } else {
     pendingReadFolderMove = false;
