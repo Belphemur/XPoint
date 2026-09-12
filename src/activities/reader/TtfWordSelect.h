@@ -9,14 +9,13 @@
 
 #if defined(CROSSPOINT_TTF_READER)
 
+#include <Epub/FootnoteEntry.h>
+#include <layout/ChapterLayout.h>
+#include <render/TtfFont.h>
 #include <stdint.h>
 
 #include <memory>
 #include <vector>
-
-#include <Epub/FootnoteEntry.h>
-#include <layout/ChapterLayout.h>
-#include <render/TtfFont.h>
 
 namespace freeink {
 namespace book {
