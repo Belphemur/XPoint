@@ -123,6 +123,13 @@ class ProgressManager {
   // diskMutex_ held: encode + write; callers of the public flush paths use
   // this so a read (openBook) and a write can never race on progress.bin.
   bool saveRecordLocked(const char* cachePath, const Record& rec);
+  // One atomic save unit: disk write + in-memory baseline commit, serialized
+  // on diskMutex_ so concurrent bypass saves cannot interleave with the
+  // worker's flush. `adopt` marks a synchronous bypass save (KOReader sync,
+  // cache-clear backup, footnote origin) as authoritative: when the live
+  // mirror differs, the record replaces it instead of being reverted by a
+  // later flush.
+  bool commitRecord(const char* cachePath, const Record& rec, bool adopt);
 
   // Lock-free state reader: write current_ when it differs from
   // lastFlushed_; the disk write itself goes through saveRecordLocked().
@@ -153,6 +160,9 @@ class ProgressManager {
   char cachePath_[160] = {0};
   bool bookOpen_ = false;
   bool writeQueued_ = false;  // worker owes a write
+  // Repair budget for flushChanged(): how many times a single call rewrites
+  // the file when a racing save leaves newer state owed.
+  static constexpr uint8_t kMaxFlushAttempts = 4;
   TaskHandle_t worker_ = nullptr;
   // Destructor handshake: set before waking the worker; the worker exits and
   // acknowledges on the semaphore below, so its loop can never touch freed
