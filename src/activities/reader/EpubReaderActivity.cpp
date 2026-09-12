@@ -28,6 +28,9 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#if defined(CROSSPOINT_TTF_READER)
+#include "TtfWordSelect.h"
+#endif
 #include "activities/ActivityResult.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #ifdef READING_STATS_ENABLED
@@ -2003,11 +2006,7 @@ void EpubReaderActivity::renderBook() {
   }
 
   if (showDictionaryMessage) {
-#if defined(CROSSPOINT_TTF_READER)
-    GUI.drawPopup(renderer, ttf_ ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
-#else
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
-#endif
   }
 
   // Toolbar menu: overlay the toolbar / panel on top of the freshly rendered page.
@@ -2557,11 +2556,7 @@ void EpubReaderActivity::renderBookTtf() {
     GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
   }
   if (showDictionaryMessage) {
-#if defined(CROSSPOINT_TTF_READER)
-    GUI.drawPopup(renderer, ttf_ ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
-#else
     GUI.drawPopup(renderer, tr(STR_DICT_NO_DICT_SET));
-#endif
   }
   if (overlay != Overlay::None && usesToolbarMenu()) {
     if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
