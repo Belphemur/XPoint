@@ -15,13 +15,14 @@ struct FinishedBookEntry {
   ReadingStatsDate finishedDate;
 };
 
-#ifdef READING_STATS_TEST
+// Recovery source for the one-time recent-books migration. The production path
+// fills it from RecentBooksStore; host tests inject it so they do not need the
+// full settings/store stack.
 struct FinishedBookRecoveryBook {
   std::string path;
   std::string title;
   std::string author;
 };
-#endif
 
 class FinishedBooksIndex {
  public:
@@ -30,8 +31,8 @@ class FinishedBooksIndex {
   static std::vector<FinishedBookEntry> load();
   static bool record(const std::string& path, const std::string& title, const std::string& author,
                      const BookReadingStats& stats);
-  static bool recordCanonical(const std::string& bookPath, const std::string& legacyCachePath,
-                              const std::string& title, const std::string& author, const BookReadingStats& stats);
+  static bool recordCanonical(const std::string& bookPath, const std::string& legacyCachePath, const std::string& title,
+                              const std::string& author, const BookReadingStats& stats);
   static bool migratePath(const std::string& oldPath, const std::string& newPath);
 
 #ifdef READING_STATS_TEST

@@ -8,7 +8,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <numeric>
+#include <vector>
 
+#include "FinishedBooksIndex.h"
+#include "MappedInputManager.h"
 #include "ReadingStatsUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -19,6 +22,11 @@ constexpr int kStatsButtonHintTopGap = 10;
 constexpr int kStandaloneNoRtcMaxTopCardHeightDivisor = 2;
 constexpr int kStandaloneNoRtcMaxVerticalOffset = 32;
 constexpr int kPerBookRtcTopCardMaxExtra = 84;
+constexpr int kReadingRhythmWeekCount = 13;
+constexpr size_t kReadingRhythmMonthCount = 12;
+constexpr int kRecentReadingDayCount = 7;
+constexpr uint8_t kMediumReadingMinutes = 15;
+constexpr uint8_t kHighReadingMinutes = 30;
 
 struct StatsLayout {
   int headerHeight;
@@ -81,6 +89,88 @@ constexpr std::array<StrId, READING_DAY_OF_WEEK_COUNT> DAY_LABELS = {
     StrId::STR_STATS_FRI, StrId::STR_STATS_SAT, StrId::STR_STATS_SUN};
 
 const char* dayCountText(const uint16_t days) { return days == 1 ? tr(STR_STATS_DAY) : tr(STR_STATS_DAYS); }
+
+bool sameFinishedBookMonth(const FinishedBookEntry& entry, const ReadingStatsDate& date) {
+  return entry.finishedDate.isValid() && date.isValid() && entry.finishedDate.year == date.year &&
+         entry.finishedDate.month == date.month;
+}
+
+void formatFinishedBookMonthHeader(const ReadingStatsDate& date, const uint8_t bookCount, const uint32_t readingSeconds,
+                                   char* buf, const size_t len) {
+  if (!buf || len == 0) {
+    return;
+  }
+  if (!date.isValid()) {
+    snprintf(buf, len, "-");
+    return;
+  }
+
+  char month[8];
+  char duration[24];
+  formatReadingStatsMonthToken(date, month, sizeof(month));
+  BookReadingStats::formatDuration(readingSeconds, duration, sizeof(duration));
+  snprintf(buf, len, tr(STR_STATS_FINISHED_MONTH_FORMAT), month, static_cast<unsigned>(date.year),
+           static_cast<unsigned>(bookCount),
+           bookCount == 1 ? tr(STR_STATS_BOOK_COUNT_ONE) : tr(STR_STATS_BOOK_COUNT_MANY), duration);
+}
+
+void finishedBookMonthSummary(const std::vector<FinishedBookEntry>& finishedBooks, const ReadingStatsDate& date,
+                              uint8_t& bookCount, uint32_t& readingSeconds) {
+  bookCount = 0;
+  readingSeconds = 0;
+  for (const auto& entry : finishedBooks) {
+    if (sameFinishedBookMonth(entry, date)) {
+      if (bookCount < 255) {
+        ++bookCount;
+      }
+      readingSeconds += entry.totalReadingSeconds;
+    }
+  }
+}
+
+void readingIntensityStyle(const uint8_t minutes, const int activeDotSize, const int inactiveDotSize, int& dotSize,
+                           Color& color) {
+  if (minutes == 0) {
+    dotSize = inactiveDotSize;
+    color = Color::LightGray;
+  } else if (minutes < kMediumReadingMinutes) {
+    dotSize = std::max(inactiveDotSize + 1, activeDotSize - 4);
+    color = Color::LightGray;
+  } else if (minutes < kHighReadingMinutes) {
+    dotSize = std::max(inactiveDotSize + 2, activeDotSize - 2);
+    color = Color::DarkGray;
+  } else {
+    dotSize = activeDotSize;
+    color = Color::Black;
+  }
+}
+
+uint16_t weeklyChartScaleMinutes(const uint16_t maxMinutes) {
+  if (maxMinutes <= 60) return 60;
+  if (maxMinutes <= 180) return 180;
+  if (maxMinutes <= 360) return 360;
+  if (maxMinutes <= 600) return 600;
+  return static_cast<uint16_t>(((static_cast<uint32_t>(maxMinutes) + 119u) / 120u) * 120u);
+}
+
+void formatRhythmMinutes(const uint16_t minutes, char* buf, const size_t len) {
+  if (!buf || len == 0) {
+    return;
+  }
+  if (minutes < 60) {
+    snprintf(buf, len, tr(STR_STATS_DURATION_MIN), static_cast<unsigned long>(minutes));
+    return;
+  }
+
+  const uint16_t hours = minutes / 60u;
+  const uint16_t remainder = minutes % 60u;
+  if (remainder == 0) {
+    snprintf(buf, len, tr(STR_STATS_DURATION_H), static_cast<unsigned long>(hours));
+  } else {
+    snprintf(buf, len, tr(STR_STATS_DURATION_HM), static_cast<unsigned long>(hours),
+             static_cast<unsigned long>(remainder));
+  }
+}
 
 int sectionCardHeight(const StatsLayout& layout, const int rowCount) {
   if (rowCount <= 0) {
@@ -225,6 +315,17 @@ void drawSectionCard(const GfxRenderer& renderer, const int x, const int y, cons
   renderer.drawLine(x, y + layout.sectionTitleH, x + w, y + layout.sectionTitleH);
   drawCenteredLabel(renderer, layout.sectionTitleFontId, x, w,
                     y + (layout.sectionTitleH - renderer.getLineHeight(layout.sectionTitleFontId)) / 2, title, true);
+}
+
+void drawDateField(const GfxRenderer& renderer, const int x, const int y, const int w, const char* text,
+                   const bool selected) {
+  const int h = renderer.getLineHeight(UI_12_FONT_ID) + 10;
+  renderer.fillRectDither(x, y, w, h, selected ? Color::LightGray : Color::White);
+  renderer.drawRect(x, y, w, h, true);
+  if (selected) {
+    renderer.drawRect(x + 1, y + 1, w - 2, h - 2, true);
+  }
+  drawCenteredLabel(renderer, UI_12_FONT_ID, x, w, y + 5, text);
 }
 
 template <size_t N>
@@ -584,6 +685,572 @@ void renderNoRtcCombinedStatsPage(const GfxRenderer& renderer, const MappedInput
     y += layout.cardGap;
     drawGlobalStatsCard(renderer, cardX, y, cardW, allDevicesCardH, tr(STR_STATS_ALL_DEVICES_SCREEN), *allDevicesStats,
                         layout);
+  }
+}
+
+void renderReadingRhythmPage(GfxRenderer& renderer, const MappedInputManager* mappedInput,
+                             const GlobalReadingStats& stats, const bool showButtonHints, const bool showMoreButton) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int screenW = renderer.getScreenWidth();
+  const int cardX = metrics.contentSidePadding;
+  const int cardW = screenW - metrics.contentSidePadding * 2;
+  const bool compactWidth = screenW < 500;
+  const int titleH = compactWidth ? 34 : 40;
+  const int cardPadding = compactWidth ? 10 : 14;
+  const int weekdayLabelW = compactWidth ? 38 : 46;
+  const int monthLabelH = 25;
+  const int rowStride = compactWidth ? 24 : 27;
+  const int activeDotSize = compactWidth ? 12 : 14;
+  const int inactiveDotSize = compactWidth ? 5 : 6;
+  const int recentDaysH = 42;
+  const int chartTitleH = kCompactLayout.sectionTitleH;
+  const int rhythmCardH = titleH + monthLabelH + rowStride * 7 + recentDaysH + cardPadding;
+  const int chartGap = compactWidth ? 10 : 18;
+  const int weeklyChartH = chartTitleH + (compactWidth ? 86 : 98);
+  const int monthlyChartH = weeklyChartH;
+  const int headerBottom = metrics.topPadding + std::min(metrics.headerHeight, kDefaultLayout.headerHeight);
+  const int bottomInset = statsBottomInset(metrics, showButtonHints);
+  const int availableH = renderer.getScreenHeight() - headerBottom - bottomInset;
+  const int baseContentH = rhythmCardH + chartGap + weeklyChartH;
+  const int fullContentH = baseContentH + chartGap + monthlyChartH;
+  const bool showMonthlyChart = availableH >= fullContentH + 12;
+  const int contentH = showMonthlyChart ? fullContentH : baseContentH;
+  const int rhythmY = headerBottom + std::max(6, (availableH - contentH) / 2);
+
+  renderer.drawRect(cardX, rhythmY, cardW, rhythmCardH);
+  renderer.drawLine(cardX, rhythmY + titleH, cardX + cardW, rhythmY + titleH);
+  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW,
+                    rhythmY + (titleH - renderer.getLineHeight(UI_10_FONT_ID)) / 2, tr(STR_STATS_RECENT_ACTIVITY),
+                    true);
+
+  ReadingStatsDateTime now;
+  const bool hasToday = getCurrentLocalReadingStatsDateTime(now);
+  const uint32_t displayDay = hasToday ? readingStatsDayIndex(now.date) : stats.readingHistoryAnchorDay;
+  ReadingStatsDate displayDate;
+  const bool hasDisplayDate = readingStatsDateFromDayIndex(displayDay, displayDate);
+  const uint8_t displayDow = hasDisplayDate ? readingStatsDayOfWeekIndex(displayDate) : 0;
+  const uint32_t currentWeekStart = displayDay >= displayDow ? displayDay - displayDow : 0;
+  const uint32_t historySpanBeforeCurrentWeek = static_cast<uint32_t>(kReadingRhythmWeekCount - 1) * 7u;
+  const uint32_t firstDay =
+      currentWeekStart >= historySpanBeforeCurrentWeek ? currentWeekStart - historySpanBeforeCurrentWeek : 0;
+
+  const int gridX = cardX + cardPadding + weekdayLabelW;
+  const int gridW = cardW - cardPadding * 2 - weekdayLabelW;
+  const int columnStride = std::max(1, gridW / kReadingRhythmWeekCount);
+  const int gridTop = rhythmY + titleH + monthLabelH;
+  uint8_t previousMonth = 0;
+
+  for (int week = 0; week < kReadingRhythmWeekCount; ++week) {
+    const uint32_t weekStartDay = firstDay + static_cast<uint32_t>(week) * 7u;
+    ReadingStatsDate weekDate;
+    if (readingStatsDateFromDayIndex(weekStartDay, weekDate) && weekDate.month != previousMonth) {
+      char monthToken[8];
+      formatReadingStatsMonthToken(weekDate, monthToken, sizeof(monthToken));
+      const int monthX = gridX + week * columnStride;
+      renderer.drawText(SMALL_FONT_ID, monthX, rhythmY + titleH + 3, monthToken);
+      previousMonth = weekDate.month;
+    }
+  }
+
+  for (int weekday = 0; weekday < 7; ++weekday) {
+    const int rowCenterY = gridTop + weekday * rowStride + rowStride / 2;
+    const char* weekdayText = I18n::getInstance().get(DAY_LABELS[weekday]);
+    const int labelY = rowCenterY - renderer.getLineHeight(SMALL_FONT_ID) / 2;
+    renderer.drawText(SMALL_FONT_ID, cardX + cardPadding, labelY, weekdayText);
+
+    for (int week = 0; week < kReadingRhythmWeekCount; ++week) {
+      const uint32_t dayIndex = firstDay + static_cast<uint32_t>(week) * 7u + static_cast<uint32_t>(weekday);
+      if (dayIndex > displayDay) {
+        continue;
+      }
+
+      const int centerX = gridX + week * columnStride + columnStride / 2;
+      const uint16_t readingMinutes = stats.readingMinutesOnDay(dayIndex);
+      int dotSize = inactiveDotSize;
+      Color dotColor = Color::LightGray;
+      readingIntensityStyle(static_cast<uint8_t>(std::min<uint32_t>(UINT8_MAX, readingMinutes)), activeDotSize,
+                            inactiveDotSize, dotSize, dotColor);
+      const int dotX = centerX - dotSize / 2;
+      const int dotY = rowCenterY - dotSize / 2;
+      renderer.fillRoundedRect(dotX, dotY, dotSize, dotSize, dotSize / 2, dotColor);
+
+      if (hasToday && dayIndex == displayDay) {
+        constexpr int todayRingGap = 3;
+        const int ringSize = activeDotSize + todayRingGap * 2;
+        renderer.drawRoundedRect(centerX - ringSize / 2, rowCenterY - ringSize / 2, ringSize, ringSize, 2, ringSize / 2,
+                                 true);
+      }
+    }
+  }
+
+  const int recentDaysY = gridTop + rowStride * 7;
+  renderer.drawLine(cardX, recentDaysY, cardX + cardW, recentDaysY);
+  const int recentDayW = std::max(1, (cardW - cardPadding * 2) / kRecentReadingDayCount);
+  const int recentDayLabelY = recentDaysY + 5;
+  const int recentDayValueY = recentDayLabelY + renderer.getLineHeight(SMALL_FONT_ID) + 2;
+  const uint32_t firstRecentDay =
+      displayDay >= kRecentReadingDayCount - 1 ? displayDay - static_cast<uint32_t>(kRecentReadingDayCount - 1) : 0;
+  for (int day = 0; day < kRecentReadingDayCount; ++day) {
+    const uint32_t dayIndex = firstRecentDay + static_cast<uint32_t>(day);
+    const int columnX = cardX + cardPadding + day * recentDayW;
+    ReadingStatsDate date;
+    if (!readingStatsDateFromDayIndex(dayIndex, date)) {
+      continue;
+    }
+
+    if (hasToday && dayIndex == displayDay) {
+      renderer.drawRoundedRect(columnX + 2, recentDaysY + 3, recentDayW - 4, recentDaysH - 6, 1, 4, true);
+    }
+
+    const uint8_t dayOfWeek = readingStatsDayOfWeekIndex(date);
+    drawCenteredLabel(renderer, SMALL_FONT_ID, columnX, recentDayW, recentDayLabelY,
+                      I18n::getInstance().get(DAY_LABELS[dayOfWeek]));
+
+    char duration[16];
+    formatRhythmMinutes(stats.readingMinutesOnDay(dayIndex), duration, sizeof(duration));
+    drawCenteredLabel(renderer, SMALL_FONT_ID, columnX, recentDayW, recentDayValueY, duration);
+  }
+
+  std::array<uint16_t, kReadingRhythmWeekCount> weeklyMinutes{};
+  uint32_t previousWeeksMinutes = 0;
+  for (int week = 0; week < kReadingRhythmWeekCount; ++week) {
+    for (int weekday = 0; weekday < 7; ++weekday) {
+      const uint32_t dayIndex = firstDay + static_cast<uint32_t>(week) * 7u + static_cast<uint32_t>(weekday);
+      if (dayIndex <= displayDay) {
+        weeklyMinutes[static_cast<size_t>(week)] += stats.readingMinutesOnDay(dayIndex);
+      }
+    }
+    if (week < kReadingRhythmWeekCount - 1) {
+      previousWeeksMinutes += weeklyMinutes[static_cast<size_t>(week)];
+    }
+  }
+
+  const uint16_t maxWeeklyMinutes = *std::max_element(weeklyMinutes.begin(), weeklyMinutes.end());
+  const uint16_t chartScaleMinutes = weeklyChartScaleMinutes(maxWeeklyMinutes);
+  const uint16_t averageWeeklyMinutes =
+      static_cast<uint16_t>(previousWeeksMinutes / static_cast<uint32_t>(kReadingRhythmWeekCount - 1));
+  const uint16_t currentWeekMinutes = weeklyMinutes.back();
+
+  const int chartY = rhythmY + rhythmCardH + chartGap;
+  drawSectionCard(renderer, cardX, chartY, cardW, weeklyChartH, tr(STR_STATS_WEEKLY_TIME), kCompactLayout);
+  const int chartTop = chartY + chartTitleH + (compactWidth ? 7 : 9);
+  const int footerH = renderer.getLineHeight(SMALL_FONT_ID) + 6;
+  const int chartBottom = chartY + weeklyChartH - footerH - 5;
+  const int chartHeight = std::max(1, chartBottom - chartTop);
+  const int chartRight = gridX + columnStride * kReadingRhythmWeekCount;
+
+  {
+    char scaleLabel[16];
+    formatRhythmMinutes(chartScaleMinutes, scaleLabel, sizeof(scaleLabel));
+    renderer.drawText(SMALL_FONT_ID, cardX + cardPadding, chartTop, scaleLabel);
+  }
+  renderer.drawLine(gridX, chartBottom, chartRight, chartBottom);
+
+  if (averageWeeklyMinutes > 0) {
+    const int averageY =
+        chartBottom - static_cast<int>((static_cast<uint32_t>(chartHeight) * averageWeeklyMinutes) / chartScaleMinutes);
+    for (int dashX = gridX; dashX < chartRight; dashX += 8) {
+      renderer.drawLine(dashX, averageY, std::min(dashX + 3, chartRight), averageY);
+    }
+  }
+
+  const int barWidth = compactWidth ? 10 : 14;
+  for (int week = 0; week < kReadingRhythmWeekCount; ++week) {
+    const uint16_t minutes = weeklyMinutes[static_cast<size_t>(week)];
+    if (minutes == 0) {
+      continue;
+    }
+    const int barHeight =
+        std::max(2, static_cast<int>((static_cast<uint32_t>(chartHeight) * minutes) / chartScaleMinutes));
+    const int barCenterX = gridX + week * columnStride + columnStride / 2;
+    const int barX = barCenterX - barWidth / 2;
+    const int barY = chartBottom - std::min(barHeight, chartHeight);
+    if (week == kReadingRhythmWeekCount - 1) {
+      renderer.fillRect(barX, barY, barWidth, chartBottom - barY);
+    } else {
+      renderer.fillRectDither(barX, barY, barWidth, chartBottom - barY, Color::DarkGray);
+    }
+  }
+
+  char averageValue[16];
+  char currentValue[16];
+  formatRhythmMinutes(averageWeeklyMinutes, averageValue, sizeof(averageValue));
+  formatRhythmMinutes(currentWeekMinutes, currentValue, sizeof(currentValue));
+  const int footerY = chartY + weeklyChartH - footerH + 2;
+  const char* averageText = tr(STR_STATS_WEEKLY_AVERAGE);
+  const int averageX = cardX + cardPadding;
+  renderer.drawText(SMALL_FONT_ID, averageX, footerY, averageText);
+  renderer.drawText(SMALL_FONT_ID, averageX + renderer.getTextWidth(SMALL_FONT_ID, averageText) + 4, footerY,
+                    averageValue);
+
+  const char* currentText = tr(STR_STATS_THIS_WEEK);
+  const int currentTextW = renderer.getTextWidth(SMALL_FONT_ID, currentText);
+  const int currentValueW = renderer.getTextWidth(SMALL_FONT_ID, currentValue);
+  const int currentX = cardX + cardW - cardPadding - currentTextW - 4 - currentValueW;
+  renderer.drawText(SMALL_FONT_ID, currentX, footerY, currentText);
+  renderer.drawText(SMALL_FONT_ID, currentX + currentTextW + 4, footerY, currentValue);
+
+  if (showMonthlyChart) {
+    std::array<ReadingStatsDate, kReadingRhythmMonthCount> monthDates{};
+    std::array<uint8_t, kReadingRhythmMonthCount> monthlyReadingDays{};
+
+    ReadingStatsDate monthCursor = displayDate;
+    monthCursor.day = 1;
+    for (size_t offset = 0; offset < kReadingRhythmMonthCount; ++offset) {
+      const size_t monthIndex = kReadingRhythmMonthCount - 1 - offset;
+      monthDates[monthIndex] = monthCursor;
+      addDaysToReadingStatsDate(monthCursor, -1);
+      monthCursor.day = 1;
+    }
+
+    for (size_t monthIndex = 0; monthIndex < kReadingRhythmMonthCount; ++monthIndex) {
+      const uint32_t monthStartDay = readingStatsDayIndex(monthDates[monthIndex]);
+      const uint8_t monthDayCount = daysInMonth(monthDates[monthIndex].year, monthDates[monthIndex].month);
+      for (uint8_t dayOffset = 0; dayOffset < monthDayCount; ++dayOffset) {
+        if (stats.readingMinutesOnDay(monthStartDay + dayOffset) > 0) {
+          ++monthlyReadingDays[monthIndex];
+        }
+      }
+    }
+
+    const uint16_t totalReadingDays =
+        std::accumulate(monthlyReadingDays.begin(), monthlyReadingDays.end(), uint16_t{0});
+    const uint8_t averageMonthlyReadingDays = static_cast<uint8_t>(
+        (totalReadingDays + static_cast<uint16_t>(kReadingRhythmMonthCount / 2)) / kReadingRhythmMonthCount);
+
+    const int monthlyY = chartY + weeklyChartH + chartGap;
+    drawSectionCard(renderer, cardX, monthlyY, cardW, monthlyChartH, tr(STR_STATS_READING_DAYS_BY_MONTH),
+                    kCompactLayout);
+
+    const int monthlyLineH = renderer.getLineHeight(SMALL_FONT_ID);
+    const int monthlyValueY = monthlyY + chartTitleH + 3;
+    const int monthlyFooterY = monthlyY + monthlyChartH - monthlyLineH - 3;
+    const int monthlyLabelY = monthlyFooterY - monthlyLineH;
+    const int monthlyChartTop = monthlyValueY + monthlyLineH + 2;
+    const int monthlyChartBottom = monthlyLabelY - 3;
+    const int monthlyChartHeight = std::max(1, monthlyChartBottom - monthlyChartTop);
+    const int monthlyGridX = cardX + cardPadding;
+    const int monthlyGridW = cardW - cardPadding * 2;
+    const int monthlyColumnStride = std::max(1, monthlyGridW / static_cast<int>(kReadingRhythmMonthCount));
+    const int monthlyRight = monthlyGridX + monthlyColumnStride * static_cast<int>(kReadingRhythmMonthCount);
+    const int monthlyBarWidth = compactWidth ? 9 : 13;
+
+    renderer.drawLine(monthlyGridX, monthlyChartBottom, monthlyRight, monthlyChartBottom);
+
+    for (size_t monthIndex = 0; monthIndex < kReadingRhythmMonthCount; ++monthIndex) {
+      const int columnX = monthlyGridX + static_cast<int>(monthIndex) * monthlyColumnStride;
+      const int centerX = columnX + monthlyColumnStride / 2;
+      const uint8_t readingDays = monthlyReadingDays[monthIndex];
+
+      char valueLabel[4];
+      if (readingDays == 0) {
+        snprintf(valueLabel, sizeof(valueLabel), "-");
+      } else {
+        snprintf(valueLabel, sizeof(valueLabel), "%u", static_cast<unsigned>(readingDays));
+      }
+      drawCenteredLabel(renderer, SMALL_FONT_ID, columnX, monthlyColumnStride, monthlyValueY, valueLabel);
+
+      if (readingDays > 0) {
+        const int barHeight =
+            std::max(2, static_cast<int>((static_cast<uint32_t>(monthlyChartHeight) * readingDays) / 31u));
+        const int barY = monthlyChartBottom - std::min(barHeight, monthlyChartHeight);
+        renderer.fillRoundedRect(centerX - monthlyBarWidth / 2, barY, monthlyBarWidth, monthlyChartBottom - barY, 2,
+                                 Color::DarkGray);
+      }
+
+      char monthLabel[8];
+      formatReadingStatsMonthToken(monthDates[monthIndex], monthLabel, sizeof(monthLabel));
+      drawCenteredLabel(renderer, SMALL_FONT_ID, columnX, monthlyColumnStride, monthlyLabelY, monthLabel);
+    }
+
+    char totalValue[20];
+    snprintf(totalValue, sizeof(totalValue), "%u %s", static_cast<unsigned>(totalReadingDays),
+             dayCountText(totalReadingDays));
+    const char* totalText = tr(STR_STATS_MONTHLY_TOTAL);
+    renderer.drawText(SMALL_FONT_ID, cardX + cardPadding, monthlyFooterY, totalText);
+    renderer.drawText(SMALL_FONT_ID, cardX + cardPadding + renderer.getTextWidth(SMALL_FONT_ID, totalText) + 4,
+                      monthlyFooterY, totalValue);
+
+    char monthlyAverageValue[20];
+    snprintf(monthlyAverageValue, sizeof(monthlyAverageValue), "%u %s",
+             static_cast<unsigned>(averageMonthlyReadingDays), dayCountText(averageMonthlyReadingDays));
+    const char* monthlyAverageText = tr(STR_STATS_MONTHLY_AVERAGE);
+    const int monthlyAverageW = renderer.getTextWidth(SMALL_FONT_ID, monthlyAverageText);
+    const int monthlyAverageValueW = renderer.getTextWidth(SMALL_FONT_ID, monthlyAverageValue);
+    const int monthlyAverageX = cardX + cardW - cardPadding - monthlyAverageW - 4 - monthlyAverageValueW;
+    renderer.drawText(SMALL_FONT_ID, monthlyAverageX, monthlyFooterY, monthlyAverageText);
+    renderer.drawText(SMALL_FONT_ID, monthlyAverageX + monthlyAverageW + 4, monthlyFooterY, monthlyAverageValue);
+  }
+
+  if (showButtonHints && mappedInput) {
+    const auto labels =
+        mappedInput->mapLabels(tr(STR_HOME), tr(STR_HOME), tr(STR_BACK), showMoreButton ? tr(STR_MORE) : "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+}
+
+void renderFinishedBooksPage(GfxRenderer& renderer, const MappedInputManager* mappedInput,
+                             const std::vector<FinishedBookEntry>& finishedBooks, const GlobalReadingStats& globalStats,
+                             const size_t pageIndex, const bool showButtonHints, const bool showPreviousPage,
+                             const bool showNextPage, const bool showMoreButton) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  const int cardX = metrics.contentSidePadding;
+  const int cardW = screenW - metrics.contentSidePadding * 2;
+  const int headerBottom = metrics.topPadding + metrics.headerHeight;
+  const int buttonTop = screenH - (showButtonHints ? metrics.buttonHintsHeight : metrics.verticalSpacing);
+  const int totalCardY = headerBottom + metrics.verticalSpacing;
+  const int totalCardH =
+      std::max(62, renderer.getLineHeight(UI_12_FONT_ID) + renderer.getLineHeight(SMALL_FONT_ID) + 20);
+
+  renderer.drawRoundedRect(cardX, totalCardY, cardW, totalCardH, 2, 10, true);
+  char duration[32];
+  BookReadingStats::formatDuration(globalStats.totalReadingSeconds, duration, sizeof(duration));
+  renderer.drawCenteredText(UI_12_FONT_ID, totalCardY + 10, duration, true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(SMALL_FONT_ID, totalCardY + totalCardH - renderer.getLineHeight(SMALL_FONT_ID) - 8,
+                            tr(STR_STATS_TOTAL_READING_TIME_LBL));
+
+  const int listY = totalCardY + totalCardH + metrics.verticalSpacing;
+  const int availableListH = std::max(0, buttonTop - listY - metrics.verticalSpacing);
+  const size_t firstEntry = pageIndex * FINISHED_BOOKS_ENTRIES_PER_PAGE;
+  const size_t remainingEntries = firstEntry < finishedBooks.size() ? finishedBooks.size() - firstEntry : 0;
+  const int visibleRows = std::min<int>(FINISHED_BOOKS_ENTRIES_PER_PAGE, remainingEntries);
+
+  if (remainingEntries == 0 || visibleRows <= 0) {
+    const int emptyY = listY + std::max(0, (availableListH - renderer.getLineHeight(UI_12_FONT_ID) -
+                                            renderer.getLineHeight(UI_10_FONT_ID) - 8) /
+                                               2);
+    renderer.drawCenteredText(UI_12_FONT_ID, emptyY, "0", true, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_10_FONT_ID, emptyY + renderer.getLineHeight(UI_12_FONT_ID) + 8,
+                              tr(STR_ACHIEVEMENT_BOOKS_COMPLETED));
+  } else {
+    const int headerH = std::max(22, renderer.getLineHeight(SMALL_FONT_ID) + 8);
+    const int titleLineH = renderer.getLineHeight(UI_10_FONT_ID);
+    const int authorLineH = renderer.getLineHeight(SMALL_FONT_ID);
+    const int bookRowH = std::max(40, titleLineH + authorLineH + 8);
+    int sectionCount = 0;
+    for (int index = 0; index < visibleRows; ++index) {
+      const auto& entry = finishedBooks[firstEntry + index];
+      const bool startsSection =
+          index == 0 || !sameFinishedBookMonth(entry, finishedBooks[firstEntry + index - 1].finishedDate);
+      if (startsSection) {
+        ++sectionCount;
+      }
+    }
+    const int minContentH = sectionCount * headerH + visibleRows * bookRowH;
+    const int extraListH = std::max(0, availableListH - minContentH);
+    const int gap = visibleRows > 1 ? std::min(metrics.verticalSpacing / 2, extraListH / (visibleRows - 1)) : 0;
+    int y = listY;
+    for (int index = 0; index < visibleRows; ++index) {
+      const auto& entry = finishedBooks[firstEntry + index];
+      const bool startsSection =
+          index == 0 || !sameFinishedBookMonth(entry, finishedBooks[firstEntry + index - 1].finishedDate);
+      if (startsSection) {
+        uint8_t monthBooks = 0;
+        uint32_t monthSeconds = 0;
+        finishedBookMonthSummary(finishedBooks, entry.finishedDate, monthBooks, monthSeconds);
+        char header[64];
+        formatFinishedBookMonthHeader(entry.finishedDate, monthBooks, monthSeconds, header, sizeof(header));
+        renderer.drawText(SMALL_FONT_ID, cardX, y + 4, header, true, EpdFontFamily::BOLD);
+        y += headerH;
+      }
+
+      const auto title = renderer.truncatedText(UI_10_FONT_ID, entry.title.c_str(),
+                                                cardW - metrics.contentSidePadding * 2, EpdFontFamily::BOLD);
+      renderer.drawText(UI_10_FONT_ID, cardX + metrics.contentSidePadding, y + 2, title.c_str(), true,
+                        EpdFontFamily::BOLD);
+
+      if (!entry.author.empty()) {
+        const auto author =
+            renderer.truncatedText(SMALL_FONT_ID, entry.author.c_str(), cardW - metrics.contentSidePadding * 2);
+        renderer.drawText(SMALL_FONT_ID, cardX + metrics.contentSidePadding, y + titleLineH + 4, author.c_str());
+      }
+      y += bookRowH + gap;
+    }
+  }
+
+  if (showButtonHints && mappedInput) {
+    const char* previousLabel = showPreviousPage ? tr(STR_PREVIOUS_SHORT) : tr(STR_BACK);
+    const char* nextLabel = showNextPage ? tr(STR_NEXT_SHORT) : (showMoreButton ? tr(STR_MORE) : "");
+    const auto labels = mappedInput->mapLabels(tr(STR_HOME), tr(STR_HOME), previousLabel, nextLabel);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+}
+
+void renderEditBookDatesPage(GfxRenderer& renderer, const MappedInputManager* mappedInput, const std::string& bookTitle,
+                             const BookReadingStats& stats, const int selectedField, const bool showButtonHints) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int cardW = pageWidth - 120;
+  const int cardH = 250;
+  const int cardX = (pageWidth - cardW) / 2;
+  const int cardY = 138;
+
+  const std::string visibleTitle =
+      renderer.truncatedText(UI_12_FONT_ID, bookTitle.c_str(), pageWidth - 80, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_12_FONT_ID, 96, visibleTitle.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawRect(cardX, cardY, cardW, cardH);
+
+  const int sectionGap = 104;
+  const int row1Y = cardY + 66;
+  const int row2Y = row1Y + sectionGap;
+  const int monthW = 52;
+  const int dayW = 46;
+  const int yearW = 68;
+  const int gap = 14;
+  const int totalFieldW = monthW + gap + dayW + gap + yearW;
+  const int fieldStartX = cardX + (cardW - totalFieldW) / 2;
+
+  char monthBuf[8];
+  char dayBuf[8];
+  char yearBuf[8];
+
+  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW, cardY + 24, tr(STR_STATS_START_DATE), true);
+  formatReadingStatsMonthToken(stats.startDate, monthBuf, sizeof(monthBuf));
+  if (stats.startDate.isValid()) {
+    snprintf(dayBuf, sizeof(dayBuf), "%02u", static_cast<unsigned>(stats.startDate.day));
+    snprintf(yearBuf, sizeof(yearBuf), "%u", static_cast<unsigned>(stats.startDate.year));
+  } else {
+    snprintf(dayBuf, sizeof(dayBuf), "-");
+    snprintf(yearBuf, sizeof(yearBuf), "-");
+  }
+  drawDateField(renderer, fieldStartX, row1Y, monthW, monthBuf, selectedField == 0);
+  drawDateField(renderer, fieldStartX + monthW + gap, row1Y, dayW, dayBuf, selectedField == 1);
+  drawDateField(renderer, fieldStartX + monthW + gap + dayW + gap, row1Y, yearW, yearBuf, selectedField == 2);
+
+  drawCenteredLabel(renderer, UI_10_FONT_ID, cardX, cardW, cardY + 24 + sectionGap, tr(STR_STATS_FINISHED_DATE), true);
+  const bool showFinishedFields = stats.isCompleted && stats.finishedDate.isValid();
+  formatReadingStatsMonthToken(showFinishedFields ? stats.finishedDate : ReadingStatsDate{}, monthBuf,
+                               sizeof(monthBuf));
+  if (showFinishedFields) {
+    snprintf(dayBuf, sizeof(dayBuf), "%02u", static_cast<unsigned>(stats.finishedDate.day));
+    snprintf(yearBuf, sizeof(yearBuf), "%u", static_cast<unsigned>(stats.finishedDate.year));
+  } else {
+    snprintf(dayBuf, sizeof(dayBuf), "-");
+    snprintf(yearBuf, sizeof(yearBuf), "-");
+  }
+  drawDateField(renderer, fieldStartX, row2Y, monthW, monthBuf, selectedField == 3);
+  drawDateField(renderer, fieldStartX + monthW + gap, row2Y, dayW, dayBuf, selectedField == 4);
+  drawDateField(renderer, fieldStartX + monthW + gap + dayW + gap, row2Y, yearW, yearBuf, selectedField == 5);
+
+  if (showButtonHints && mappedInput) {
+    const auto labels = mappedInput->mapLabels(tr(STR_BACK), tr(STR_NEXT_FIELD), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
+}
+
+void renderReadingAchievementPage(GfxRenderer& renderer, const MappedInputManager* mappedInput,
+                                  const std::string& bookTitle, const BookReadingStats& stats,
+                                  const GlobalReadingStats& globalStats, const bool showButtonHints) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  const bool compact = screenH < 620;
+  const int centerX = screenW / 2;
+  const int medalSize = compact ? 62 : 82;
+  const int medalY = metrics.topPadding + (compact ? 76 : 88);
+  const int medalX = centerX - medalSize / 2;
+
+  const int ray = compact ? 18 : 24;
+  renderer.drawLine(centerX, medalY - ray, centerX, medalY - 5, 2, true);
+  renderer.drawLine(centerX, medalY + medalSize + 5, centerX, medalY + medalSize + ray, 2, true);
+  renderer.drawLine(medalX - ray, medalY + medalSize / 2, medalX - 5, medalY + medalSize / 2, 2, true);
+  renderer.drawLine(medalX + medalSize + 5, medalY + medalSize / 2, medalX + medalSize + ray, medalY + medalSize / 2, 2,
+                    true);
+  renderer.drawLine(medalX - 13, medalY - 13, medalX - 4, medalY - 4, 2, true);
+  renderer.drawLine(medalX + medalSize + 4, medalY - 4, medalX + medalSize + 13, medalY - 13, 2, true);
+
+  renderer.fillRoundedRect(medalX, medalY, medalSize, medalSize, medalSize / 2, Color::Black);
+  renderer.fillRoundedRect(medalX + 7, medalY + 7, medalSize - 14, medalSize - 14, (medalSize - 14) / 2, Color::White);
+  renderer.drawLine(medalX + medalSize / 4, medalY + medalSize / 2, medalX + medalSize * 2 / 5,
+                    medalY + medalSize * 2 / 3, compact ? 4 : 5, true);
+  renderer.drawLine(medalX + medalSize * 2 / 5, medalY + medalSize * 2 / 3, medalX + medalSize * 3 / 4,
+                    medalY + medalSize / 3, compact ? 4 : 5, true);
+
+  const int celebrationY = medalY + medalSize + (compact ? 12 : 18);
+  renderer.drawCenteredText(UI_12_FONT_ID, celebrationY, tr(STR_ACHIEVEMENT_SUBTITLE), true, EpdFontFamily::BOLD);
+  const std::string visibleTitle = renderer.truncatedText(
+      UI_10_FONT_ID, bookTitle.c_str(), screenW - metrics.contentSidePadding * 4, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, celebrationY + renderer.getLineHeight(UI_12_FONT_ID) + 7,
+                            visibleTitle.c_str(), true, EpdFontFamily::BOLD);
+
+  const int cardX = metrics.contentSidePadding;
+  const int cardW = screenW - metrics.contentSidePadding * 2;
+  const int cardY = celebrationY + renderer.getLineHeight(UI_12_FONT_ID) + renderer.getLineHeight(UI_10_FONT_ID) +
+                    (compact ? 14 : 24);
+  const int rowH = compact ? 74 : 94;
+  const int cardH = rowH * 2;
+  renderer.drawRoundedRect(cardX, cardY, cardW, cardH, 2, 12, true);
+  renderer.drawLine(cardX, cardY + rowH, cardX + cardW, cardY + rowH);
+  const int thirdW = cardW / 3;
+  for (int column = 1; column < 3; ++column) {
+    renderer.drawLine(cardX + thirdW * column, cardY, cardX + thirdW * column, cardY + cardH);
+  }
+
+  char value[32];
+  BookReadingStats::formatDuration(stats.totalReadingSeconds, value, sizeof(value));
+  drawStatCell(renderer, cardX, thirdW, cardY, rowH, value, tr(STR_STATS_TIME_LBL));
+
+  snprintf(value, sizeof(value), "%u", static_cast<unsigned>(stats.sessionCount));
+  drawStatCell(renderer, cardX + thirdW, thirdW, cardY, rowH, value, tr(STR_STATS_SESSIONS_LBL));
+
+  const uint32_t averageSeconds = stats.sessionCount > 0 ? stats.totalReadingSeconds / stats.sessionCount : 0;
+  BookReadingStats::formatDuration(averageSeconds, value, sizeof(value));
+  drawStatCell(renderer, cardX + thirdW * 2, thirdW, cardY, rowH, value, tr(STR_STATS_AVG_SESSION_LBL));
+
+  size_t favoriteBucket = 0;
+  for (size_t bucket = 1; bucket < stats.timeOfDaySeconds.size(); ++bucket) {
+    if (stats.timeOfDaySeconds[bucket] > stats.timeOfDaySeconds[favoriteBucket]) {
+      favoriteBucket = bucket;
+    }
+  }
+  const char* favoriteValue = stats.totalReadingSeconds > 0
+                                  ? I18n::getInstance().get(TIME_BUCKET_LABELS[favoriteBucket])
+                                  : tr(STR_STATS_NEW_READER);
+  drawStatCell(renderer, cardX, thirdW, cardY + rowH, rowH, favoriteValue, tr(STR_ACHIEVEMENT_FAVORITE_TIME));
+
+  const uint16_t readingDays = stats.startDate.isValid() && stats.finishedDate.isValid()
+                                   ? readingSpanDaysInclusive(stats.startDate, stats.finishedDate)
+                                   : 0;
+  snprintf(value, sizeof(value), "%u", static_cast<unsigned>(readingDays));
+  drawStatCell(renderer, cardX + thirdW, thirdW, cardY + rowH, rowH, value, dayCountText(readingDays));
+
+  snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(globalStats.completedBooks));
+  drawStatCell(renderer, cardX + thirdW * 2, thirdW, cardY + rowH, rowH, value, tr(STR_ACHIEVEMENT_BOOKS_COMPLETED));
+
+  const int totalReadingCardY = cardY + cardH + (compact ? 10 : 44);
+  if (!compact && stats.startDate.isValid() && stats.finishedDate.isValid()) {
+    char startDate[20];
+    char finishDate[20];
+    formatReadingStatsShortDate(stats.startDate, startDate, sizeof(startDate));
+    formatReadingStatsShortDate(stats.finishedDate, finishDate, sizeof(finishDate));
+    char timeline[64];
+    snprintf(timeline, sizeof(timeline), tr(STR_ACHIEVEMENT_TIMELINE_FORMAT), startDate, finishDate,
+             static_cast<unsigned>(readingDays));
+    renderer.drawCenteredText(SMALL_FONT_ID, cardY + cardH + 18, timeline);
+  }
+
+  const int buttonHintsTop = screenH - (showButtonHints ? metrics.buttonHintsHeight : metrics.contentSidePadding);
+  const int totalReadingCardH = std::min(compact ? 54 : 68, buttonHintsTop - totalReadingCardY - 10);
+  if (totalReadingCardH >= 44) {
+    BookReadingStats::formatDuration(globalStats.totalReadingSeconds, value, sizeof(value));
+    renderer.drawRoundedRect(cardX, totalReadingCardY, cardW, totalReadingCardH, 2, 12, true);
+    drawStatCell(renderer, cardX, cardW, totalReadingCardY, totalReadingCardH, value,
+                 tr(STR_STATS_TOTAL_READING_TIME_LBL));
+  }
+
+  if (showButtonHints && mappedInput) {
+    const auto labels = mappedInput->mapLabels(tr(STR_HOME), tr(STR_HOME), "", tr(STR_HOME));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 }
 
