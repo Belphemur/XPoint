@@ -62,12 +62,12 @@ void ProgressManager::begin() {
   // Ownership released to the raw members; the destructor poolFree()s them.
   (void)cur.release();
   (void)last.release();
-  // Exit handshake; see workerStopping_/workerExit_.
-  SemaphoreHandle_t workerExit_ = xSemaphoreCreateBinary();
+  // Exit handshake; see workerStopping_/workerExit_. Without the handshake
+  // the worker must not run: a later destructor could otherwise free state
+  // it still reads.
+  workerExit_ = xSemaphoreCreateBinary();
   if (workerExit_ == nullptr) {
     LOG_ERR(MUTEX_TAG, "OOM: progress worker exit semaphore");
-    // Without the handshake the worker must not run: a later destructor
-    // could otherwise free state it still reads.
     return;
   }
   if (xTaskCreatePinnedToCore(
