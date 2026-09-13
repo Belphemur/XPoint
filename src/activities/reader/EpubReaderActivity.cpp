@@ -2291,6 +2291,27 @@ void EpubReaderActivity::ttfSaveProgress() {
                           static_cast<uint16_t>(ttfPageCount), ttfCurrentCharStart, ttfGeneration);
 }
 
+void EpubReaderActivity::finishTtfPageRender() {
+  if (pendingScreenshot) {
+    pendingScreenshot = false;
+    ScreenshotUtil::takeScreenshot(renderer);
+  }
+  if (showBookmarkMessage) {
+    GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
+  }
+  if (showDictionaryMessage) {
+    GUI.drawPopup(renderer, dictionaryMessageTtf ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
+  }
+  if (overlay != Overlay::None && usesToolbarMenu()) {
+    // The page just re-rendered under the overlay: refresh the snapshot that
+    // backs panel->toolbar restores (any previous copy is stale).
+    if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
+    renderOverlay();
+    if (overlayPopup.isActive()) overlayPopup.render(renderer);
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
+}
+
 void EpubReaderActivity::ttfInvalidateCaches() {
   if (!ttf_) return;
   if (ttfCurrentCharStart > 0) {
@@ -2785,6 +2806,7 @@ void EpubReaderActivity::renderBookTtf() {
 #endif
     ttfSaveProgress();
     showPendingSyncSaveError();
+    finishTtfPageRender();
     return;
   }
 #endif
@@ -2812,23 +2834,7 @@ void EpubReaderActivity::renderBookTtf() {
 
   ttfSaveProgress();
   showPendingSyncSaveError();
-
-  if (pendingScreenshot) {
-    pendingScreenshot = false;
-    ScreenshotUtil::takeScreenshot(renderer);
-  }
-  if (showBookmarkMessage) {
-    GUI.drawPopup(renderer, bookmarkRemoved ? tr(STR_BOOKMARK_REMOVED) : tr(STR_BOOKMARK_ADDED));
-  }
-  if (showDictionaryMessage) {
-    GUI.drawPopup(renderer, dictionaryMessageTtf ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
-  }
-  if (overlay != Overlay::None && usesToolbarMenu()) {
-    if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
-    renderOverlay();
-    if (overlayPopup.isActive()) overlayPopup.render(renderer);
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-  }
+  finishTtfPageRender();
 }
 
 void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
@@ -3670,8 +3676,8 @@ void EpubReaderActivity::showTextRowPopup(const int row) {
     overlay = Overlay::None;
     overlayPopup.dismiss();
     discardOverlayPage();
-    startActivityForResult(std::move(picker), [this](const ActivityResult&) {
-      applyReaderTextSettings();
+    startActivityForResult(std::move(picker), [this](const ActivityResult& result) {
+      if (!result.isCancelled) applyReaderTextSettings();
       overlay = Overlay::Text;  // back to the Text panel
       panelIndex = 0;
       if (toolbarUi) toolbarUi->begin();  // the picker drew its own FUI screen

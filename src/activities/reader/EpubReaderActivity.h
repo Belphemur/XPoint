@@ -199,6 +199,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void ttfPrefetchTick();
   void ttfInvalidateCaches();
   void ttfSaveProgress();
+  void finishTtfPageRender();
   bool ttfPageTurn(bool isForwardTurn);
 #endif
 
