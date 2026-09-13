@@ -1,6 +1,7 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -31,7 +32,24 @@ class ImageToFramebufferDecoder {
 
   virtual bool decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer, const RenderConfig& config) = 0;
 
+  // Memory-backed variant used by PSRAM image staging. Decoders that do not
+  // support it leave the default false so callers fall back to the SD path.
+  virtual bool decodeToFramebuffer(uint8_t* data, size_t size, GfxRenderer& renderer, const RenderConfig& config) {
+    (void)data;
+    (void)size;
+    (void)renderer;
+    (void)config;
+    return false;
+  }
+
   virtual bool getDimensions(const std::string& imagePath, ImageDimensions& dims) const = 0;
+
+  virtual bool getDimensions(const uint8_t* data, size_t size, ImageDimensions& dims) const {
+    (void)data;
+    (void)size;
+    (void)dims;
+    return false;
+  }
 
   virtual const char* getFormatName() const = 0;
 
