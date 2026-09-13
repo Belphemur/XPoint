@@ -10,11 +10,11 @@
 #if defined(CROSSPOINT_TTF_READER)
 
 #include <Epub/FootnoteEntry.h>
+#include <Memory.h>
 #include <layout/ChapterLayout.h>
 #include <render/TtfFont.h>
 #include <stdint.h>
 
-#include <memory>
 #include <vector>
 
 namespace freeink {
@@ -39,7 +39,9 @@ struct TtfWordBox {
 };
 
 struct TtfWordSelectData {
-  std::unique_ptr<char[]> arena;  // token text storage, outlives every box
+  // Token text storage, outlives every box. PSRAM-backed on PSRAM builds
+  // (poolMalloc); DRAM malloc on host/DRAM-only builds.
+  PoolBytes arena;
   std::vector<TtfWordBox> boxes;
   std::vector<FootnoteEntry> footnotes;
 };

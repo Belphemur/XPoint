@@ -51,14 +51,14 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   out.boxes.clear();
   out.footnotes.clear();
 
-  // Pass 1: token boundaries (byte ranges per run) so the arena can be
-  // allocated once.
+  // Pass 1: token boundary scan (no storage) so the pooled token table and
+  // text arena can be allocated once, sized exactly.
   struct TokenRange {
     uint16_t run;
     uint16_t start;
     uint16_t end;
   };
-  std::vector<TokenRange> tokens;
+  size_t tokenCount = 0;
   size_t arenaBytes = 0;
   for (uint16_t r = 0; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
@@ -68,23 +68,48 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
       if (i >= run.len) break;
       const uint16_t start = i;
       while (i < run.len && !isWsByte(run.text[i])) ++i;
-      tokens.push_back(TokenRange{r, start, i});
+      ++tokenCount;
       arenaBytes += static_cast<size_t>(i - start) + 1;  // NUL-terminated
     }
   }
-  if (tokens.empty()) return true;
+  if (tokenCount == 0) return true;
 
-  // Pass 2: copy text, measure, and group. A logical word's group id is the
-  // index of its first fragment — a fragment continuing a previous run's
-  // word reuses the carried group, which is exactly the pairing
-  // DictionarySelection::groupTokens joins on.
-  auto arena = makeUniqueNoThrow<char[]>(arenaBytes);
+  // Token boundaries and word text are page-scale derived data: PSRAM-backed
+  // pool on PSRAM builds, plain heap on DRAM-only/host builds.
+  auto tokenBytes = poolMakeBytes(tokenCount * sizeof(TokenRange));
+  if (!tokenBytes) {
+    LOG_ERR("TTFWS", "OOM: token table %u bytes", static_cast<unsigned>(tokenCount * sizeof(TokenRange)));
+    return false;
+  }
+  auto arena = poolMakeBytes(arenaBytes);
   if (!arena) {
     LOG_ERR("TTFWS", "OOM: token arena %u bytes", static_cast<unsigned>(arenaBytes));
     return false;
   }
-  out.boxes.reserve(tokens.size());
-  char* write = arena.get();
+  auto* tokens = reinterpret_cast<TokenRange*>(tokenBytes.get());
+
+  // Pass 2: fill the token table (same boundary walk as pass 1).
+  {
+    size_t t = 0;
+    for (uint16_t r = 0; r < page.runCount; ++r) {
+      const PageTextRun& run = page.runs[r];
+      uint16_t i = 0;
+      while (i < run.len) {
+        while (i < run.len && isWsByte(run.text[i])) ++i;
+        if (i >= run.len) break;
+        const uint16_t start = i;
+        while (i < run.len && !isWsByte(run.text[i])) ++i;
+        tokens[t++] = TokenRange{r, start, i};
+      }
+    }
+  }
+
+  // Pass 3: copy text, measure, and group. A logical word's group id is the
+  // index of its first fragment — a fragment continuing a previous run's
+  // word reuses the carried group, which is exactly the pairing
+  // DictionarySelection::groupTokens joins on.
+  out.boxes.reserve(tokenCount);
+  char* write = reinterpret_cast<char*>(arena.get());
 
   // Width of a byte range inside a run: plain advance walk with kerning, the
   // same convention PagePaint uses when it draws the run.
@@ -107,7 +132,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
   // metric work (kody, PR #113).
   int32_t penX = 0;
   uint16_t measuredTo = 0;
-  for (size_t t = 0; t < tokens.size(); ++t) {
+  for (size_t t = 0; t < tokenCount; ++t) {
     const TokenRange& token = tokens[t];
     const PageTextRun& run = page.runs[token.run];
     const char* text = run.text + token.start;
@@ -115,7 +140,7 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     const std::string_view rawView(text, rawLen);
 
     const bool runFirst = t == 0 || tokens[t - 1].run != token.run;
-    const bool runLast = t + 1 == tokens.size() || tokens[t + 1].run != token.run;
+    const bool runLast = t + 1 == tokenCount || tokens[t + 1].run != token.run;
     const bool headFlag = runFirst && (run.layoutFlags & PageTextRun::LayoutFirstContinues) != 0;
     const bool tailFlag = runLast && token.end == run.len && (run.layoutFlags & PageTextRun::LayoutLastContinues) != 0;
 

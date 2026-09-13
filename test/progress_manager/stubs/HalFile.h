@@ -27,16 +27,20 @@ class HalFile {
     return true;
   }
   int read(void* buf, size_t count) {
-    if (!data) return 0;
-    const size_t n = (cursor + count <= data->size()) ? count : (data->size() > cursor ? data->size() - cursor : 0);
+    if (!data || cursor > data->size()) return 0;
+    // Subtraction form: no unsigned overflow before the bound decision.
+    const size_t avail = data->size() - cursor;
+    const size_t n = count <= avail ? count : avail;
     for (size_t i = 0; i < n; ++i) static_cast<char*>(buf)[i] = (*data)[cursor + i];
     cursor += n;
     return static_cast<int>(n);
   }
   size_t write(const void* buf, size_t count) {
-    if (!data) return 0;
+    if (!data || cursor > data->size()) return 0;
     const auto* b = static_cast<const char*>(buf);
-    if (cursor + count > data->size()) data->resize(cursor + count);
+    // Subtraction form: count is validated against the remaining span before
+    // any addition, so the resize argument cannot wrap.
+    if (count > data->size() - cursor) data->resize(cursor + count);
     for (size_t i = 0; i < count; ++i) (*data)[cursor + i] = b[i];
     cursor += count;
     return count;
