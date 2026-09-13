@@ -292,7 +292,7 @@ void ProgressManager::saveTtf(const uint16_t spineIndex, const uint16_t pageNumb
       current_->visibleTextOffset = charOffset;  // char-offset carrier
 
       changed = !(*current_ == *lastFlushed_);
-      sinceFlushSec = static_cast<uint32_t>(millis() / 1000) - lastFlushSec_;
+      sinceFlushSec = secsSinceFlush(lastFlushSec_);
       const bool intervalElapsed = sinceFlushSec >= (FLUSH_INTERVAL_MS / 1000);
       due = changed && (intervalElapsed || lowBat || writeQueued_);
       if (due) writeQueued_ = true;
