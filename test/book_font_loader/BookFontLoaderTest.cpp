@@ -482,7 +482,7 @@ namespace {
 
 std::string readFixtureFile(const std::string& path) {
   std::ifstream f(path, std::ios::binary);
-  if (!f.good()) return {};  // callers must skip on empty (see requireFixture)
+  if (!f.good()) return {};  // callers must skip on empty (see fixtureAvailable)
   return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
@@ -490,9 +490,8 @@ std::string emberBytes(const char* name) { return readFixtureFile(EMBER_FIXTURES
 
 // Missing/unreadable fixtures must skip the test, not feed stb an empty
 // buffer (stbtt_GetFontOffsetForIndex reads 4 header bytes → OOB crash).
-void requireFixture(const std::string& bytes, const char* name) {
-  if (bytes.empty()) GTEST_SKIP() << "fixture unavailable: " << name;
-}
+// GTEST_SKIP() returns from the current function, so test bodies own it.
+bool fixtureAvailable(const std::string& bytes) { return !bytes.empty(); }
 
 struct ParsedFace {
   stbtt_fontinfo info{};
@@ -549,9 +548,9 @@ TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
   const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string boldBytes = emberBytes("Amazon_Ember_Bold.ttf");
   const std::string boldItalicBytes = emberBytes("Amazon_Ember_Bold_Italic.ttf");
-  requireFixture(regularBytes, "Amazon_Ember_Regular.ttf");
-  requireFixture(boldBytes, "Amazon_Ember_Bold.ttf");
-  requireFixture(boldItalicBytes, "Amazon_Ember_Bold_Italic.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  if (!fixtureAvailable(boldBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Bold.ttf";
+  if (!fixtureAvailable(boldItalicBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Bold_Italic.ttf";
   resetStorage();
   seedFile("/fonts/Amazon Ember/Amazon_Ember_Regular.ttf", regularBytes);
   seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold.ttf", boldBytes);
@@ -580,8 +579,8 @@ TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
 TEST(TtfFaceMetrics, AmazonEmberScalesByPerFaceUnitsPerEm) {
   const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string boldItalic = emberBytes("Amazon_Ember_Bold_Italic.ttf");
-  requireFixture(regular, "Amazon_Ember_Regular.ttf");
-  requireFixture(boldItalic, "Amazon_Ember_Bold_Italic.ttf");
+  if (!fixtureAvailable(regular)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  if (!fixtureAvailable(boldItalic)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Bold_Italic.ttf";
   const ParsedFace pr = parseFace(regular);
   const ParsedFace pbi = parseFace(boldItalic);
   ASSERT_NE(pr.asc, 0);
@@ -609,8 +608,8 @@ TEST(TtfFaceMetrics, AmazonEmberScalesByPerFaceUnitsPerEm) {
 TEST(FontChainMixedUpem, LineGridComesFromFirstFace) {
   const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string boldItalic = emberBytes("Amazon_Ember_Bold_Italic.ttf");
-  requireFixture(regular, "Amazon_Ember_Regular.ttf");
-  requireFixture(boldItalic, "Amazon_Ember_Bold_Italic.ttf");
+  if (!fixtureAvailable(regular)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  if (!fixtureAvailable(boldItalic)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Bold_Italic.ttf";
 
   static uint8_t arenaBuf[64 * 1024];
   book::Arena arena(arenaBuf, sizeof(arenaBuf));
@@ -634,8 +633,8 @@ TEST(FontChainMixedUpem, LineGridComesFromFirstFace) {
 TEST(FontChainMixedUpem, CmapMissFallsThroughToCoveringFace) {
   const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
-  requireFixture(regular, "Amazon_Ember_Regular.ttf");
-  requireFixture(dejavu, DEJAVU_FIXTURE);
+  if (!fixtureAvailable(regular)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DEJAVU_FIXTURE";
 
   static uint8_t arenaBuf[64 * 1024];
   book::Arena arena(arenaBuf, sizeof(arenaBuf));
