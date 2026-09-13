@@ -7,11 +7,18 @@
 
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include "BookFontLoader.h"
 #include "TestHeapHooks.h"
+#include "render/TtfFont.h"
+
+// TtfFont.cpp compiles stb with STBTT_STATIC (internal linkage), so the test
+// needs its own non-static copy for the reference-metrics math below.
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
 
 namespace {
 
@@ -444,4 +451,168 @@ TEST(BookFontLoaderSelection, ClearedSelectionServesFallbackChain) {
   loader.getReaderFont();
   EXPECT_EQ(loader.fontFingerprint(), 0u);
   EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+}
+
+// ── Real-font fixtures: Amazon Ember (mixed upem, subsetted cmap) ────────────
+// Owner-supplied faces with hostile metadata: upem 2048/2048/1000 across one
+// family and inconsistent internal name tables ("AmazonEmber-Regular" vs
+// "Amazon Ember"). Grouping must be folder-based (§14.4) and scaling
+// per-face — these tests pin both so a family-uniform-upem regression fails
+// here before it can produce off-page geometry on device.
+
+namespace {
+
+std::string readFixtureFile(const std::string& path) {
+  std::ifstream f(path, std::ios::binary);
+  EXPECT_TRUE(f.good()) << "fixture missing: " << path;
+  return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+std::string emberBytes(const char* name) { return readFixtureFile(EMBER_FIXTURES_DIR "/" + std::string(name)); }
+
+struct ParsedFace {
+  stbtt_fontinfo info{};
+  int asc = 0;
+  int desc = 0;
+  int gap = 0;
+};
+
+ParsedFace parseFace(const std::string& bytes) {
+  ParsedFace f;
+  const int offset = stbtt_GetFontOffsetForIndex(reinterpret_cast<const uint8_t*>(bytes.data()), 0);
+  EXPECT_GE(offset, 0);
+  EXPECT_NE(stbtt_InitFont(&f.info, reinterpret_cast<const uint8_t*>(bytes.data()), offset), 0);
+  stbtt_GetFontVMetrics(&f.info, &f.asc, &f.desc, &f.gap);
+  return f;
+}
+
+// Mirrors TtfFont::ascent(): unitsAscent * stbtt_ScaleForPixelHeight(size).
+int16_t expectedAscent(const ParsedFace& f, uint16_t sizePx) {
+  const float scale = stbtt_ScaleForPixelHeight(&f.info, static_cast<float>(sizePx));
+  return static_cast<int16_t>(f.asc * scale + 0.5f);
+}
+
+constexpr uint16_t kReadSize = 40;  // px; any size works — math is linear
+
+}  // namespace
+
+// §14.4: family identity is the folder name; the files' internal name tables
+// ("AmazonEmber-Regular", "AmazonEmber-Bold", "Amazon Ember") must never
+// split or rename the family, and filename tokens must drive style slots.
+TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
+  resetStorage();
+  seedFile("/fonts/Amazon Ember/Amazon_Ember_Regular.ttf", emberBytes("Amazon_Ember_Regular.ttf"));
+  seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold.ttf", emberBytes("Amazon_Ember_Bold.ttf"));
+  seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf", emberBytes("Amazon_Ember_Bold_Italic.ttf"));
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Amazon Ember");
+  ASSERT_EQ(fams[0].faceCount, 3u);
+  const auto* regular = findFace(fams[0], freeink::book::StyleNone);
+  const auto* bold = findFace(fams[0], freeink::book::StyleBold);
+  const auto* boldItalic = findFace(fams[0], kStyleBI);
+  ASSERT_NE(regular, nullptr);
+  ASSERT_NE(bold, nullptr);
+  ASSERT_NE(boldItalic, nullptr);
+  EXPECT_STREQ(regular->file, "/fonts/Amazon Ember/Amazon_Ember_Regular.ttf");
+  EXPECT_STREQ(bold->file, "/fonts/Amazon Ember/Amazon_Ember_Bold.ttf");
+  EXPECT_STREQ(boldItalic->file, "/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf");
+}
+
+// Each face scales by its OWN unitsPerEm: the 1000-upem BoldItalic carries
+// ~half the raw hhea units of the 2048 faces, yet the pixel-scaled ascents
+// must land in the same neighborhood and match stb's per-face math exactly.
+TEST(TtfFaceMetrics, AmazonEmberScalesByPerFaceUnitsPerEm) {
+  const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
+  const std::string boldItalic = emberBytes("Amazon_Ember_Bold_Italic.ttf");
+  const ParsedFace pr = parseFace(regular);
+  const ParsedFace pbi = parseFace(boldItalic);
+  ASSERT_NE(pr.asc, 0);
+  ASSERT_NE(pbi.asc, 0);
+
+  static uint8_t arenaBuf[64 * 1024];
+  book::Arena arena(arenaBuf, sizeof(arenaBuf));
+  book::TtfFont fontReg;
+  ASSERT_TRUE(
+      fontReg.init(reinterpret_cast<const uint8_t*>(regular.data()), static_cast<uint32_t>(regular.size()), arena));
+  book::TtfFont fontBi;
+  ASSERT_TRUE(fontBi.init(reinterpret_cast<const uint8_t*>(boldItalic.data()), static_cast<uint32_t>(boldItalic.size()),
+                          arena));
+
+  // Exact per-face formula match (a family-uniform scale would break these).
+  EXPECT_EQ(fontReg.ascent(kReadSize), expectedAscent(pr, kReadSize));
+  EXPECT_EQ(fontBi.ascent(kReadSize), expectedAscent(pbi, kReadSize));
+  // Raw unit spaces are ~2x apart; the scaled results are not.
+  EXPECT_GT(std::abs(pr.asc), std::abs(pbi.asc));
+  EXPECT_LE(std::abs(static_cast<int>(fontReg.ascent(kReadSize)) - static_cast<int>(fontBi.ascent(kReadSize))), 2);
+}
+
+// Mixed-upem chain: the chain's line grid comes from the FIRST registered
+// face (stable baseline across styles), never from a later face's upem.
+TEST(FontChainMixedUpem, LineGridComesFromFirstFace) {
+  const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
+  const std::string boldItalic = emberBytes("Amazon_Ember_Bold_Italic.ttf");
+
+  static uint8_t arenaBuf[64 * 1024];
+  book::Arena arena(arenaBuf, sizeof(arenaBuf));
+  book::TtfFont fontReg;
+  ASSERT_TRUE(
+      fontReg.init(reinterpret_cast<const uint8_t*>(regular.data()), static_cast<uint32_t>(regular.size()), arena));
+  book::TtfFont fontBi;
+  ASSERT_TRUE(fontBi.init(reinterpret_cast<const uint8_t*>(boldItalic.data()), static_cast<uint32_t>(boldItalic.size()),
+                          arena));
+
+  book::FontChain chain;
+  ASSERT_TRUE(chain.add(&fontReg, book::StyleNone));
+  ASSERT_TRUE(chain.add(&fontBi, book::StyleBold | book::StyleItalic));
+  EXPECT_EQ(chain.lineHeight(kReadSize), fontReg.lineHeight(kReadSize));
+  EXPECT_EQ(chain.ascent(kReadSize), fontReg.ascent(kReadSize));
+}
+
+// The Regular face is heavily subsetted (78 glyphs, 682 cmap entries):
+// common Latin letters must resolve in-face; a cmap miss must fall through
+// the chain to a covering tail face instead of returning nullptr.
+TEST(FontChainMixedUpem, CmapMissFallsThroughToCoveringFace) {
+  const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+
+  static uint8_t arenaBuf[64 * 1024];
+  book::Arena arena(arenaBuf, sizeof(arenaBuf));
+  book::TtfFont fontReg;
+  ASSERT_TRUE(
+      fontReg.init(reinterpret_cast<const uint8_t*>(regular.data()), static_cast<uint32_t>(regular.size()), arena));
+  book::TtfFont fontTail;
+  ASSERT_TRUE(
+      fontTail.init(reinterpret_cast<const uint8_t*>(dejavu.data()), static_cast<uint32_t>(dejavu.size()), arena));
+
+  book::FontChain chain;
+  ASSERT_TRUE(chain.add(&fontReg, book::StyleNone));
+  ASSERT_TRUE(chain.add(&fontTail, book::StyleNone));
+  ASSERT_TRUE(chain.add(&fontTail, book::StyleBold));
+  ASSERT_TRUE(chain.add(&fontTail, book::StyleItalic));
+  ASSERT_TRUE(chain.add(&fontTail, book::StyleBold | book::StyleItalic));
+
+  // Sanity: core Latin letters stay in the subsetted face.
+  for (const uint32_t cp : {'a', 'A', 'e', ' ', '.'}) {
+    EXPECT_TRUE(fontReg.hasGlyph(cp)) << "subset lacks common codepoint U+" << std::hex << cp;
+  }
+
+  // Find a codepoint the Ember subset does not cover but the tail face
+  // does; the chain must route it to that covering face, never nullptr.
+  // (Ember's cmap spans Latin/Greek/Cyrillic; Hebrew/Armenian/Georgian sit
+  // outside it. DejaVu carries all three blocks.)
+  const uint32_t candidates[] = {0x05D0 /*א*/, 0x0531 /*Ա*/, 0x1E00, 0x10A0};
+  uint32_t missing = 0;
+  for (const uint32_t cp : candidates) {
+    if (!fontReg.hasGlyph(cp) && fontTail.hasGlyph(cp)) {
+      missing = cp;
+      break;
+    }
+  }
+  ASSERT_NE(missing, 0u) << "fixture unexpectedly covers every candidate";
+  uint8_t faceFlags = 0xFF;
+  EXPECT_EQ(chain.fontFor(missing, book::StyleNone, &faceFlags), &fontTail);
 }

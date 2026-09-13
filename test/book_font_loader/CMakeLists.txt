@@ -20,6 +20,9 @@ target_include_directories(BookFontLoaderTest PRIVATE
 target_compile_definitions(BookFontLoaderTest PRIVATE
   # Memory.h host mode (no heap_caps); matches the real host-test gating.
   HOST_TEST=1
+  # Real-font fixtures for the scan/upem/subset tests (paths, not contents).
+  EMBER_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/fonts/amazon-ember"
+  DEJAVU_FIXTURE="${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/test/fixtures/fonts/DejaVuSans.ttf"
 )
 
 target_link_libraries(BookFontLoaderTest PRIVATE
