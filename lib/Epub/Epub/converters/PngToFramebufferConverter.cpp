@@ -326,11 +326,38 @@ bool PngToFramebufferConverter::getDimensionsStatic(const std::string& imagePath
     return false;
   }
 
-  int rc = png->open(imagePath.c_str(), pngOpenWithHandle, pngCloseWithHandle, pngReadWithHandle, pngSeekWithHandle,
-                     nullptr);
+  const int rc = png->open(imagePath.c_str(), pngOpenWithHandle, pngCloseWithHandle, pngReadWithHandle,
+                           pngSeekWithHandle, nullptr);
   const ScopedCleanup cleanup{[&png]() { png->close(); }};
+  if (rc != PNG_SUCCESS) {
+    LOG_ERR("PNG", "Failed to open PNG for dimensions: %d", rc);
+    return false;
+  }
 
-  if (rc != 0) {
+  return validateAndStoreDimensions(png->getWidth(), png->getHeight(), out, "PNG");
+}
+
+bool PngToFramebufferConverter::getDimensionsStatic(const uint8_t* data, size_t size, ImageDimensions& out) {
+  if (!data || size == 0) {
+    LOG_ERR("PNG", "Invalid memory source for PNG dimensions");
+    return false;
+  }
+
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
+    LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
+    return false;
+  }
+
+  std::unique_ptr<PNG> png(new (std::nothrow) PNG());
+  if (!png) {
+    LOG_ERR("PNG", "Failed to allocate PNG decoder for dimensions");
+    return false;
+  }
+
+  const int rc = png->openRAM(const_cast<uint8_t*>(data), static_cast<int>(size), nullptr);
+  const ScopedCleanup cleanup{[&png]() { png->close(); }};
+  if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Failed to open PNG for dimensions: %d", rc);
     return false;
   }
@@ -348,30 +375,66 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
     return false;
   }
 
-  // Heap-allocate PNG decoder (~42 KB) - freed at end of function
   std::unique_ptr<PNG> png(new (std::nothrow) PNG());
   if (!png) {
     LOG_ERR("PNG", "Failed to allocate PNG decoder");
     return false;
   }
 
-  PngContext ctx;
-  ctx.decoder = png.get();
-  ctx.renderer = &renderer;
-  ctx.config = &config;
-  ctx.screenWidth = renderer.getScreenWidth();
-  ctx.screenHeight = renderer.getScreenHeight();
-
-  int rc = png->open(imagePath.c_str(), pngOpenWithHandle, pngCloseWithHandle, pngReadWithHandle, pngSeekWithHandle,
-                     pngDrawCallback);
+  const int rc = png->open(imagePath.c_str(), pngOpenWithHandle, pngCloseWithHandle, pngReadWithHandle,
+                           pngSeekWithHandle, pngDrawCallback);
   const ScopedCleanup cleanup{[&png]() { png->close(); }};
   if (rc != PNG_SUCCESS) {
     LOG_ERR("PNG", "Failed to open PNG: %d", rc);
     return false;
   }
 
+  return decodeFromOpen(*png, renderer, config, imagePath);
+}
+
+bool PngToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size, GfxRenderer& renderer,
+                                                    const RenderConfig& config) {
+  if (data == nullptr || size == 0) {
+    LOG_ERR("PNG", "Invalid memory source for PNG decode");
+    return false;
+  }
+
+  LOG_DBG("PNG", "Decoding PNG from memory (%u bytes)", static_cast<unsigned>(size));
+
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
+    LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
+    return false;
+  }
+
+  std::unique_ptr<PNG> png(new (std::nothrow) PNG());
+  if (!png) {
+    LOG_ERR("PNG", "Failed to allocate PNG decoder");
+    return false;
+  }
+
+  // openRAM() reads the buffer without mutating it.
+  const int rc = png->openRAM(data, static_cast<int>(size), pngDrawCallback);
+  const ScopedCleanup cleanup{[&png]() { png->close(); }};
+  if (rc != PNG_SUCCESS) {
+    LOG_ERR("PNG", "Failed to open PNG from memory: %d", rc);
+    return false;
+  }
+
+  return decodeFromOpen(*png, renderer, config, std::string());
+}
+
+bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, const RenderConfig& config,
+                                               const std::string& imagePath) {
+  PngContext ctx;
+  ctx.decoder = &png;
+  ctx.renderer = &renderer;
+  ctx.config = &config;
+  ctx.screenWidth = renderer.getScreenWidth();
+  ctx.screenHeight = renderer.getScreenHeight();
+
   ImageDimensions sourceDimensions;
-  if (!validateAndStoreDimensions(png->getWidth(), png->getHeight(), sourceDimensions, "PNG")) return false;
+  if (!validateAndStoreDimensions(png.getWidth(), png.getHeight(), sourceDimensions, "PNG")) return false;
 
   // Calculate output dimensions
   ctx.srcWidth = sourceDimensions.width;
@@ -402,8 +465,8 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
   }
   ctx.lastDstY = -1;  // Reset row tracking
 
-  const int pixelType = png->getPixelType();
-  const int bitsPerSample = png->getBpp();
+  const int pixelType = png.getPixelType();
+  const int bitsPerSample = png.getBpp();
   LOG_DBG("PNG", "PNG %dx%d (visible %dx%d) -> %dx%d (scale %.2f), type: %d, bpp: %d", ctx.srcWidth, ctx.srcHeight,
           ctx.visibleWidth, ctx.visibleHeight, ctx.dstWidth, ctx.dstHeight, ctx.scale, pixelType, bitsPerSample);
 
@@ -463,7 +526,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath
 
   unsigned long decodeStart = millis();
   ctx.lastYieldMs = decodeStart;
-  rc = png->decode(&ctx, 0);
+  const int rc = png.decode(&ctx, 0);
   unsigned long decodeTime = millis() - decodeStart;
 
   ctx.grayLineBuffer = nullptr;
