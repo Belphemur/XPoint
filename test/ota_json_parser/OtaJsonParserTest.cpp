@@ -155,6 +155,24 @@ const char* kManifestV190 = R"({
   ]
 })";
 
+// Dual-family release manifest (v1.16 transition): five crosspoint entries
+// first for v1.15.x parsers, followed by the five xpoint entries.
+const char* kManifestDualFamily = R"({
+  "version": "1.16.0",
+  "boards": [
+    {"board":"x4","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-x3-x4.bin","size":5390001,"sha256":"1111111122222222333333334444444455555555666666667777777788888888"},
+    {"board":"sticky","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-sticky.bin","size":5420097,"sha256":"99990000111122223333444455556666777788889999aaaabbbbccccddddeeee"},
+    {"board":"x4pro","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-x4pro.bin","size":5435937,"sha256":"a5f3c9d2e1b8074a6f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607182"},
+    {"board":"papermono","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-papermono.bin","size":5401232,"sha256":"2222222233333333444444445555555566666666777777778888888899999999"},
+    {"board":"x4c","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-x4c.bin","size":5410000,"sha256":"33333333444444445555555566666666777777778888888899999999aaaaaaab"},
+    {"board":"x4","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/xpoint-1.16.0-x3-x4.bin","size":5390001,"sha256":"1111111122222222333333334444444455555555666666667777777788888888"},
+    {"board":"sticky","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/xpoint-1.16.0-sticky.bin","size":5420097,"sha256":"99990000111122223333444455556666777788889999aaaabbbbccccddddeeee"},
+    {"board":"x4pro","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/xpoint-1.16.0-x4pro.bin","size":5435937,"sha256":"a5f3c9d2e1b8074a6f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607182"},
+    {"board":"papermono","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/xpoint-1.16.0-papermono.bin","size":5401232,"sha256":"2222222233333333444444445555555566666666777777778888888899999999"},
+    {"board":"x4c","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/xpoint-1.16.0-x4c.bin","size":5410000,"sha256":"33333333444444445555555566666666777777778888888899999999aaaaaaab"}
+  ]
+})";
+
 // OtaReleaseInfo (~1KB) and ManifestBoardEntry (~580B each) blow the
 // 256-byte stack-safety budget, so test instances live in static storage
 // and are zeroed before each use.
@@ -407,6 +425,40 @@ TEST(OtaManifestParse, InvalidHexShaMeansNoSha) {
   ASSERT_EQ(count, 2);
   EXPECT_FALSE(findBoardEntry(entries, count, "x4pro", 5)->hasSha);
   EXPECT_FALSE(findBoardEntry(entries, count, "x4", 2)->hasSha);
+}
+
+TEST(OtaManifestParse, DualFamilyManifestParsesAllEntries) {
+  ManifestBoardEntry* entries = makeEntries();
+  int count = -1;
+  char version[32] = {0};
+
+  ASSERT_TRUE(parseOtaManifest(kManifestDualFamily, strlen(kManifestDualFamily), entries, OTA_MANIFEST_MAX_BOARDS,
+                               &count, version, sizeof(version)));
+
+  EXPECT_EQ(count, 10);
+  EXPECT_STREQ(version, "1.16.0");
+  const ManifestBoardEntry* x4 = findBoardEntry(entries, count, "x4", 2);
+  ASSERT_NE(x4, nullptr);
+  EXPECT_STREQ(x4->url, "https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-x3-x4.bin");
+}
+
+TEST(OtaManifestParse, BoardEntryPrefersSelectedAssetUrl) {
+  ManifestBoardEntry* entries = makeEntries();
+  int count = -1;
+  char version[32] = {0};
+
+  ASSERT_TRUE(parseOtaManifest(kManifestDualFamily, strlen(kManifestDualFamily), entries, OTA_MANIFEST_MAX_BOARDS,
+                               &count, version, sizeof(version)));
+
+  const char* x4proUrl = "https://github.com/Belphemur/XPoint/releases/download/v1.16.0/xpoint-1.16.0-x4pro.bin";
+  const ManifestBoardEntry* x4pro = findBoardEntryForUrl(entries, count, "x4pro", 5, x4proUrl);
+  ASSERT_NE(x4pro, nullptr);
+  EXPECT_STREQ(x4pro->url, x4proUrl);
+
+  // A URL with no exact manifest entry falls back to the first board match.
+  const ManifestBoardEntry* x4 = findBoardEntryForUrl(entries, count, "x4", 2, "https://example.com/other.bin");
+  ASSERT_NE(x4, nullptr);
+  EXPECT_STREQ(x4->url, "https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-x3-x4.bin");
 }
 
 TEST(OtaManifestParse, MaxEntriesCapsParsedBoards) {

@@ -32,3 +32,17 @@ inline const ManifestBoardEntry* findBoardEntry(const ManifestBoardEntry* entrie
   }
   return nullptr;
 }
+
+// Like findBoardEntry, but prefers the entry whose URL matches the asset the
+// release JSON selected. This disambiguates duplicate board entries published
+// during the crosspoint/xpoint asset-name transition. Falls back to the first
+// board match for manifests that carry only one entry per board.
+inline const ManifestBoardEntry* findBoardEntryForUrl(const ManifestBoardEntry* entries, int count, const char* name,
+                                                      size_t len, const char* url) {
+  const ManifestBoardEntry* fallback = findBoardEntry(entries, count, name, len);
+  if (!fallback || !url || url[0] == '\0') return fallback;
+  for (const ManifestBoardEntry* e = fallback; e < entries + count; ++e) {
+    if (len == strlen(e->board) && memcmp(e->board, name, len) == 0 && strcmp(e->url, url) == 0) return e;
+  }
+  return fallback;
+}

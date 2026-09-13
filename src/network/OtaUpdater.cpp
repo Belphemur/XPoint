@@ -48,8 +48,9 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // User-Agent (see HttpDownloader).
   constexpr size_t MAX_RELEASE_BYTES = 65536;
   std::string releaseBody;
-  // Each board updates from crosspoint-<version>-<device>.bin. The combined
-  // C3 X4/X3 image uses the x3-x4 device tag; other asset suffixes match the
+  // Each board updates from xpoint-<version>-<device>.bin, then falls back to
+  // the crosspoint-<version>-<device>.bin compatibility name. The combined C3
+  // X4/X3 image uses the x3-x4 device tag; other asset suffixes match the
   // firmware board tag. The version embeds the release tag, which is only
   // known after parsing, so the body is parsed once for the tag and again
   // (below) to match the assets.
@@ -73,16 +74,24 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return JSON_PARSE_ERROR;
   }
 
-  // Fork release tags are "v"-prefixed ("v1.14.0"); the asset name carries the
-  // bare version ("crosspoint-1.14.0-x4pro.bin").
+  // Fork release tags are "v"-prefixed ("v1.15.0"); the asset name carries the
+  // bare version ("xpoint-1.16.0-x4pro.bin").
   const char* version = info.tagName;
   if (*version == 'v' || *version == 'V') ++version;
   char assetName[48];
-  snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", version, assetSuffix);
+  snprintf(assetName, sizeof(assetName), "xpoint-%s%s.bin", version, assetSuffix);
   parseOtaRelease(releaseBody.data(), releaseBody.size(), assetName, "manifest.json", info);
 
-  // Legacy fallback: releases published before the crosspoint-<version>-
-  // <device>.bin naming still carry firmware[-<board>].bin assets.
+  // Transition shim: v1.16 releases also publish crosspoint-<version>-<device>.bin
+  // so v1.15.x devices keep finding an asset. Remove this fallback after v1.17
+  // drops the compatibility assets.
+  if (!info.hasFirmware) {
+    snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", version, assetSuffix);
+    parseOtaRelease(releaseBody.data(), releaseBody.size(), assetName, "manifest.json", info);
+  }
+
+  // Legacy fallback: releases published before either versioned naming still
+  // carry firmware[-<board>].bin assets.
   if (!info.hasFirmware) {
     snprintf(assetName, sizeof(assetName), isX4 ? "firmware.bin" : "firmware-%.*s.bin",
              static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
@@ -90,7 +99,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   }
 
   if (!info.hasFirmware) {
-    LOG_INF("OTA", "No %s asset in latest release", assetName);
+    LOG_INF("OTA", "No OTA firmware asset in latest release");
     return NO_UPDATE;
   }
 
@@ -165,7 +174,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::fetchAndVerifyManifest(const std::string
   }
 
   const ManifestBoardEntry* entry =
-      findBoardEntry(entries.get(), nEntries, board_tag::boardName(), board_tag::boardNameLen());
+      findBoardEntryForUrl(entries.get(), nEntries, board_tag::boardName(), board_tag::boardNameLen(), otaUrl.c_str());
   if (!entry) {
     LOG_INF("OTA", "Manifest has no entry for this board (%.*s)", static_cast<int>(board_tag::boardNameLen()),
             board_tag::boardName());
