@@ -76,8 +76,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
+          key: pio-${{ runner.os }}-cppcheck-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-cppcheck-
+            pio-${{ runner.os }}-
 
       - name: Install cppcheck runtime dependency
         run: |
@@ -105,6 +107,8 @@ jobs:
             asset: firmware-x4pro.bin
           - env: papermono
             asset: firmware-papermono.bin
+          - env: x4c
+            asset: firmware-x4c.bin
     steps:
       - uses: actions/checkout@v7
         with:
@@ -135,8 +139,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
+          key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ matrix.env }}-
+            pio-${{ runner.os }}-
 
       - name: Build ${{ matrix.env }} firmware
         run: |

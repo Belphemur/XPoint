@@ -19,6 +19,8 @@ jobs:
             asset: firmware-x4pro.bin
           - pio_env: papermono-gh_release_rc
             asset: firmware-papermono.bin
+          - pio_env: x4c-gh_release_rc
+            asset: firmware-x4c.bin
     steps:
       - uses: actions/checkout@v7
         with:
@@ -49,8 +51,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
+          key: pio-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ matrix.pio_env }}-
+            pio-${{ runner.os }}-
 
       - name: Extract env
         run: |
