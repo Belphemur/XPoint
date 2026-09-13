@@ -50,7 +50,12 @@ const char* matchMethodName(const DocumentMatchMethod method) {
 
 KOReaderSyncActivity::KOReaderSyncActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const std::string& epubPath, CrossPointPosition localPosition,
-                                           SavedProgressPosition localKoPos, std::string localChapterName)
+                                           SavedProgressPosition localKoPos, std::string localChapterName
+#if defined(CROSSPOINT_TTF_READER)
+                                           ,
+                                           const uint32_t ttfLayoutGeneration, const bool ttfLayoutValid
+#endif
+                                           )
     : Activity("KOReaderSync", renderer, mappedInput),
       UiAppHost(renderer),
       epubPath(epubPath),
@@ -58,7 +63,12 @@ KOReaderSyncActivity::KOReaderSyncActivity(GfxRenderer& renderer, MappedInputMan
       localPosition(localPosition),
       remoteProgress{},
       remotePosition{},
-      localProgress(std::move(localKoPos)) {}
+      localProgress(std::move(localKoPos)) {
+#if defined(CROSSPOINT_TTF_READER)
+  this->ttfLayoutGeneration = ttfLayoutGeneration;
+  this->ttfLayoutValid = ttfLayoutValid;
+#endif
+}
 
 void KOReaderSyncActivity::ensureEpubLoaded() {
   if (!epub) {
@@ -79,15 +89,32 @@ void KOReaderSyncActivity::saveProgressAndReturn(int spineIndex, int page) {
   // epub is guaranteed non-null here: ensureEpubLoaded() was called in performSync() before
   // SHOWING_RESULT state is entered, and this method is only called from that state.
   assert(epub);
+#if defined(CROSSPOINT_TTF_READER)
+  // Keep the 16-byte TTF record shape when the reader opened the book under
+  // TTF: a legacy write here would strip the generation tag, and the next
+  // TTF open would degrade the synced position to chapter start. The record
+  // is page-anchored (charOffset 0): the TTF restore maps it through the
+  // record's page number instead of the char-offset index.
+  const bool saved =
+      ttfLayoutValid
+          ? progressManager.saveNowTtf(epub->getCachePath().c_str(), spineIndex, page, 0, 0, ttfLayoutGeneration)
+          : progressManager.saveNow(epub->getCachePath().c_str(), spineIndex, page, 0,
+                                    remotePosition.hasVisibleTextOffset && remotePosition.spineIndex == spineIndex,
+                                    remotePosition.hasVisibleTextOffset && remotePosition.spineIndex == spineIndex
+                                        ? remotePosition.visibleTextOffset
+                                        : 0);
+#else
   std::optional<uint32_t> offset;
   if (remotePosition.hasVisibleTextOffset && remotePosition.spineIndex == spineIndex) {
     offset = remotePosition.visibleTextOffset;
   }
+  const bool saved = progressManager.saveNow(epub->getCachePath().c_str(), spineIndex, page, 0, offset.has_value(),
+                                             offset.value_or(0));
+#endif
   // Single-writer rule (design §4.7): the KOReader remote-accept save goes
   // through the saver so the background tick never reverts the synced
   // position.
-  if (!progressManager.saveNow(epub->getCachePath().c_str(), spineIndex, page, 0, offset.has_value(),
-                               offset.value_or(0))) {
+  if (!saved) {
     {
       RenderLock lock(*this);
       state = SYNC_FAILED;

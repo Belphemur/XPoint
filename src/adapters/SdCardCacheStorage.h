@@ -21,8 +21,14 @@ class SdCardCacheStorage : public CacheStorage {
   // Takes the cache DIRECTORY (e.g. "/books/.crosspoint/<hash>/ficache").
   // Creates it if missing. Invalid/oversized paths leave the storage dead:
   // every operation then fails without crashing.
+  // Explicit ctor creates the directory; default-constructed storage is
+  // dead (empty dir_ → every operation fails without touching SD).
+  SdCardCacheStorage() = default;
   explicit SdCardCacheStorage(const char* dirPath);
   ~SdCardCacheStorage() override = default;
+  // Reopenable in place: defaulted move-assign (the user-declared destructor
+  // suppresses the implicit one).
+  SdCardCacheStorage& operator=(SdCardCacheStorage&&) = default;
 
   bool exists(const char* name) override;
   bool remove(const char* name) override;
@@ -47,6 +53,8 @@ class SdCardCacheStorage : public CacheStorage {
   // (allocation failed) makes every path-based operation fail.
   std::unique_ptr<char[]> pathBuf_;
   HalFile writeHandle_;  // the open .tmp between beginWrite()/endWrite()
+  bool writeFailed_ = false;
+  bool endWriteFailed_ = false;
 };
 
 }  // namespace book

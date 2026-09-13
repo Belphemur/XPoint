@@ -68,3 +68,32 @@ TEST(GrayPlanesTest, BlockPlanGrayscaleMirrorsPixelMapping) {
 }
 
 }  // namespace
+
+// ── PagePaint quantization (§11 Q7 construction (a), §13 correction 11) ──────
+// 8-bit engine coverage → the 2-bit GrayPlanes tones, using the .cpfont
+// converter banding (>=144/96/48), NOT uniform quartiles.
+
+#include "adapters/PagePaint.h"
+
+TEST(PagePaintTone, ConverterBandingThresholds) {
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(0), 0);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(47), 0);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(48), 1);  // tone-1 boundary
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(95), 1);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(96), 2);  // tone-2 boundary
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(143), 2);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(144), 3);  // solid-ink boundary
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(255), 3);
+}
+
+TEST(GrayPlanesToneMapping, PagePaintTonesMatchLegacyPlaneBits) {
+  using freeink::book::pagepaint::grayTone;
+  for (int c = 0; c <= 255; ++c) {
+    const uint8_t tone = grayTone(static_cast<uint8_t>(c));
+    // The BW base plots tone >= 1; the plane pass flags MSB for tones 1|2 and
+    // LSB only for tone 2 — identical to the bitmap path's raw tone values.
+    if (tone == 0) continue;
+    EXPECT_EQ(grayplanes::setMsb(tone), tone == 1 || tone == 2);
+    EXPECT_EQ(grayplanes::setLsb(tone), tone == 2);
+  }
+}

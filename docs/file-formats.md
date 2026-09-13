@@ -380,3 +380,67 @@ if (parsedSize != fileSize) {
     std::warning(std::format("Unparsed data detected: {} bytes remaining at offset 0x{:X}", fileSize - parsedSize, parsedSize));
 }
 ```
+
+## `ficache` — FreeInkBook native-TTF caches (CROSSPOINT_TTF_READER builds)
+
+PSRAM-class builds only (`x4pro`, `x4c`, `papermono` families; design
+`DESIGN_NATIVE_TTF_SUPPORT.md` §14.1). Everything lives under
+`<book cache path>/ficache/`:
+
+### `catalog.fibc`
+
+Built once per book by `BookCatalog::build` (FreeInkBook). Keyed by a
+fingerprint of the ZIP central directory + catalog format version; `open()`
+returns `Stale` when the container changed and the runtime rebuilds it.
+Sections (little-endian): name pool, title pool, 16-byte entry records
+(hash-sorted), 16-byte spine records, 12-byte TOC records, 8-byte hash table,
+metadata strings, compacted CSS rules, footer (`FIBC`).
+
+### `s<spine>-<hash8>.fibp` — per-chapter page cache
+
+One file per spine item; `<hash8>` is the 8-hex-digit layout generation hash
+(mix of page geometry, base size, font fingerprint, engine version —
+`layoutGenerationHash()`). Layout is replayed only while the generation
+matches; otherwise the file is rebuilt. Layout (little-endian, packed):
+
+```
+header : 'F''I''B''P' u16 version u16 reserved u32 generationHash
+blobs  : per page — u32 charStart, u16 runCount, u16 reserved, runs
+         {i16 x, i16 baselineY, u16 sizePx, u8 flags, u8 reserved,
+          u16 textLen, bytes}
+index  : per page — u32 blobOffset, u32 charStart
+anchors: per anchor — u32 idHash, u32 charStart
+footer : u32 indexOffset, u32 pageCount, u32 totalChars, 'F''I''B''X'
+```
+
+A *suspended partial build* commits the same shape with a partial footer
+(extra `bytesConsumed`/`bytesTotal` u32s, sealed `FIBx` instead of `FIBX`);
+readers treat it as a prefix (`isPartial()`). The restore primitive is
+`pageForChar(charOffset)`: the page whose `charStart` range covers the saved
+chapter character offset. `charOffset` addresses the extracted-text space,
+which is layout-parameter independent — it survives font-size/orientation
+changes (the anchor that carries reading position across generations).
+
+## `progress.bin`
+
+Atomic-record layout (little-endian, byte-packed; writer:
+`activities/reader/ProgressRecord.h`, single consumer `ProgressManager`):
+
+| Size | Shape |
+|---|---|
+| 6 | `u16 spineIndex, u16 pageNumber, u16 pageCount` |
+| 10 | 6-byte shape + `u32 visibleTextOffset` |
+| 16 | `u16 spineIndex, u16 pageNumber, u16 pageCount, u32 charOffset, u32 generation, u16 reserved=0` (TTF reader) |
+
+The 16-byte shape shares its 10-byte prefix with the legacy layout.
+**Downgrade caveat:** pre-change firmware reads only 10 bytes and cannot
+discriminate the shape, so it interprets the `charOffset` slot as a
+`visibleTextOffset` — a position misrestore within the right chapter (never
+a crash), self-healing on the reader's next save, which rewrites the record
+in that firmware's native shape. This firmware's own legacy paths
+(`ProgressManager::load`) decode by exact length and degrade to the base
+triple instead.
+Load-side migration never fails: any unrecognized size degrades to the
+6-byte base restore. The TTF reader restores through
+`pageForChar` only when the saved `generation` matches the current layout
+generation; otherwise the book opens at the chapter start (§7).

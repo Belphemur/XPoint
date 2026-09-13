@@ -36,6 +36,7 @@ class HalFile {
   }
   int read() { return -1; }
   size_t write(const void* buf, size_t count) {
+    if (testFailWrite) return 0;
     if (!data) return 0;
     const auto* b = static_cast<const char*>(buf);
     if (cursor + count > data->size()) data->resize(cursor + count);
@@ -44,7 +45,10 @@ class HalFile {
     return count;
   }
   size_t write(uint8_t b) { return write(&b, 1); }
-  bool sync() { return open_; }
+  bool sync() {
+    if (testFailSync) return false;  // injection point: sync stays open
+    return open_;
+  }
   bool close() {
     if (!open_) return false;
     if (testFailClose) return false;  // injection point: close stays open
@@ -54,6 +58,8 @@ class HalFile {
 
   // Test control (defined in Stubs.cpp).
   static bool testFailClose;
+  static bool testFailWrite;
+  static bool testFailSync;
 
  private:
   bool open_ = false;

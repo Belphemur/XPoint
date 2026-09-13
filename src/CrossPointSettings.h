@@ -359,6 +359,25 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
   char sdFontFamilyName[32] = "";
+  // Reader font engine (design §3.6/§14): BITMAP = legacy EpdFont reader
+  // path (rollback), TTF = the FreeInkBook native chain. The default follows
+  // the device class (§14.1): TTF on CROSSPOINT_TTF_READER builds, bitmap
+  // elsewhere. Only the TTF runtime consults this key.
+  enum READER_FONT_ENGINE { READER_ENGINE_BITMAP = 0, READER_ENGINE_TTF = 1 };
+#if defined(CROSSPOINT_TTF_READER)
+  uint8_t readerFontEngine = READER_ENGINE_TTF;
+#else
+  uint8_t readerFontEngine = READER_ENGINE_BITMAP;
+#endif
+  // Selected native TTF family under /fonts (empty = built-in fallback
+  // chain). Keyed by the §14.4 scanner's display name.
+  char ttfFontFamilyName[48] = "";
+  // Continuous 8..72 pt body size for the TTF engine (§14.2). The bitmap
+  // reader keeps the discrete fontPointSize list.
+  static constexpr uint8_t TTF_FONT_POINT_SIZE_MIN = 8;
+  static constexpr uint8_t TTF_FONT_POINT_SIZE_MAX = 72;
+  static constexpr uint8_t DEFAULT_TTF_FONT_POINT_SIZE = 14;
+  uint8_t ttfFontPointSize = DEFAULT_TTF_FONT_POINT_SIZE;
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)

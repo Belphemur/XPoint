@@ -54,6 +54,20 @@ class BookFontLoader {
   // Content-based fingerprint: FNV-1a over loaded font bytes xor styleCoverage.
   uint32_t fontFingerprint() const;
 
+  // Phase 3 family selection (design §3.6/§14.2): the reader and the settings
+  // preview call this from SETTINGS before getReaderFont(). An empty name is
+  // an explicit "built-in fallback" selection; a never-selected loader keeps
+  // the legacy families_[0] default (debug rig).
+  void selectFamily(const char* name);
+  // Case-insensitive manifest lookup (§14.4 display name); nullptr when absent.
+  const FamilyInfo* findFamily(const char* name) const;
+  // Static picker gates: PSRAM present AND every face within the per-face
+  // size guard. Load failures (corrupt fonts) are runtime — they degrade to
+  // the fallback chain instead of greying the row.
+  static bool isFamilyAvailable(const FamilyInfo& fam);
+  // Per-face PSRAM size guard (CWE-400); picker rows above it are greyed out.
+  static constexpr uint32_t kMaxFaceBytes = 2u * 1024u * 1024u;
+
   const FamilyInfo* families() const { return families_.data(); }
   uint8_t familyCount() const { return familyCount_; }
 
@@ -72,11 +86,22 @@ class BookFontLoader {
   FamilyInfo& editFamily(uint8_t idx) { return families_[idx]; }
   void setFamilyCountForTest(uint8_t n) { familyCount_ = n; }
   uint32_t dramBudgetForTest() const { return remainingBudget_; }
+  // Appends the Atkinson tail to the live chain without a loadable TTF face,
+  // so host tests can exercise the tail-append path.
+  void forceFallbackTailForTest();
+  const FontChain& chainForTest() const { return chain_; }
+  // Drive the §14.4 two-root discovery walk against the stub storage.
+  static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
+    scanFonts(rootPath, families, familyCount);
+  }
 #endif
 
  private:
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
+  // Selection state (see selectFamily()).
+  char selectedFamily_[48] = {};
+  bool familySelected_ = false;
 
   TtfFont* faces_[4] = {};
   FontChain chain_;
@@ -125,9 +150,18 @@ class BookFontLoader {
   // Aggregate DRAM budget: derived from free heap with floor guards.
   uint32_t remainingBudget_ = 0;
 
-  static void scanFonts(const char* fontPath);
-  static bool loadFaceBytes(const FontFaceInfo& fi);
+  // Two-level family walk (design §14.4): one subfolder per family under
+  // `rootPath`, hidden root scanned first so it wins on name collisions.
+  // Appends into the caller's manifest (capped at kMaxDiscoveredFamilies).
+  static void scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount);
   static FontChain* builtinFallback();
+  // One of the four baked Atkinson fallback faces (§14.3), owned by the
+  // builtin singleton; appended to the active chain as its tail.
+  static RenderFont* builtinFace(uint8_t idx);
+  // Appends the four Atkinson faces to `chain` as its non-selectable tail:
+  // a selected TTF family that lacks a glyph or style degrades to the
+  // fallback face instead of a missing glyph (§14.5 chain-tail semantics).
+  static void appendFallbackTail(FontChain& chain);
 
   // Load a single face into the live chain (member so it can access private
   // state: faces_, arenas_, fontBytes_, fontPsramBytes_, fontDramBytes_).

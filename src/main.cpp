@@ -74,6 +74,16 @@ BookFontLoader fontLoader;
 }  // namespace book
 }  // namespace freeink
 
+// TTF Phase 0 wiring proof: a link-time reference to the FreeInkBook engine.
+// File scope + gnu::used defeats the optimizer on every build variant (valid
+// for a namespace-scope variable on both the RISC-V and Xtensa GCC targets).
+// gnu::used alone does not guarantee retention under --gc-sections; gnu::retain
+// would, but the S3 framework's Xtensa GCC rejects it with -Wattributes at
+// namespace scope, so the LOG_DBG reference in setup() anchors the section
+// instead.
+using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
+[[gnu::used]] static const BookStatusProbe bookStatusProbe = &freeink::book::bookStatusName;
+
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
 constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
@@ -589,6 +599,12 @@ void setupDisplayAndFonts(bool seamless = false) {
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
 
+  // Native-TTF reader font discovery (design §14.1): gated so PSRAM-less
+  // builds never scan or allocate for the native-TTF path.
+#if defined(CROSSPOINT_TTF_READER)
+  freeink::book::fontLoader.begin();
+#endif
+
   LOG_DBG("MAIN", "Fonts setup");
 }
 
@@ -759,14 +775,8 @@ void setup() {
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   // TTF Phase 0 wiring proof: the FreeInkBook engine is linked but unused.
-  // The function pointer is a link-time reference that survives every build
-  // variant — it does not depend on logging at all (LOG_DBG compiles out
-  // when ENABLE_SERIAL_LOG is undefined, as in slim builds, or when
-  // LOG_LEVEL < 2); the log line is the visible smoke trace only where
-  // logging is compiled in. Both vanish with the lib_deps entry (design
-  // Phase 0 gate).
-  using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
-  [[gnu::used, gnu::retain]] static const BookStatusProbe bookStatusProbe = &freeink::book::bookStatusName;
+  // The reference lives at file scope (bookStatusProbe above); the log line
+  // is the visible smoke trace only where logging is compiled in.
   LOG_DBG("MAIN", "Book engine linked: bookStatusName(Ok)=%s, vendor=%s",
           freeink::book::bookStatusName(freeink::book::BookStatus::Ok), freeink::book::vendorVersions());
 

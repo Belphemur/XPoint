@@ -38,11 +38,21 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#if defined(CROSSPOINT_TTF_READER)
+#include <builtinFonts/atkinson_hn_14_bold.h>
+#include <builtinFonts/atkinson_hn_14_bolditalic.h>
+#include <builtinFonts/atkinson_hn_14_italic.h>
+#include <builtinFonts/atkinson_hn_14_regular.h>
+
+#include "adapters/EpdBookFont.h"
+#endif
+
 #ifdef HOST_TEST
 #include "Arduino.h"  // host-test stub for ESP.getFreeHeap
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <memory>
 
@@ -54,9 +64,10 @@ namespace book {
 // allocated; this constant is the current placeholder (128KB floor).
 static constexpr uint32_t kMaxDramFontBytes = 128 * 1024;
 
-// PSRAM-tier per-face size guard (CWE-400): fonts live resident in PSRAM for
-// the face's lifetime; bound each file well below the 8MB PSRAM pool.
-static constexpr uint32_t kMaxPsramFontBytes = 2 * 1024 * 1024;
+// Device-lifetime fallback faces (owned by builtinFallback()'s singleton pool
+// block). builtinFace() hands these out so appendFallbackTail() can register
+// them as an active chain's tail without transferring ownership.
+RenderFont* g_builtinFaces[4] = {};
 
 // SFNT minimum: 12-byte header + numTables * 16-byte entries.
 static constexpr uint32_t kMinSfntLen(uint16_t numTables) { return 12u + static_cast<uint32_t>(numTables) * 16u; }
@@ -92,6 +103,104 @@ static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
   return sz;
 }
 
+// ── scanFonts — per-family TTF discovery (design §14.4) ──────────────────
+
+#if defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)
+namespace {
+// Font roots. The hidden root is scanned first so it wins on family-name
+// collisions, matching the SdCardFontRegistry sleep-folder pattern.
+constexpr const char* kFontsRootHidden = "/.fonts";
+constexpr const char* kFontsRootVisible = "/fonts";
+
+// Case-insensitive ends-with on a null-terminated string.
+bool endsWithIgnoreCase(const char* s, const char* suffix) {
+  const size_t sLen = strlen(s);
+  const size_t sufLen = strlen(suffix);
+  if (sLen < sufLen) return false;
+  for (size_t i = 0; i < sufLen; ++i) {
+    if (tolower(static_cast<unsigned char>(s[sLen - sufLen + i])) != tolower(static_cast<unsigned char>(suffix[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Word-boundary case-insensitive substring test: the token must start after
+// a non-alphanumeric (or string start) and end before one, so "SemiBold"
+// does not match "bold".
+bool hasWord(const char* hay, const char* token) {
+  const size_t tLen = strlen(token);
+  for (size_t i = 0; hay[i] != '\0'; ++i) {
+    if (i > 0 && isalnum(static_cast<unsigned char>(hay[i - 1]))) continue;
+    size_t j = 0;
+    while (token[j] != '\0' && hay[i + j] != '\0' && tolower(static_cast<unsigned char>(hay[i + j])) == token[j]) {
+      ++j;
+    }
+    if (token[j] != '\0') continue;
+    const char after = hay[i + tLen];
+    if (after == '\0' || !isalnum(static_cast<unsigned char>(after))) return true;
+  }
+  return false;
+}
+
+// Style inference per design §14.4. Bold and italic are detected
+// independently (so "Font-Bold-Italic.ttf" gets both flags); the fused
+// "bolditalic"/"boldoblique" forms are matched explicitly because their
+// halves never sit on word boundaries ("BoldOblique": "bold" ends inside
+// the word, "oblique" starts inside it). "SemiBold" never matches "bold" —
+// the weight heuristics own those names.
+// `lower` is the lowercased filename stem.
+bool inferStyleFlags(const char* lower, uint8_t& styleOut) {
+  if (hasWord(lower, "bolditalic") || hasWord(lower, "boldoblique")) {
+    styleOut = StyleBold | StyleItalic;
+    return true;
+  }
+  const bool italic = hasWord(lower, "italic") || hasWord(lower, "oblique") || hasWord(lower, "ital");
+  const bool bold = hasWord(lower, "bold");
+  if (italic && bold) {
+    styleOut = StyleBold | StyleItalic;
+    return true;
+  }
+  if (italic) {
+    styleOut = StyleItalic;
+    return true;
+  }
+  if (bold) {
+    styleOut = StyleBold;
+    return true;
+  }
+  if (hasWord(lower, "regular") || hasWord(lower, "normal") || hasWord(lower, "book") || hasWord(lower, "roman") ||
+      hasWord(lower, "text")) {
+    styleOut = StyleNone;
+    return true;
+  }
+  if (hasWord(lower, "semibold") || hasWord(lower, "demibold") || hasWord(lower, "medium") || hasWord(lower, "black") ||
+      hasWord(lower, "heavy") || hasWord(lower, "extrabold")) {
+    styleOut = StyleBold;
+    return true;
+  }
+  if (hasWord(lower, "light") || hasWord(lower, "thin")) {
+    styleOut = StyleNone;
+    return true;
+  }
+  return false;
+}
+
+// Case-insensitive comparison for family dedupe and same-style duplicate
+// resolution (lexicographically-first filename wins).
+int ciCompare(const char* a, const char* b) {
+  while (*a != '\0' && *b != '\0') {
+    const int ca = tolower(static_cast<unsigned char>(*a));
+    const int cb = tolower(static_cast<unsigned char>(*b));
+    if (ca != cb) return ca - cb;
+    ++a;
+    ++b;
+  }
+  return tolower(static_cast<unsigned char>(*a)) - tolower(static_cast<unsigned char>(*b));
+}
+}  // namespace
+#endif
+
 // ── BookFontLoader implementation ────────────────────────────────────────────
 
 BookFontLoader::BookFontLoader() = default;
@@ -109,6 +218,11 @@ void BookFontLoader::begin() {
   familyCount_ = 0;
   families_ = {};
   dirty_.store(false, std::memory_order_relaxed);
+#if defined(CROSSPOINT_TTF_READER)
+  // Hidden root first so it wins on family-name collisions (§14.4).
+  scanFonts(kFontsRootHidden, families_.data(), familyCount_);
+  scanFonts(kFontsRootVisible, families_.data(), familyCount_);
+#endif
   remainingBudget_ = 0;
   initBudget();
 }
@@ -136,19 +250,50 @@ void BookFontLoader::ensureLoaded() {
     glyphBacking_[i].reset();
   }
   chain_ = FontChain{};
-  if (familyCount_ == 0) return;
+  if (familyCount_ == 0) {
+    // No manifest: no real fingerprint exists. Zero it so a cache generation
+    // derived from the stale value can't collide with a previously loaded
+    // family's caches; dirty stays clear until the next begin()/selectFamily.
+    fingerprint_ = 0;
+    dirty_.store(false, std::memory_order_relaxed);
+    loaded_ = true;  // a load attempt completed — the short-circuit must hold
+    return;
+  }
 
   // Recompute the DRAM budget: the release loop above freed the previous
   // faces' bytes, so a reload must not inherit the previously spent budget.
   initBudget();
 
-  const FamilyInfo& fam = families_[0];
-  for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
-    if (!tryLoadFace(i, fam.faces[i], chain_)) {
+  // Phase 3 family selection (design §3.6): the SETTINGS-driven reader and
+  // preview call selectFamily() first; an empty selection means the built-in
+  // fallback chain. An unselected loader keeps the legacy families_[0]
+  // default so the debug rig (and any pre-settings consumer) still works.
+  const FamilyInfo* famPtr = nullptr;
+  if (!familySelected_) {
+    famPtr = &families_[0];
+  } else if (selectedFamily_[0] != '\0') {
+    famPtr = findFamily(selectedFamily_);
+    if (famPtr == nullptr) {
+      LOG_DBG("BFNT", "Selected family '%s' not found — built-in fallback", selectedFamily_);
+    }
+  }  // explicit fallback selection: famPtr stays null
+  if (famPtr == nullptr) {
+    // Fallback chain (explicit or renamed family): fingerprint_ would
+    // otherwise keep the previous family's value and derive a stale FIBP
+    // generation from it.
+    fingerprint_ = 0;
+    dirty_.store(false, std::memory_order_relaxed);
+    loaded_ = true;  // a load attempt completed — the short-circuit must hold
+    return;          // chain stays empty; getReaderFont() serves the fallback
+  }
+
+  for (uint8_t i = 0; i < famPtr->faceCount && i < 4; ++i) {
+    if (!tryLoadFace(i, famPtr->faces[i], chain_)) {
       // Face skipped (too large, invalid sfnt, OOM); continue with fewer faces.
     }
   }
   fingerprint_ = computeFingerprint();
+  appendFallbackTail(chain_);
   loaded_ = true;
   dirty_.store(false, std::memory_order_relaxed);
 }
@@ -161,6 +306,33 @@ FontChain* BookFontLoader::getReaderFont() {
 uint32_t BookFontLoader::fontFingerprint() const { return fingerprint_; }
 
 void BookFontLoader::markDirty() { dirty_.store(true, std::memory_order_relaxed); }
+
+void BookFontLoader::selectFamily(const char* name) {
+  const char* clean = name != nullptr ? name : "";
+  if (familySelected_ && strncmp(selectedFamily_, clean, sizeof(selectedFamily_)) == 0) return;
+  strncpy(selectedFamily_, clean, sizeof(selectedFamily_) - 1);
+  selectedFamily_[sizeof(selectedFamily_) - 1] = '\0';
+  familySelected_ = true;
+  markDirty();
+}
+
+const FamilyInfo* BookFontLoader::findFamily(const char* name) const {
+  if (name == nullptr || name[0] == '\0') return nullptr;
+  // Case-insensitive per the loader contract (§14.4 display names): settings
+  // can round-trip through the web UI/JSON with different casing, and a
+  // renamed family on SD still degrades to the fallback.
+  const auto match = [name](const FamilyInfo& fam) { return strcasecmp(fam.name, name) == 0; };
+  const auto it = std::find_if(families_.begin(), families_.begin() + familyCount_, match);
+  return it != families_.begin() + familyCount_ ? &*it : nullptr;
+}
+
+bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) {
+  if (HalMemory::getPsramHeap().totalBytes == 0) return false;
+  for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
+    if (fam.faces[i].fileSize > kMaxFaceBytes) return false;
+  }
+  return true;
+}
 
 void BookFontLoader::releaseResidentCaches() {
   // Same release discipline as ensureLoaded(): RAII owners own the bytes.
@@ -201,17 +373,25 @@ uint32_t BookFontLoader::computeFingerprint() const {
 }
 
 FontChain* BookFontLoader::builtinFallback() {
-  // Singleton FontChain over 4 BitmapBookFont instances (4 styles),
-  // placement-new'ed into a pool block so their coverage_[64*64] payloads
-  // live in PSRAM instead of static BSS (PSRAM-only directive):
-  // 4 * sizeof(BitmapBookFont) ≈ 16.4KB total.
-  // The faces are intentional device-lifetime singletons: destructors are
-  // never run so FontChain entries remain valid after this function returns.
+  // Singleton FontChain over 4 fallback faces (4 styles), placement-new'ed
+  // into a pool block so their payloads live in PSRAM instead of static BSS
+  // (PSRAM-only directive). The faces are intentional device-lifetime
+  // singletons: destructors are never run so FontChain entries remain valid
+  // after this function returns. The face pointers stay in a static table so
+  // appendFallbackTail() can register the same faces as an active chain's
+  // tail without owning them.
+#if defined(CROSSPOINT_TTF_READER)
+  // Reader chain (§14.5): four RenderFont adapters over the baked Atkinson
+  // fonts so the whole chain speaks the same rasterize protocol.
+  using FaceType = EpdBookFont;
+#else
+  using FaceType = freeink::ui::BitmapBookFont;
+#endif
   static FontChain fallback;
   static PoolBytes backing;  // PoolBytes object itself is only a pointer of BSS
   static bool init = false;
   if (!init) {
-    static constexpr size_t kFallbackBytes = 4 * sizeof(freeink::ui::BitmapBookFont);
+    static constexpr size_t kFallbackBytes = 4 * sizeof(FaceType);
     backing = poolMakeBytes(kFallbackBytes);
     if (!backing) {
       LOG_ERR("BFNT", "OOM: %u bytes for builtin fallback fonts", static_cast<unsigned>(kFallbackBytes));
@@ -224,15 +404,26 @@ FontChain* BookFontLoader::builtinFallback() {
     // call (see singleton note).
     // cppcheck-suppress constVariablePointer ; placement-new writes through these addresses
     auto* slots = reinterpret_cast<char*>(backing.get());
-    constexpr auto faceSize = sizeof(freeink::ui::BitmapBookFont);
-    auto* r = new (slots + 0 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* b = new (slots + 1 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* i = new (slots + 2 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
-    auto* bi = new (slots + 3 * faceSize) freeink::ui::BitmapBookFont(freeink::ui::kNotoSansFont);
+    constexpr auto faceSize = sizeof(FaceType);
+#if defined(CROSSPOINT_TTF_READER)
+    auto* r = new (slots + 0 * faceSize) FaceType(&atkinson_hn_14_regular);
+    auto* b = new (slots + 1 * faceSize) FaceType(&atkinson_hn_14_bold);
+    auto* i = new (slots + 2 * faceSize) FaceType(&atkinson_hn_14_italic);
+    auto* bi = new (slots + 3 * faceSize) FaceType(&atkinson_hn_14_bolditalic);
+#else
+    auto* r = new (slots + 0 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+    auto* b = new (slots + 1 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+    auto* i = new (slots + 2 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+    auto* bi = new (slots + 3 * faceSize) FaceType(freeink::ui::kNotoSansFont);
+#endif
     fallback.add(r, StyleNone);
     fallback.add(b, StyleBold);
     fallback.add(i, StyleItalic);
     fallback.add(bi, StyleBold | StyleItalic);
+    g_builtinFaces[0] = r;
+    g_builtinFaces[1] = b;
+    g_builtinFaces[2] = i;
+    g_builtinFaces[3] = bi;
     // Mark built only after full construction: a transient PSRAM failure
     // above must leave init false so the next call retries, instead of
     // permanently serving the empty chain.
@@ -241,23 +432,201 @@ FontChain* BookFontLoader::builtinFallback() {
   return &fallback;
 }
 
-// ── scanFonts / loadFaceBytes (private, Phase 2 fill-ins) ────────────────────
-// Phase 1a ships the loader infrastructure only; discovery (instance-backed
-// /fonts walk grouping Family-Regular/Bold/Italic.ttf into families_) is
-// implemented in Phase 2, where begin() will call it and main.cpp will call
-// fontLoader.begin() beside sdFontSystem.begin(renderer). Until then
-// familyCount_ stays 0 and getReaderFont() serves the builtin fallback — the
-// intended Phase 1a behavior (no reader wiring yet, zero regression risk).
-
-void BookFontLoader::scanFonts(const char* fontPath) { (void)fontPath; }
-
-bool BookFontLoader::loadFaceBytes(const FontFaceInfo& fi) {
-  // Stub for Phase 1a — real implementation loads the whole font into a
-  // transient buffer for init, then releases the raw bytes; glyph data
-  // persists in the per-face arena.
-  (void)fi;
-  return false;
+RenderFont* BookFontLoader::builtinFace(const uint8_t idx) {
+  // Ensures the singleton is constructed, then hands out the device-lifetime
+  // face pointer (null only when the pool backing failed; FontChain::add
+  // treats a null font as a safe no-op).
+  builtinFallback();
+  return idx < 4 ? g_builtinFaces[idx] : nullptr;
 }
+
+void BookFontLoader::appendFallbackTail(FontChain& chain) {
+  chain.add(builtinFace(0), StyleNone);
+  chain.add(builtinFace(1), StyleBold);
+  chain.add(builtinFace(2), StyleItalic);
+  chain.add(builtinFace(3), StyleBold | StyleItalic);
+}
+
+#if defined(HOST_TEST)
+void BookFontLoader::forceFallbackTailForTest() { appendFallbackTail(chain_); }
+#endif
+#if defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)
+void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
+  HalFile root = Storage.open(rootPath);
+  if (!root || !root.isDirectory()) {
+    LOG_DBG("BFNT", "Font root not found: %s", rootPath);
+    return;
+  }
+
+  // The walk frame would need ~550B of stack locals (over the 256B stack
+  // budget, and scanFonts runs from boot wiring) — one heap scratch instead.
+  struct ScanScratch {
+    char dirName[48];   // FamilyInfo::name cap; longer folder names are skipped
+    char fileName[64];  // FontFaceInfo::file cap minus dir prefix headroom
+    char lower[64];     // lowercased stem
+    char subPath[160];  // SdCardCacheStorage::kDirMax
+    char soloFile[64];  // §14.4 rule 7: the lone candidate's name
+    FamilyInfo fam;     // 552B manifest row — heap, reset per family
+    uint32_t soloSize = 0;
+  };
+  // sizeof() on the decayed pointers would measure the pointer, not the
+  // buffer — the walk uses the struct's member sizes everywhere.
+  const auto scratch = makeUniqueNoThrow<ScanScratch>();
+  if (!scratch) {
+    LOG_ERR("BFNT", "OOM: scan scratch");
+    return;
+  }
+  char* dirName = scratch->dirName;
+  char* fileName = scratch->fileName;
+  char* lower = scratch->lower;
+  char* subPath = scratch->subPath;
+  constexpr size_t kDirNameCap = sizeof(ScanScratch::dirName);
+  constexpr size_t kFileNameCap = sizeof(ScanScratch::fileName);
+  constexpr size_t kLowerCap = sizeof(ScanScratch::lower);
+  constexpr size_t kSubPathCap = sizeof(ScanScratch::subPath);
+  while (true) {
+    HalFile dir = root.openNextFile();
+    if (!dir) break;
+    if (!dir.isDirectory()) continue;
+    const size_t nameLen = dir.getName(dirName, kDirNameCap);
+
+    // Skip hidden/system folders (macOS ._*, .Trashes, _folders).
+    if (dirName[0] == '.' || dirName[0] == '_') continue;
+    // Hidden root wins on dedupe: the later (visible) pass skips existing names.
+    bool exists = false;
+    for (uint8_t i = 0; i < familyCount; ++i) {
+      if (ciCompare(families[i].name, dirName) == 0) {
+        exists = true;
+        break;
+      }
+    }
+    if (exists) continue;
+    if (familyCount >= kMaxDiscoveredFamilies) {
+      LOG_DBG("BFNT", "Family cap reached, skipping %s", dirName);
+      continue;
+    }
+    if (nameLen >= kDirNameCap - 1) {
+      LOG_DBG("BFNT", "Family name too long: %s", dirName);
+      continue;
+    }
+
+    FamilyInfo& fam = scratch->fam;
+    fam = {};
+    strncpy(fam.name, dirName, sizeof(fam.name) - 1);
+
+    const int subLen = snprintf(subPath, kSubPathCap, "%s/%s", rootPath, dirName);
+    if (subLen < 0 || static_cast<size_t>(subLen) >= kSubPathCap) continue;
+
+    HalFile subdir = Storage.open(subPath);
+    if (!subdir || !subdir.isDirectory()) continue;
+
+    // Extension-accepted candidates (§14.4 rule 7: a family folder with
+    // exactly one .ttf/.otf registers it as Regular even without style
+    // tokens in the name).
+    char* const soloFile = scratch->soloFile;
+    uint32_t& soloSize = scratch->soloSize;
+    uint8_t candidateCount = 0;
+
+    while (true) {
+      HalFile entry = subdir.openNextFile();
+      if (!entry) break;
+      if (entry.isDirectory()) continue;
+      entry.getName(fileName, kFileNameCap);
+
+      // Skip macOS resource forks, hidden files, editor backups.
+      if (fileName[0] == '.' || fileName[0] == '_') continue;
+      const size_t nameLen = strlen(fileName);
+      if (nameLen > 0 && fileName[nameLen - 1] == '~') continue;
+      const bool isTtf = endsWithIgnoreCase(fileName, ".ttf");
+      if (!isTtf && !endsWithIgnoreCase(fileName, ".otf")) continue;
+      if (candidateCount < UINT8_MAX) ++candidateCount;
+      if (candidateCount == 1) {
+        snprintf(soloFile, kFileNameCap, "%s", fileName);
+        soloSize = entry.fileSize();
+      }
+
+      // Stem for style inference (extension stripped, lowercased).
+      const size_t stemLen = nameLen - 4;
+      if (stemLen == 0 || stemLen >= kLowerCap) continue;
+      for (size_t i = 0; i < stemLen; ++i) {
+        lower[i] = static_cast<char>(tolower(static_cast<unsigned char>(fileName[i])));
+      }
+      lower[stemLen] = '\0';
+
+      uint8_t style = 0;
+      if (!inferStyleFlags(lower, style)) {
+        LOG_DBG("BFNT", "No style tokens in %s/%s — skipped", fam.name, fileName);
+        continue;
+      }
+
+      // Same-style duplicate: lexicographically-first filename wins.
+      uint8_t slot = kMaxFacesPerFamily;
+      for (uint8_t i = 0; i < fam.faceCount; ++i) {
+        if (fam.faces[i].styleFlags == style) {
+          slot = i;
+          break;
+        }
+      }
+      const bool replacingExisting = slot < kMaxFacesPerFamily;
+      if (replacingExisting) {
+        if (ciCompare(lower, fam.faces[slot].name) >= 0) continue;  // existing wins
+      } else {
+        if (fam.faceCount >= kMaxFacesPerFamily) continue;
+      }
+      // Validate the full path BEFORE touching the slot: a too-long path must
+      // not clobber an existing face (or shrink the count of one).
+      char newFile[kFileNameCap];
+      if (snprintf(newFile, kFileNameCap, "%s/%s", subPath, fileName) >= static_cast<int>(kFileNameCap)) {
+        LOG_DBG("BFNT", "Path too long for %s/%s", fam.name, fileName);
+        continue;
+      }
+      if (!replacingExisting) slot = fam.faceCount++;
+
+      FontFaceInfo& face = fam.faces[slot];
+      face = {};
+      snprintf(face.name, sizeof(face.name), "%s", lower);
+      snprintf(face.file, sizeof(face.file), "%s", newFile);
+      face.styleFlags = style;
+      face.fileSize = entry.fileSize();
+    }
+
+    if (fam.faceCount == 0) {
+      if (candidateCount != 1) continue;  // empty / unparseable family
+      // Single-file family: register the lone face as Regular (§14.4).
+      FontFaceInfo& face = fam.faces[0];
+      fam.faceCount = 1;
+      face = {};
+      snprintf(face.name, sizeof(face.name), "%s", lower);
+      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
+        fam.faceCount = 0;
+        continue;
+      }
+      face.fileSize = soloSize;
+      face.styleFlags = StyleNone;
+    } else {
+      // A family with files but no Regular face promotes its lexicographically-
+      // first face (case-insensitive) to Regular.
+      bool hasRegular = false;
+      for (uint8_t i = 0; i < fam.faceCount; ++i) {
+        if (fam.faces[i].styleFlags == StyleNone) {
+          hasRegular = true;
+          break;
+        }
+      }
+      if (!hasRegular) {
+        int first = 0;
+        for (uint8_t i = 1; i < fam.faceCount; ++i) {
+          if (ciCompare(fam.faces[i].name, fam.faces[first].name) < 0) first = i;
+        }
+        fam.faces[first].styleFlags = StyleNone;
+      }
+    }
+
+    families[familyCount++] = fam;
+    LOG_DBG("BFNT", "Family %s: %u faces from %s", fam.name, fam.faceCount, rootPath);
+  }
+}
+#endif
 
 // ── tryLoadFace — single face into the live chain ────────────────────────────
 // Member of BookFontLoader so it can access private members (faces_,
@@ -276,8 +645,9 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
       LOG_ERR("BFNT", "Font %s exceeds remaining DRAM budget (%u > %u)", fi.file, fi.fileSize, remainingBudget_);
       return false;
     }
-  } else if (fi.fileSize > kMaxPsramFontBytes) {
-    LOG_ERR("BFNT", "Font %s too large for PSRAM tier (%u > %u)", fi.file, fi.fileSize, kMaxPsramFontBytes);
+  } else if (fi.fileSize > kMaxFaceBytes) {
+    LOG_ERR("BFNT", "Font %s too large for PSRAM tier (%u > %u)", fi.file, fi.fileSize,
+            static_cast<unsigned>(kMaxFaceBytes));
     return false;
   }
 
