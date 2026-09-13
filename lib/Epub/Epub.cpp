@@ -741,27 +741,28 @@ bool Epub::generateBmpFromPsram(const std::string& coverImageHref, const std::st
     return false;
   }
 
-  HalFile bmpFile;
-  if (!Storage.openFileForWrite("EBP", bmpPath, bmpFile)) {
-    return false;
-  }
   bool success;
-  if (oneBit) {
-    if (isJpg) {
-      success = JpegToBmpConverter::jpegMemTo1BitBmpStreamWithSize(coverBuf.get(), coverSize, bmpFile, targetWidth,
+  {
+    HalFile bmpFile;
+    if (!Storage.openFileForWrite("EBP", bmpPath, bmpFile)) {
+      return false;
+    }
+    if (oneBit) {
+      if (isJpg) {
+        success = JpegToBmpConverter::jpegMemTo1BitBmpStreamWithSize(coverBuf.get(), coverSize, bmpFile, targetWidth,
+                                                                     targetHeight);
+      } else {
+        success = PngToBmpConverter::pngMemTo1BitBmpStreamWithSize(coverBuf.get(), coverSize, bmpFile, targetWidth,
                                                                    targetHeight);
+      }
     } else {
-      success = PngToBmpConverter::pngMemTo1BitBmpStreamWithSize(coverBuf.get(), coverSize, bmpFile, targetWidth,
-                                                                 targetHeight);
+      if (isJpg) {
+        success = JpegToBmpConverter::jpegMemToBmpStream(coverBuf.get(), coverSize, bmpFile, crop, originalThresholds);
+      } else {
+        success = PngToBmpConverter::pngMemToBmpStream(coverBuf.get(), coverSize, bmpFile, crop, originalThresholds);
+      }
     }
-  } else {
-    if (isJpg) {
-      success = JpegToBmpConverter::jpegMemToBmpStream(coverBuf.get(), coverSize, bmpFile, crop, originalThresholds);
-    } else {
-      success = PngToBmpConverter::pngMemToBmpStream(coverBuf.get(), coverSize, bmpFile, crop, originalThresholds);
-    }
-  }
-  bmpFile.close();
+  }  // bmpFile closes here, before the failure remove below
   if (!success) {
     LOG_ERR("EBP", "Failed to generate BMP from cover image (memory path)");
     Storage.remove(bmpPath.c_str());
@@ -804,26 +805,27 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
             originalThresholds ? ", original thresholds" : "");
     const auto coverJpgTempPath = getCachePath() + "/.cover.jpg";
 
-    HalFile coverJpg;
-    if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
-      return false;
-    }
-    readItemContentsToStream(coverImageHref, coverJpg, kStreamChunkSize);
-    // Explicitly close() file before reopening for reading
-    coverJpg.close();
+    {
+      HalFile coverJpg;
+      if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
+        return false;
+      }
+      readItemContentsToStream(coverImageHref, coverJpg, kStreamChunkSize);
+    }  // write handle closes before the read reopen below
 
-    if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
-      return false;
-    }
+    bool success;
+    {
+      HalFile coverJpg;
+      if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
+        return false;
+      }
 
-    HalFile coverBmp;
-    if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, originalThresholds), coverBmp)) {
-      return false;
-    }
-    const bool success = JpegToBmpConverter::jpegFileToBmpStream(coverJpg, coverBmp, cropped, originalThresholds);
-    // Explicitly close() files before calling Storage.remove()
-    coverJpg.close();
-    coverBmp.close();
+      HalFile coverBmp;
+      if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, originalThresholds), coverBmp)) {
+        return false;
+      }
+      success = JpegToBmpConverter::jpegFileToBmpStream(coverJpg, coverBmp, cropped, originalThresholds);
+    }  // both handles close before the temp remove below
     Storage.remove(coverJpgTempPath.c_str());
 
     if (!success) {
@@ -839,26 +841,27 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
             originalThresholds ? ", original thresholds" : "");
     const auto coverPngTempPath = getCachePath() + "/.cover.png";
 
-    HalFile coverPng;
-    if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
-      return false;
-    }
-    readItemContentsToStream(coverImageHref, coverPng, 1024);
-    // Explicitly close() file before reopening for reading
-    coverPng.close();
+    {
+      HalFile coverPng;
+      if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
+        return false;
+      }
+      readItemContentsToStream(coverImageHref, coverPng, 1024);
+    }  // write handle closes before the read reopen below
 
-    if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
-      return false;
-    }
+    bool success;
+    {
+      HalFile coverPng;
+      if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
+        return false;
+      }
 
-    HalFile coverBmp;
-    if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, originalThresholds), coverBmp)) {
-      return false;
-    }
-    const bool success = PngToBmpConverter::pngFileToBmpStream(coverPng, coverBmp, cropped, originalThresholds);
-    // Explicitly close() files before calling Storage.remove()
-    coverPng.close();
-    coverBmp.close();
+      HalFile coverBmp;
+      if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, originalThresholds), coverBmp)) {
+        return false;
+      }
+      success = PngToBmpConverter::pngFileToBmpStream(coverPng, coverBmp, cropped, originalThresholds);
+    }  // both handles close before the temp remove below
     Storage.remove(coverPngTempPath.c_str());
 
     if (!success) {
@@ -908,31 +911,30 @@ bool Epub::generateThumbBmp(int height) const {
       LOG_DBG("EBP", "Generating thumb BMP from JPG cover image");
       const auto coverJpgTempPath = getCachePath() + "/.cover.jpg";
 
-      HalFile coverJpg;
-      if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
-        return false;
-      }
-      readItemContentsToStream(coverImageHref, coverJpg, 1024);
-      // Explicitly close() file before reopening for reading
-      coverJpg.close();
+      {
+        HalFile coverJpg;
+        if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
+          return false;
+        }
+        readItemContentsToStream(coverImageHref, coverJpg, 1024);
+      }  // write handle closes before the read reopen below
 
-      if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
-        return false;
-      }
+      bool success;
+      {
+        HalFile coverJpg;
+        if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
+          return false;
+        }
 
-      HalFile thumbBmp;
-      if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
-        return false;
-      }
-      // Use smaller target size for Continue Reading card (half of screen: 240x400)
-      // Generate 1-bit BMP for fast home screen rendering (no gray passes needed)
-      int THUMB_TARGET_WIDTH = height * 0.6;
-      int THUMB_TARGET_HEIGHT = height;
-      const bool success = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverJpg, thumbBmp, THUMB_TARGET_WIDTH,
-                                                                               THUMB_TARGET_HEIGHT);
-      // Explicitly close() files before calling Storage.remove()
-      coverJpg.close();
-      thumbBmp.close();
+        HalFile thumbBmp;
+        if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
+          return false;
+        }
+        // Use smaller target size for Continue Reading card (half of screen: 240x400)
+        // Generate 1-bit BMP for fast home screen rendering (no gray passes needed)
+        const int thumbTargetWidth = static_cast<int>(height * 0.6);
+        success = JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(coverJpg, thumbBmp, thumbTargetWidth, height);
+      }  // both handles close before the temp remove below
       Storage.remove(coverJpgTempPath.c_str());
 
       if (!success) {
@@ -945,29 +947,28 @@ bool Epub::generateThumbBmp(int height) const {
       LOG_DBG("EBP", "Generating thumb BMP from PNG cover image");
       const auto coverPngTempPath = getCachePath() + "/.cover.png";
 
-      HalFile coverPng;
-      if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
-        return false;
-      }
-      readItemContentsToStream(coverImageHref, coverPng, kStreamChunkSize);
-      // Explicitly close() file before reopening for reading
-      coverPng.close();
+      {
+        HalFile coverPng;
+        if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
+          return false;
+        }
+        readItemContentsToStream(coverImageHref, coverPng, kStreamChunkSize);
+      }  // write handle closes before the read reopen below
 
-      if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
-        return false;
-      }
+      bool success;
+      {
+        HalFile coverPng;
+        if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
+          return false;
+        }
 
-      HalFile thumbBmp;
-      if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
-        return false;
-      }
-      int THUMB_TARGET_WIDTH = height * 0.6;
-      int THUMB_TARGET_HEIGHT = height;
-      const bool success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, THUMB_TARGET_WIDTH,
-                                                                             THUMB_TARGET_HEIGHT);
-      // Explicitly close() files before calling Storage.remove()
-      coverPng.close();
-      thumbBmp.close();
+        HalFile thumbBmp;
+        if (!Storage.openFileForWrite("EBP", getThumbBmpPath(height), thumbBmp)) {
+          return false;
+        }
+        const int thumbTargetWidth = static_cast<int>(height * 0.6);
+        success = PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(coverPng, thumbBmp, thumbTargetWidth, height);
+      }  // both handles close before the temp remove below
       Storage.remove(coverPngTempPath.c_str());
 
       if (!success) {

@@ -2,6 +2,8 @@
 
 #include <stddef.h>
 
+#include <string_view>
+
 #include "ImageToFramebufferDecoder.h"
 
 class PNG;
@@ -26,5 +28,5 @@ class PngToFramebufferConverter final : public ImageToFramebufferDecoder {
   const char* getFormatName() const override { return "PNG"; }
 
  private:
-  static bool decodeFromOpen(PNG& png, GfxRenderer& renderer, const RenderConfig& config, const std::string& imagePath);
+  static bool decodeFromOpen(PNG& png, GfxRenderer& renderer, const RenderConfig& config, std::string_view imagePath);
 };

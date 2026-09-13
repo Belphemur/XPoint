@@ -2,6 +2,7 @@
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <JPEGDEC.h>
 #include <Logging.h>
@@ -397,7 +398,7 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const uint8_t* data, size_t
     return false;
   }
 
-  size_t freeHeap = ESP.getFreeHeap();
+  const size_t freeHeap = HalMemory::getDefaultHeap().freeBytes;
   if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
     LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
     return false;
@@ -454,7 +455,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size,
 
   LOG_DBG("JPG", "Decoding JPEG from memory (%u bytes)", static_cast<unsigned>(size));
 
-  size_t freeHeap = ESP.getFreeHeap();
+  const size_t freeHeap = HalMemory::getDefaultHeap().freeBytes;
   if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
     LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
     return false;

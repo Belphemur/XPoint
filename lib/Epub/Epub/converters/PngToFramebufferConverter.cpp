@@ -2,6 +2,7 @@
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalMemory.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -343,7 +344,7 @@ bool PngToFramebufferConverter::getDimensionsStatic(const uint8_t* data, size_t 
     return false;
   }
 
-  size_t freeHeap = ESP.getFreeHeap();
+  const size_t freeHeap = HalMemory::getDefaultHeap().freeBytes;
   if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
     LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
     return false;
@@ -401,7 +402,7 @@ bool PngToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size, 
 
   LOG_DBG("PNG", "Decoding PNG from memory (%u bytes)", static_cast<unsigned>(size));
 
-  size_t freeHeap = ESP.getFreeHeap();
+  const size_t freeHeap = HalMemory::getDefaultHeap().freeBytes;
   if (freeHeap < MIN_FREE_HEAP_FOR_PNG) {
     LOG_ERR("PNG", "Not enough heap for PNG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_PNG);
     return false;
@@ -421,11 +422,11 @@ bool PngToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size, 
     return false;
   }
 
-  return decodeFromOpen(*png, renderer, config, std::string());
+  return decodeFromOpen(*png, renderer, config, {});
 }
 
 bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, const RenderConfig& config,
-                                               const std::string& imagePath) {
+                                               std::string_view imagePath) {
   PngContext ctx;
   ctx.decoder = &png;
   ctx.renderer = &renderer;
@@ -482,7 +483,8 @@ bool PngToFramebufferConverter::decodeFromOpen(PNG& png, GfxRenderer& renderer, 
 
   if (!isSupportedBitDepth(pixelType, bitsPerSample)) {
     warnUnsupportedFeature(
-        "bit depth (" + std::to_string(bitsPerSample) + "bpp) for pixel type " + std::to_string(pixelType), imagePath);
+        "bit depth (" + std::to_string(bitsPerSample) + "bpp) for pixel type " + std::to_string(pixelType),
+        std::string(imagePath));
     return false;
   }
 
