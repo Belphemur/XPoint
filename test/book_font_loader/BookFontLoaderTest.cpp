@@ -484,7 +484,9 @@ ParsedFace parseFace(const std::string& bytes) {
   }
   const auto* u8 = reinterpret_cast<const uint8_t*>(bytes.data());
   const int offset = stbtt_GetFontOffsetForIndex(u8, 0);
-  if (offset < 0 || offset + 12 > static_cast<int>(bytes.size())) {
+  // 64-bit compare: a fixture-crafted TTC container offset can be near
+  // INT32_MAX and offset+12 would overflow signed 32-bit arithmetic.
+  if (offset < 0 || static_cast<uint64_t>(offset) + 12u > bytes.size()) {
     ADD_FAILURE() << "fixture has no sfnt offset for index 0";
     return f;
   }
