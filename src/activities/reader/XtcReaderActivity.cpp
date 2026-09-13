@@ -8,6 +8,13 @@
 
 #include <algorithm>
 
+#ifdef READING_STATS_ENABLED
+#include "BookStatsActivity.h"
+#include "FinishedBooksIndex.h"
+#include "ReadingStatsUtils.h"
+#include "activities/util/ConfirmationActivity.h"
+#endif
+
 #include "CrossPointSettings.h"
 #include "ProgressFile.h"
 #include "ReaderActivity.h"
@@ -31,6 +38,142 @@ bool XtcReaderActivity::loadBook() {
   loadProgress();
   return true;
 }
+
+#ifdef READING_STATS_ENABLED
+void XtcReaderActivity::onEnter() {
+  ReaderActivity::onEnter();
+  if (xtc && SETTINGS.shouldTrackReadingStats()) {
+    stats = BookReadingStats::load(xtc->getCachePath());
+    globalStats = GlobalReadingStats::load();
+  }
+}
+
+void XtcReaderActivity::onExit() {
+  if (xtc && SETTINGS.shouldTrackReadingStats()) {
+    const uint32_t pageCount = xtc->getPageCount();
+    if (pageCount > 0) {
+      const uint32_t clampedPage = std::min(currentPage, pageCount - 1);
+      const int progress = std::clamp(
+          static_cast<int>((static_cast<float>(clampedPage) + 1.0f) * 100.0f / static_cast<float>(pageCount) + 0.5f), 0,
+          100);
+      stats.lastBookProgressPercent = static_cast<uint8_t>(progress);
+    }
+    stats.save(xtc->getCachePath());
+    globalStats.save();
+    if (stats.isCompleted) syncFinishedBookIndex();
+  }
+  ReaderActivity::onExit();
+}
+
+void XtcReaderActivity::syncFinishedBookIndex() {
+  if (xtc && xtc->getTitle().empty()) {
+    LOG_ERR("XTR", "Skipping finished-book entry: empty title");
+    return;
+  }
+  if (!xtc || !FinishedBooksIndex::recordCanonical(xtc->getPath(), xtc->getCachePath(), xtc->getTitle(),
+                                                   xtc->getAuthor(), stats)) {
+    LOG_ERR("XTR", "Failed to synchronize finished-book entry");
+  }
+}
+
+BookReadingStats XtcReaderActivity::achievementStatsPreview() const {
+  BookReadingStats preview = stats;
+  if (!SETTINGS.shouldTrackReadingStats()) return preview;
+
+  const uint32_t pageCount = xtc ? xtc->getPageCount() : 0;
+  if (pageCount > 0) {
+    const int progress = std::clamp(static_cast<int>(getCurrentBookProgressPercent() + 0.5f), 0, 100);
+    preview.lastBookProgressPercent = static_cast<uint8_t>(progress);
+  }
+  return preview;
+}
+
+void XtcReaderActivity::goHomeOrShowCompletionAchievement() {
+  const uint32_t pageCount = xtc ? xtc->getPageCount() : 0;
+  const bool atEndOfBook = xtc && pageCount > 0 && currentPage >= pageCount;
+  const bool onFinalPage = xtc && pageCount > 0 && currentPage == pageCount - 1;
+  const bool displaysHundredPercent = getCurrentBookProgressPercent() >= 99.5f;
+
+  // Crossing past the final readable page is definitive completion evidence.
+  // A final page or rounded 100% can also come from a jump, so ask first.
+  if (!stats.isCompleted && atEndOfBook) {
+    setBookCompleted(true);
+  } else if (!stats.isCompleted && !stats.completionPromptDismissedAtHundred &&
+             (onFinalPage || displaysHundredPercent)) {
+    auto prompt = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_MARK_FINISHED_PROMPT), "");
+    if (!prompt) {
+      LOG_ERR("XTR", "OOM: completion prompt");
+      onGoHome();
+      return;
+    }
+    startActivityForResult(std::move(prompt), [this](const ActivityResult& result) {
+      if (result.isCancelled) {
+        stats.completionPromptDismissedAtHundred = true;
+        if (xtc) stats.save(xtc->getCachePath());
+        onGoHome();
+        return;
+      }
+      setBookCompleted(true);
+      goHomeOrShowCompletionAchievement();
+    });
+    return;
+  }
+
+  if (!stats.isCompleted || !stats.completionAchievementPending || !xtc) {
+    onGoHome();
+    return;
+  }
+
+  auto achievement = makeUniqueNoThrow<BookStatsActivity>(renderer, mappedInput, xtc->getTitle(), xtc->getAuthor(),
+                                                          achievementStatsPreview(), "", globalStats,
+                                                          BookStatsActivity::InitialPage::Achievement);
+  if (!achievement) {
+    LOG_ERR("XTR", "OOM: completion achievement screen");
+    onGoHome();
+    return;
+  }
+  stats.completionAchievementPending = false;
+  stats.save(xtc->getCachePath());
+  activityManager.replaceActivity(std::move(achievement));
+}
+
+void XtcReaderActivity::setBookCompleted(bool completed) {
+  if (!xtc || stats.isCompleted == completed) return;
+
+  stats.isCompleted = completed;
+  stats.completionAchievementPending = completed;
+  stats.completionPromptDismissedAtHundred = false;
+  if (completed && !stats.finishedDateManual && !stats.finishedDate.isValid()) {
+    ReadingStatsDateTime now;
+    if (getCurrentLocalReadingStatsDateTime(now)) stats.finishedDate = now.date;
+  }
+
+  if (completed) {
+    if (globalStats.completedBooks < UINT32_MAX) ++globalStats.completedBooks;
+  } else if (globalStats.completedBooks > 0) {
+    --globalStats.completedBooks;
+  }
+
+  stats.save(xtc->getCachePath());
+  globalStats.save();
+  syncFinishedBookIndex();
+}
+
+void XtcReaderActivity::onGoHomeRequested() {
+  if (!xtc || !SETTINGS.shouldTrackReadingStats()) {
+    onGoHome();
+    return;
+  }
+  goHomeOrShowCompletionAchievement();
+}
+
+float XtcReaderActivity::getCurrentBookProgressPercent() const {
+  if (!xtc || xtc->getPageCount() == 0) return -1.0f;
+  const uint32_t pageCount = xtc->getPageCount();
+  const uint32_t clampedPage = std::min(currentPage, pageCount - 1);
+  return (static_cast<float>(clampedPage) + 1.0f) * 100.0f / static_cast<float>(pageCount);
+}
+#endif
 
 void XtcReaderActivity::openChapterSelection() {
   if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
@@ -291,8 +434,21 @@ void XtcReaderActivity::renderPage() {
 bool XtcReaderActivity::pageTurn(bool isForward) {
   if (!xtc) return false;
   if (isForward) {
+#ifdef READING_STATS_ENABLED
+    // A declined 100%-completion prompt applies only until the reader moves
+    // forward again; otherwise it would suppress the prompt on a later exit.
+    stats.completionPromptDismissedAtHundred = false;
+#endif
     if (currentPage < xtc->getPageCount()) {
       currentPage++;
+#ifdef READING_STATS_ENABLED
+      // Crossing past the last readable page is definitive completion.
+      if (!stats.isCompleted && SETTINGS.shouldTrackReadingStats() && currentPage == xtc->getPageCount())
+        setBookCompleted(true);
+#endif
+      // The EOB render path bypasses renderBook()'s save, so persist the
+      // terminal page synchronously when the forward turn crosses it.
+      if (currentPage == xtc->getPageCount()) saveProgress();
       return true;
     }
   } else {
@@ -306,11 +462,23 @@ bool XtcReaderActivity::pageTurn(bool isForward) {
 
 bool XtcReaderActivity::skipPages(int amount) {
   if (!xtc) return false;
+#ifdef READING_STATS_ENABLED
+  if (amount > 0 && SETTINGS.shouldTrackReadingStats()) stats.completionPromptDismissedAtHundred = false;
+#endif
   int newPage = static_cast<int>(currentPage) + amount;
   if (newPage < 0) newPage = 0;
   if (newPage > static_cast<int>(xtc->getPageCount())) newPage = static_cast<int>(xtc->getPageCount());
   if (newPage != static_cast<int>(currentPage)) {
     currentPage = static_cast<uint32_t>(newPage);
+#ifdef READING_STATS_ENABLED
+    if (SETTINGS.shouldTrackReadingStats() && !stats.isCompleted && currentPage == xtc->getPageCount())
+      setBookCompleted(true);
+#endif
+    if (currentPage == xtc->getPageCount()) {
+      // The EOB render path bypasses renderBook()'s save, so persist the
+      // terminal page synchronously when a skip crosses it.
+      saveProgress();
+    }
     return true;
   }
   return false;

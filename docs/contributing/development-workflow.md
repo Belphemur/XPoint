@@ -20,13 +20,20 @@ This page defines the expected local workflow before opening a pull request.
 
 ```sh
 ./bin/clang-format-fix
-pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+./bin/cppcheck-check
 pio run
 ```
 
 CI enforces formatting, static analysis, and build checks.
 Use clang-format 21+ locally to match CI.
 If `clang-format` is missing or too old locally, see [Getting Started](./getting-started.md).
+
+`./bin/cppcheck-check` runs cppcheck with the exact flags the CI job uses
+(`pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high`).
+Treat the CI `cppcheck` job as the authoritative gate: a local PASS does not
+guarantee CI passes. The tool binary is byte-identical in CI and local, but CI
+has flagged defects (e.g. `uselessOverride`) that the same local invocation
+reported as clean — so always confirm the CI `cppcheck` job before pushing.
 
 ## 4) Open the PR
 

@@ -42,6 +42,9 @@ class ReaderActivity : public Activity {
   bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered);
   void clearEndOfBookOptionsIfNeeded();
   void disableFastInitialRefresh();
+  // Readers override this to run format-specific completion/achievement flow
+  // before the activity actually leaves the stack.
+  virtual void onGoHomeRequested();
 
  public:
   ~ReaderActivity() override = default;

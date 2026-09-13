@@ -66,6 +66,12 @@ contradict that very claim). Layout (73 bytes):
 > (109 bytes). Byte 108, reserved (0) at the time of this document, now carries
 > `lastBookProgressPercent` (uint8, 0-100, 0xFF = unknown) — see the
 > 2026-09-02 home-card-progress design doc, §3.
+>
+> Version 7 (134 bytes) appended the Kindle-style trimmed-mean session window at bytes
+> 109–133. Version 8 (135 bytes) appends one completion-flow flags byte at byte 134:
+> bit0 = `completionAchievementPending`, bit1 = `completionPromptDismissedAtHundred`.
+> The loader recognizes v8 as current plus v7/v6/v5 as one-hop migration candidates;
+> unknown bits in byte 134 are ignored.
 
 ```
 [0]      version (= 5)
@@ -125,6 +131,13 @@ because the newer-format guard permanently blocks saves — the user's global st
 frozen and silently discarded. Monotonicity is preserved (next bump is 4). Load accepts
 `version <= 3` (sizes 13/17/159 per crossink's loader); anything larger ⇒ `NewerFormat` ⇒
 refuse destructive saves (crossink behavior).
+
+> **Subsequent updates:** the shipped record has since moved through **version 5**
+> (225 bytes, trailing session window) to **version 6** (407 bytes). Bytes 225–406 hold a
+> rolling 91-entry `uint16` real-minutes array; index 0 is the history anchor day and larger
+> indexes are older days. The v6 loader clamps each loaded entry to 1440 minutes. v3/v4/v5
+> loads backfill each set read-history bit to one minute. The destructive-save guard trips
+> for versions newer than 6.
 
 ### 3.3 Write discipline (SD/HAL-optimized)
 

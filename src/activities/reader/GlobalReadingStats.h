@@ -17,6 +17,9 @@ struct GlobalReadingStats {
   std::array<uint32_t, READING_DAY_OF_WEEK_COUNT> dayOfWeekSeconds{};
   uint32_t readingHistoryAnchorDay = 0;
   std::array<uint8_t, READING_HISTORY_BYTES> readingHistoryBits{};
+  // Real minutes per day for the most recent 91 days (v6+). Index 0 is the
+  // same anchor day as readingHistoryBits; larger indexes are older days.
+  std::array<uint16_t, READING_MINUTE_HISTORY_DAYS> dailyReadingMinutes{};
   uint16_t longestReadingStreak = 0;
   // Rolling reading-speed window in words per minute (v4 fields).
   WpmWindow wpm;
@@ -45,4 +48,6 @@ struct GlobalReadingStats {
   uint16_t currentReadingStreakDays(const ReadingStatsDate* today = nullptr) const;
   // Longest run of consecutive reading days ever recorded.
   uint16_t longestReadingStreakDays() const;
+  // Real recorded minutes for a calendar day (0 when absent/outside the 91-day window).
+  uint16_t readingMinutesOnDay(uint32_t dayIndex) const;
 };

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <set>
 #include <string>
 
 #include "ReadingStatsUtils.h"
@@ -9,7 +10,7 @@
 // Sentinel for an unknown last-read progress percentage (v6 byte 108).
 constexpr uint8_t UNKNOWN_BOOK_PROGRESS_PERCENT = 0xFF;
 
-// Per-book reading statistics, persisted to <cachePath>/stats_v7.bin (150-byte
+// Per-book reading statistics, persisted to <cachePath>/stats_v8.bin (135-byte
 // versioned record inside the book's cache dir; see
 // docs/design/reading-stats-binary-files.md). The record's lifetime matches the
 // cache dir exactly: created with it, deleted with it, and moved with it on
@@ -38,6 +39,11 @@ struct BookReadingStats {
   // Last known book progress as a percentage (v6 byte 108): 0-100, or
   // UNKNOWN_BOOK_PROGRESS_PERCENT when no valid snapshot exists yet.
   uint8_t lastBookProgressPercent = UNKNOWN_BOOK_PROGRESS_PERCENT;
+  // Completion-flow state (v8 byte 134). Pending is set when completion is
+  // first recorded and consumed by the achievement screen; dismissed is the
+  // no-repeat latch for a declined 100% exit prompt.
+  bool completionAchievementPending = false;
+  bool completionPromptDismissedAtHundred = false;
 
   static BookReadingStats load(const std::string& cachePath);
   void save(const std::string& cachePath) const;
@@ -50,4 +56,10 @@ struct BookReadingStats {
   // buckets and the legacy seconds-per-page average survive.
   void clearWpmStats();
   static void formatDuration(uint32_t seconds, char* buf, size_t len);
+
+ private:
+  // Paths whose on-disk records were written by a newer firmware: saves for
+  // those paths are refused until the record is removed, so this build can
+  // never clobber future-format data. Other books remain saveable.
+  static std::set<std::string> s_blockDestructiveSavePaths;
 };
