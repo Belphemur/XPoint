@@ -80,8 +80,9 @@ parity path via tiled Gray8 quantization is tracked in the design doc
 
 ## Prerequisites
 
-Initialize git submodules to inspect engine references:
+Initialize git submodules recursively to inspect engine references; FreeInkBook
+vendors `esp_full_miniz` as a nested submodule:
 
 ```bash
-git submodule update --init
+git submodule update --init --recursive
 ```

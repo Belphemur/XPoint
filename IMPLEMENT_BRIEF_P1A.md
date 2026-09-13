@@ -34,7 +34,8 @@ BUILD NOTES:
 - Kanban materializes YOUR worktree at .worktrees/<task-id> on the branch
   above before you start. Do NOT pre-create branches/worktrees manually
   (causes branch-already-checked-out conflicts).
-- After claiming: git submodule update --init freeink-sdk, then wire the
+- After claiming: git submodule update --init --recursive freeink-sdk (FreeInkBook
+  now vendors esp_full_miniz as a nested submodule), then wire the
   shared build cache per the crosspoint-reader-dev skill (platformio.local.ini
   -> .pio-build-cache).
 - Build gate: pio run -e default unless stated otherwise. Format:
