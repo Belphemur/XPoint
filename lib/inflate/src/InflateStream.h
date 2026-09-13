@@ -7,7 +7,7 @@
 // decompressor state is heap-allocated in the .cpp where the type is complete.
 struct tinfl_decompressor_tag;
 
-// Streaming deflate decompressor wrapping the esp_full_miniz fork: the
+// Streaming deflate decompressor wrapping freeink-sdk's nested esp_full_miniz fork: the
 // ESP32 SoC ROM's v1.15-era tinfl on firmware (bound at link time via the
 // ROM's fixed symbol addresses), the same v1.15 cores compiled from source
 // on host builds.

@@ -18,8 +18,8 @@ add_executable(SectionIncrementalTest
   ${REPO_ROOT}/lib/hal/HalMemory.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/inflate/src/InflateStream.cpp
-  ${REPO_ROOT}/esp_full_miniz/src/miniz.c
-  ${REPO_ROOT}/esp_full_miniz/src/miniz_cores.c
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/src/miniz.c
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/src/miniz_cores.c
 )
 
 # Real-EPUB reproduction test (gated on CROSSPOINT_REPRO_EPUB env var).
@@ -44,8 +44,8 @@ add_executable(SectionIncrementalReproTest
   ${REPO_ROOT}/lib/hal/HalMemory.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
   ${REPO_ROOT}/lib/inflate/src/InflateStream.cpp
-  ${REPO_ROOT}/esp_full_miniz/src/miniz.c
-  ${REPO_ROOT}/esp_full_miniz/src/miniz_cores.c
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/src/miniz.c
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/src/miniz_cores.c
 )
 
 target_include_directories(SectionIncrementalTest PRIVATE
@@ -67,7 +67,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/ZipFile
   ${REPO_ROOT}/lib/inflate/src
-  ${REPO_ROOT}/esp_full_miniz/include
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
 )
 
 target_include_directories(SectionIncrementalReproTest PRIVATE
@@ -89,7 +89,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/ZipFile
   ${REPO_ROOT}/lib/inflate/src
-  ${REPO_ROOT}/esp_full_miniz/include
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
 )
 
 target_compile_definitions(SectionIncrementalTest PRIVATE
