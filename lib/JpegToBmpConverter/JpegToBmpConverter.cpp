@@ -537,9 +537,63 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
 
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
 
-  const int srcWidth = jpeg->getWidth();
-  const int srcHeight = jpeg->getHeight();
-  const bool progressiveDecode = (jpeg->getJPEGType() == JPEG_MODE_PROGRESSIVE);
+  return jpegToBmpStreamOpen(*jpeg, bmpOut, targetWidth, targetHeight, oneBit, crop, originalThresholds);
+}
+
+bool JpegToBmpConverter::jpegMemToBmpStream(uint8_t* jpegData, const size_t jpegSize, Print& bmpOut, const bool crop,
+                                            const bool originalThresholds) {
+  LOG_DBG("JPG", "Converting JPEG to BMP from memory (%u bytes)", static_cast<unsigned>(jpegSize));
+
+  // Use runtime display dimensions (swapped for portrait cover sizing)
+  const int targetWidth = display.getDisplayHeight();
+  const int targetHeight = display.getDisplayWidth();
+  return jpegMemToBmpStreamInternal(jpegData, jpegSize, bmpOut, targetWidth, targetHeight, false, crop,
+                                    originalThresholds);
+}
+
+bool JpegToBmpConverter::jpegMemTo1BitBmpStreamWithSize(uint8_t* jpegData, const size_t jpegSize, Print& bmpOut,
+                                                        const int targetMaxWidth, const int targetMaxHeight) {
+  return jpegMemToBmpStreamInternal(jpegData, jpegSize, bmpOut, targetMaxWidth, targetMaxHeight, true, true, false);
+}
+
+bool JpegToBmpConverter::jpegMemToBmpStreamInternal(uint8_t* jpegData, const size_t jpegSize, Print& bmpOut,
+                                                    const int targetWidth, const int targetHeight, const bool oneBit,
+                                                    const bool crop, const bool originalThresholds) {
+  if (jpegData == nullptr || jpegSize == 0) {
+    LOG_ERR("JPG", "Invalid memory source for JPEG to BMP");
+    return false;
+  }
+
+  if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
+    return false;
+  }
+
+  const auto jpeg = makeUniqueNoThrow<JPEGDEC>();
+  if (!jpeg) {
+    LOG_ERR("JPG", "OOM: JPEG decoder");
+    return false;
+  }
+
+  const int rc = jpeg->openRAM(jpegData, static_cast<int>(jpegSize), bmpDrawCallback);
+  if (rc != 1) {
+    LOG_ERR("JPG", "JPEG open failed (err=%d)", jpeg->getLastError());
+    return false;
+  }
+
+  const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
+
+  return jpegToBmpStreamOpen(*jpeg, bmpOut, targetWidth, targetHeight, oneBit, crop, originalThresholds);
+}
+
+// Internal implementation with configurable target size and bit depth
+bool JpegToBmpConverter::jpegToBmpStreamOpen(JPEGDEC& jpeg, Print& bmpOut, int targetWidth, int targetHeight,
+                                             bool oneBit, bool crop, bool originalThresholds) {
+  LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
+
+  const int srcWidth = jpeg.getWidth();
+  const int srcHeight = jpeg.getHeight();
+  const bool progressiveDecode = (jpeg.getJPEGType() == JPEG_MODE_PROGRESSIVE);
   // JPEGDEC forces progressive streams to JPEG_SCALE_EIGHTH in DecodeJPEG,
   // so callback coordinates and MCU buffering must use the reduced decode grid.
   const int decodedSrcWidth = progressiveDecode ? ((srcWidth + 7) >> 3) : srcWidth;
@@ -695,17 +749,17 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
     }
   }
 
-  jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
-  jpeg->setUserPointer(&ctx);
+  jpeg.setPixelType(EIGHT_BIT_GRAYSCALE);
+  jpeg.setUserPointer(&ctx);
 
-  rc = jpeg->decode(0, 0, 0);
+  const int rc = jpeg.decode(0, 0, 0);
 
   if (rc == 1 && ctx.smoothUpscale && !ctx.error) {
     finishSmoothUpscale(&ctx);
   }
 
   if (rc != 1 || ctx.error) {
-    LOG_ERR("JPG", "JPEG decode failed (rc=%d, err=%d)", rc, jpeg->getLastError());
+    LOG_ERR("JPG", "JPEG decode failed (rc=%d, err=%d)", rc, jpeg.getLastError());
     return false;
   }
 

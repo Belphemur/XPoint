@@ -1,11 +1,61 @@
 #pragma once
 #include <HalStorage.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 
 class GfxRenderer;
+
+// Read-only, seekable view over a memory buffer (PSRAM pool buffer on PSRAM
+// boards). Satisfies the HalFile-shaped read/seek surface that the PNG BMP
+// converter's chunk walker consumes, so the same decode core runs from SD
+// files and PSRAM buffers.
+class HalMemoryFile {
+ public:
+  HalMemoryFile() = default;
+  HalMemoryFile(const uint8_t* data, size_t size) : data_(data), size_(size) {}
+
+  void attach(const uint8_t* data, size_t size) {
+    data_ = data;
+    size_ = size;
+    pos_ = 0;
+  }
+
+  int read(void* buf, size_t count) {
+    if (data_ == nullptr) return -1;
+    if (pos_ >= size_) return 0;
+    // Subtraction form: pos_ is proven <= size_ by the seek contract, so this
+    // cannot overflow (pos_ + count could).
+    if (count > size_ - pos_) count = size_ - pos_;
+    memcpy(buf, data_ + pos_, count);
+    pos_ += count;
+    return static_cast<int>(count);
+  }
+
+  bool seek(size_t pos) {
+    if (pos > size_) return false;
+    pos_ = pos;
+    return true;
+  }
+  bool seekSet(size_t pos) { return seek(pos); }
+  bool seekCur(int64_t offset) { return seek(static_cast<size_t>(static_cast<int64_t>(pos_) + offset)); }
+
+  size_t position() const { return pos_; }
+  size_t size() const { return size_; }
+  int available() const { return static_cast<int>(size_ - pos_); }
+  bool isOpen() const { return data_ != nullptr; }
+  explicit operator bool() const { return data_ != nullptr; }
+  static bool close() { return true; }
+  static void flush() {}
+
+ private:
+  const uint8_t* data_ = nullptr;
+  size_t size_ = 0;
+  size_t pos_ = 0;
+};
 
 struct ImageDimensions {
   int16_t width;
@@ -31,7 +81,24 @@ class ImageToFramebufferDecoder {
 
   virtual bool decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer, const RenderConfig& config) = 0;
 
+  // Memory-backed variant used by PSRAM image staging. Decoders that do not
+  // support it leave the default false so callers fall back to the SD path.
+  virtual bool decodeToFramebuffer(uint8_t* data, size_t size, GfxRenderer& renderer, const RenderConfig& config) {
+    (void)data;
+    (void)size;
+    (void)renderer;
+    (void)config;
+    return false;
+  }
+
   virtual bool getDimensions(const std::string& imagePath, ImageDimensions& dims) const = 0;
+
+  virtual bool getDimensions(const uint8_t* data, size_t size, ImageDimensions& dims) const {
+    (void)data;
+    (void)size;
+    (void)dims;
+    return false;
+  }
 
   virtual const char* getFormatName() const = 0;
 
@@ -56,5 +123,5 @@ class ImageToFramebufferDecoder {
   static constexpr int64_t MAX_SOURCE_DIMENSION = INT16_MAX;
   static constexpr int64_t MAX_SOURCE_PIXELS = 8388608;  // 8 MP (e.g. 2048 * 4096)
 
-  void warnUnsupportedFeature(const std::string& feature, const std::string& imagePath);
+  static void warnUnsupportedFeature(const std::string& feature, const std::string& imagePath);
 };

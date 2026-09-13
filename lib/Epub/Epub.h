@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Memory.h>
 #include <Print.h>
 #include <ZipFile.h>
 
@@ -63,6 +64,20 @@ class Epub {
                                 bool allowEarlyStop = false) const;
   // Extract an item to a file on SD. On failure the partial file is removed.
   bool extractItemToFile(const std::string& itemHref, const std::string& destPath) const;
+  // Inflate a ZIP item into a pool-backed buffer for PSRAM image staging.
+  // Returns nullptr when the item is missing, larger than MAX_IMAGE_FILE_SIZE,
+  // or the allocation fails. The caller falls back to the SD staging path.
+  PoolBytes extractItemToPsram(const std::string& itemHref, size_t* size = nullptr) const;
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM staging decode shared by cover and thumbnail generation: inflate the
+  // cover image into a pool buffer, convert to 1-bit BMP at targetWidth×
+  // targetHeight when oneBit, otherwise 2-bit display fit (targets ignored),
+  // writing only the final BMP to bmpPath. Returns false (caller falls back to
+  // the SD staging path) when the image is unsupported, oversized (>4 MB), or
+  // the allocation/decode fails.
+  bool generateBmpFromPsram(const std::string& coverImageHref, const std::string& bmpPath, bool oneBit, int targetWidth,
+                            int targetHeight, bool crop, bool originalThresholds) const;
+#endif
   bool getItemSize(const std::string& itemHref, size_t* size) const;
   BookMetadataCache::SpineEntry getSpineItem(int spineIndex) const;
   BookMetadataCache::TocEntry getTocItem(int tocIndex) const;

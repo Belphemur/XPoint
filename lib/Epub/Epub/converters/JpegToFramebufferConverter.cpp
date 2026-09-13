@@ -8,6 +8,7 @@
 #include <Memory.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <new>
 
@@ -185,7 +186,7 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
       caching = false;
       ctx->caching = false;
     } else {
-      cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
+      cw.init(ctx->cache.buffer.get(), ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
       cacheOriginY = ctx->config->y + ctx->cache.bandStart;
     }
   }
@@ -358,6 +359,10 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
 }  // namespace
 
+// Core decode path shared by the file-backed and memory-backed sources.
+// `jpeg` must already be open; the caller owns the ScopedCleanup close.
+static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, const RenderConfig& config);
+
 bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
   size_t freeHeap = ESP.getFreeHeap();
   if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
@@ -386,6 +391,34 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePat
   return true;
 }
 
+bool JpegToFramebufferConverter::getDimensionsStatic(const uint8_t* data, size_t size, ImageDimensions& out) {
+  if (!data || size == 0) {
+    LOG_ERR("JPG", "Invalid memory source for JPEG dimensions");
+    return false;
+  }
+
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
+    return false;
+  }
+
+  std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
+  if (!jpeg) {
+    LOG_ERR("JPG", "Failed to allocate JPEG decoder for dimensions");
+    return false;
+  }
+
+  int rc = jpeg->openRAM(const_cast<uint8_t*>(data), static_cast<int>(size), nullptr);
+  const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
+  if (rc != 1) {
+    LOG_ERR("JPG", "Failed to open JPEG for dimensions (err=%d): memory source", jpeg->getLastError());
+    return false;
+  }
+
+  return validateAndStoreDimensions(jpeg->getWidth(), jpeg->getHeight(), out, "JPEG");
+}
+
 bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                      const RenderConfig& config) {
   LOG_DBG("JPG", "Decoding JPEG: %s", imagePath.c_str());
@@ -402,25 +435,63 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     return false;
   }
 
-  JpegContext ctx;
-  ctx.renderer = &renderer;
-  ctx.config = &config;
-  ctx.screenWidth = renderer.getScreenWidth();
-  ctx.screenHeight = renderer.getScreenHeight();
-
-  int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDrawCallback);
+  const int rc = jpeg->open(imagePath.c_str(), jpegOpen, jpegClose, jpegRead, jpegSeek, jpegDrawCallback);
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
   if (rc != 1) {
     LOG_ERR("JPG", "Failed to open JPEG (err=%d): %s", jpeg->getLastError(), imagePath.c_str());
     return false;
   }
 
+  return decodeToFramebufferFromOpen(*jpeg, renderer, config);
+}
+
+bool JpegToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size, GfxRenderer& renderer,
+                                                     const RenderConfig& config) {
+  if (data == nullptr || size == 0) {
+    LOG_ERR("JPG", "Invalid memory source for JPEG decode");
+    return false;
+  }
+
+  LOG_DBG("JPG", "Decoding JPEG from memory (%u bytes)", static_cast<unsigned>(size));
+
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < MIN_FREE_HEAP_FOR_JPEG) {
+    LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", freeHeap, MIN_FREE_HEAP_FOR_JPEG);
+    return false;
+  }
+
+  std::unique_ptr<JPEGDEC> jpeg(new (std::nothrow) JPEGDEC());
+  if (!jpeg) {
+    LOG_ERR("JPG", "Failed to allocate JPEG decoder");
+    return false;
+  }
+
+  // openRAM() reads the buffer without mutating it.
+  const int rc = jpeg->openRAM(data, static_cast<int>(size), jpegDrawCallback);
+  const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
+  if (rc != 1) {
+    LOG_ERR("JPG", "Failed to open JPEG from memory (err=%d)", jpeg->getLastError());
+    return false;
+  }
+
+  return decodeToFramebufferFromOpen(*jpeg, renderer, config);
+}
+
+static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, const RenderConfig& config) {
+  JpegContext ctx;
+  ctx.renderer = &renderer;
+  ctx.config = &config;
+  ctx.screenWidth = renderer.getScreenWidth();
+  ctx.screenHeight = renderer.getScreenHeight();
+
   ImageDimensions sourceDimensions;
-  if (!validateAndStoreDimensions(jpeg->getWidth(), jpeg->getHeight(), sourceDimensions, "JPEG")) return false;
+  if (!ImageToFramebufferDecoder::validateAndStoreDimensions(jpeg.getWidth(), jpeg.getHeight(), sourceDimensions,
+                                                             "JPEG"))
+    return false;
   const int srcWidth = sourceDimensions.width;
   const int srcHeight = sourceDimensions.height;
 
-  bool isProgressive = jpeg->getJPEGType() == JPEG_MODE_PROGRESSIVE;
+  bool isProgressive = jpeg.getJPEGType() == JPEG_MODE_PROGRESSIVE;
   if (isProgressive) {
     LOG_INF("JPG", "Progressive JPEG detected - decoding DC coefficients only (lower quality)");
   }
@@ -457,8 +528,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
   }
 
   if (destWidth <= 0 || destHeight <= 0) {
-    LOG_ERR("JPG", "Degenerate output dimensions %dx%d for %s, skipping render", destWidth, destHeight,
-            imagePath.c_str());
+    LOG_ERR("JPG", "Degenerate output dimensions %dx%d, skipping render", destWidth, destHeight);
     return false;
   }
 
@@ -476,8 +546,8 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
           isProgressive ? " [progressive]" : "");
 
   // Set pixel type to 8-bit grayscale (must be after open())
-  jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
-  jpeg->setUserPointer(&ctx);
+  jpeg.setPixelType(EIGHT_BIT_GRAYSCALE);
+  jpeg.setUserPointer(&ctx);
 
   // Start streaming the pixel cache to disk. The band only needs to hold the
   // tallest single decode block: a JPEGDEC MCU cell is at most 16 scaled-source
@@ -493,11 +563,11 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
 
   unsigned long decodeStart = millis();
   ctx.lastYieldMs = decodeStart;
-  rc = jpeg->decode(0, 0, jpegScaleOption);
+  const int rc = jpeg.decode(0, 0, jpegScaleOption);
   unsigned long decodeTime = millis() - decodeStart;
 
   if (rc != 1) {
-    LOG_ERR("JPG", "Decode failed (rc=%d, lastError=%d)", rc, jpeg->getLastError());
+    LOG_ERR("JPG", "Decode failed (rc=%d, lastError=%d)", rc, jpeg.getLastError());
     if (ctx.caching) ctx.cache.abort();
     return false;
   }
