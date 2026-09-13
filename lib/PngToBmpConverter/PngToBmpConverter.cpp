@@ -882,20 +882,31 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
 // the core consumes and run the same decode.
 bool PngToBmpConverter::pngMemToBmpStream(uint8_t* pngData, const size_t pngSize, Print& bmpOut, const bool crop,
                                           const bool originalThresholds) {
+  LOG_DBG("PNG", "Converting PNG to BMP from memory (%u bytes)", static_cast<unsigned>(pngSize));
+
+  // Use runtime display dimensions (swapped for portrait cover sizing)
+  const int targetWidth = display.getDisplayHeight();
+  const int targetHeight = display.getDisplayWidth();
+  return pngMemToBmpStreamInternal(pngData, pngSize, bmpOut, targetWidth, targetHeight, false, crop,
+                                   originalThresholds);
+}
+
+bool PngToBmpConverter::pngMemTo1BitBmpStreamWithSize(uint8_t* pngData, const size_t pngSize, Print& bmpOut,
+                                                      const int targetMaxWidth, const int targetMaxHeight) {
+  return pngMemToBmpStreamInternal(pngData, pngSize, bmpOut, targetMaxWidth, targetMaxHeight, true, true, false);
+}
+
+bool PngToBmpConverter::pngMemToBmpStreamInternal(uint8_t* pngData, const size_t pngSize, Print& bmpOut,
+                                                  const int targetWidth, const int targetHeight, const bool oneBit,
+                                                  const bool crop, const bool originalThresholds) {
   if (pngData == nullptr || pngSize == 0) {
     LOG_ERR("PNG", "Invalid memory source for PNG to BMP");
     return false;
   }
 
-  LOG_DBG("PNG", "Converting PNG to BMP from memory (%u bytes)", static_cast<unsigned>(pngSize));
-
   HalMemoryFile view;
   view.attach(pngData, pngSize);
-
-  // Use runtime display dimensions (swapped for portrait cover sizing)
-  const int targetWidth = display.getDisplayHeight();
-  const int targetHeight = display.getDisplayWidth();
-  return pngToBmpStreamCoreImpl(view, bmpOut, targetWidth, targetHeight, false, crop, originalThresholds);
+  return pngToBmpStreamCoreImpl(view, bmpOut, targetWidth, targetHeight, oneBit, crop, originalThresholds);
 }
 
 bool PngToBmpConverter::pngFileToBmpStream(HalFile& pngFile, Print& bmpOut, bool crop, bool originalThresholds) {

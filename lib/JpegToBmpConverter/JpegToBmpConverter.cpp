@@ -542,12 +542,27 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(HalFile& jpegFile, Print& b
 
 bool JpegToBmpConverter::jpegMemToBmpStream(uint8_t* jpegData, const size_t jpegSize, Print& bmpOut, const bool crop,
                                             const bool originalThresholds) {
+  LOG_DBG("JPG", "Converting JPEG to BMP from memory (%u bytes)", static_cast<unsigned>(jpegSize));
+
+  // Use runtime display dimensions (swapped for portrait cover sizing)
+  const int targetWidth = display.getDisplayHeight();
+  const int targetHeight = display.getDisplayWidth();
+  return jpegMemToBmpStreamInternal(jpegData, jpegSize, bmpOut, targetWidth, targetHeight, false, crop,
+                                    originalThresholds);
+}
+
+bool JpegToBmpConverter::jpegMemTo1BitBmpStreamWithSize(uint8_t* jpegData, const size_t jpegSize, Print& bmpOut,
+                                                        const int targetMaxWidth, const int targetMaxHeight) {
+  return jpegMemToBmpStreamInternal(jpegData, jpegSize, bmpOut, targetMaxWidth, targetMaxHeight, true, true, false);
+}
+
+bool JpegToBmpConverter::jpegMemToBmpStreamInternal(uint8_t* jpegData, const size_t jpegSize, Print& bmpOut,
+                                                    const int targetWidth, const int targetHeight, const bool oneBit,
+                                                    const bool crop, const bool originalThresholds) {
   if (jpegData == nullptr || jpegSize == 0) {
     LOG_ERR("JPG", "Invalid memory source for JPEG to BMP");
     return false;
   }
-
-  LOG_DBG("JPG", "Converting JPEG to BMP from memory (%u bytes)", static_cast<unsigned>(jpegSize));
 
   if (ESP.getFreeHeap() < MIN_FREE_HEAP) {
     LOG_ERR("JPG", "Not enough heap for JPEG decoder (%u free, need %u)", ESP.getFreeHeap(), MIN_FREE_HEAP);
@@ -568,10 +583,7 @@ bool JpegToBmpConverter::jpegMemToBmpStream(uint8_t* jpegData, const size_t jpeg
 
   const ScopedCleanup cleanup{[&jpeg]() { jpeg->close(); }};
 
-  // Use runtime display dimensions (swapped for portrait cover sizing)
-  const int targetWidth = display.getDisplayHeight();
-  const int targetHeight = display.getDisplayWidth();
-  return jpegToBmpStreamOpen(*jpeg, bmpOut, targetWidth, targetHeight, false, crop, originalThresholds);
+  return jpegToBmpStreamOpen(*jpeg, bmpOut, targetWidth, targetHeight, oneBit, crop, originalThresholds);
 }
 
 // Internal implementation with configurable target size and bit depth

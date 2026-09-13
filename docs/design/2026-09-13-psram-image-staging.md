@@ -67,7 +67,7 @@ not between allocators: any allocation call site still goes through `poolMalloc`
 
 | # | Decision | Rationale |
 |---|---|---|
-| 1 | Scope includes both the chapter-image pipeline and cover BMP generation | Both are compressed-image staging hot spots; fixing only one leaves SD wear and latency on the other. |
+| 1 | Scope includes the chapter-image pipeline, cover BMP generation, and thumbnail BMP generation | All three are compressed-image staging hot spots; fixing only some leaves SD wear and latency on the rest. (Thumbnails were added in a follow-up after being missed in the first pass — see decision log.) |
 | 2 | PSRAM builds never write compressed image bytes to SD, even as a persistent cache | PSRAM is large enough to re-extract on demand; a persistent compressed cache buys nothing after decode. |
 | 3 | A single compressed image larger than 4 MB is rejected before PSRAM allocation | Enforces the CWE-400 oversized-decompression rule. Larger images still render via the legacy SD fallback. |
 | 4 | PSRAM allocation failure or oversized image falls back to the existing SD temp-file path | No functional regression: the image still renders. |
@@ -104,4 +104,5 @@ not between allocators: any allocation call site still goes through `poolMalloc`
 | 2026-09-13 | Keep C3 (`default`) path byte-for-byte unchanged | The PSRAM optimization is board-conditional; C3 hardware has no PSRAM to benefit. |
 | 2026-09-13 | Decoders expose virtual memory-input overloads with a `false` default instead of a new source abstraction | JPEGDEC and PNGdec both natively support `openRAM`, so per-decoder overloads are the smallest seam; unmodified decoders signal "unsupported" by returning the base default. |
 | 2026-09-13 | `PixelCache` band buffer refactored from direct `heap_caps_malloc`/`heap_caps_free` to `poolMalloc`/`PoolBytes` | Project rule: allocation call sites go through the pool allocator; behavior (PSRAM band on PSRAM boards) is unchanged. |
+| 2026-09-13 | `generateThumbBmp()` added to the PSRAM staging path (implementation-time decision; initially missed in the first pass) | The thumbnail used the same decompress→stage→read-back→processed-output pipeline as the cover BMP, so leaving it on SD staging violated the "no compressed image temp on SD" directive. Shared `Epub::generateBmpFromPsram` helper factored for DRY; memory-input 1-bit converter variants added (`jpegMemTo1BitBmpStreamWithSize`, `pngMemTo1BitBmpStreamWithSize`). Legacy SD path kept as fallback. |
 | 2026-09-13 | PNG BMP converter core templated on a read/seek source view (`HalFileView` for SD, `HalMemoryFile` for PSRAM); JPEG BMP gained `jpegMemToBmpStream` via JPEGDEC `openRAM` | PNGdec is not used by the BMP converter (custom zlib chunk walker), so a minimal source adapter was cheaper than a RAM-mode rewrite; JPEGDEC has native `openRAM`. |
