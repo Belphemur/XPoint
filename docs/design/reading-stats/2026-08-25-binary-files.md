@@ -247,8 +247,9 @@ win (no alternating-offset small writes, no per-commit create/delete) is what ma
 
 ### Kept as-is
 `ReadingStatsUtils` (pure date/bucket/history math, minus `bookStatsDbKey()`), both stats
-activities/UI, settings gating (`READING_STATS_ENABLED` on the `x4pro` + `papermono` envs —
-`sticky` is also N16R8/PSRAM but lacks the flag — plus the
+activities/UI, settings gating (`READING_STATS_ENABLED`, hoisted into `[base]` on
+2026-09-13 so every environment ships it — originally only the `x4pro` + `papermono`
+envs carried it — plus the
 `SETTINGS.shouldTrackReadingStats()` runtime toggle), session lifecycle thresholds
 (≥10 s count, ≥60 s = session).
 
@@ -420,7 +421,18 @@ Pass ran 2026-08-26 against this repo (`feat/reading-stats-binary`) and crossink
    - `recordSession()` / the `reading_sessions` table have zero call sites in `src/` —
      dropped without replacement (§4).
    - `READING_STATS_ENABLED` is set on the `x4pro` + `papermono` envs, not "PSRAM envs"
-     (`sticky` is N16R8/PSRAM but lacks the flag) — §4 wording corrected.
+     (`sticky` is N16R8/PSRAM but lacks the flag) — §4 wording corrected. Superseded
+     2026-09-13: the flag moved into `[base]` (see decision below); every environment
+     now compiles the stats feature.
+
+6. **`READING_STATS_ENABLED` hoisted into `[base]` (2026-09-13).** The flag was
+   repeated per-env on `x4pro`, `x4pro_profile`, both `x4pro` release/RC envs, and all
+   three `papermono` envs; `default`/`gh_release*`/`slim`/`sticky`/`x4c*` compiled
+   without it, so the Classic, Sticky and C3 devices shipped without reading stats.
+   Moved into `[base].build_flags` so every environment carries it; the original
+   per-device gating intent is preserved by the runtime
+   `SETTINGS.shouldTrackReadingStats()` opt-out toggle. 7 per-env repeats deleted;
+   RAM cost on the C3 (380 KB) accepted by the user as the price of feature parity.
 
 **Deliberately kept intact:** no-temp per-book write; `.bak` rotation for the global record;
 the `NewerFormat` destructive-save guard; legacy fallback chains; ≥10 s / ≥60 s thresholds;
