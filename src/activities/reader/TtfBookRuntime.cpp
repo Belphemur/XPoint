@@ -294,6 +294,12 @@ bool TtfBookRuntime::finishSession() {
   LOG_DBG("TTFB", "Session done: %u pages, totalChars=%u, scratch highWater=%u failedAlloc=%u",
           static_cast<unsigned>(writer_.pageCount()), static_cast<unsigned>(session_.totalChars()),
           static_cast<unsigned>(scratch_.highWater()), static_cast<unsigned>(scratch_.failedAllocSize()));
+  // Release the engine/sink/parser objects while their arena backing is still
+  // intact. resetBuildArenas() only clears marks, so skipping this left
+  // session_ holding dangling engine_/parser_ pointers into reset arena
+  // memory — the next begin()'s abort() then ran destructors on reused
+  // memory (LoadProhibited crash opening the second chapter).
+  session_.abort();
   writer_ = PageCacheWriter{};
   sessionSpine_ = kNoSpine;
   sessionGen_ = 0;
