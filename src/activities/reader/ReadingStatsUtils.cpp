@@ -31,6 +31,19 @@ void setBit(std::array<uint8_t, READING_HISTORY_BYTES>& bits, const size_t bitIn
 
 void clearBits(std::array<uint8_t, READING_HISTORY_BYTES>& bits) { bits.fill(0); }
 
+void shiftMinutesOlder(std::array<uint16_t, READING_MINUTE_HISTORY_DAYS>& minutes, const size_t shiftDays) {
+  if (shiftDays == 0) return;
+  if (shiftDays >= READING_MINUTE_HISTORY_DAYS) {
+    minutes.fill(0);
+    return;
+  }
+  std::array<uint16_t, READING_MINUTE_HISTORY_DAYS> shifted = {};
+  for (size_t dayOffset = 0; dayOffset + shiftDays < READING_MINUTE_HISTORY_DAYS; ++dayOffset) {
+    shifted[dayOffset + shiftDays] = minutes[dayOffset];
+  }
+  minutes = shifted;
+}
+
 void shiftHistoryOlder(std::array<uint8_t, READING_HISTORY_BYTES>& bits, const size_t shiftDays) {
   if (shiftDays == 0) {
     return;
@@ -608,6 +621,7 @@ void markReadingHistoryDay(uint32_t& anchorDay, std::array<uint8_t, READING_HIST
 }
 
 void recordReadingSpanIntoHistory(uint32_t& anchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& bits,
+                                  std::array<uint16_t, READING_MINUTE_HISTORY_DAYS>& dailyMinutes,
                                   const ReadingStatsDateTime& localStart, const uint32_t seconds) {
   if (!localStart.isValid() || seconds == 0) {
     return;
@@ -616,14 +630,42 @@ void recordReadingSpanIntoHistory(uint32_t& anchorDay, std::array<uint8_t, READI
   ReadingStatsDateTime cursor = localStart;
   uint32_t remaining = seconds;
   while (remaining > 0) {
-    markReadingHistoryDay(anchorDay, bits, readingStatsDayIndex(cursor.date));
+    const uint32_t dayIndex = readingStatsDayIndex(cursor.date);
+    const uint32_t previousAnchorDay = anchorDay;
+    markReadingHistoryDay(anchorDay, bits, dayIndex);
     const uint32_t secondsUntilMidnight =
         (24u * 3600u) - (static_cast<uint32_t>(cursor.hour) * 3600u + static_cast<uint32_t>(cursor.minute) * 60u +
                          static_cast<uint32_t>(cursor.second));
     const uint32_t segment = remaining < secondsUntilMidnight ? remaining : secondsUntilMidnight;
     remaining -= segment;
+
+    // Round each calendar-day segment to minutes and cap one call's
+    // contribution at one day's worth of minutes. The array is uint16 and
+    // per-day totals also stay <= 1440.
+    const uint32_t minutesToAdd = std::min<uint32_t>(READING_MINUTES_PER_DAY, (segment + 30u) / 60u);
+    if (previousAnchorDay == 0 && dailyMinutes[0] == 0) {
+      dailyMinutes.fill(0);
+    } else if (dayIndex > previousAnchorDay) {
+      shiftMinutesOlder(dailyMinutes, dayIndex - previousAnchorDay);
+    }
+    const uint32_t dayOffset = anchorDay - dayIndex;
+    if (dayOffset < READING_MINUTE_HISTORY_DAYS) {
+      const uint32_t updated = std::min<uint32_t>(READING_MINUTES_PER_DAY, dailyMinutes[dayOffset] + minutesToAdd);
+      dailyMinutes[dayOffset] = static_cast<uint16_t>(updated);
+    }
+
     addSecondsToReadingStatsDateTime(cursor, segment);
   }
+}
+
+uint16_t readingMinutesForDay(const uint32_t anchorDay,
+                              const std::array<uint16_t, READING_MINUTE_HISTORY_DAYS>& dailyMinutes,
+                              const uint32_t dayIndex) {
+  if (dayIndex > anchorDay) {
+    return 0;
+  }
+  const uint32_t dayOffset = anchorDay - dayIndex;
+  return dayOffset < READING_MINUTE_HISTORY_DAYS ? dailyMinutes[dayOffset] : 0;
 }
 
 void mergeReadingHistory(uint32_t& targetAnchorDay, std::array<uint8_t, READING_HISTORY_BYTES>& targetBits,

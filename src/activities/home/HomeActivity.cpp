@@ -412,6 +412,6 @@ void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
 void HomeActivity::onReadingStatsOpen() {
 #ifdef READING_STATS_ENABLED
-  activityManager.goToGlobalStats();
+  activityManager.goToReadingStats();
 #endif
 }

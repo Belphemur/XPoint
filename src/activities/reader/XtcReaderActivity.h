@@ -5,6 +5,11 @@
 #include <memory>
 #include <string>
 
+#ifdef READING_STATS_ENABLED
+#include "BookReadingStats.h"
+#include "GlobalReadingStats.h"
+#endif
+
 #include "ReaderActivity.h"
 
 class XtcReaderActivity final : public ReaderActivity {
@@ -24,6 +29,17 @@ class XtcReaderActivity final : public ReaderActivity {
   StatusBarInfo getStatusBarInfo() const;
   void saveProgress() const;
   void loadProgress();
+#ifdef READING_STATS_ENABLED
+  BookReadingStats stats;
+  GlobalReadingStats globalStats;
+
+  void onGoHomeRequested() override;
+  void setBookCompleted(bool completed);
+  void goHomeOrShowCompletionAchievement();
+  void syncFinishedBookIndex();
+  BookReadingStats achievementStatsPreview() const;
+  float getCurrentBookProgressPercent() const;
+#endif
 
   bool loadBook() override;
   std::string getBookTitle() const override { return xtc ? xtc->getTitle() : ""; }
@@ -38,6 +54,11 @@ class XtcReaderActivity final : public ReaderActivity {
                              bool allowFastInitialRefresh)
       : ReaderActivity("XtcReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
   ~XtcReaderActivity() override = default;
+
+#ifdef READING_STATS_ENABLED
+  void onEnter() override;
+  void onExit() override;
+#endif
 
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;

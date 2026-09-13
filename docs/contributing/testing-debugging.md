@@ -9,9 +9,13 @@ If needed, see [Getting Started](./getting-started.md).
 
 ```sh
 ./bin/clang-format-fix
-pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+./bin/cppcheck-check
 pio run
 ```
+
+`./bin/cppcheck-check` mirrors the CI cppcheck flags. The CI `cppcheck` job is
+the authoritative gate — a local PASS does not guarantee CI passes (CI has
+flagged defects the identical local run reported clean).
 
 ## Flash and monitor
 

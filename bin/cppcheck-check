@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run static analysis exactly as the CI `cppcheck` job does
+# (.github/workflows/ci.yml, "Run cppcheck" step).
+#
+# CI is the authoritative gate: a PASS from this script does not guarantee
+# the CI job passes. CI has twice flagged defects (e.g. uselessOverride in
+# XtcReaderActivity.h at bd34800c) that the identical local invocation
+# (same byte-identical tool-cppcheck binary, same content, same env/flags)
+# did not reproduce — the divergence sits in PlatformIO's per-file analysis
+# environment, not in tool versions. Always treat the CI cppcheck job as
+# authoritative before pushing.
+#
+# Tool facts (verified 2026-09-12):
+#   PlatformIO Core 6.1.19 (CI: uv pioarduino platformio-core v6.1.19 zip)
+#   tool-cppcheck package 2.20.1 (pioarduino registry); the binary
+#   self-reports "Cppcheck 2.20.0" on BOTH CI and local — the packaged
+#   build is identical everywhere (sha256 6191fdcf...).
+set -euo pipefail
+
+exec pio check \
+  --fail-on-defect low \
+  --fail-on-defect medium \
+  --fail-on-defect high

@@ -242,18 +242,20 @@ require a persisted flag that breaks the pure-`count` gate contract.
 
 | Record | Loaded? | Notes |
 |---|---|---|
-| Book v7 (134 B, current) | ✅ | Written by this build |
-| Book v6 (109 B) | ✅ → v7 in-place | Migrated on first save; legacy file deleted |
-| Book v5 (73 B) | ✅ → v7 in-place | Single-hop upgrade on first save; legacy files deleted |
+| Book v8 (135 B, current) | ✅ | Written by this build |
+| Book v7 (134 B) | ✅ → v8 in-place | Migrated on first save; legacy file deleted |
+| Book v6 (109 B) | ✅ → v8 in-place | Single-hop upgrade on first save; legacy file deleted |
+| Book v5 (73 B) | ✅ → v8 in-place | Single-hop upgrade on first save; legacy files deleted |
 | Book v4 and earlier | ❌ | Unchanged (dropped by design) |
-| Global v5 (225 B, current) | ✅ | Written by this build |
-| Global v4 (195 B) | ✅ → v5 in-place | Migrated on first save |
-| Global v3 (159 B) | ✅ → v4 in-place | Chain preserved |
+| Global v6 (407 B, current) | ✅ | Written by this build |
+| Global v5 (225 B) | ✅ → v6 in-place | Migrated on first save |
+| Global v4 (195 B) | ✅ → v6 in-place | Migrated on first save |
+| Global v3 (159 B) | ✅ → v6 in-place | Chain preserved |
 | Global v1/v2 | ❌ | Unchanged |
 
-(Concretely: a book still on v5 upgrades v5 → v7 in a single save — the
- writer only emits the current version — and both `stats_v6.bin` (if any)
- and `stats_v5.bin` are removed once the v7 write has fully landed.)
+(Concretely: a book still on v5 upgrades v5 → v8 in a single save — the writer only emits
+ the current version — and all recognized legacy files are removed once the v8 write has
+ fully landed.)
 
 ## 7. Implementation plan
 
