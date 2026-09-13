@@ -15,9 +15,11 @@ struct ManifestBoardEntry {
   bool hasSha;
 };
 
-// Upper bound on boards parsed from one manifest (matches the release
-// workflow's per-fork board count with headroom).
-constexpr int OTA_MANIFEST_MAX_BOARDS = 8;
+// Upper bound on boards parsed from one manifest: five boards x two asset
+// families. The release workflow puts crosspoint entries first so v1.15.x
+// parsers (which retain the old cap of 8 and return the first board match)
+// still resolve their compatibility URL.
+constexpr int OTA_MANIFEST_MAX_BOARDS = 16;
 
 // Returns the entry whose `board` matches name/len, or nullptr if the
 // manifest carries no image for that board.
