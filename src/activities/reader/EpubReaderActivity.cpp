@@ -195,6 +195,9 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
 
 EpubReaderActivity::~EpubReaderActivity() {
   ImageBlock::setExtractor(nullptr, nullptr);
+#ifdef BOARD_HAS_PSRAM
+  ImageBlock::setPsramExtractor(nullptr, nullptr);
+#endif
   discardOverlayPage();  // free the overlay's page snapshot if one is held
 
   // Design §4.4: exit flushing is the manager's job — closeBook() flushes
@@ -552,6 +555,11 @@ bool EpubReaderActivity::loadBook() {
   ImageBlock::setExtractor(epub.get(), [](void* ctx, const char* src, const char* dest) {
     return static_cast<Epub*>(ctx)->extractItemToFile(src, dest);
   });
+#ifdef BOARD_HAS_PSRAM
+  ImageBlock::setPsramExtractor(epub.get(), [](void* ctx, const char* src, size_t& size) {
+    return static_cast<Epub*>(ctx)->extractItemToPsram(src, &size);
+  });
+#endif
 
   epub->setupCacheDir();
 
@@ -1445,6 +1453,9 @@ bool EpubReaderActivity::launchKOReaderSync() {
     discardOverlayPage();
     ImageBlock::releaseRenderCache();
     ImageBlock::setExtractor(nullptr, nullptr);
+#ifdef BOARD_HAS_PSRAM
+    ImageBlock::setPsramExtractor(nullptr, nullptr);
+#endif
     section.reset();
     if (auto* fcm = renderer.getFontCacheManager()) {
       fcm->releaseSdFontCaches();

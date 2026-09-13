@@ -985,25 +985,45 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   self->imagePopupFired = true;
                   self->popupFn();
                 }
-                HalFile cachedImageFile;
-                bool extractSuccess = false;
-                if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
-                  extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
-                  cachedImageFile.flush();
-                  cachedImageFile.close();
-                }
-                if (extractSuccess) {
-                  // Retry to absorb SD-card sync latency on slow cards, and to close
-                  // the silent-drop bug where a single getDimensions failure was fatal.
-                  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
-                  for (int attempt = 0; attempt < 3 && !gotDimensions; attempt++) {
-                    if (attempt > 0) {
-                      delay(50);  // Give a slow SD card time to finish syncing before retrying
-                    }
-                    gotDimensions = decoder && decoder->getDimensions(cachedImagePath, dims);
+#ifdef BOARD_HAS_PSRAM
+                // PSRAM boards probe from a pool buffer: the compressed image is
+                // never staged on SD. Oversized (>4 MB) or OOM falls back to SD.
+                size_t psramImageSize = 0;
+                PoolBytes psramImage{self->epub->extractItemToPsram(resolvedPath, &psramImageSize)};
+                if (psramImage) {
+                  ImageToFramebufferDecoder* psramDecoder = ImageDecoderFactory::getDecoder(cachedImagePath);
+                  if (psramDecoder) {
+                    gotDimensions = psramDecoder->getDimensions(psramImage.get(), psramImageSize, dims);
                   }
+                }
+                if (gotDimensions) {
+                  LOG_DBG("EHP", "Probed image dimensions from PSRAM (%u bytes)",
+                          static_cast<unsigned>(psramImageSize));
                 } else {
-                  LOG_ERR("EHP", "Failed to extract image");
+                  LOG_DBG("EHP", "PSRAM probe unavailable, staging to SD: %s", resolvedPath.c_str());
+                }
+#endif
+                if (!gotDimensions) {
+                  HalFile cachedImageFile;
+                  bool extractSuccess = false;
+                  if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
+                    extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
+                    cachedImageFile.flush();
+                    cachedImageFile.close();
+                  }
+                  if (extractSuccess) {
+                    // Retry to absorb SD-card sync latency on slow cards, and to close
+                    // the silent-drop bug where a single getDimensions failure was fatal.
+                    ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
+                    for (int attempt = 0; attempt < 3 && !gotDimensions; attempt++) {
+                      if (attempt > 0) {
+                        delay(50);  // Give a slow SD card time to finish syncing before retrying
+                      }
+                      gotDimensions = decoder && decoder->getDimensions(cachedImagePath, dims);
+                    }
+                  } else {
+                    LOG_ERR("EHP", "Failed to extract image");
+                  }
                 }
               }
 
