@@ -163,6 +163,29 @@ TEST_F(ProgressManagerTest, CloseBookPreservesOwedStateAfterFlushFailure) {
   EXPECT_EQ(rec.visibleTextOffset, 900u);
 }
 
+TEST_F(ProgressManagerTest, CloseBookRejectsLateSave) {
+  uint16_t spine = 0, page = 0, count = 0;
+  uint32_t offset = 0;
+  ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
+  progressManager.save(4, 8, 20, true, 700);
+
+  // A save racing the close (render task still finishing) must not update
+  // the record after the close flush snapshot; closeBook() resets the
+  // session, and a subsequent openBook() re-enables saves.
+  progressManager.closeBook();
+  progressManager.save(9, 9, 20, true, 999);
+
+  // Re-open: the disk baseline is the pre-close flush, not the late save.
+  spine = 0;
+  page = 0;
+  count = 0;
+  offset = 0;
+  ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
+  EXPECT_EQ(spine, 4u);
+  EXPECT_EQ(page, 8u);
+  EXPECT_EQ(offset, 700u);
+}
+
 TEST_F(ProgressManagerTest, FlushWritesMirrorAfterIntervalGate) {
   uint16_t spine = 0, page = 0, count = 0;
   uint32_t offset = 0;

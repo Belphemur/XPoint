@@ -688,9 +688,11 @@ Discrepancies found in the previous draft, all corrected above:
 
 - **Compile-time split, not runtime.** On PSRAM-less builds none of the TTF stack
   links at all (`BookFontLoader`, adapters, `ChapterLayout`/`PageRenderer` path,
-  font/size settings UI) — zero flash/RAM cost, zero new UX. On PSRAM builds the
-  legacy reader activity, `FontCacheManager`, and the old font-settings tab are
-  **compiled out**; the two render paths never coexist in one binary.
+  font/size settings UI) — zero flash/RAM cost, zero new UX. On PSRAM builds both
+  render paths coexist until Phase 4: the native-TTF runtime is the active reader
+  path and falls back to the legacy reader on TTF open failure, while the legacy
+  reader stays in the binary as the build-flag kill switch. Phase 4 compiles the
+  legacy reader activity, `FontCacheManager`, and the old font-settings tab out.
 - **No runtime toggle, no dual-mode testing.** A device is one class or the
   other for its whole life.
 - **UI chrome stays bitmap on every device** (`GfxRenderer` + `EpdFont`):

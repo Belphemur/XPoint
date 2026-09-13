@@ -150,6 +150,10 @@ class ProgressManager {
   // cadence) makes this cheap; reads only the battery singleton — static.
   static bool lowBattery();
 
+  // Frees the pool records and deletes the sync primitives (no worker
+  // handling — quiesce first). Destructor teardown and begin() failure paths.
+  void releaseState();
+
   // Protects current_, lastFlushed_, cachePath_, bookOpen_, writeQueued_,
   // and lastFlushSec_. This mutex is never held across disk I/O.
   SemaphoreHandle_t stateMutex_ = nullptr;
@@ -168,6 +172,7 @@ class ProgressManager {
   uint32_t bookGeneration_ = 0;
   char cachePath_[160] = {0};
   bool bookOpen_ = false;
+  bool closing_ = false;      // closeBook() in progress: save()/saveTtf() reject updates
   bool writeQueued_ = false;  // worker owes a write
   TaskHandle_t worker_ = nullptr;
   // Destructor handshake: set before waking the worker; the worker exits and

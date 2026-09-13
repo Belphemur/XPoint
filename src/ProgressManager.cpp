@@ -79,6 +79,7 @@ void ProgressManager::begin() {
   workerExit_ = xSemaphoreCreateBinary();
   if (workerExit_ == nullptr) {
     LOG_ERR(MUTEX_TAG, "OOM: progress worker exit semaphore");
+    releaseState();
     return;
   }
   if (xTaskCreatePinnedToCore(
@@ -110,23 +111,12 @@ void ProgressManager::begin() {
           },
           WORKER_TASK_NAME, WORKER_STACK_BYTES, this, WORKER_PRIORITY, &worker_, 0) != pdPASS) {
     LOG_ERR(MUTEX_TAG, "Failed to create progress worker task");
+    worker_ = nullptr;
+    releaseState();
   }
 }
 
-ProgressManager::~ProgressManager() {
-  // Quiesce the worker BEFORE releasing the state it reads. It acknowledges
-  // exactly once: after its loop leaves either a blocked wake (notification
-  // below) or an in-flight flush, and before vTaskDelete().
-  if (worker_ != nullptr) {
-    workerStopping_ = true;
-    xTaskNotifyGive(worker_);
-    if (workerExit_ != nullptr) {
-      // A flush can take several seconds on slow SD; waiting here is safe in
-      // the only teardown path (global static destruction after loop()).
-      xSemaphoreTake(workerExit_, portMAX_DELAY);
-    }
-    worker_ = nullptr;
-  }
+void ProgressManager::releaseState() {
   if (current_ != nullptr) {
     poolFree(current_);
     current_ = nullptr;
@@ -149,6 +139,23 @@ ProgressManager::~ProgressManager() {
   }
 }
 
+ProgressManager::~ProgressManager() {
+  // Quiesce the worker BEFORE releasing the state it reads. It acknowledges
+  // exactly once: after its loop leaves either a blocked wake (notification
+  // below) or an in-flight flush, and before vTaskDelete().
+  if (worker_ != nullptr) {
+    workerStopping_ = true;
+    xTaskNotifyGive(worker_);
+    if (workerExit_ != nullptr) {
+      // A flush can take several seconds on slow SD; waiting here is safe in
+      // the only teardown path (global static destruction after loop()).
+      xSemaphoreTake(workerExit_, portMAX_DELAY);
+    }
+    worker_ = nullptr;
+  }
+  releaseState();
+}
+
 bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint16_t& pageNumber, uint16_t& pageCount,
                                uint32_t& visibleTextOffset) {
   if (diskMutex_ == nullptr || current_ == nullptr) {
@@ -160,6 +167,7 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
   xSemaphoreTake(stateMutex_, portMAX_DELAY);
   *current_ = ProgressManager::Record{};
   *lastFlushed_ = ProgressManager::Record{};
+  closing_ = false;
   writeQueued_ = false;
   lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
   xSemaphoreGive(stateMutex_);
@@ -281,7 +289,7 @@ void ProgressManager::saveTtf(const uint16_t spineIndex, const uint16_t pageNumb
   bool queued = false;
   {
     xSemaphoreTake(stateMutex_, portMAX_DELAY);
-    available = bookOpen_;
+    available = bookOpen_ && !closing_;
     if (available) {
       current_->spineIndex = spineIndex;
       current_->pageNumber = pageNumber;
@@ -330,7 +338,7 @@ void ProgressManager::save(const uint16_t spineIndex, const uint16_t pageNumber,
   bool queued = false;
   {
     xSemaphoreTake(stateMutex_, portMAX_DELAY);
-    available = bookOpen_;
+    available = bookOpen_ && !closing_;
     if (available) {
       current_->spineIndex = spineIndex;
       current_->pageNumber = pageNumber;
@@ -426,6 +434,13 @@ void ProgressManager::closeBook() {
     return;
   }
   LOG_DBG(MUTEX_TAG, "closeBook(): flushing pending progress");
+  // Mark the session closing before the flush: save()/saveTtf() from the
+  // render task can still run while this task closes the book — without the
+  // flag a late save would update current_ after the flush snapshot and its
+  // record would be silently discarded by the reset below.
+  xSemaphoreTake(stateMutex_, portMAX_DELAY);
+  closing_ = true;
+  xSemaphoreGive(stateMutex_);
   const bool flushed = flushChanged();
   // Session state changes hold diskMutex_ too: a worker mid-commitRecord
   // (which validates the session under the same lock before its disk write)

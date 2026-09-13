@@ -461,12 +461,13 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
   // The walk frame would need ~550B of stack locals (over the 256B stack
   // budget, and scanFonts runs from boot wiring) — one heap scratch instead.
   struct ScanScratch {
-    char dirName[48];   // FamilyInfo::name cap; longer folder names are skipped
-    char fileName[64];  // FontFaceInfo::file cap minus dir prefix headroom
-    char lower[64];     // lowercased stem
-    char subPath[160];  // SdCardCacheStorage::kDirMax
-    char soloFile[64];  // §14.4 rule 7: the lone candidate's name
-    FamilyInfo fam;     // 552B manifest row — heap, reset per family
+    char dirName[48];    // FamilyInfo::name cap; longer folder names are skipped
+    char fileName[64];   // FontFaceInfo::file cap minus dir prefix headroom
+    char lower[64];      // lowercased stem
+    char subPath[160];   // SdCardCacheStorage::kDirMax
+    char soloFile[64];   // §14.4 rule 7: the lone candidate's name
+    char soloLower[64];  // the lone candidate's stem — `lower` is stale by promotion time
+    FamilyInfo fam;      // 552B manifest row — heap, reset per family
     uint32_t soloSize = 0;
   };
   // sizeof() on the decayed pointers would measure the pointer, not the
@@ -479,6 +480,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
   char* dirName = scratch->dirName;
   char* fileName = scratch->fileName;
   char* lower = scratch->lower;
+  char* soloLower = scratch->soloLower;
   char* subPath = scratch->subPath;
   constexpr size_t kDirNameCap = sizeof(ScanScratch::dirName);
   constexpr size_t kFileNameCap = sizeof(ScanScratch::fileName);
@@ -543,6 +545,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       if (candidateCount == 1) {
         snprintf(soloFile, kFileNameCap, "%s", fileName);
         soloSize = entry.fileSize();
+        soloLower[0] = '\0';
       }
 
       // Stem for style inference (extension stripped, lowercased).
@@ -552,6 +555,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
         lower[i] = static_cast<char>(tolower(static_cast<unsigned char>(fileName[i])));
       }
       lower[stemLen] = '\0';
+      if (candidateCount == 1) snprintf(soloLower, kLowerCap, "%s", lower);
 
       uint8_t style = 0;
       if (!inferStyleFlags(lower, style)) {
@@ -596,7 +600,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       FontFaceInfo& face = fam.faces[0];
       fam.faceCount = 1;
       face = {};
-      snprintf(face.name, sizeof(face.name), "%s", lower);
+      snprintf(face.name, sizeof(face.name), "%s", soloLower);
       if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
         fam.faceCount = 0;
         continue;

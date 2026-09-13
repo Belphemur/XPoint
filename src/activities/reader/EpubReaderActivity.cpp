@@ -2414,7 +2414,9 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     if (ttfSavedCharOffset == 0) {
       if (haveTotal) {
         ttfHasSavedPosition = false;
-        targetOut = std::clamp(static_cast<int>(nextPageNumber), 0, available - 1);
+        // A complete-but-empty chapter has no pages; clamp(x, 0, -1) would
+        // be UB, so degrade to page 0 instead.
+        targetOut = available > 0 ? std::clamp(static_cast<int>(nextPageNumber), 0, available - 1) : 0;
         return true;
       }
       needFullBuild = true;
@@ -3647,37 +3649,44 @@ void EpubReaderActivity::showTextRowPopup(const int row) {
     overlay = Overlay::None;
     overlayPopup.dismiss();
     discardOverlayPage();
-    startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
-                                                                  TextSettingsActivity::Tab::Family),
-                           [this](const ActivityResult&) {
-                             applyReaderTextSettings();
-                             overlay = Overlay::Text;  // back to the Text panel
-                             panelIndex = 0;
-                             if (toolbarUi) toolbarUi->begin();  // the picker drew its own FUI screen
-                             requestUpdate();                    // re-render page + Text panel
-                           });
+    auto picker = makeUniqueNoThrow<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
+                                                          TextSettingsActivity::Tab::Family);
+    if (!picker) {
+      LOG_ERR("ERS", "OOM: TextSettingsActivity");
+      return;
+    }
+    startActivityForResult(std::move(picker), [this](const ActivityResult&) {
+      applyReaderTextSettings();
+      overlay = Overlay::Text;  // back to the Text panel
+      panelIndex = 0;
+      if (toolbarUi) toolbarUi->begin();  // the picker drew its own FUI screen
+      requestUpdate();                    // re-render page + Text panel
+    });
     return;
   }
   if (ttf_ && row == 1) {
     // §14.2: continuous size — same slider as the settings Size tab.
-    startActivityForResult(
-        std::make_unique<IntervalSelectionActivity>(
-            renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
-            CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
-            StrId::STR_FONT_SIZE_VALUE, /*readerActivity=*/true),
-        [this](const ActivityResult& result) {
-          if (!result.isCancelled && std::holds_alternative<IntervalResult>(result.data)) {
-            SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
-                std::get<IntervalResult>(result.data).value, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN,
-                CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
-            applyTextSettingLive();
-          }
-          // Reopen the Text panel over the restored page.
-          overlay = Overlay::Text;
-          panelIndex = 1;
-          if (toolbarUi) toolbarUi->begin();
-          requestUpdate();
-        });
+    auto sizeDialog = makeUniqueNoThrow<IntervalSelectionActivity>(
+        renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
+        CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
+        StrId::STR_FONT_SIZE_VALUE, /*readerActivity=*/true);
+    if (!sizeDialog) {
+      LOG_ERR("ERS", "OOM: IntervalSelectionActivity");
+      return;
+    }
+    startActivityForResult(std::move(sizeDialog), [this](const ActivityResult& result) {
+      if (!result.isCancelled && std::holds_alternative<IntervalResult>(result.data)) {
+        SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
+            std::get<IntervalResult>(result.data).value, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN,
+            CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
+        applyTextSettingLive();
+      }
+      // Reopen the Text panel over the restored page.
+      overlay = Overlay::Text;
+      panelIndex = 1;
+      if (toolbarUi) toolbarUi->begin();
+      requestUpdate();
+    });
     return;
   }
 #endif

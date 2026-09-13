@@ -2,6 +2,8 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
+#include <Memory.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -473,24 +475,27 @@ void TextSettingsActivity::activateRow(int row) {
         requestUpdate();
       }
       break;
-    case Tab::Size:
+    case Tab::Size: {
 #if defined(CROSSPOINT_TTF_READER)
       // §14.2: continuous point size — the slider dialog (IntervalSelection)
       // applies on OK; the e-ink refresh between stops is the debounce.
-      startActivityForResult(
-          std::make_unique<IntervalSelectionActivity>(
-              renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
-              CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
-              StrId::STR_FONT_SIZE_VALUE),
-          [this](const ActivityResult& result) {
-            if (result.isCancelled || !std::holds_alternative<IntervalResult>(result.data)) return;
-            const auto size = std::get<IntervalResult>(result.data).value;
-            SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
-                size, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
-            SETTINGS.saveToFile();
-            rebuildSizeList();
-            requestUpdate();
-          });
+      auto sizeDialog = makeUniqueNoThrow<IntervalSelectionActivity>(
+          renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
+          CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
+          StrId::STR_FONT_SIZE_VALUE);
+      if (!sizeDialog) {
+        LOG_ERR("TSET", "OOM: IntervalSelectionActivity");
+        break;
+      }
+      startActivityForResult(std::move(sizeDialog), [this](const ActivityResult& result) {
+        if (result.isCancelled || !std::holds_alternative<IntervalResult>(result.data)) return;
+        const auto size = std::get<IntervalResult>(result.data).value;
+        SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
+            size, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
+        SETTINGS.saveToFile();
+        rebuildSizeList();
+        requestUpdate();
+      });
       break;
 #endif
       if (row != currentSizeIndex_) {
@@ -499,6 +504,7 @@ void TextSettingsActivity::activateRow(int row) {
         requestUpdate();
       }
       break;
+    }
     case Tab::Layout:
       confirmLayoutRow(row);
       break;

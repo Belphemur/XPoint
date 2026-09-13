@@ -1,7 +1,7 @@
 // Host-test stub of the FreeRTOS surface ProgressManager uses.
-// Single-threaded: semaphores are counters-only no-ops and the worker task is
-// never created (xTaskCreatePinnedToCore fails), so suites exercise the real
-// snapshot/commit logic without a second task.
+// Single-threaded: semaphores are counters-only no-ops and the worker task
+// body never runs (task.h stub), so suites exercise the real snapshot/commit
+// logic without a second task.
 #pragma once
 
 #include <cstdint>
