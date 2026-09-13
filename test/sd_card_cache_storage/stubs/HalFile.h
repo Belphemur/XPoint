@@ -41,8 +41,9 @@ class HalFile {
     if (testFailWrite) return 0;
     if (!data || cursor > data->size()) return 0;
     const auto* b = static_cast<const char*>(buf);
-    // Subtraction form: count is validated against the remaining span before
-    // any addition, so the resize argument cannot wrap.
+    // Subtraction form for the span check, plus a wrap guard so the resize
+    // argument cannot overflow: cursor + count must be representable.
+    if (count > SIZE_MAX - cursor) return 0;
     if (count > data->size() - cursor) data->resize(cursor + count);
     for (size_t i = 0; i < count; ++i) (*data)[cursor + i] = b[i];
     cursor += count;
