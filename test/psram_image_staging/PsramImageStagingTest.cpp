@@ -6,9 +6,7 @@
 
 namespace {
 
-TEST(ImageStagingGuard, AcceptsImageAtTheLimit) {
-  EXPECT_TRUE(isImageSizeWithinPsramLimit(MAX_IMAGE_FILE_SIZE));
-}
+TEST(ImageStagingGuard, AcceptsImageAtTheLimit) { EXPECT_TRUE(isImageSizeWithinPsramLimit(MAX_IMAGE_FILE_SIZE)); }
 
 TEST(ImageStagingGuard, RejectsImageAboveTheLimit) {
   EXPECT_FALSE(isImageSizeWithinPsramLimit(MAX_IMAGE_FILE_SIZE + 1));
