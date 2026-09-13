@@ -33,4 +33,11 @@ TEST(NormalisePath, CollapsesParentReferenceWithinPath) {
 
 TEST(NormalisePath, DropsLeadingParentReferencesPastRoot) { EXPECT_EQ(FsHelpers::normalisePath("/../../etc"), "etc"); }
 
+TEST(CheckFileExtension, FirmwarePickerAcceptsAnyBinName) {
+  EXPECT_TRUE(FsHelpers::checkFileExtension("xpoint-1.16.0-x4pro.bin"sv, ".bin"));
+  EXPECT_TRUE(FsHelpers::checkFileExtension("crosspoint-1.16.0-x4pro.bin"sv, ".bin"));
+  EXPECT_TRUE(FsHelpers::checkFileExtension("locally-built-firmware.bin"sv, ".bin"));
+  EXPECT_FALSE(FsHelpers::checkFileExtension("firmware.txt"sv, ".bin"));
+}
+
 }  // namespace

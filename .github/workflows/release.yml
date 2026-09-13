@@ -1,10 +1,12 @@
 name: Compile Release
 
-# Builds every board's release firmware on tag push, with each .bin named exactly as
-# OtaUpdater requests it from the GitHub release: crosspoint-<version>-<device>.bin
-# (the combined C3 X4/X3 binary uses device tag x3-x4), then creates a draft GitHub
-# Release, attaches all build artifacts, and generates + signs a per-board manifest.json
-# (Ed25519) so the device can verify OTA authenticity.
+# Builds every board's release firmware on tag push and publishes each .bin under
+# BOTH names during the OTA asset-name transition:
+#   xpoint-<version>-<device>.bin        (current name)
+#   crosspoint-<version>-<device>.bin    (compatibility name for v1.15.x OTA)
+# (the combined C3 X4/X3 binary uses device tag x3-x4). It then creates a draft
+# GitHub Release, attaches all build artifacts, and generates + signs a per-board
+# manifest.json (Ed25519) so the device can verify OTA authenticity.
 #
 # Easy OTA trigger:
 #   1. Bump the version in platformio.ini (crosspoint.version) and commit to develop.
@@ -87,24 +89,29 @@ jobs:
       - name: Build CrossPoint
         run: pio run -e ${{ matrix.pio_env }} -j1
 
-      - name: Prepare firmware asset
+      - name: Prepare firmware assets
         id: asset
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version="${RELEASE_TAG#v}"
-          asset="crosspoint-${version}-${{ matrix.device }}.bin"
+          crosspoint_asset="crosspoint-${version}-${{ matrix.device }}.bin"
+          xpoint_asset="xpoint-${version}-${{ matrix.device }}.bin"
           cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
-            ".pio/build/${{ matrix.pio_env }}/${asset}"
-          echo "name=$asset" >> "$GITHUB_OUTPUT"
+            ".pio/build/${{ matrix.pio_env }}/${crosspoint_asset}"
+          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
+            ".pio/build/${{ matrix.pio_env }}/${xpoint_asset}"
+          echo "crosspoint_name=$crosspoint_asset" >> "$GITHUB_OUTPUT"
+          echo "xpoint_name=$xpoint_asset" >> "$GITHUB_OUTPUT"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.asset.outputs.name }}
+          name: ${{ steps.asset.outputs.crosspoint_name }}
           path: |
             .pio/build/${{ matrix.pio_env }}/bootloader.bin
-            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.name }}
+            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.crosspoint_name }}
+            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.xpoint_name }}
             .pio/build/${{ matrix.pio_env }}/firmware.elf
             .pio/build/${{ matrix.pio_env }}/firmware.map
             .pio/build/${{ matrix.pio_env }}/partitions.bin
@@ -131,13 +138,13 @@ jobs:
         id: collect
         run: |
           mkdir -p dist
-          # Map each uploaded artifact dir back to its crosspoint-<version>-<device>.bin
-          # asset name. The artifact folder is named like the asset, so search for the
-          # actual *file* recursively and never match a directory (a directory match
-          # made `cp` fail with "omitting directory").
+          # Each artifact carries one crosspoint-*.bin and one identical
+          # xpoint-*.bin. Search for actual *files* recursively and never match a
+          # directory (a directory match made `cp` fail with "omitting directory").
           for d in artifacts/*/; do
-            bin=$(find "$d" -type f -name 'crosspoint-*.bin' | head -n1)
-            [ -n "$bin" ] && cp "$bin" "dist/$(basename "$bin")"
+            while IFS= read -r bin; do
+              cp "$bin" "dist/$(basename "$bin")"
+            done < <(find "$d" -type f \( -name 'crosspoint-*.bin' -o -name 'xpoint-*.bin' \))
           done
           ls -la dist
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
@@ -161,28 +168,37 @@ jobs:
               "x4c": "x4c",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
-          prefix = f"crosspoint-{version}-"
+          # Sign both asset families. Crosspoint entries MUST come first:
+          # v1.15.x devices parse at most 8 entries and return the first match
+          # for their board, so they must encounter the crosspoint URL before
+          # the duplicate xpoint entry. Newer devices select the entry whose
+          # URL matches the xpoint asset they found in the release JSON.
+          families = (
+              ("crosspoint", f"crosspoint-{version}-"),
+              ("xpoint", f"xpoint-{version}-"),
+          )
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["GITHUB_REF_NAME"]
           boards = []
-          for path in sorted(glob.glob(os.path.join(dist, "crosspoint-*.bin"))):
-              name = os.path.basename(path)
-              device = name[len(prefix):-len(".bin")]
-              board = device_board.get(device)
-              if not board:
-                  print(f"skip {name}: unknown device tag", file=sys.stderr)
-                  continue
-              with open(path, "rb") as f:
-                  data = f.read()
-              sha = hashlib.sha256(data).hexdigest()
-              # Resolve the published asset URL on the (draft) release.
-              repo = os.environ["GITHUB_REPOSITORY"]
-              tag = os.environ["GITHUB_REF_NAME"]
-              url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
-              boards.append({
-                  "board": board,
-                  "url": url,
-                  "size": len(data),
-                  "sha256": sha,
-              })
+          for family, prefix in families:
+              for path in sorted(glob.glob(os.path.join(dist, f"{family}-*.bin"))):
+                  name = os.path.basename(path)
+                  device = name[len(prefix):-len(".bin")]
+                  board = device_board.get(device)
+                  if not board:
+                      print(f"skip {name}: unknown device tag", file=sys.stderr)
+                      continue
+                  with open(path, "rb") as f:
+                      data = f.read()
+                  sha = hashlib.sha256(data).hexdigest()
+                  # Resolve the published asset URL on the (draft) release.
+                  url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+                  boards.append({
+                      "board": board,
+                      "url": url,
+                      "size": len(data),
+                      "sha256": sha,
+                  })
           manifest = {
               "version": version,
               "repository": os.environ["GITHUB_REPOSITORY"],
@@ -236,4 +252,5 @@ jobs:
             --draft \
             --title "XPoint ${{ steps.collect.outputs.tag }}" \
             --notes-file dist/NOTES.md \
-            dist/crosspoint-*.bin dist/manifest.json dist/manifest.json.sig
+            dist/crosspoint-*.bin dist/xpoint-*.bin \
+            dist/manifest.json dist/manifest.json.sig
