@@ -586,11 +586,8 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(ATKINSON_HN_14_FONT_ID, atkinson_hn14FontFamily);
   renderer.insertFont(ATKINSON_HN_16_FONT_ID, atkinson_hn16FontFamily);
   renderer.insertFont(ATKINSON_HN_18_FONT_ID, atkinson_hn18FontFamily);
-  // NOTOSANS_* aliases to the same IDs (implicit migration for existing settings)
-  renderer.insertFont(NOTOSANS_12_FONT_ID, atkinson_hn12FontFamily);
-  renderer.insertFont(NOTOSANS_14_FONT_ID, atkinson_hn14FontFamily);
-  renderer.insertFont(NOTOSANS_16_FONT_ID, atkinson_hn16FontFamily);
-  renderer.insertFont(NOTOSANS_18_FONT_ID, atkinson_hn18FontFamily);
+  // NOTOSANS_* are macro aliases of the ATKINSON_HN_* IDs (implicit migration
+  // for existing settings), so the registrations above already cover them.
 #endif  // OMIT_FONTS
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
