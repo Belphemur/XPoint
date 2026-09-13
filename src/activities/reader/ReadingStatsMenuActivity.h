@@ -1,6 +1,7 @@
 #pragma once
 #include <I18n.h>
 
+#include <array>
 #include <optional>
 #include <string>
 
@@ -33,7 +34,10 @@ class ReadingStatsMenuActivity final : public UiListActivity {
   std::string bookTitle;
   std::string bookAuthor;
   std::string bookCachePath;
+  // Compacted rows: visible row i is menuRowItems[i] with target rowEntries[i].
   freeink::ui::ListItem menuRowItems[4]{};
+  std::array<StatsEntry, 4> rowEntries{};
+  int rowCount = 0;
 
   void rebuildRowItems();
   void openThisBook();
