@@ -74,5 +74,5 @@ class ImageToFramebufferDecoder {
   static constexpr int64_t MAX_SOURCE_DIMENSION = INT16_MAX;
   static constexpr int64_t MAX_SOURCE_PIXELS = 8388608;  // 8 MP (e.g. 2048 * 4096)
 
-  void warnUnsupportedFeature(const std::string& feature, const std::string& imagePath);
+  static void warnUnsupportedFeature(const std::string& feature, const std::string& imagePath);
 };
