@@ -21,8 +21,6 @@ jobs:
             asset: firmware-x4c.bin
           - pio_env: papermono-gh_release_rc
             asset: firmware-papermono.bin
-          - pio_env: x4c-gh_release_rc
-            asset: firmware-x4c.bin
     steps:
       - uses: actions/checkout@v7
         with:

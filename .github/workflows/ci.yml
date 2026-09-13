@@ -109,8 +109,6 @@ jobs:
             asset: firmware-x4c.bin
           - env: papermono
             asset: firmware-papermono.bin
-          - env: x4c
-            asset: firmware-x4c.bin
     steps:
       - uses: actions/checkout@v7
         with:
