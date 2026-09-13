@@ -157,7 +157,7 @@ const char* kManifestV190 = R"({
 
 // Dual-family release manifest (v1.16 transition): five crosspoint entries
 // first for v1.15.x parsers, followed by the five xpoint entries.
-const char* kManifestDualFamily = R"({
+static constexpr char kManifestDualFamily[] = R"({
   "version": "1.16.0",
   "boards": [
     {"board":"x4","url":"https://github.com/Belphemur/XPoint/releases/download/v1.16.0/crosspoint-1.16.0-x3-x4.bin","size":5390001,"sha256":"1111111122222222333333334444444455555555666666667777777788888888"},
