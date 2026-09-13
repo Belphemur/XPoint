@@ -39,6 +39,8 @@ jobs:
             device: x4pro
           - pio_env: papermono-gh_release
             device: papermono
+          - pio_env: x4c-gh_release
+            device: x4c
     steps:
       - uses: actions/checkout@v7
         with:
@@ -77,8 +79,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
+          key: pio-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio-${{ runner.os }}-${{ matrix.pio_env }}-
+            pio-${{ runner.os }}-
 
       - name: Build CrossPoint
         run: pio run -e ${{ matrix.pio_env }} -j1
@@ -154,6 +158,7 @@ jobs:
               "sticky": "sticky",
               "x4pro": "x4pro",
               "papermono": "papermono",
+              "x4c": "x4c",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
           prefix = f"crosspoint-{version}-"
