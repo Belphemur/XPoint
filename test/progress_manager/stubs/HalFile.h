@@ -27,7 +27,7 @@ class HalFile {
     return true;
   }
   int read(void* buf, size_t count) {
-    if (!data || cursor > data->size()) return 0;
+    if (!data || cursor >= data->size()) return 0;
     // Subtraction form: no unsigned overflow before the bound decision.
     const size_t avail = data->size() - cursor;
     const size_t n = count <= avail ? count : avail;

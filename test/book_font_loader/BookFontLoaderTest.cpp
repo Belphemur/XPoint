@@ -170,6 +170,34 @@ TEST(BookFontLoaderBasics, NoFamilyStillUsesFallbackSingleton) {
   EXPECT_EQ(loader.chainForTest().styleCoverage(), 0u);
 }
 
+// An empty manifest may legitimately complete the load attempt (fingerprint 0
+// and the standalone fallback singleton), but a later begin() rescan must
+// reset the load gate so the same persisted family selection can load without
+// relying on selectFamily() to dirty an unchanged name.
+TEST(BookFontLoaderBasics, BeginResetsLoadGateAfterEmptyManifest) {
+  testSetPsramHeap({0, 0, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.selectFamily("Alpha");
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+  EXPECT_EQ(loader.chainForTest().styleCoverage(), 0u);  // empty-manifest path
+
+  loader.begin();  // simulates the settings screen rescan after SD mounts
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Alpha");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = 5;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Alpha/Alpha-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+  loader.selectFamily("Alpha");  // unchanged selection: intentionally no markDirty
+
+  // The malformed face is rejected, but ensureLoaded() ran and appended the
+  // fallback tail to the live chain (distinct from the standalone singleton).
+  freeink::book::FontChain* font = loader.getReaderFont();
+  EXPECT_EQ(font, &loader.chainForTest());
+  EXPECT_EQ(font->styleCoverage(), 0x07);
+}
+
 TEST(FontFaceInfoTest, DefaultMembers) {
   freeink::book::FontFaceInfo faceInfo;
   EXPECT_EQ(faceInfo.name[0], '\0');

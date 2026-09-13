@@ -23,6 +23,8 @@ class HalStorage {
   HalFile open(const char* path);
 
   // Test control: populate with path -> bytes. Empty map = all opens fail.
+  // Host-only stub: never linked into firmware, so the default allocator is
+  // intentional; PSRAMAllocator is not available/meaningful here.
   std::map<std::string, std::string> files;
   // Registered directory paths (open() returns a directory handle for them).
   std::set<std::string> dirs;
