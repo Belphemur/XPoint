@@ -21,6 +21,7 @@ struct PreviewKey {
   bool extraParagraphSpacing = false;
   bool focusReading = false;
   bool hyphenation = false;
+  bool embeddedStyle = false;  // engine layout input (params.embeddedStyles)
   // Native-TTF preview (design §3.6): the engine chain's identity — engine
   // selection + content fingerprint + the continuous point size. A family
   // swap or file replacement (new fingerprint) re-lays the sample.

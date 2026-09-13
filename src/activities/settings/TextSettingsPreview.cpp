@@ -228,11 +228,12 @@ uint32_t decodeUtf8(const char* text, const uint32_t len, uint32_t& i) {
 // double-strike), but coverage lands through GfxRenderer::drawPixel so the
 // renderer's orientation transform applies — a Phase 3.5 PagePaint preview.
 void drawTtfRuns(const GfxRenderer& renderer, const std::vector<PreviewRun>& runs, const int textLeft, const int top,
-                 const int bottom) {
+                 const int bottom, const int right) {
   freeink::book::FontChain* fonts = freeink::book::fontLoader.getReaderFont();
   if (fonts == nullptr) return;
   for (const auto& run : runs) {
-    int32_t penX = run.x;
+    // run.x is pane-relative (layout used pageWidth=textWidth, margins 0).
+    int32_t penX = textLeft + run.x;
     uint32_t i = 0;
     uint32_t prev = 0;
     while (i < run.text.size()) {
@@ -251,8 +252,9 @@ void drawTtfRuns(const GfxRenderer& renderer, const std::vector<PreviewRun>& run
             const uint8_t* srcRow = glyph->pixels + static_cast<uint32_t>(gy) * glyph->width;
             for (uint16_t gx = 0; gx < glyph->width; ++gx) {
               if (srcRow[gx] >= 96) {  // mid threshold: preview-grade ink
-                renderer.drawPixel(static_cast<int>(penX + glyph->xoff + static_cast<int32_t>(gx) + s),
-                                   static_cast<int>(y), true);
+                const int px = static_cast<int>(penX + glyph->xoff + static_cast<int32_t>(gx) + s);
+                if (px < textLeft || px >= right) continue;
+                renderer.drawPixel(px, static_cast<int>(y), true);
               }
             }
           }
@@ -303,6 +305,7 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
                          .extraParagraphSpacing = SETTINGS.extraParagraphSpacing != 0,
                          .focusReading = SETTINGS.focusReadingEnabled != 0,
                          .hyphenation = SETTINGS.hyphenationEnabled != 0,
+                         .embeddedStyle = SETTINGS.embeddedStyle != 0,
                          .engine = SETTINGS.readerFontEngine,
                          .fingerprint = freeink::book::fontLoader.fontFingerprint(),
                          .ttfPointSize = SETTINGS.ttfFontPointSize,
@@ -317,7 +320,7 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
     }
     const int top2 = top + previewPadding;
     const int bottom = top + height - labelReserved;
-    drawTtfRuns(renderer, layout.ttfRuns, textLeft, top2, bottom);
+    drawTtfRuns(renderer, layout.ttfRuns, textLeft, top2, bottom, textLeft + textWidth);
     return;
   }
 #endif
@@ -346,7 +349,8 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
                        .alignment = SETTINGS.paragraphAlignment,
                        .extraParagraphSpacing = SETTINGS.extraParagraphSpacing != 0,
                        .focusReading = SETTINGS.focusReadingEnabled != 0,
-                       .hyphenation = SETTINGS.hyphenationEnabled != 0};
+                       .hyphenation = SETTINGS.hyphenationEnabled != 0,
+                       .embeddedStyle = SETTINGS.embeddedStyle != 0};
   if (key != layout.key) {
     if (auto* fcm = renderer.getFontCacheManager()) {
       fcm->prewarmCache(fontId, I18N.get(StrId::STR_FONT_PREVIEW_TEXT), SETTINGS.focusReadingEnabled ? 0x03 : 0x01);
