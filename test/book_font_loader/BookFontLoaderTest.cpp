@@ -38,16 +38,6 @@ std::string validSfntShell(uint16_t numTables = 1) {
 
 void writeFaceFile(const std::string& path, const std::string& bytes) { Storage.files[path] = bytes; }
 
-// Register one face directly into family[0] (Phase 2 owns discovery; the
-// manifest is populated here to drive tryLoadFace deterministically).
-void addFace(freeink::book::BookFontLoader& loader, const char* path, uint32_t size, uint8_t styleFlags) {
-  auto& fam = loader.editFamily(0);
-  fam.faceCount = 1;
-  fam.faces[0].styleFlags = styleFlags;
-  fam.faces[0].fileSize = size;
-  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", path);
-}
-
 TEST(BookFontLoaderBasics, InstanceCreated) {
   freeink::book::BookFontLoader loader;
   EXPECT_EQ(loader.familyCount(), 0u);
@@ -485,12 +475,18 @@ struct ParsedFace {
 
 ParsedFace parseFace(const std::string& bytes) {
   ParsedFace f;
-  if (bytes.size() < 4) {
+  // 12 = sfnt header (4) + one directory entry header (numTables etc.);
+  // stbtt_InitFont walks numTables at bytes[4..5] and would OOB-read on a
+  // truncated stub or a small git-lfs pointer file.
+  if (bytes.size() < 12) {
     ADD_FAILURE() << "fixture too short to be a TTF (missing file?)";
     return f;
   }
   const int offset = stbtt_GetFontOffsetForIndex(reinterpret_cast<const uint8_t*>(bytes.data()), 0);
-  EXPECT_GE(offset, 0);
+  if (offset < 0) {
+    ADD_FAILURE() << "fixture has no sfnt offset for index 0";
+    return f;
+  }
   EXPECT_NE(stbtt_InitFont(&f.info, reinterpret_cast<const uint8_t*>(bytes.data()), offset), 0);
   stbtt_GetFontVMetrics(&f.info, &f.asc, &f.desc, &f.gap);
   return f;
@@ -510,11 +506,16 @@ constexpr uint16_t kReadSize = 40;  // px; any size works — math is linear
 // ("AmazonEmber-Regular", "AmazonEmber-Bold", "Amazon Ember") must never
 // split or rename the family, and filename tokens must drive style slots.
 TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
-  requireFixture(emberBytes("Amazon_Ember_Regular.ttf"), "Amazon_Ember_Regular.ttf");
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  const std::string boldBytes = emberBytes("Amazon_Ember_Bold.ttf");
+  const std::string boldItalicBytes = emberBytes("Amazon_Ember_Bold_Italic.ttf");
+  requireFixture(regularBytes, "Amazon_Ember_Regular.ttf");
+  requireFixture(boldBytes, "Amazon_Ember_Bold.ttf");
+  requireFixture(boldItalicBytes, "Amazon_Ember_Bold_Italic.ttf");
   resetStorage();
-  seedFile("/fonts/Amazon Ember/Amazon_Ember_Regular.ttf", emberBytes("Amazon_Ember_Regular.ttf"));
-  seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold.ttf", emberBytes("Amazon_Ember_Bold.ttf"));
-  seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf", emberBytes("Amazon_Ember_Bold_Italic.ttf"));
+  seedFile("/fonts/Amazon Ember/Amazon_Ember_Regular.ttf", regularBytes);
+  seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold.ttf", boldBytes);
+  seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf", boldItalicBytes);
 
   static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
