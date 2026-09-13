@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Memory.h>
 #include <Print.h>
 #include <ZipFile.h>
 
@@ -63,6 +64,10 @@ class Epub {
                                 bool allowEarlyStop = false) const;
   // Extract an item to a file on SD. On failure the partial file is removed.
   bool extractItemToFile(const std::string& itemHref, const std::string& destPath) const;
+  // Inflate a ZIP item into a pool-backed buffer for PSRAM image staging.
+  // Returns nullptr when the item is missing, larger than MAX_IMAGE_FILE_SIZE,
+  // or the allocation fails. The caller falls back to the SD staging path.
+  PoolBytes extractItemToPsram(const std::string& itemHref, size_t* size = nullptr) const;
   bool getItemSize(const std::string& itemHref, size_t* size) const;
   BookMetadataCache::SpineEntry getSpineItem(int spineIndex) const;
   BookMetadataCache::TocEntry getTocItem(int tocIndex) const;

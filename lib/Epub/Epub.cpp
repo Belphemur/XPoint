@@ -10,6 +10,7 @@
 #include <ZipFile.h>
 #include <esp_heap_caps.h>
 
+#include "Epub/ImageStaging.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
 #include "Epub/parsers/TocNavParser.h"
@@ -965,6 +966,30 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 #endif
   return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);
+}
+
+PoolBytes Epub::extractItemToPsram(const std::string& itemHref, size_t* size) const {
+  if (itemHref.empty()) {
+    LOG_DBG("EBP", "Failed to read item, empty href");
+    return nullptr;
+  }
+
+  size_t itemSize = 0;
+  if (!getItemSize(itemHref, &itemSize)) {
+    LOG_ERR("EBP", "Could not size image item: %s", itemHref.c_str());
+    return nullptr;
+  }
+
+  if (!isImageSizeWithinPsramLimit(itemSize)) {
+    LOG_DBG("EBP", "Image too large for PSRAM staging: %s (%zu bytes)", itemHref.c_str(), itemSize);
+    return nullptr;
+  }
+
+  PoolBytes buf{readItemContentsToBytes(itemHref, size)};
+  if (!buf) {
+    LOG_ERR("EBP", "OOM reading image item: %s", itemHref.c_str());
+  }
+  return buf;
 }
 
 bool Epub::extractItemToFile(const std::string& itemHref, const std::string& destPath) const {
