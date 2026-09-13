@@ -87,5 +87,7 @@ void PageHorizontalRule::render(GfxRenderer&, int, int, int) {}
 // are never called by this test.
 bool JpegToBmpConverter::jpegFileToBmpStream(HalFile&, HalFile&, bool, bool) { return false; }
 bool JpegToBmpConverter::jpegFileTo1BitBmpStreamWithSize(HalFile&, HalFile&, int, int) { return false; }
+bool JpegToBmpConverter::jpegMemToBmpStream(uint8_t*, size_t, Print&, bool, bool) { return false; }
 bool PngToBmpConverter::pngFileToBmpStream(HalFile&, HalFile&, bool, bool) { return false; }
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile&, HalFile&, int, int) { return false; }
+bool PngToBmpConverter::pngMemToBmpStream(uint8_t*, size_t, Print&, bool, bool) { return false; }
