@@ -252,15 +252,24 @@ bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, u
     ProgressRecord rec;
     if (n == static_cast<int>(bytesToRead) &&
         progress_record::decode(data, static_cast<size_t>(n), rec) == progress_record::kSizeGeneration) {
+      // Single-snapshot restore: the base triple comes from THIS read, not
+      // openBook()'s earlier pass, so an interleaved flush/bypass save can
+      // never pair one revision's spine/page with another's char offset.
       charOffset = rec.charOffset;
       generation = rec.generation;
       hasGeneration = true;
+      spineIndex = rec.spineIndex;
+      pageNumber = rec.pageNumber;
+      pageCount = rec.pageCount;
       gen = true;
     }
   }
   xSemaphoreGive(diskMutex_);
   if (gen) {
     xSemaphoreTake(stateMutex_, portMAX_DELAY);
+    current_->spineIndex = spineIndex;
+    current_->pageNumber = pageNumber;
+    current_->pageCount = pageCount;
     current_->hasOffset = false;
     current_->hasGeneration = true;
     current_->generation = generation;

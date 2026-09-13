@@ -224,8 +224,16 @@ EpubReaderActivity::~EpubReaderActivity() {
 #if defined(CROSSPOINT_TTF_READER)
     if (ttf_) {
       // Page-anchored TTF record (charOffset 0 + generation): the restore
-      // maps the record's page number (§3.5 item 8).
-      progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, 0,
+      // maps the record's page number (§3.5 item 8). Persist the origin
+      // chapter's page count when a COMPLETE source can answer it, so the
+      // load-side corrupt-page guard applies; 0 keeps the deferred
+      // within-chapter clamp as the bound for unbuilt chapters.
+      const bool sessionComplete =
+          ttf_->sessionFor(origin.spineIndex) && ttf_->sessionDone() && ttf_->sessionMatchesGeneration(ttfGeneration);
+      const bool cacheComplete = ttf_->cacheReady() && !ttf_->cachePartial();
+      const uint16_t originPageCount =
+          (sessionComplete || cacheComplete) ? static_cast<uint16_t>(ttf_->availablePageCount(origin.spineIndex)) : 0;
+      progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, originPageCount, 0,
                                  ttfGeneration);
     } else {
 #endif
