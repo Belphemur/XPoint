@@ -230,7 +230,12 @@ EpubReaderActivity::~EpubReaderActivity() {
       // within-chapter clamp as the bound for unbuilt chapters.
       const bool sessionComplete =
           ttf_->sessionFor(origin.spineIndex) && ttf_->sessionDone() && ttf_->sessionMatchesGeneration(ttfGeneration);
-      const bool cacheComplete = ttf_->cacheReady() && !ttf_->cachePartial();
+      // Same completeness contract as the restore path (ttfResolveTargetPage):
+      // the cache answers only its own chapter at the current generation, and
+      // never while a session for that spine is mid-build (partial writer
+      // count must not masquerade as the chapter total).
+      const bool cacheComplete = !ttf_->sessionFor(origin.spineIndex) && ttf_->cacheReady() && !ttf_->cachePartial() &&
+                                 ttf_->cacheSpine() == origin.spineIndex && ttf_->cacheGeneration() == ttfGeneration;
       const uint16_t originPageCount =
           (sessionComplete || cacheComplete) ? static_cast<uint16_t>(ttf_->availablePageCount(origin.spineIndex)) : 0;
       progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, originPageCount, 0,

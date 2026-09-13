@@ -71,6 +71,7 @@ class TtfBookRuntime {
   BookStatus openChapterCache(uint16_t spineIndex, uint32_t generation);
   void closeChapterCache();
   bool cacheReady() const { return cacheReady_; }
+  uint16_t cacheSpine() const { return cacheSpine_; }
   bool cachePartial() const { return cacheReady_ && cacheReader_.isPartial(); }
   uint32_t cacheTotalChars() const { return cacheReady_ ? cacheReader_.totalChars() : 0; }
   uint32_t cacheGeneration() const { return cacheReady_ ? cacheGen_ : 0; }
