@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 
-// Decompression core: the esp_full_miniz fork. On firmware its header types
+// Decompression core: freeink-sdk's nested esp_full_miniz fork. On firmware its header types
 // match the SoC ROM's v1.15-era tinfl exactly and the linker binds the core
 // calls to the ROM's precompiled machine code (the vendored miniz C build's
 // output diverges under the Xtensa toolchain for specific DEFLATE streams).

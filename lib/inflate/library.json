@@ -1,7 +1,7 @@
 {
   "name": "inflate",
   "version": "1.0.0",
-  "description": "InflateStream wrapper over the esp_full_miniz fork (ROM tinfl cores on firmware, v1.15 cores on host)",
+  "description": "InflateStream wrapper over freeink-sdk's nested esp_full_miniz fork (ROM tinfl cores on firmware, v1.15 cores on host)",
   "build": {
     "srcDir": "src",
     "includeDir": "src"
