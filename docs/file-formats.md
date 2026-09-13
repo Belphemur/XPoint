@@ -90,6 +90,22 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 47
+
+Version 47 keeps the version 46 serialized layout unchanged. Both sides of the
+2026-09-13 upstream sync independently consumed version 46 — the fork for
+logical selection groups and synthetic line-break hyphen flags, upstream for
+ordered-list numbering — so a cache written by either parent's v46 build would
+pass the version check while being stale. The bump invalidates both.
+
+### Version 46
+
+Version 46 keeps the version 45 serialized layout unchanged. It was bumped
+because ordered lists now number their items, `list-style-type: none`
+suppresses list markers, and `<ul>`/`<ol>` containers contribute their own
+margins and padding to child block insets, changing cached word contents and
+page layout.
+
 ### Version 45
 
 Version 45 keeps the version 44 serialized layout unchanged. It was bumped
