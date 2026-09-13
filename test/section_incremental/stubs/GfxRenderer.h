@@ -9,6 +9,13 @@ class GfxRenderer {
  public:
   int getScreenWidth() const { return 480; }
   int getScreenHeight() const { return 800; }
+  // Stub font cache: Section::startBuild null-checks then releases caches;
+  // there is nothing to release in the host test.
+  class FontCacheManager {
+   public:
+    void releaseSdFontCaches() {}
+  };
+  FontCacheManager* getFontCacheManager() const { return nullptr; }
   int getLineHeight(int, float = 1.0f) const { return 16; }
   int getFontAscenderSize(int) const { return 12; }
   int getSpaceWidth(int, EpdFontFamily::Style) const { return 4; }
