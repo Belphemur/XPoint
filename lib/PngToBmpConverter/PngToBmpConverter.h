@@ -12,4 +12,8 @@ class PngToBmpConverter {
   static bool pngFileToBmpStream(HalFile& pngFile, Print& bmpOut, bool crop = true, bool originalThresholds = false);
   static bool pngFileToBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight);
   static bool pngFileTo1BitBmpStreamWithSize(HalFile& pngFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight);
+  // Memory-backed variant for PSRAM staging: the view satisfies the read/
+  // seek surface the chunk walker consumes.
+  static bool pngMemToBmpStream(uint8_t* pngData, size_t pngSize, Print& bmpOut, bool crop = true,
+                                bool originalThresholds = false);
 };

@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "BitmapHelpers.h"
+#include "Epub/converters/ImageToFramebufferDecoder.h"
 
 // ============================================================================
 // IMAGE PROCESSING OPTIONS - Same as JpegToBmpConverter for consistency
@@ -81,8 +82,9 @@ void yieldDuringDecode(uint8_t& rowsSinceYield) {
   vTaskDelay(1);
 }
 
-// Read a big-endian 32-bit value from file
-bool readBE32(HalFile& file, uint32_t& value) {
+// Read a big-endian 32-bit value from the source view
+template <typename SourceView>
+bool readBE32(SourceView& file, uint32_t& value) {
   uint8_t buf[4];
   if (file.read(buf, 4) != 4) return false;
   value = (static_cast<uint32_t>(buf[0]) << 24) | (static_cast<uint32_t>(buf[1]) << 16) |
@@ -182,10 +184,12 @@ void writeBmpHeader2bit(Print& bmpOut, const int width, const int height) {
 }
 }  // namespace
 
-// Context for streaming PNG decompression
-struct PngDecodeContext {
+// Context for streaming PNG decompression; templated on the source view
+// (HalFileView for SD files, HalMemoryFile for PSRAM staging).
+template <typename SourceView>
+struct PngDecodeContextT {
   InflateStream reader;
-  HalFile* file;
+  SourceView* file;
 
   // PNG image properties
   uint32_t width;
@@ -211,9 +215,17 @@ struct PngDecodeContext {
   int paletteSize;
 };
 
+using PngDecodeContext = PngDecodeContextT<HalMemoryFile>;
+
 // Read the next IDAT chunk header, skipping non-IDAT chunks
 // Returns true if an IDAT chunk was found
-static bool findNextIdatChunk(PngDecodeContext& ctx) {
+template <typename SourceView>
+struct PngDecodeContextT;
+
+// Read the next IDAT chunk header, skipping non-IDAT chunks
+// Returns true if an IDAT chunk was found
+template <typename SourceView>
+static bool findNextIdatChunk(PngDecodeContextT<SourceView>& ctx) {
   while (true) {
     uint32_t chunkLen;
     if (!readBE32(*ctx.file, chunkLen)) return false;
@@ -237,9 +249,10 @@ static bool findNextIdatChunk(PngDecodeContext& ctx) {
   }
 }
 
-// Fill callback: reads the next batch of IDAT data from the file
+// Fill callback: reads the next batch of IDAT data from the source
+template <typename SourceView>
 static size_t pngIdatFillCallback(void* vctx, const uint8_t** data) {
-  auto* ctx = static_cast<PngDecodeContext*>(vctx);
+  auto* ctx = static_cast<PngDecodeContextT<SourceView>*>(vctx);
 
   if (ctx->idatFinished) return 0;
 
@@ -271,7 +284,8 @@ static size_t pngIdatFillCallback(void* vctx, const uint8_t** data) {
 }
 
 // Decode one scanline: decompress filter byte + raw bytes, then unfilter
-static bool decodeScanline(PngDecodeContext& ctx) {
+template <typename SourceView>
+static bool decodeScanline(PngDecodeContextT<SourceView>& ctx) {
   // Decompress filter byte
   uint8_t filterType;
   if (!ctx.reader.read(&filterType, 1)) return false;
@@ -325,7 +339,8 @@ static bool decodeScanline(PngDecodeContext& ctx) {
 
 // Batch-convert an entire scanline to grayscale.
 // Branches once on colorType/bitDepth, then runs a tight loop for the whole row.
-static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow) {
+template <typename SourceView>
+static void convertScanlineToGray(const PngDecodeContextT<SourceView>& ctx, uint8_t* grayRow) {
   const uint8_t* src = ctx.currentRow;
   const uint32_t w = ctx.width;
 
@@ -400,8 +415,12 @@ static void convertScanlineToGray(const PngDecodeContext& ctx, uint8_t* grayRow)
   }
 }
 
-bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpOut, int targetWidth, int targetHeight,
-                                                   bool oneBit, bool crop, bool originalThresholds) {
+// Decode core, source-agnostic: the view must provide read(void*, size_t)
+// and seekCur(int64_t). File path instantiates it with HalFileView, PSRAM
+// staging with HalMemoryFile.
+template <typename SourceView>
+static bool pngToBmpStreamCoreImpl(SourceView& pngFile, Print& bmpOut, int targetWidth, int targetHeight, bool oneBit,
+                                   bool crop, bool originalThresholds) {
   LOG_DBG("PNG", "Converting PNG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
   // Verify PNG signature
@@ -503,7 +522,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
   }
 
   // Initialize decode context
-  PngDecodeContext ctx = {};
+  PngDecodeContextT<SourceView> ctx = {};
   ctx.file = &pngFile;
   ctx.width = width;
   ctx.height = height;
@@ -567,7 +586,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     free(ctx.previousRow);
     return false;
   }
-  ctx.reader.setFill(pngIdatFillCallback, &ctx);
+  ctx.reader.setFill(pngIdatFillCallback<SourceView>, &ctx);
   // PNG IDAT data is zlib-wrapped (2-byte header + trailing adler32)
   ctx.reader.setZlibWrapped();
 
@@ -841,6 +860,42 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpO
     LOG_DBG("PNG", "Successfully converted PNG to BMP");
   }
   return success;
+}
+
+// File-source adapter: exposes the read/seek surface the core consumes over
+// an SD-backed HalFile.
+namespace {
+struct HalFileView {
+  HalFile& file;
+  int read(void* buf, size_t count) { return file.read(buf, count); }
+  bool seekCur(int64_t offset) { return file.seekCur(offset); }
+};
+}  // namespace
+
+// File-backed wrapper: adapt the HalFile to the core's view type.
+bool PngToBmpConverter::pngFileToBmpStreamInternal(HalFile& pngFile, Print& bmpOut, int targetWidth, int targetHeight,
+                                                   bool oneBit, bool crop, bool originalThresholds) {
+  HalFileView view{pngFile};
+  return pngToBmpStreamCoreImpl(view, bmpOut, targetWidth, targetHeight, oneBit, crop, originalThresholds);
+}
+// Memory-backed wrapper for PSRAM staging: wrap the pool buffer in the view
+// the core consumes and run the same decode.
+bool PngToBmpConverter::pngMemToBmpStream(uint8_t* pngData, const size_t pngSize, Print& bmpOut, const bool crop,
+                                          const bool originalThresholds) {
+  if (pngData == nullptr || pngSize == 0) {
+    LOG_ERR("PNG", "Invalid memory source for PNG to BMP");
+    return false;
+  }
+
+  LOG_DBG("PNG", "Converting PNG to BMP from memory (%u bytes)", static_cast<unsigned>(pngSize));
+
+  HalMemoryFile view;
+  view.attach(pngData, pngSize);
+
+  // Use runtime display dimensions (swapped for portrait cover sizing)
+  const int targetWidth = display.getDisplayHeight();
+  const int targetHeight = display.getDisplayWidth();
+  return pngToBmpStreamCoreImpl(view, bmpOut, targetWidth, targetHeight, false, crop, originalThresholds);
 }
 
 bool PngToBmpConverter::pngFileToBmpStream(HalFile& pngFile, Print& bmpOut, bool crop, bool originalThresholds) {
