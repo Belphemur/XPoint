@@ -45,8 +45,8 @@ class HalMemoryFile {
   int available() const { return static_cast<int>(size_ - pos_); }
   bool isOpen() const { return data_ != nullptr; }
   explicit operator bool() const { return data_ != nullptr; }
-  bool close() { return true; }
-  void flush() {}
+  static bool close() { return true; }
+  static void flush() {}
 
  private:
   const uint8_t* data_ = nullptr;
