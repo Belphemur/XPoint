@@ -102,3 +102,5 @@ not between allocators: any allocation call site still goes through `poolMalloc`
 | 2026-09-13 | Adopt PSRAM staging for both chapter images and cover BMP, with SD fallback | User-confirmed design; balances SD wear/latency savings against functional risk. |
 | 2026-09-13 | Enforce a 4 MB `MAX_IMAGE_FILE_SIZE` guard before PSRAM allocation | CWE-400 oversized-decompression protection; >4 MB images use the existing SD path. |
 | 2026-09-13 | Keep C3 (`default`) path byte-for-byte unchanged | The PSRAM optimization is board-conditional; C3 hardware has no PSRAM to benefit. |
+| 2026-09-13 | Decoders expose virtual memory-input overloads with a `false` default instead of a new source abstraction | JPEGDEC and PNGdec both natively support `openRAM`, so per-decoder overloads are the smallest seam; unmodified decoders signal "unsupported" by returning the base default. |
+| 2026-09-13 | `PixelCache` band buffer refactored from direct `heap_caps_malloc`/`heap_caps_free` to `poolMalloc`/`PoolBytes` | Project rule: allocation call sites go through the pool allocator; behavior (PSRAM band on PSRAM boards) is unchanged. |

@@ -272,7 +272,7 @@ int pngDrawCallback(PNGDRAW* pDraw) {
         caching = false;
         ctx->caching = false;
       } else {
-        cw.init(ctx->cache.buffer, ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
+        cw.init(ctx->cache.buffer.get(), ctx->cache.bytesPerRow, ctx->cache.bandRows, ctx->cache.originX);
         cw.beginRow(outY, ctx->config->y + ctx->cache.bandStart);
       }
     }

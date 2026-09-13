@@ -1,6 +1,8 @@
 #pragma once
 #include <HalStorage.h>
+#include <Memory.h>
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -36,6 +38,12 @@ class ImageBlock final : public Block {
   using ExtractFn = bool (*)(void* ctx, const char* srcPath, const char* destPath);
   static void setExtractor(void* ctx, ExtractFn fn);
 
+  // PSRAM staging hook: inflates the compressed image straight into a pool
+  // (PSRAM) buffer so the decode never stages compressed bytes on SD. Same
+  // callback discipline as ExtractFn. Registered by the reader activity.
+  using PsramExtractFn = PoolBytes (*)(void* ctx, const char* srcPath, size_t& outSize);
+  static void setPsramExtractor(void* ctx, PsramExtractFn fn);
+
   BlockType getType() override { return IMAGE_BLOCK; }
   bool isEmpty() override { return false; }
 
@@ -51,4 +59,10 @@ class ImageBlock final : public Block {
 
   static void* extractCtx;
   static ExtractFn extractFn;
+  static void* psramExtractCtx;
+  static PsramExtractFn psramExtractFn;
+
+  // PSRAM decode path: extract into a pool buffer and decode from memory.
+  // Returns false when anything fails so the caller falls back to the SD path.
+  bool renderFromPsram(GfxRenderer& renderer, int x, int y, const std::string& cachePath);
 };

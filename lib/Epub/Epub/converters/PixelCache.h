@@ -2,6 +2,7 @@
 
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <stdint.h>
 
 #include <cstdlib>
@@ -26,8 +27,8 @@
 // to contiguous, non-overlapping destination row ranges, so once a block whose
 // top row is Y arrives, every output row < Y is final and is flushed to disk.
 struct PixelCache {
-  uint8_t* buffer;   // band buffer: (bandRows + 1) rows; last row kept zeroed
-  uint8_t* zeroRow;  // points at the spare zeroed row, for gap/clip fill
+  PoolBytes buffer{nullptr};  // band buffer: (bandRows + 1) rows; last row kept zeroed
+  uint8_t* zeroRow;           // points at the spare zeroed row, for gap/clip fill
   int width;
   int height;
   int bytesPerRow;
@@ -41,8 +42,7 @@ struct PixelCache {
   bool ok;
 
   PixelCache()
-      : buffer(nullptr),
-        zeroRow(nullptr),
+      : zeroRow(nullptr),
         width(0),
         height(0),
         bytesPerRow(0),
@@ -88,30 +88,19 @@ struct PixelCache {
     bandRows = wantRows;
 
     const size_t bufSize = (size_t)(bandRows + 1) * bytesPerRow;  // +1 spare zero row
-#ifdef BOARD_HAS_PSRAM
-    // PSRAM: the band buffer is the working set for the MCU's streaming JPEG/PNG
-    // decoder (decoded rows land here, are re-packed to framebuffer, then released).
-    // On X4 Pro with 8 MB of PSRAM this is free; on C3 the #else path keeps it in
-    // DRAM where the heap is tighter but the band is small enough.
-    buffer = (uint8_t*)heap_caps_malloc(bufSize, MALLOC_CAP_SPIRAM);
-#else
-    buffer = (uint8_t*)malloc(bufSize);
-#endif
+    // PoolBytes places the band in PSRAM on PSRAM boards, DRAM elsewhere.
+    buffer.reset(static_cast<uint8_t*>(poolMalloc(bufSize)));
     if (!buffer) {
       LOG_ERR("IMG", "OOM cache band: %u bytes", (unsigned)bufSize);
       return false;
     }
-    memset(buffer, 0, bufSize);
-    zeroRow = buffer + (size_t)bandRows * bytesPerRow;
+    memset(buffer.get(), 0, bufSize);
+    zeroRow = buffer.get() + (size_t)bandRows * bytesPerRow;
 
     if (!Storage.openFileForWrite("IMG", cachePath, file)) {
       LOG_ERR("IMG", "Failed to open cache file for writing: %s", cachePath.c_str());
-#ifdef BOARD_HAS_PSRAM
-      heap_caps_free(buffer);
-#else
-      free(buffer);
-#endif
-      buffer = nullptr;
+      buffer.reset();
+      zeroRow = nullptr;
       return false;
     }
     cachePathStr = cachePath;
@@ -139,7 +128,7 @@ struct PixelCache {
 
     for (int r = bandStart; r < newTopRow; ++r) {
       const int idx = r - bandStart;
-      const uint8_t* rowPtr = (idx < bandRows) ? (buffer + (size_t)idx * bytesPerRow) : zeroRow;
+      const uint8_t* rowPtr = (idx < bandRows) ? (buffer.get() + (size_t)idx * bytesPerRow) : zeroRow;
       if (file.write(rowPtr, (size_t)bytesPerRow) != (size_t)bytesPerRow) {
         LOG_ERR("IMG", "Cache write error at row %d", r);
         ok = false;
@@ -148,7 +137,7 @@ struct PixelCache {
     }
     flushedRows = newTopRow;
     bandStart = newTopRow;
-    memset(buffer, 0, (size_t)bandRows * bytesPerRow);  // fresh band (gaps stay black)
+    memset(buffer.get(), 0, (size_t)bandRows * bytesPerRow);  // fresh band (gaps stay black)
     return true;
   }
 
@@ -161,7 +150,7 @@ struct PixelCache {
     }
     for (int r = flushedRows; r < height; ++r) {
       const int idx = r - bandStart;
-      const uint8_t* rowPtr = (idx >= 0 && idx < bandRows) ? (buffer + (size_t)idx * bytesPerRow) : zeroRow;
+      const uint8_t* rowPtr = (idx >= 0 && idx < bandRows) ? (buffer.get() + (size_t)idx * bytesPerRow) : zeroRow;
       if (file.write(rowPtr, (size_t)bytesPerRow) != (size_t)bytesPerRow) {
         LOG_ERR("IMG", "Cache write error at row %d", r);
         abort();
@@ -191,13 +180,6 @@ struct PixelCache {
       // Drop the partial cache so we leave no corrupt file behind.
       abort();
     }
-    if (buffer) {
-#ifdef BOARD_HAS_PSRAM
-      heap_caps_free(buffer);
-#else
-      free(buffer);
-#endif
-      buffer = nullptr;
-    }
+    // PoolBytes frees the band (heap_caps_free on PSRAM builds, free elsewhere).
   }
 };

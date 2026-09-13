@@ -23,10 +23,17 @@ ImageBlock::ImageBlock(const std::string& imagePath, const std::string& srcPath,
 
 void* ImageBlock::extractCtx = nullptr;
 ImageBlock::ExtractFn ImageBlock::extractFn = nullptr;
+void* ImageBlock::psramExtractCtx = nullptr;
+ImageBlock::PsramExtractFn ImageBlock::psramExtractFn = nullptr;
 
 void ImageBlock::setExtractor(void* ctx, ExtractFn fn) {
   extractCtx = ctx;
   extractFn = fn;
+}
+
+void ImageBlock::setPsramExtractor(void* ctx, PsramExtractFn fn) {
+  psramExtractCtx = ctx;
+  psramExtractFn = fn;
 }
 
 bool ImageBlock::imageExists() const { return Storage.exists(imagePath.c_str()); }
@@ -315,6 +322,43 @@ void ImageBlock::renderPlaceholder(GfxRenderer& renderer, const int x, const int
   }
 }
 
+// PSRAM decode path: extract the compressed image into a pool buffer and
+// decode from memory. Returns false (caller falls back to SD) on extraction
+// or decode failure; render() handles the placeholder bookkeeping.
+bool ImageBlock::renderFromPsram(GfxRenderer& renderer, const int x, const int y, const std::string& cachePath) {
+  size_t imageSize = 0;
+  PoolBytes imageBuf{psramExtractFn(psramExtractCtx, srcPath.c_str(), imageSize)};
+  if (!imageBuf) {
+    LOG_DBG("IMG", "PSRAM extraction unavailable: %s", srcPath.c_str());
+    return false;
+  }
+
+  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(imagePath);
+  if (!decoder) {
+    LOG_ERR("IMG", "No decoder found for image: %s", imagePath.c_str());
+    return false;
+  }
+
+  RenderConfig config;
+  config.x = x;
+  config.y = y;
+  config.maxWidth = width;
+  config.maxHeight = height;
+  config.useGrayscale = true;
+  config.useDithering = true;
+  config.performanceMode = false;
+  config.useExactDimensions = true;
+  config.cachePath = cachePath;
+
+  if (!decoder->decodeToFramebuffer(imageBuf.get(), imageSize, renderer, config)) {
+    LOG_ERR("IMG", "PSRAM decode failed: %s", imagePath.c_str());
+    return false;
+  }
+
+  LOG_DBG("IMG", "Decoded image from PSRAM (%u bytes)", static_cast<unsigned>(imageSize));
+  return true;
+}
+
 void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
   // The font-prewarm scan pass only accumulates glyphs; an image contributes
   // none, and its DirectPixelWriter output bypasses the renderer's scan-mode
@@ -360,8 +404,21 @@ void ImageBlock::render(GfxRenderer& renderer, const int x, const int y) {
 
   // The build only header-probed the image for dimensions; pull the actual
   // file out of the book now, on first visit to the page.
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM boards decode straight from a pool buffer: the compressed image is
+  // never staged on SD. Any failure (oversized >4 MB, PSRAM OOM, decode error)
+  // falls back to the legacy SD path below, unchanged.
+  if (!srcPath.empty() && psramExtractFn) {
+    if (renderFromPsram(renderer, x, y, cachePath)) {
+      renderer.preserveImagePolarity(x, y, width, height);
+      return;
+    }
+    LOG_DBG("IMG", "PSRAM decode failed, falling back to SD staging: %s", srcPath.c_str());
+  }
+#endif
+
   if (!srcPath.empty() && extractFn && !Storage.exists(imagePath.c_str())) {
-    LOG_DBG("IMG", "Lazy-extracting %s -> %s", srcPath.c_str(), imagePath.c_str());
+    LOG_DBG("IMG", "Staged image to SD: %s -> %s", srcPath.c_str(), imagePath.c_str());
     if (!extractFn(extractCtx, srcPath.c_str(), imagePath.c_str())) {
       LOG_ERR("IMG", "Lazy extraction failed: %s", srcPath.c_str());
     }
