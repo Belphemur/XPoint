@@ -34,6 +34,10 @@ struct PreviewKey {
 
 // One laid-out sample line on the native-TTF path: a copy of the engine run
 // (PageTextRun text points into layout scratch and dies with it).
+// std::string is intentional: at most kMaxPreviewRuns (24) runs of one pane
+// line each (<512 B per run, a few KB total) held only while the settings
+// activity is open — a DRAM-sized, short-lived UI payload, not a
+// PSRAM-policy buffer.
 struct PreviewRun {
   std::string text;
   int16_t x = 0;
