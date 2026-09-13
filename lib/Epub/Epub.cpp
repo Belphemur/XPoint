@@ -742,6 +742,47 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
     return false;
   }
 
+#ifdef BOARD_HAS_PSRAM
+  // PSRAM boards decode the cover from a pool buffer: no .cover.jpg/.cover.png
+  // temp ever reaches SD. Oversized (>4 MB) or OOM falls back to the SD path.
+  const auto decodeCoverFromPsram = [this, &coverImageHref, cropped, originalThresholds](bool isJpg) -> bool {
+    size_t coverSize = 0;
+    PoolBytes coverBuf = extractItemToPsram(coverImageHref, &coverSize);
+    if (!coverBuf) {
+      LOG_DBG("EBP", "Cover PSRAM staging unavailable, falling back to SD");
+      return false;
+    }
+
+    HalFile coverBmp;
+    if (!Storage.openFileForWrite("EBP", getCoverBmpPath(cropped, originalThresholds), coverBmp)) {
+      return false;
+    }
+    bool success;
+    if (isJpg) {
+      success =
+          JpegToBmpConverter::jpegMemToBmpStream(coverBuf.get(), coverSize, coverBmp, cropped, originalThresholds);
+    } else {
+      success = PngToBmpConverter::pngMemToBmpStream(coverBuf.get(), coverSize, coverBmp, cropped, originalThresholds);
+    }
+    coverBmp.close();
+    if (!success) {
+      LOG_ERR("EBP", "Failed to generate BMP from cover image (memory path)");
+      Storage.remove(getCoverBmpPath(cropped, originalThresholds).c_str());
+      return false;
+    }
+    LOG_DBG("EBP", "Generated BMP from cover image in memory (%u bytes)", static_cast<unsigned>(coverSize));
+    return true;
+  };
+
+  if (FsHelpers::hasJpgExtension(coverImageHref)) {
+    if (decodeCoverFromPsram(true)) return true;
+    LOG_DBG("EBP", "Falling back to SD staging for JPG cover");
+  } else if (FsHelpers::hasPngExtension(coverImageHref)) {
+    if (decodeCoverFromPsram(false)) return true;
+    LOG_DBG("EBP", "Falling back to SD staging for PNG cover");
+  }
+#endif
+
   if (FsHelpers::hasJpgExtension(coverImageHref)) {
     LOG_DBG("EBP", "Generating BMP from JPG cover image (%s mode%s)", cropped ? "cropped" : "fit",
             originalThresholds ? ", original thresholds" : "");

@@ -3,10 +3,56 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 
 class GfxRenderer;
+
+// Read-only, seekable view over a memory buffer (PSRAM pool buffer on PSRAM
+// boards). Satisfies the HalFile-shaped read/seek surface that the PNG BMP
+// converter's chunk walker consumes, so the same decode core runs from SD
+// files and PSRAM buffers.
+class HalMemoryFile {
+ public:
+  HalMemoryFile() = default;
+  HalMemoryFile(const uint8_t* data, size_t size) : data_(data), size_(size) {}
+
+  void attach(const uint8_t* data, size_t size) {
+    data_ = data;
+    size_ = size;
+    pos_ = 0;
+  }
+
+  int read(void* buf, size_t count) {
+    if (data_ == nullptr) return -1;
+    if (pos_ + count > size_) count = size_ - pos_;
+    memcpy(buf, data_ + pos_, count);
+    pos_ += count;
+    return static_cast<int>(count);
+  }
+
+  bool seek(size_t pos) {
+    if (pos > size_) return false;
+    pos_ = pos;
+    return true;
+  }
+  bool seekSet(size_t pos) { return seek(pos); }
+  bool seekCur(int64_t offset) { return seek(static_cast<size_t>(static_cast<int64_t>(pos_) + offset)); }
+
+  size_t position() const { return pos_; }
+  size_t size() const { return size_; }
+  int available() const { return static_cast<int>(size_ - pos_); }
+  bool isOpen() const { return data_ != nullptr; }
+  explicit operator bool() const { return data_ != nullptr; }
+  bool close() { return true; }
+  void flush() {}
+
+ private:
+  const uint8_t* data_ = nullptr;
+  size_t size_ = 0;
+  size_t pos_ = 0;
+};
 
 struct ImageDimensions {
   int16_t width;
