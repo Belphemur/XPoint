@@ -81,6 +81,8 @@ class EpubReaderActivity final : public ReaderActivity {
 #endif
   // Number of tiles in the tool row (kToolMore is the last one).
   static constexpr int kToolTileCount = kToolMore + 1;
+  // Stats panel rows: This Book / All Books / Reading Rhythm / Finished Books.
+  static constexpr int kStatsPanelRows = 4;
   Overlay overlay = Overlay::None;
   int focusedTool = 0;  // toolbar tool focus: kToolContents..kToolMore
   int panelIndex = 0;   // selected row within the active panel

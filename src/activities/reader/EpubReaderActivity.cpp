@@ -31,8 +31,12 @@
 #include "activities/ActivityResult.h"
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
+#include "FinishedBooksActivity.h"
 #include "FinishedBooksIndex.h"
+#include "GlobalReadingStats.h"
+#include "ReadingRhythmActivity.h"
 #include "ReadingStatsMenuActivity.h"
+#include "activities/settings/GlobalStatsActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #endif
 #include "EpubReaderBookmarksActivity.h"
@@ -2804,11 +2808,12 @@ void EpubReaderActivity::renderOverlay() {
     model.rowText = [this](int i) { return textRowName(i); };
     model.rowValue = [this](int i) { return textRowValue(i); };
   } else if (overlay == Overlay::Stats) {
+    static constexpr StrId kStatsRowIds[] = {StrId::STR_STATS_SHOW_BOOK_STATS, StrId::STR_STATS_ALL_TIME,
+                                             StrId::STR_STATS_READING_RHYTHM, StrId::STR_STATS_FINISHED_BOOKS};
+    static_assert(std::size(kStatsRowIds) == kStatsPanelRows);
     model.panelTitle = tr(STR_READING_STATS);
-    model.itemCount = 2;
-    model.rowText = [](int row) {
-      return std::string(I18N.get(row == 0 ? StrId::STR_STATS_SHOW_BOOK_STATS : StrId::STR_STATS_ALL_TIME));
-    };
+    model.itemCount = kStatsPanelRows;
+    model.rowText = [](int row) { return std::string(I18N.get(kStatsRowIds[row])); };
   } else {
     model.panelTitle = tr(STR_TOOL_MORE);
     model.itemCount = static_cast<int>(moreItems.size());
@@ -2941,7 +2946,7 @@ void EpubReaderActivity::handleOverlayInput() {
   // --- Panels (Contents / Text / More) ---
   const int count = overlay == Overlay::Contents ? epub->getTocItemsCount()
                     : overlay == Overlay::Text   ? kTextRowCount
-                    : overlay == Overlay::Stats  ? 2
+                    : overlay == Overlay::Stats  ? kStatsPanelRows
                                                  : static_cast<int>(moreItems.size());
   const int pageRows = std::max(1, toolbarUi->visibleRows());
 
@@ -2994,17 +2999,28 @@ void EpubReaderActivity::handleOverlayInput() {
         if (SETTINGS.shouldTrackReadingStats()) {
           displayStats.totalReadingSeconds += sessionReadingSeconds;
         }
-
-        auto statsMenu = makeUniqueNoThrow<ReadingStatsMenuActivity>(
-            renderer, mappedInput, displayStats, epub->getTitle(), epub->getCachePath(), epub->getAuthor());
-        if (!statsMenu) {
-          LOG_ERR("ERS", "OOM: ReadingStatsMenuActivity");
+        // The panel lists the real destinations directly; no intermediate
+        // ReadingStatsMenuActivity hop.
+        std::unique_ptr<Activity> target;
+        if (panelIndex == 0) {
+          target = makeUniqueNoThrow<BookStatsActivity>(
+              renderer, mappedInput, epub->getTitle(), epub->getAuthor(), displayStats, epub->getCachePath(),
+              epub->getCachePath().empty() ? GlobalReadingStats{} : GlobalReadingStats::load());
+        } else if (panelIndex == 1) {
+          target = makeUniqueNoThrow<GlobalStatsActivity>(renderer, mappedInput);
+        } else if (panelIndex == 2) {
+          target = makeUniqueNoThrow<ReadingRhythmActivity>(renderer, mappedInput);
+        } else {
+          target = makeUniqueNoThrow<FinishedBooksActivity>(renderer, mappedInput);
+        }
+        if (!target) {
+          LOG_ERR("ERS", "OOM: reading stats screen");
           return;
         }
         overlay = Overlay::None;
         overlayPopup.dismiss();
         discardOverlayPage();
-        startActivityForResult(std::move(statsMenu), [this](const ActivityResult& result) {
+        startActivityForResult(std::move(target), [this](const ActivityResult& result) {
           if (epub && SETTINGS.shouldTrackReadingStats()) handleBookStatsReturn();
           if (std::holds_alternative<ClearPaceResult>(result.data) && epub) {
             stats.clearWpmStats();

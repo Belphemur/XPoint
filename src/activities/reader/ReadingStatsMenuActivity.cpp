@@ -34,23 +34,25 @@ void ReadingStatsMenuActivity::onEnter() {
 
 void ReadingStatsMenuActivity::onExit() { Activity::onExit(); }
 
-int ReadingStatsMenuActivity::listCount() const { return bookStats ? 4 : 3; }
+int ReadingStatsMenuActivity::listCount() const { return rowCount; }
 
 void ReadingStatsMenuActivity::rebuildRowItems() {
+  // Touch hits dispatch ListItem::actionValue as a row index, so actionValue
+  // must be the visible row; rowEntries carries the target screen.
   size_t index = 0;
-  if (bookStats) {
-    menuRowItems[index].label = tr(STR_STATS_THIS_BOOK);
-    menuRowItems[index].actionValue = static_cast<int16_t>(static_cast<uint8_t>(StatsEntry::ThisBook));
+  const auto addRow = [this, &index](const char* label, const StatsEntry entry) {
+    menuRowItems[index].label = label;
+    menuRowItems[index].actionValue = static_cast<int16_t>(index);
+    rowEntries[index] = entry;
     ++index;
+  };
+  if (bookStats) {
+    addRow(tr(STR_STATS_THIS_BOOK), StatsEntry::ThisBook);
   }
-  menuRowItems[index].label = tr(STR_STATS_THIS_DEVICE_SCREEN);
-  menuRowItems[index].actionValue = static_cast<int16_t>(static_cast<uint8_t>(StatsEntry::ThisDevice));
-  ++index;
-  menuRowItems[index].label = tr(STR_STATS_READING_RHYTHM);
-  menuRowItems[index].actionValue = static_cast<int16_t>(static_cast<uint8_t>(StatsEntry::ReadingRhythm));
-  ++index;
-  menuRowItems[index].label = tr(STR_STATS_FINISHED_BOOKS);
-  menuRowItems[index].actionValue = static_cast<int16_t>(static_cast<uint8_t>(StatsEntry::FinishedBooks));
+  addRow(tr(STR_STATS_THIS_DEVICE_SCREEN), StatsEntry::ThisDevice);
+  addRow(tr(STR_STATS_READING_RHYTHM), StatsEntry::ReadingRhythm);
+  addRow(tr(STR_STATS_FINISHED_BOOKS), StatsEntry::FinishedBooks);
+  rowCount = static_cast<int>(index);
 }
 
 void ReadingStatsMenuActivity::buildScreen(UiScreen& screen) {
@@ -69,10 +71,9 @@ void ReadingStatsMenuActivity::buildScreen(UiScreen& screen) {
 }
 
 void ReadingStatsMenuActivity::activateIndex(const int index) {
-  if (index < 0 || index >= listCount()) return;
+  if (index < 0 || index >= rowCount) return;
   app.clearTapFlash();
-  const auto entry = static_cast<StatsEntry>(menuRowItems[index].actionValue);
-  switch (entry) {
+  switch (rowEntries[index]) {
     case StatsEntry::ThisBook:
       openThisBook();
       break;
