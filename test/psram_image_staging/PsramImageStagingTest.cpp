@@ -74,4 +74,15 @@ TEST(HalMemoryFileTest, UnattachedViewFailsReads) {
   EXPECT_FALSE(static_cast<bool>(view));
 }
 
+TEST(HalMemoryFileTest, ReadAtEndOfBufferReturnsZeroWithoutOverflow) {
+  std::array<uint8_t, 8> bytes{1, 2, 3, 4, 5, 6, 7, 8};
+  HalMemoryFile view;
+  view.attach(bytes.data(), bytes.size());
+  ASSERT_TRUE(view.seek(8));  // exactly at end
+  uint8_t out[4] = {};
+  // pos_ == size_: subtraction-form bound check returns 0, no wraparound.
+  EXPECT_EQ(view.read(out, 4), 0);
+  EXPECT_EQ(view.position(), 8u);
+}
+
 }  // namespace

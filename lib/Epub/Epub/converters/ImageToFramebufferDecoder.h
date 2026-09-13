@@ -26,7 +26,10 @@ class HalMemoryFile {
 
   int read(void* buf, size_t count) {
     if (data_ == nullptr) return -1;
-    if (pos_ + count > size_) count = size_ - pos_;
+    if (pos_ >= size_) return 0;
+    // Subtraction form: pos_ is proven <= size_ by the seek contract, so this
+    // cannot overflow (pos_ + count could).
+    if (count > size_ - pos_) count = size_ - pos_;
     memcpy(buf, data_ + pos_, count);
     pos_ += count;
     return static_cast<int>(count);
