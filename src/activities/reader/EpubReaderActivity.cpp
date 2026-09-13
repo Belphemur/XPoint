@@ -3646,15 +3646,17 @@ void EpubReaderActivity::showTextRowPopup(const int row) {
   if (ttf_ && row == 0) {
     // Native family picker (built-in + §14.4 families, live preview) — the
     // same screen the Settings entry uses; a popup cannot scroll the list.
-    overlay = Overlay::None;
-    overlayPopup.dismiss();
-    discardOverlayPage();
+    // Allocate before touching overlay state: on OOM the Text panel stays
+    // intact for the next input.
     auto picker = makeUniqueNoThrow<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
                                                           TextSettingsActivity::Tab::Family);
     if (!picker) {
       LOG_ERR("ERS", "OOM: TextSettingsActivity");
       return;
     }
+    overlay = Overlay::None;
+    overlayPopup.dismiss();
+    discardOverlayPage();
     startActivityForResult(std::move(picker), [this](const ActivityResult&) {
       applyReaderTextSettings();
       overlay = Overlay::Text;  // back to the Text panel
