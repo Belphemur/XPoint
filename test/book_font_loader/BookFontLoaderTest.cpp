@@ -464,11 +464,17 @@ namespace {
 
 std::string readFixtureFile(const std::string& path) {
   std::ifstream f(path, std::ios::binary);
-  EXPECT_TRUE(f.good()) << "fixture missing: " << path;
+  if (!f.good()) return {};  // callers must skip on empty (see requireFixture)
   return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
 std::string emberBytes(const char* name) { return readFixtureFile(EMBER_FIXTURES_DIR "/" + std::string(name)); }
+
+// Missing/unreadable fixtures must skip the test, not feed stb an empty
+// buffer (stbtt_GetFontOffsetForIndex reads 4 header bytes → OOB crash).
+void requireFixture(const std::string& bytes, const char* name) {
+  if (bytes.empty()) GTEST_SKIP() << "fixture unavailable: " << name;
+}
 
 struct ParsedFace {
   stbtt_fontinfo info{};
@@ -479,6 +485,10 @@ struct ParsedFace {
 
 ParsedFace parseFace(const std::string& bytes) {
   ParsedFace f;
+  if (bytes.size() < 4) {
+    ADD_FAILURE() << "fixture too short to be a TTF (missing file?)";
+    return f;
+  }
   const int offset = stbtt_GetFontOffsetForIndex(reinterpret_cast<const uint8_t*>(bytes.data()), 0);
   EXPECT_GE(offset, 0);
   EXPECT_NE(stbtt_InitFont(&f.info, reinterpret_cast<const uint8_t*>(bytes.data()), offset), 0);
@@ -500,6 +510,7 @@ constexpr uint16_t kReadSize = 40;  // px; any size works — math is linear
 // ("AmazonEmber-Regular", "AmazonEmber-Bold", "Amazon Ember") must never
 // split or rename the family, and filename tokens must drive style slots.
 TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
+  requireFixture(emberBytes("Amazon_Ember_Regular.ttf"), "Amazon_Ember_Regular.ttf");
   resetStorage();
   seedFile("/fonts/Amazon Ember/Amazon_Ember_Regular.ttf", emberBytes("Amazon_Ember_Regular.ttf"));
   seedFile("/fonts/Amazon Ember/Amazon_Ember_Bold.ttf", emberBytes("Amazon_Ember_Bold.ttf"));
@@ -528,6 +539,8 @@ TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
 TEST(TtfFaceMetrics, AmazonEmberScalesByPerFaceUnitsPerEm) {
   const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string boldItalic = emberBytes("Amazon_Ember_Bold_Italic.ttf");
+  requireFixture(regular, "Amazon_Ember_Regular.ttf");
+  requireFixture(boldItalic, "Amazon_Ember_Bold_Italic.ttf");
   const ParsedFace pr = parseFace(regular);
   const ParsedFace pbi = parseFace(boldItalic);
   ASSERT_NE(pr.asc, 0);
@@ -555,6 +568,8 @@ TEST(TtfFaceMetrics, AmazonEmberScalesByPerFaceUnitsPerEm) {
 TEST(FontChainMixedUpem, LineGridComesFromFirstFace) {
   const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string boldItalic = emberBytes("Amazon_Ember_Bold_Italic.ttf");
+  requireFixture(regular, "Amazon_Ember_Regular.ttf");
+  requireFixture(boldItalic, "Amazon_Ember_Bold_Italic.ttf");
 
   static uint8_t arenaBuf[64 * 1024];
   book::Arena arena(arenaBuf, sizeof(arenaBuf));
@@ -578,6 +593,8 @@ TEST(FontChainMixedUpem, LineGridComesFromFirstFace) {
 TEST(FontChainMixedUpem, CmapMissFallsThroughToCoveringFace) {
   const std::string regular = emberBytes("Amazon_Ember_Regular.ttf");
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  requireFixture(regular, "Amazon_Ember_Regular.ttf");
+  requireFixture(dejavu, DEJAVU_FIXTURE);
 
   static uint8_t arenaBuf[64 * 1024];
   book::Arena arena(arenaBuf, sizeof(arenaBuf));
