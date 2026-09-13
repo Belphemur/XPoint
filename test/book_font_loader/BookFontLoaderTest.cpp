@@ -475,19 +475,29 @@ struct ParsedFace {
 
 ParsedFace parseFace(const std::string& bytes) {
   ParsedFace f;
-  // 12 = sfnt header (4) + one directory entry header (numTables etc.);
-  // stbtt_InitFont walks numTables at bytes[4..5] and would OOB-read on a
-  // truncated stub or a small git-lfs pointer file.
-  if (bytes.size() < 12) {
+  // stbtt_GetFontOffsetForIndex's TTC path reads the first container offset
+  // at bytes[12..15]; require 16 bytes so every stb read below is in bounds
+  // even for a truncated stub or a small git-lfs pointer file.
+  if (bytes.size() < 16) {
     ADD_FAILURE() << "fixture too short to be a TTF (missing file?)";
     return f;
   }
-  const int offset = stbtt_GetFontOffsetForIndex(reinterpret_cast<const uint8_t*>(bytes.data()), 0);
-  if (offset < 0) {
+  const auto* u8 = reinterpret_cast<const uint8_t*>(bytes.data());
+  const int offset = stbtt_GetFontOffsetForIndex(u8, 0);
+  if (offset < 0 || offset + 12 > static_cast<int>(bytes.size())) {
     ADD_FAILURE() << "fixture has no sfnt offset for index 0";
     return f;
   }
-  EXPECT_NE(stbtt_InitFont(&f.info, reinterpret_cast<const uint8_t*>(bytes.data()), offset), 0);
+  // Table-directory bound, mirroring BookFontLoader's sfnt validation
+  // (kMinSfntLen): stbtt_InitFont walks numTables * 16-byte entries at
+  // data+12 and would OOB-read past a truncated directory.
+  const uint16_t numTables = static_cast<uint16_t>((u8[offset + 4] << 8) | u8[offset + 5]);
+  const uint64_t minSz = static_cast<uint64_t>(offset) + 12u + static_cast<uint64_t>(numTables) * 16u;
+  if (numTables == 0 || minSz > bytes.size()) {
+    ADD_FAILURE() << "fixture table directory out of bounds (numTables=" << numTables << ")";
+    return f;
+  }
+  EXPECT_NE(stbtt_InitFont(&f.info, u8, offset), 0);
   stbtt_GetFontVMetrics(&f.info, &f.asc, &f.desc, &f.gap);
   return f;
 }
