@@ -44,8 +44,12 @@ Check the [devices page](https://crosspointreader.com/devices) for the full list
 ### 📊 Reading statistics
 
 A complete reading-statistics subsystem with a CrossInk-style card UI — full credit to
-[@uxjulia](https://github.com/uxjulia) for the original design and
-[@Sichroteph](https://github.com/Sichroteph) for the YACP screens this fork ports.
+[@uxjulia](https://github.com/uxjulia)
+([CrossInk](https://github.com/uxjulia/CrossInk)) for the original `BookStatsView`
+design, and to [@Sichroteph](https://github.com/Sichroteph)
+([YACP](https://github.com/Sichroteph/YACP)) for the Reading Rhythm, Reading
+Achievement, and Finished Books screens and the screenshots above, which this fork
+ports directly.
 
 | | |
 |---|---|
