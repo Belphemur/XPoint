@@ -4480,6 +4480,7 @@ void EpubReaderActivity::addBookmark() {
     // Page-text summary from the cached page runs (cold path).
     std::string pageText;
     {
+      RenderLock lock;  // render task owns/uses the scratch arena
       const size_t mark = ttf_->scratch().mark();
       freeink::book::Page page{};
       if (ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(currentPage), &page)) {
