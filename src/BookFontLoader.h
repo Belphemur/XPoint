@@ -19,9 +19,13 @@ namespace book {
 // ── public value types (discovery + settings) ────────────────────────────────
 
 struct FontFaceInfo {
-  char name[48] = {};      // family display name (manifest or filename stem)
-  char file[64] = {};      // path under /fonts/
-  uint8_t styleFlags = 0;  // BookFont::StyleFlags this file provides
+  // Full SD path including the root. Matches SdCardCacheStorage::kDirMax so
+  // long vendor names ("Atkinson Hyperlegible Next/...-Regular.otf") fit.
+  static constexpr size_t kFileCap = 160;
+
+  char name[48] = {};        // family display name (manifest or filename stem)
+  char file[kFileCap] = {};  // full path under the font root
+  uint8_t styleFlags = 0;    // BookFont::StyleFlags this file provides
   uint32_t fileSize = 0;
   uint32_t mtime = 0;  // for fingerprinting
 };
@@ -32,6 +36,11 @@ struct FamilyInfo {
   FontFaceInfo faces[4] = {};
   bool isBuiltinFallback = false;  // the BitmapBookFont chain
 };
+
+// The manifest lives in the loader's BSS. Keep the enlarged path storage
+// bounded: 32 rows must remain a modest DRAM allocation (~30KB), not a
+// runaway buffer.
+static_assert(sizeof(FamilyInfo) <= 1024, "FamilyInfo manifest row is too large");
 
 class BookFontLoader {
  public:

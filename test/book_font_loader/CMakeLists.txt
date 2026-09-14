@@ -23,6 +23,7 @@ target_compile_definitions(BookFontLoaderTest PRIVATE
   # Real-font fixtures for the scan/upem/subset tests (paths, not contents).
   EMBER_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/fonts/amazon-ember"
   DEJAVU_FIXTURE="${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/test/fixtures/fonts/DejaVuSans.ttf"
+  ATKINSON_OTF_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Regular.otf"
 )
 
 target_link_libraries(BookFontLoaderTest PRIVATE

@@ -34,9 +34,9 @@ There are three ways to install fonts:
 
    Both roots are always scanned at boot and the results are merged: a
    family installed in `/fonts/` shows up even when `/.fonts/` also
-   exists, and vice versa. The two roots only collide if the same family
-   name appears in both — in that case the copy in `/.fonts/` wins and
-   the duplicate in `/fonts/` is ignored.
+   exists, and vice versa. If the same family name appears in both, the
+   family is merged: `/.fonts/` wins for any style it provides, and styles
+   available only in `/fonts/` are added to the same family.
 
        SD Card Root/
        ├── .fonts/                     ← Hidden root (preferred)

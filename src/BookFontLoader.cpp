@@ -453,22 +453,29 @@ void BookFontLoader::forceFallbackTailForTest() { appendFallbackTail(chain_); }
 #if defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)
 void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
   HalFile root = Storage.open(rootPath);
+  const int familiesBefore = familyCount;
   if (!root || !root.isDirectory()) {
-    LOG_DBG("BFNT", "Font root not found: %s", rootPath);
+    // Missing roots are normal (a card may use only one of the two roots),
+    // but the owner-visible boot log must distinguish this from a family cap.
+    LOG_INF("BFNT", "Font root unavailable: %s", rootPath);
     return;
   }
 
-  // The walk frame would need ~550B of stack locals (over the 256B stack
+  // The walk frame would need over 1KB of stack locals (over the 256B stack
   // budget, and scanFonts runs from boot wiring) — one heap scratch instead.
   struct ScanScratch {
-    char dirName[48];    // FamilyInfo::name cap; longer folder names are skipped
-    char fileName[64];   // FontFaceInfo::file cap minus dir prefix headroom
-    char lower[64];      // lowercased stem
-    char subPath[160];   // SdCardCacheStorage::kDirMax
-    char soloFile[64];   // §14.4 rule 7: the lone candidate's name
-    char soloLower[64];  // the lone candidate's stem — `lower` is stale by promotion time
-    FamilyInfo fam;      // 552B manifest row — heap, reset per family
+    char dirName[64];                            // FamilyInfo::name cap; longer folder names are skipped
+    char fileName[FontFaceInfo::kFileCap];       // long vendor filenames fit untruncated
+    char lower[64];                              // lowercased stem
+    char subPath[160];                           // SdCardCacheStorage::kDirMax
+    char newFile[FontFaceInfo::kFileCap];        // full-path validation scratch
+    char soloFile[FontFaceInfo::kFileCap];       // §14.4 rule 7: the lone candidate's name
+    char soloLower[64];                          // the lone candidate's stem — `lower` is stale by promotion time
+    char tokenlessFile[FontFaceInfo::kFileCap];  // first no-token candidate
+    char tokenlessLower[64];                     // its stem
+    FamilyInfo fam;                              // ~940B manifest row — heap, reset per family
     uint32_t soloSize = 0;
+    uint32_t tokenlessSize = 0;
   };
   // sizeof() on the decayed pointers would measure the pointer, not the
   // buffer — the walk uses the struct's member sizes everywhere.
@@ -494,27 +501,31 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
 
     // Skip hidden/system folders (macOS ._*, .Trashes, _folders).
     if (dirName[0] == '.' || dirName[0] == '_') continue;
-    // Hidden root wins on dedupe: the later (visible) pass skips existing names.
-    bool exists = false;
+    // Hidden-root family with the same name: MERGE this root's faces into it
+    // (§14.4). A new face only fills an unused style slot; for a style both
+    // roots provide, the already-stored hidden-root face wins outright.
+    uint8_t existingIndex = kMaxDiscoveredFamilies;
     for (uint8_t i = 0; i < familyCount; ++i) {
       if (ciCompare(families[i].name, dirName) == 0) {
-        exists = true;
+        existingIndex = i;
         break;
       }
     }
-    if (exists) continue;
-    if (familyCount >= kMaxDiscoveredFamilies) {
-      LOG_DBG("BFNT", "Family cap reached, skipping %s", dirName);
+    const bool mergingExisting = existingIndex < kMaxDiscoveredFamilies;
+    if (!mergingExisting && familyCount >= kMaxDiscoveredFamilies) {
+      LOG_INF("BFNT", "Family cap reached (%u): skipping %s", static_cast<unsigned>(kMaxDiscoveredFamilies), dirName);
       continue;
     }
-    if (nameLen >= kDirNameCap - 1) {
+    if (nameLen >= kDirNameCap - 1 || nameLen >= sizeof(FamilyInfo::name)) {
       LOG_DBG("BFNT", "Family name too long: %s", dirName);
       continue;
     }
 
-    FamilyInfo& fam = scratch->fam;
-    fam = {};
-    strncpy(fam.name, dirName, sizeof(fam.name) - 1);
+    FamilyInfo& fam = mergingExisting ? families[existingIndex] : scratch->fam;
+    if (!mergingExisting) {
+      fam = {};
+      strncpy(fam.name, dirName, sizeof(fam.name) - 1);
+    }
 
     const int subLen = snprintf(subPath, kSubPathCap, "%s/%s", rootPath, dirName);
     if (subLen < 0 || static_cast<size_t>(subLen) >= kSubPathCap) continue;
@@ -526,7 +537,10 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     // exactly one .ttf/.otf registers it as Regular even without style
     // tokens in the name).
     char* const soloFile = scratch->soloFile;
+    char* const tokenlessFile = scratch->tokenlessFile;
+    char* const tokenlessLower = scratch->tokenlessLower;
     uint32_t& soloSize = scratch->soloSize;
+    uint32_t& tokenlessSize = scratch->tokenlessSize;
     uint8_t candidateCount = 0;
 
     while (true) {
@@ -559,11 +573,21 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
 
       uint8_t style = 0;
       if (!inferStyleFlags(lower, style)) {
-        LOG_DBG("BFNT", "No style tokens in %s/%s — skipped", fam.name, fileName);
+        // Do not drop it: remember the lexicographically-first no-token file
+        // as the family's Regular candidate (fixes "Bookerly Display" and
+        // tokenless Amazon Ember files being skipped, which previously made
+        // Bold the promoted Regular).
+        if (tokenlessLower[0] == '\0' || ciCompare(lower, tokenlessLower) < 0) {
+          snprintf(tokenlessFile, kFileNameCap, "%s", fileName);
+          snprintf(tokenlessLower, kLowerCap, "%s", lower);
+          tokenlessSize = entry.fileSize();
+        }
         continue;
       }
 
-      // Same-style duplicate: lexicographically-first filename wins.
+      // Same-style duplicate: within one root the lexicographically-first
+      // filename wins; when merging from the second root the stored
+      // (hidden-root) face always wins.
       uint8_t slot = kMaxFacesPerFamily;
       for (uint8_t i = 0; i < fam.faceCount; ++i) {
         if (fam.faces[i].styleFlags == style) {
@@ -573,15 +597,15 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       }
       const bool replacingExisting = slot < kMaxFacesPerFamily;
       if (replacingExisting) {
-        if (ciCompare(lower, fam.faces[slot].name) >= 0) continue;  // existing wins
+        if (mergingExisting || ciCompare(lower, fam.faces[slot].name) >= 0) continue;
       } else {
         if (fam.faceCount >= kMaxFacesPerFamily) continue;
       }
       // Validate the full path BEFORE touching the slot: a too-long path must
       // not clobber an existing face (or shrink the count of one).
-      char newFile[kFileNameCap];
-      if (snprintf(newFile, kFileNameCap, "%s/%s", subPath, fileName) >= static_cast<int>(kFileNameCap)) {
-        LOG_DBG("BFNT", "Path too long for %s/%s", fam.name, fileName);
+      char* const newFile = scratch->newFile;
+      if (snprintf(newFile, kFileNameCap, "%s/%s", subPath, fileName) >= static_cast<int>(FontFaceInfo::kFileCap)) {
+        LOG_INF("BFNT", "Path too long for %s/%s", fam.name, fileName);
         continue;
       }
       if (!replacingExisting) slot = fam.faceCount++;
@@ -595,21 +619,35 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     }
 
     if (fam.faceCount == 0) {
-      if (candidateCount != 1) continue;  // empty / unparseable family
-      // Single-file family: register the lone face as Regular (§14.4).
-      FontFaceInfo& face = fam.faces[0];
-      fam.faceCount = 1;
-      face = {};
-      snprintf(face.name, sizeof(face.name), "%s", soloLower);
-      if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
-        fam.faceCount = 0;
-        continue;
+      if (candidateCount == 1) {
+        // Single-file family: register the lone face as Regular (§14.4).
+        FontFaceInfo& face = fam.faces[0];
+        fam.faceCount = 1;
+        face = {};
+        snprintf(face.name, sizeof(face.name), "%s", soloLower);
+        if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, soloFile) >= static_cast<int>(sizeof(face.file))) {
+          fam.faceCount = 0;
+          continue;
+        }
+        face.fileSize = soloSize;
+        face.styleFlags = StyleNone;
+      } else if (tokenlessLower[0] != '\0') {
+        // Multiple no-token candidates: lexicographically-first becomes Regular.
+        FontFaceInfo& face = fam.faces[0];
+        fam.faceCount = 1;
+        face = {};
+        snprintf(face.name, sizeof(face.name), "%s", tokenlessLower);
+        if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, tokenlessFile) >=
+            static_cast<int>(sizeof(face.file))) {
+          fam.faceCount = 0;
+          continue;
+        }
+        face.fileSize = tokenlessSize;
+        face.styleFlags = StyleNone;
+      } else {
+        continue;  // empty / unparseable family
       }
-      face.fileSize = soloSize;
-      face.styleFlags = StyleNone;
     } else {
-      // A family with files but no Regular face promotes its lexicographically-
-      // first face (case-insensitive) to Regular.
       bool hasRegular = false;
       for (uint8_t i = 0; i < fam.faceCount; ++i) {
         if (fam.faces[i].styleFlags == StyleNone) {
@@ -617,7 +655,32 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           break;
         }
       }
-      if (!hasRegular) {
+      if (!hasRegular && tokenlessLower[0] != '\0') {
+        // Explicit Regular wins if present. Otherwise add the remembered
+        // no-token candidate instead of promoting Bold to Regular.
+        uint8_t slot = kMaxFacesPerFamily;
+        for (uint8_t i = 0; i < fam.faceCount; ++i) {
+          if (fam.faces[i].styleFlags == StyleNone) {
+            slot = i;
+            break;
+          }
+        }
+        if (slot == kMaxFacesPerFamily && fam.faceCount < kMaxFacesPerFamily) slot = fam.faceCount++;
+        if (slot < kMaxFacesPerFamily) {
+          FontFaceInfo& face = fam.faces[slot];
+          face = {};
+          snprintf(face.name, sizeof(face.name), "%s", tokenlessLower);
+          if (snprintf(face.file, sizeof(face.file), "%s/%s", subPath, tokenlessFile) >=
+              static_cast<int>(sizeof(face.file))) {
+            if (slot == fam.faceCount - 1) --fam.faceCount;
+            continue;
+          }
+          face.fileSize = tokenlessSize;
+          face.styleFlags = StyleNone;
+        }
+      } else if (!hasRegular) {
+        // No tokenless candidate either: preserve the legacy promotion of the
+        // lexicographically-first face (case-insensitive) to Regular.
         int first = 0;
         for (uint8_t i = 1; i < fam.faceCount; ++i) {
           if (ciCompare(fam.faces[i].name, fam.faces[first].name) < 0) first = i;
@@ -626,9 +689,16 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       }
     }
 
-    families[familyCount++] = fam;
-    LOG_DBG("BFNT", "Family %s: %u faces from %s", fam.name, fam.faceCount, rootPath);
+    if (mergingExisting) {
+      LOG_DBG("BFNT", "Family %s: %u faces after merge from %s", fam.name, fam.faceCount, rootPath);
+    } else {
+      families[familyCount++] = fam;
+      LOG_DBG("BFNT", "Family %s: %u faces from %s", fam.name, fam.faceCount, rootPath);
+    }
   }
+
+  LOG_INF("BFNT", "Font root %s: %d new families (total %d/%u)", rootPath, familyCount - familiesBefore, familyCount,
+          static_cast<unsigned>(kMaxDiscoveredFamilies));
 }
 #endif
 

@@ -392,13 +392,85 @@ TEST(ScanFontsTest, OtfExtensionAccepted) {
 
 TEST(ScanFontsTest, TruncatedFamilyNameIsSkipped) {
   resetStorage();
-  const std::string longName(47, 'L');
+  // FamilyInfo::name holds 47 chars plus NUL; dirName now has headroom for
+  // long path validation, but names too large for the manifest are skipped.
+  const std::string longName(48, 'L');
   seedFile("/fonts/" + longName + "/Long-Regular.ttf");
 
   static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
   uint8_t count = 0;
   BookFontLoader::scanFontsForTest("/fonts", fams, count);
   EXPECT_EQ(count, 0u);
+}
+
+TEST(ScanFontsTest, LongVendorPathsFitManifest) {
+  resetStorage();
+  // Owner-log regression: the full path is 71 chars and the old 64-byte face
+  // path silently dropped it.
+  const std::string path = "/.fonts/Atkinson Hyperlegible Next/AtkinsonHyperlegibleNext-Regular.otf";
+  ASSERT_GT(path.size(), 64u);
+  seedFile(path);
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/.fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Atkinson Hyperlegible Next");
+  EXPECT_EQ(fams[0].faceCount, 1u);
+  EXPECT_STREQ(fams[0].faces[0].file, path.c_str());
+}
+
+TEST(ScanFontsTest, SplitsFamilyAcrossRootsIntoOneFamily) {
+  resetStorage();
+  seedFile("/.fonts/Bookerly/Bookerly-Regular.ttf");
+  seedFile("/fonts/Bookerly/Bookerly-Bold.ttf");
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/.fonts", fams, count);
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Bookerly");
+  ASSERT_EQ(fams[0].faceCount, 2u);
+  const auto* regular = findFace(fams[0], freeink::book::StyleNone);
+  const auto* bold = findFace(fams[0], freeink::book::StyleBold);
+  ASSERT_NE(regular, nullptr);
+  ASSERT_NE(bold, nullptr);
+  EXPECT_STREQ(regular->file, "/.fonts/Bookerly/Bookerly-Regular.ttf");
+  EXPECT_STREQ(bold->file, "/fonts/Bookerly/Bookerly-Bold.ttf");
+}
+
+TEST(ScanFontsTest, FamilyOnlyInVisibleRootIsStillDiscovered) {
+  resetStorage();
+  seedFile("/.fonts/Hidden/Hidden-Regular.ttf");
+  seedFile("/fonts/Visible/Visible-Regular.ttf");
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/.fonts", fams, count);
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 2u);
+  EXPECT_STREQ(fams[1].name, "Visible");
+  EXPECT_STREQ(fams[1].faces[0].file, "/fonts/Visible/Visible-Regular.ttf");
+}
+
+TEST(ScanFontsTest, TokenlessCandidateBecomesRegularNotPromotedBold) {
+  resetStorage();
+  // Owner-log regression: "Bookerly Display" has no style token and was
+  // skipped, leaving Bold as the promoted Regular.
+  seedFile("/fonts/Bookerly-otf/Bookerly Display.ttf");
+  seedFile("/fonts/Bookerly-otf/Bookerly-Bold.ttf");
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  const auto* regular = findFace(fams[0], freeink::book::StyleNone);
+  const auto* bold = findFace(fams[0], freeink::book::StyleBold);
+  ASSERT_NE(regular, nullptr);
+  ASSERT_NE(bold, nullptr);
+  EXPECT_STREQ(regular->file, "/fonts/Bookerly-otf/Bookerly Display.ttf");
+  EXPECT_STREQ(bold->file, "/fonts/Bookerly-otf/Bookerly-Bold.ttf");
 }
 
 TEST(ScanFontsTest, MissingRootIsQuietNoop) {
@@ -540,6 +612,39 @@ int16_t expectedAscent(const ParsedFace& f, uint16_t sizePx) {
 constexpr uint16_t kReadSize = 40;  // px; any size works — math is linear
 
 }  // namespace
+
+// Owner-supplied OTF regression: stb_truetype's vendored version supports
+// OTTO/CFF (stb_truetype.h:1299 and the CFF charstring interpreter), but the
+// loader path must still produce real pixels — an empty "A" means the font
+// appears selectable yet cannot render.
+TEST(TtfFaceMetrics, AtkinsonOtfCffRendersGlyphA) {
+  const std::string bytes = readFixtureFile(ATKINSON_OTF_FIXTURE);
+  if (!fixtureAvailable(bytes)) GTEST_SKIP() << "fixture unavailable: AtkinsonHyperlegibleNext-Regular.otf";
+  const ParsedFace parsed = parseFace(bytes);
+  ASSERT_NE(parsed.asc, 0);
+
+  const int glyph = stbtt_FindGlyphIndex(&parsed.info, 'A');
+  ASSERT_GT(glyph, 0);
+  const float scale = stbtt_ScaleForPixelHeight(&parsed.info, static_cast<float>(kReadSize));
+  int width = 0;
+  int height = 0;
+  int xoff = 0;
+  int yoff = 0;
+  unsigned char* bitmap =
+      stbtt_GetCodepointBitmapSubpixel(&parsed.info, scale, scale, 0.0f, 0.0f, 'A', &width, &height, &xoff, &yoff);
+  ASSERT_NE(bitmap, nullptr);
+  EXPECT_GT(width, 0);
+  EXPECT_GT(height, 0);
+  bool hasInk = false;
+  for (int i = 0; i < width * height; ++i) {
+    if (bitmap[i] != 0) {
+      hasInk = true;
+      break;
+    }
+  }
+  stbtt_FreeBitmap(bitmap, nullptr);
+  EXPECT_TRUE(hasInk);
+}
 
 // §14.4: family identity is the folder name; the files' internal name tables
 // ("AmazonEmber-Regular", "AmazonEmber-Bold", "Amazon Ember") must never
