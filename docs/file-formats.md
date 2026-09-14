@@ -435,7 +435,11 @@ readers treat it as a prefix (`isPartial()`). The restore primitive is
 `pageForChar(charOffset)`: the page whose `charStart` range covers the saved
 chapter character offset. `charOffset` addresses the extracted-text space,
 which is layout-parameter independent — it survives font-size/orientation
-changes (the anchor that carries reading position across generations).
+changes as a coordinate. The saved record is still generation-gated: the
+TTF restore accepts it only when the saved `generation` matches the current
+layout generation (see `progress.bin` below); otherwise the book opens at
+the chapter start rather than trusting a coordinate whose page cache has
+not yet been rebuilt.
 
 ## `progress.bin`
 

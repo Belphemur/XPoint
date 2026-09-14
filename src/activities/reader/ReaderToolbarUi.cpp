@@ -88,7 +88,7 @@ void ReaderToolbarUi::onAction(const fui::ActionEvent& event, void* user) {
   Routed& out = self->pending_;
   out.value = event.value;
   out.permille = event.dragPermille;
-  if (event.action >= ACTION_DISMISS && event.action <= ACTION_ROW) out.event = static_cast<Event>(event.action);
+  if (event.action >= ACTION_DISMISS && event.action <= ACTION_FONT_ROW) out.event = static_cast<Event>(event.action);
   if (out.event == Event::Scrub && event.dragPermille < 0) out.event = Event::None;
   // A handled action repaints through the reader's own fast path, not through
   // app.invalidate(): the page underneath is the reader's to draw.

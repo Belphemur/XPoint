@@ -238,8 +238,10 @@ EpubReaderActivity::~EpubReaderActivity() {
                                  ttf_->cacheSpine() == origin.spineIndex && ttf_->cacheGeneration() == ttfGeneration;
       const uint16_t originPageCount =
           (sessionComplete || cacheComplete) ? static_cast<uint16_t>(ttf_->availablePageCount(origin.spineIndex)) : 0;
-      progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, originPageCount, 0,
-                                 ttfGeneration);
+      if (!progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber,
+                                      originPageCount, 0, ttfGeneration)) {
+        LOG_ERR("ERS", "TTF footnote-origin progress save failed");
+      }
     } else {
 #endif
       std::optional<uint32_t> offset;
@@ -2347,15 +2349,7 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     if (!haveTotal) return false;
     return sessionHasTotal ? ttf_->sessionTotalChars() > offset : (completeCache && ttf_->cacheTotalChars() > offset);
   };
-  const bool sessionCanMap = ttf_->sessionFor(currentSpine) && ttf_->sessionMatchesGeneration(ttfGeneration);
-  const bool cacheCanMap = cacheMatchesGeneration;
   const auto canMapCompleteOffset = [&offsetIsAvailable](uint32_t offset) { return offsetIsAvailable(offset); };
-  const auto canMapPrefixOffset = [sessionCanMap, cacheCanMap, sessionHasTotal, completeCache,
-                                   &offsetIsAvailable](uint32_t offset) {
-    if (sessionCanMap && !sessionHasTotal) return true;
-    if (cacheCanMap && !completeCache) return true;
-    return completeCache && offsetIsAvailable(offset);
-  };
 
   if (pendingPageJump.has_value()) {
     const int jump = *pendingPageJump;
@@ -2385,7 +2379,12 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 
   if (ttfRestoreLastPage) {
     // Back from page 0 into the previous chapter (§3.5): last built page,
-    // degrading to page 0 on a cold chapter.
+    // degrading to page 0 on a cold chapter. A partial prefix cannot report
+    // the chapter's last page, so wait for the build to complete first.
+    if (!haveTotal) {
+      needFullBuild = true;
+      return false;
+    }
     ttfRestoreLastPage = false;
     targetOut = available > 0 ? available - 1 : 0;
     return true;
@@ -2395,7 +2394,7 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     const uint32_t anchorHash = freeink::book::ZipCatalog::hashPath(pendingAnchor.c_str());
     uint32_t charOffset = 0;
     uint32_t page = 0;
-    if (canMapPrefixOffset(charOffset) && ttf_->charForAnchor(currentSpine, anchorHash, &charOffset) &&
+    if (ttf_->charForAnchor(currentSpine, anchorHash, &charOffset) && canMapCompleteOffset(charOffset) &&
         ttf_->pageForChar(currentSpine, charOffset, &page)) {
       pendingAnchor.clear();
       targetOut = static_cast<int>(page);
@@ -2763,19 +2762,12 @@ void EpubReaderActivity::renderBookTtf() {
     // tiled strip machinery. Base refresh ordering mirrors the legacy AA
     // path: cleanup cycle when due, otherwise the grayscale base waveform;
     // then per-band plane walks, the gray display, and the baseline cleanup.
-    if (pagesUntilFullRefresh <= 1) {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      renderer.preconditionGrayscale();
-      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-    } else {
-      renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
-      pagesUntilFullRefresh--;
-    }
-
     constexpr int STRIP_ROWS = 80;
     const int gh = renderer.getDisplayHeight();
     const int gwBytes = renderer.getDisplayWidthBytes();
     const size_t bandBytes = static_cast<size_t>(gwBytes) * STRIP_ROWS;
+    // Allocate both plane bands before mutating refresh state: if either
+    // allocation fails, the B/W fallback runs from untouched cadence state.
     auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
     auto msbScratch = scratch ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS) : nullptr;
     if (!scratch || !msbScratch) {
@@ -2783,6 +2775,15 @@ void EpubReaderActivity::renderBookTtf() {
       renderer.cleanupGrayscaleWithFrameBuffer();
       ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, /*async=*/false);
     } else {
+      if (pagesUntilFullRefresh <= 1) {
+        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+        renderer.preconditionGrayscale();
+        pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+      } else {
+        renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+        pagesUntilFullRefresh--;
+      }
+
       renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
       for (int y = 0; y < gh; y += STRIP_ROWS) {
         const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
@@ -3735,17 +3736,28 @@ void EpubReaderActivity::renderQuickFontPage() {
           pageIndex_(pageIndexRef) {}
 
     bool onPage(const freeink::book::Page& page) override {
-      if (page.pageIndex >= maxPages_) return false;
-      if (page.charStart > target_) return !found_;
+      if (page.charStart > target_) {
+        // The previous painted page is the target page: it ended before the
+        // first page past the anchor. Stop with a confirmed preview.
+        if (sawCandidate_) found_ = true;
+        return false;
+      }
       // Later pages also match until the first page past the anchor; each
       // paint overwrites the previous one, so the framebuffer ends on the
       // target page. Painting here avoids copying the engine-owned runs.
       owner_->renderer.clearScreen(0xFF);
       owner_->paintTtfPage(page, const_cast<void*>(font_));
-      found_ = true;
+      sawCandidate_ = true;
       pageIndex_ = page.pageIndex;
+      if (page.pageIndex + 1 >= maxPages_) {
+        budgetStopped_ = true;
+        return false;
+      }
       return true;
     }
+
+    bool sawCandidate() const { return sawCandidate_; }
+    bool budgetStopped() const { return budgetStopped_; }
 
    private:
     EpubReaderActivity* owner_;
@@ -3754,6 +3766,8 @@ void EpubReaderActivity::renderQuickFontPage() {
     uint8_t maxPages_;
     bool& found_;
     uint32_t& pageIndex_;
+    bool sawCandidate_ = false;
+    bool budgetStopped_ = false;
   };
   constexpr uint8_t kQuickRelayoutPageBudget = 64;
   QuickSink sink(this, params.font, targetChar, kQuickRelayoutPageBudget, found, pageIndex);
@@ -3762,6 +3776,10 @@ void EpubReaderActivity::renderQuickFontPage() {
     RenderLock lock;
     const auto st =
         ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
+    // A page past the anchor confirms the last painted page as the target;
+    // a natural end-of-chapter without that confirmation means the anchor
+    // page itself was the last page. Budget exhaustion always falls back.
+    if (sink.sawCandidate() && !sink.budgetStopped()) found = true;
     if (!found) {
       LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s); falling back to full reflow", bookStatusName(st));
     }
