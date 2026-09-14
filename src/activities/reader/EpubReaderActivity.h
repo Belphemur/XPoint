@@ -72,7 +72,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
   // Toolbar; its tools open the Contents/Text/More bottom-sheet panels.
-  enum class Overlay { None, Toolbar, Contents, Text, More, Stats };
+  enum class Overlay { None, Toolbar, Contents, Text, More, Stats, FontSheet };
   // Toolbar tool focus. 0=Contents, 1=Text, then the stats tile
   // (READING_STATS_ENABLED only) and More last — kTool* + kToolTileCount are
   // the source of truth, never bare literals.
@@ -109,6 +109,18 @@ class EpubReaderActivity final : public ReaderActivity {
   // use), for enum rows: font size / line spacing / alignment / orientation /
   // auto page turn. Toggle rows stay one-tap toggles, as in Settings.
   OptionPopup overlayPopup;
+#if defined(CROSSPOINT_TTF_READER)
+  // Quick font sheet focus: 0 = size, 1 = family. The sheet applies each +/-
+  // step to the displayed page before pushing a FAST refresh; caches are
+  // invalidated only when the sheet closes (SD write + full reflow are
+  // deliberately not per-tap costs).
+  int quickFontRow = 0;
+  void openFontSheet();
+  void quickFontStep(int direction);
+  void quickFontSelectRow(int row);
+  void renderQuickFontPage();
+  void closeFontSheet();
+#endif
   // True while a clean-page snapshot (renderer.storeBwBuffer) backs the open
   // overlay, letting panel->toolbar steps restore the page without a full
   // re-render. Discarded on close / whenever the page under the overlay changes.

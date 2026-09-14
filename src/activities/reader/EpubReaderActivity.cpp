@@ -3660,54 +3660,156 @@ void EpubReaderActivity::applyTextSettingLive() {
 
 // Settings-style option pickers for the Text panel's enum rows. Every
 // selection applies immediately to the page under the sheet.
-void EpubReaderActivity::showTextRowPopup(const int row) {
 #if defined(CROSSPOINT_TTF_READER)
-  if (ttf_ && row == 0) {
-    // Native family picker (built-in + §14.4 families, live preview) — the
-    // same screen the Settings entry uses; a popup cannot scroll the list.
-    // Allocate before touching overlay state: on OOM the Text panel stays
-    // intact for the next input.
-    auto picker = makeUniqueNoThrow<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
-                                                          TextSettingsActivity::Tab::Family);
-    if (!picker) {
-      LOG_ERR("ERS", "OOM: TextSettingsActivity");
-      return;
+
+// The quick sheet relays out only the page around the displayed char anchor.
+// It is a transient ChapterLayout pass (TextSettingsPreview's scratch pattern),
+// never a committed cache rebuild; the full reflow happens once on close.
+void EpubReaderActivity::openFontSheet() {
+  if (!ttf_) return;
+  openOverlay(Overlay::FontSheet);
+}
+
+void EpubReaderActivity::quickFontSelectRow(const int row) {
+  quickFontRow = std::clamp(row, 0, 1);
+  if (!toolbarUi) return;
+  RenderLock lock;
+  renderOverlay();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+void EpubReaderActivity::quickFontStep(const int direction) {
+  if (!ttf_) return;
+  if (quickFontRow == 0) {
+    const int next = std::clamp(static_cast<int>(SETTINGS.ttfFontPointSize) + direction,
+                                static_cast<int>(CrossPointSettings::TTF_FONT_POINT_SIZE_MIN),
+                                static_cast<int>(CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
+    if (next == SETTINGS.ttfFontPointSize) return;
+    SETTINGS.ttfFontPointSize = static_cast<uint8_t>(next);
+  } else {
+    const uint8_t count = freeink::book::fontLoader.familyCount();
+    int idx = -1;
+    if (SETTINGS.ttfFontFamilyName[0] != '\0') {
+      const auto* fam = freeink::book::fontLoader.findFamily(SETTINGS.ttfFontFamilyName);
+      if (fam != nullptr) idx = fam - freeink::book::fontLoader.families();
     }
-    overlay = Overlay::None;
-    overlayPopup.dismiss();
-    discardOverlayPage();
-    startActivityForResult(std::move(picker), [this](const ActivityResult& result) {
-      if (!result.isCancelled) applyReaderTextSettings();
-      overlay = Overlay::Text;  // back to the Text panel
-      panelIndex = 0;
-      if (toolbarUi) toolbarUi->begin();  // the picker drew its own FUI screen
-      requestUpdate();                    // re-render page + Text panel
-    });
+    int next = idx + direction;
+    if (next < -1) next = count - 1;
+    if (next >= count) next = -1;
+    if (next == idx) return;
+    if (next < 0) {
+      SETTINGS.ttfFontFamilyName[0] = '\0';
+    } else {
+      strncpy(SETTINGS.ttfFontFamilyName, freeink::book::fontLoader.families()[next].name,
+              sizeof(SETTINGS.ttfFontFamilyName) - 1);
+      SETTINGS.ttfFontFamilyName[sizeof(SETTINGS.ttfFontFamilyName) - 1] = '\0';
+    }
+    SETTINGS.readerFontEngine = CrossPointSettings::READER_ENGINE_TTF;
+    freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+  }
+  renderQuickFontPage();
+}
+
+void EpubReaderActivity::renderQuickFontPage() {
+  if (!ttf_ || !epub) return;
+
+  freeink::book::LayoutParams params;
+  ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+  if (params.font == nullptr) {
+    LOG_ERR("ERS", "Quick font reflow: no font chain");
     return;
   }
-  if (ttf_ && row == 1) {
-    // §14.2: continuous size — same slider as the settings Size tab.
-    auto sizeDialog = makeUniqueNoThrow<IntervalSelectionActivity>(
-        renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
-        CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
-        StrId::STR_FONT_SIZE_VALUE, /*readerActivity=*/true);
-    if (!sizeDialog) {
-      LOG_ERR("ERS", "OOM: IntervalSelectionActivity");
-      return;
+
+  const uint32_t targetChar = ttfCurrentCharStart;
+  bool found = false;
+  uint32_t pageIndex = 0;
+  class QuickSink final : public freeink::book::PageSink {
+   public:
+    QuickSink(EpubReaderActivity* owner, const void* font, const uint32_t target, const uint8_t maxPages,
+              bool& foundRef, uint32_t& pageIndexRef)
+        : owner_(owner),
+          font_(font),
+          target_(target),
+          maxPages_(maxPages),
+          found_(foundRef),
+          pageIndex_(pageIndexRef) {}
+
+    bool onPage(const freeink::book::Page& page) override {
+      if (page.pageIndex >= maxPages_) return false;
+      if (page.charStart > target_) return !found_;
+      // Later pages also match until the first page past the anchor; each
+      // paint overwrites the previous one, so the framebuffer ends on the
+      // target page. Painting here avoids copying the engine-owned runs.
+      owner_->renderer.clearScreen(0xFF);
+      owner_->paintTtfPage(page, const_cast<void*>(font_));
+      found_ = true;
+      pageIndex_ = page.pageIndex;
+      return true;
     }
-    startActivityForResult(std::move(sizeDialog), [this](const ActivityResult& result) {
-      if (!result.isCancelled && std::holds_alternative<IntervalResult>(result.data)) {
-        SETTINGS.ttfFontPointSize = static_cast<uint8_t>(std::clamp<uint32_t>(
-            std::get<IntervalResult>(result.data).value, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN,
-            CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
-        applyTextSettingLive();
+
+   private:
+    EpubReaderActivity* owner_;
+    const void* font_;
+    uint32_t target_;
+    uint8_t maxPages_;
+    bool& found_;
+    uint32_t& pageIndex_;
+  };
+  constexpr uint8_t kQuickRelayoutPageBudget = 64;
+  QuickSink sink(this, params.font, targetChar, kQuickRelayoutPageBudget, found, pageIndex);
+
+  {
+    RenderLock lock;
+    const auto st =
+        ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
+    if (!found) {
+      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s); falling back to full reflow", bookStatusName(st));
+    }
+  }
+
+  if (!found) {
+    applyReaderTextSettings();
+    requestUpdate();
+    return;
+  }
+
+  // The page-only layout succeeded. Mirror the page cursor for the status bar,
+  // snapshot the new clean page for overlay transitions, then draw the sheet.
+  ttfPage = static_cast<int>(pageIndex);
+  nextPageNumber = ttfPage;
+  {
+    RenderLock lock;
+    renderStatusBar();
+    if (renderer.hasFrameBuffer()) {
+      if (overlayPageStored) {
+        renderer.discardStoredBwBuffer();
+        overlayPageStored = false;
       }
-      // Reopen the Text panel over the restored page.
-      overlay = Overlay::Text;
-      panelIndex = 1;
-      if (toolbarUi) toolbarUi->begin();
-      requestUpdate();
-    });
+      overlayPageStored = renderer.storeBwBuffer();
+    }
+    renderOverlay();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
+}
+
+void EpubReaderActivity::closeFontSheet() {
+#if defined(CROSSPOINT_TTF_READER)
+  if (!ttf_) return;
+  overlay = Overlay::None;
+  overlayPopup.dismiss();
+  discardOverlayPage();
+  applyReaderTextSettings();  // one persisted save + full reflow on close
+  requestUpdate();
+#endif
+}
+#endif
+
+void EpubReaderActivity::showTextRowPopup(const int row) {
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_ && (row == 0 || row == 1)) {
+    // Size and family live in the compact quick sheet; the full-screen
+    // settings activity remains the advanced Settings entry point.
+    openFontSheet();
     return;
   }
 #endif
@@ -3782,6 +3884,9 @@ void EpubReaderActivity::openOverlay(Overlay target) {
       panelIndex = 0;
       buildMoreActions();
       toolbarUi->nav().reset();
+      break;
+    case Overlay::FontSheet:
+      quickFontRow = 0;
       break;
     default:
       break;
@@ -3858,6 +3963,9 @@ void EpubReaderActivity::renderOverlay() {
   model.activeTool = (overlay == Overlay::Toolbar && !panelCursorShown) ? -1 : focusedTool;
   // Strings the model points at live here until render() returns.
   std::string chapterTitle, pageInfo;
+#if defined(CROSSPOINT_TTF_READER)
+  std::string sizeText, familyText;
+#endif
 
   if (overlay == Overlay::Toolbar) {
     chapterTitle = currentChapterTitle();
@@ -3876,6 +3984,26 @@ void EpubReaderActivity::renderOverlay() {
     toolbarUi->render();
     return;
   }
+
+#if defined(CROSSPOINT_TTF_READER)
+  if (overlay == Overlay::FontSheet) {
+    model.quickFont = true;
+    model.panelTitle = tr(STR_FONT);
+    model.quickSelected = quickFontRow;
+    model.bottomReserve = mappedInput.hasTouch() ? 0 : UITheme::getInstance().getMetrics().buttonHintsHeight;
+    sizeText = std::to_string(SETTINGS.ttfFontPointSize) + " pt";
+    familyText = SETTINGS.ttfFontFamilyName[0] != '\0' ? SETTINGS.ttfFontFamilyName : tr(STR_BUILTIN_FONT);
+    model.sizeText = sizeText.c_str();
+    model.familyText = familyText.c_str();
+    toolbarUi->setModel(model);
+    toolbarUi->render();
+    if (!mappedInput.hasTouch()) {
+      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    }
+    return;
+  }
+#endif
 
   // Panels (Contents / Text / More): a bottom sheet over the page + button hints.
   model.panel = true;
@@ -3981,6 +4109,53 @@ void EpubReaderActivity::handleOverlayInput() {
   // render registered and hands back the action it mapped to.
   const auto routed = toolbarUi->route(mappedInput);
 
+#if defined(CROSSPOINT_TTF_READER)
+  if (overlay == Overlay::FontSheet) {
+    switch (routed.event) {
+      case ReaderToolbarUi::Event::Dismiss:
+        closeFontSheet();
+        return;
+      case ReaderToolbarUi::Event::FontMinus:
+        if (routed.value >= 0 && routed.value <= 1) quickFontSelectRow(routed.value);
+        quickFontStep(-1);
+        return;
+      case ReaderToolbarUi::Event::FontPlus:
+        if (routed.value >= 0 && routed.value <= 1) quickFontSelectRow(routed.value);
+        quickFontStep(1);
+        return;
+      case ReaderToolbarUi::Event::FontRow:
+        quickFontSelectRow(routed.value);
+        return;
+      default:
+        break;
+    }
+    if (routed.routed) return;
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      closeFontSheet();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      quickFontSelectRow(0);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      quickFontSelectRow(1);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      quickFontStep(-1);
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Right) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      quickFontStep(1);
+      return;
+    }
+    return;
+  }
+#endif
+
   // --- Toolbar ---
   if (overlay == Overlay::Toolbar) {
     switch (routed.event) {
@@ -4048,20 +4223,9 @@ void EpubReaderActivity::handleOverlayInput() {
     if (panelIndex < 0 || panelIndex >= count) return;
     if (overlay == Overlay::Text) {
       if (panelIndex == 0) {
-        // Full font picker (built-in + SD fonts, live preview) -- the same
-        // screen Settings uses; a popup cannot scroll a long font list.
-        overlay = Overlay::None;
-        overlayPopup.dismiss();
-        discardOverlayPage();
-        startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
-                                                                      TextSettingsActivity::Tab::Family),
-                               [this](const ActivityResult&) {
-                                 applyReaderTextSettings();
-                                 overlay = Overlay::Text;  // back to the Text panel
-                                 panelIndex = 0;
-                                 if (toolbarUi) toolbarUi->begin();  // the picker drew its own FUI screen
-                                 requestUpdate();                    // re-render page + Text panel
-                               });
+        // Family and size live in the compact quick sheet; the full picker
+        // remains available from the Settings text screen.
+        openFontSheet();
       } else if (panelIndex == 4) {
         // Focus Reading is a genuine on/off: a tap toggles and applies live.
         SETTINGS.focusReadingEnabled = SETTINGS.focusReadingEnabled ? 0 : 1;

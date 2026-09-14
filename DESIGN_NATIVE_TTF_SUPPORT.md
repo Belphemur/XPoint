@@ -759,9 +759,10 @@ about — one folder tree hosts both engines, no migration, no duplication.
 ```
 
 **Folder = family; extension filtering is the only gate.** Both roots
-(`/fonts` and the hidden `/.fonts`) are scanned — hidden-root families win,
-exactly as `SdCardFontRegistry::scanRoot()` de-duplicates today
-(SdCardFontRegistry.cpp:201-202). Within a family folder the TTF scanner
+(`/fonts` and the hidden `/.fonts`) are scanned. Families with the same
+name are merged across roots: the hidden-root face wins for a style both
+roots provide, while styles found only in the other root are added to the
+same family. Within a family folder the TTF scanner
 accepts only `.ttf`/`.otf`; `.cpfont` (legacy bundles), `.tmp`, `~` backups,
 `.json`, and macOS `._*`/hidden files are skipped without a log. The legacy
 `SdCardFontRegistry` in turn ignores `.ttf`/`.otf` (it only accepts
@@ -781,13 +782,18 @@ matches `Bold`) against, in priority order:
 4. `regular`, `normal`, `book`, `roman`, `text` → Regular
 5. No match → heuristics: `semibold`/`demibold`/`medium`/`black`/`heavy`/
    `extrabold` → Bold; `light`/`thin` → Regular; folder with exactly one file
-   → Regular regardless of its name; otherwise the file is skipped with
-   `LOG_DBG` (unknown style). Duplicate style resolution: lexicographically
-   first wins, rest logged. A family with no Regular match but ≥1 file
-   promotes its first file to Regular.
+   → Regular regardless of its name; otherwise the lexicographically-first
+   no-token file in a multi-file family is kept as the Regular candidate
+   (explicit Regular tokens win if present; otherwise it is registered as
+   Regular). Duplicate style resolution: lexicographically first wins, rest
+   logged. A family with no Regular candidate at all promotes its first
+   face to Regular.
 
 - One file = one face; up to 4 faces per family (regular/bold/italic/
-  bold-italic); 32-family cap (`kMaxDiscoveredFamilies`).
+  bold-italic); 32-family cap (`kMaxDiscoveredFamilies`). Full face paths
+  use `FontFaceInfo::kFileCap` = 160 bytes, matching the cache adapter's
+  directory cap so long vendor names/paths are discovered rather than
+  truncated away.
 - Per-face size guard: 2MB (CWE-400) on the PSRAM tier; fonts are loaded
   whole-file into PSRAM and stay resident while the face is live (§3.3).
 - Enumeration: `HalStorage::listFiles()` on each root +
@@ -825,3 +831,59 @@ font payload is added:
   covers glyphs/styles a chosen TTF family lacks; single baked size
   (headings render at body size under fallback). `kNotoSansFont` stays
   UI-chrome only.
+
+## 15. Reader quick font sheet (owner soak feedback, 2026-09-14)
+
+**Decision: size and family quick-adjustment is a compact bottom sheet, not a
+full-screen activity.** The vendor reference (XT Licorice) keeps the page
+visible while settings change. On the TTF reader path, the reader's Text panel
+now opens the quick sheet (`Overlay::FontSheet`) for family and size; the
+full-screen `TextSettingsActivity` remains the advanced Settings entry point.
+
+### UX contract
+
+- The sheet is a two-row `+/-` surface (`ReaderToolbarUi::buildQuickFont`),
+  anchored to the bottom edge. On a touch board it has no button-hint reserve;
+  on button boards it leaves the usual bottom hint strip clear.
+- Row 0 adjusts point size. Row 1 cycles built-in → scanned families (or the
+  reverse). The selected row is outlined; the full picker is still available
+  from Settings for browsing the entire list.
+- A tap or button step applies to the currently displayed page and refreshes
+  it in place. There is no full-screen activity push.
+- Dismissing the sheet persists settings once and performs the normal full
+  reflow/cache invalidation. Per-tap work is deliberately not persisted to
+  the page cache.
+
+### Page-only relayout and memory
+
+`TtfBookRuntime::quickLayoutPage()` runs a transient `ChapterLayout::layout`
+pass with the current layout parameters and a `PageSink` budget. The sink
+skips ahead by `Page::charStart`, paints through the real `PageRenderer`,
+and stops once it has passed the displayed anchor (bounded to the first 64
+pages; otherwise the reader falls back to the full reflow). The pass uses the
+runtime's existing scratch/parse arenas, resets them on return, and never
+writes or invalidates the committed page cache. This is the same transient
+scratch pattern as `TextSettingsPreview::relayoutTtf`, not a second persistent
+allocation. The frame is stored only after the quick page has painted; any
+prior overlay snapshot is explicitly discarded before `storeBwBuffer()` to
+avoid the BW-buffer "already stored" imbalance. A FAST refresh is used per
+tap; the normal render path restores AA plane parity on the final close/reflow.
+
+### Decision log
+
+- **2026-09-14 — Quick sheet over full-screen picker:** compact overlay for
+  Size/Family with live page feedback; full settings retained for advanced
+  configuration.
+- **2026-09-14 — Page-only preview, full reflow on close:** each +/- tap does
+  a transient layout of the visible anchor (64-page cap); the full chapter is
+  rebuilt and persisted once when the sheet closes.
+- **2026-09-14 — Manifest path cap:** `FontFaceInfo::file` is now 160 bytes,
+  matching `SdCardCacheStorage::kDirMax`; full paths longer than the manifest
+  cap are rejected explicitly rather than silently truncated.
+- **2026-09-14 — Two-root family merge:** same-named families in `/.fonts`
+  and `/fonts` merge by style. The hidden root wins per conflicting style;
+  styles available only in the other root are still added. Missing roots and
+  the 32-family cap now log distinctly.
+- **2026-09-14 — Tokenless Regular candidates:** a multi-file family keeps its
+  lexicographically-first no-token file as a Regular candidate instead of
+  skipping it and promoting Bold/Italic to Regular.

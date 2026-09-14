@@ -86,3 +86,22 @@ vendors `esp_full_miniz` as a nested submodule:
 ```bash
 git submodule update --init --recursive
 ```
+
+## Reader Quick Font Sheet (2026-09-14)
+
+Reader size/family adjustment uses a compact two-row bottom sheet over the
+still-visible page: `Size 28 [ - ] [ + ]` and `Family [ - ] [ + ]`. A step
+performs a transient page-only ChapterLayout pass through the real engine,
+paints the page, and FAST-refreshes; it does not rebuild the page cache. The
+sheet closes with one settings save and a full reflow. `TextSettingsActivity`
+remains the full advanced picker. See `DESIGN_NATIVE_TTF_SUPPORT.md` §15.
+
+Decision log:
+
+- 2026-09-14: quick bottom sheet replaces full-screen TTF size/family pushes
+  in the reader; live page preview per +/- tap.
+- 2026-09-14: page-only transient layout with a 64-page anchor budget; full
+  reflow and cache invalidation deferred until sheet close.
+- 2026-09-14: font scan now merges same-named families across `/.fonts` and
+  `/fonts`, keeps hidden-root precedence on conflicting styles, uses 160-byte
+  face paths, and retains a tokenless file as a Regular candidate.

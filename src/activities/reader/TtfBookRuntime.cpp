@@ -337,7 +337,28 @@ void TtfBookRuntime::abortSession() {
   resetBuildArenas();
 }
 
-// ---- prefetch ----
+BookStatus TtfBookRuntime::quickLayoutPage(const uint16_t spineIndex, const LayoutParams& params, PageSink& sink,
+                                           const uint8_t maxPages) {
+  // A live build owns scratch_/parseArena_. The caller must fall back to a
+  // full reflow in that rare case rather than corrupting the session.
+  if (sessionActive()) return BookStatus::Unsupported;
+
+  ZipEntry entry;
+  BookStatus st = catalog_.spineEntry(spineIndex, &entry);
+  if (st != BookStatus::Ok) return st;
+  st = catalog_.spineHref(spineIndex, spineHref_, sizeof(spineHref_));
+  if (st != BookStatus::Ok) return st;
+
+  scratch_.reset();
+  parseArena_.reset();
+  st = ChapterLayout::layout(bookSource_, catalog_.zip(), entry, spineHref_, params, scratch_, sink, nullptr, nullptr,
+                             &parseArena_);
+  // The quick pass is transient by contract; release its marks even if the
+  // engine returned a failure so the next page read starts from clean arenas.
+  scratch_.reset();
+  parseArena_.reset();
+  return st;
+}
 
 bool TtfBookRuntime::openPrefetch(const uint16_t spineIndex, const uint32_t generation) {
   if (prefetchFor(spineIndex) && prefetchGen_ == generation) return true;

@@ -15,12 +15,15 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr fui::ActionId ACTION_DISMISS = 1;  // tap anywhere on the page above the sheet
-constexpr fui::ActionId ACTION_TOOL = 2;     // value = 0 Contents, 1 Text, 2 More
-constexpr fui::ActionId ACTION_PREV = 3;     // scrub row: previous chapter
-constexpr fui::ActionId ACTION_NEXT = 4;     // scrub row: next chapter
-constexpr fui::ActionId ACTION_SCRUB = 5;    // progress track: dragPermille along the book
-constexpr fui::ActionId ACTION_ROW = 6;      // panel list row, value = row index
+constexpr fui::ActionId ACTION_DISMISS = 1;     // tap anywhere on the page above the sheet
+constexpr fui::ActionId ACTION_TOOL = 2;        // value = 0 Contents, 1 Text, 2 More
+constexpr fui::ActionId ACTION_PREV = 3;        // scrub row: previous chapter
+constexpr fui::ActionId ACTION_NEXT = 4;        // scrub row: next chapter
+constexpr fui::ActionId ACTION_SCRUB = 5;       // progress track: dragPermille along the book
+constexpr fui::ActionId ACTION_ROW = 6;         // panel list row, value = row index
+constexpr fui::ActionId ACTION_FONT_MINUS = 7;  // quick font row's - control
+constexpr fui::ActionId ACTION_FONT_PLUS = 8;   // quick font row's + control
+constexpr fui::ActionId ACTION_FONT_ROW = 9;    // select a quick-font row
 
 // Scrub row: two small round-cornered chapter buttons flanking a thin progress
 // track with a round knob -- the reading page's chrome is light, so the
@@ -42,6 +45,8 @@ constexpr int kToolCount = 3;
 constexpr int kPanelHeightPercent = 62;
 // Cap the sheet may grow to when rounding the list area up to a whole row.
 constexpr int kPanelHeightMaxPercent = 72;
+// Quick font sheet: deliberately compact so the re-laid page remains visible.
+constexpr int16_t kQuickFontRowH = 52;
 }  // namespace
 
 ReaderToolbarUi::ReaderToolbarUi(GfxRenderer& renderer) : UiAppHost(renderer) {}
@@ -50,7 +55,7 @@ void ReaderToolbarUi::begin() {
   resetUi();
   pending_ = Routed{};
   nav_.reset();
-  for (fui::ActionId id = ACTION_DISMISS; id <= ACTION_ROW; ++id) {
+  for (fui::ActionId id = ACTION_DISMISS; id <= ACTION_FONT_ROW; ++id) {
     app.on(id, &ReaderToolbarUi::onAction, this);
   }
   app.setScreen(&ReaderToolbarUi::screenFn, this);
@@ -92,11 +97,88 @@ void ReaderToolbarUi::onAction(const fui::ActionEvent& event, void* user) {
 
 void ReaderToolbarUi::screenFn(UiScreen& screen, void* user) {
   auto* self = static_cast<ReaderToolbarUi*>(user);
-  if (self->model_.panel) {
+  if (self->model_.quickFont) {
+    self->buildQuickFont(screen);
+  } else if (self->model_.panel) {
     self->buildPanel(screen);
   } else {
     self->buildToolbar(screen);
   }
+}
+
+// Quick font sheet: a two-row +/- surface over the page. The reader paints the
+// re-laid page underneath before every refresh, so the owner sees the text
+// change in context (vendor XT Licorice pattern).
+void ReaderToolbarUi::buildQuickFontRow(UiScreen& screen, const fui::Rect& row, const int rowIndex, const char* label) {
+  const auto& tokens = screen.theme();
+  const fui::Paint ink = fui::Paint::solid(fui::Color::Black);
+  if (rowIndex == model_.quickSelected) {
+    screen.target().stroke(row, ink, 2, tokens.controlRadius);
+  }
+
+  const int16_t controlW = 44;
+  const fui::Rect minusRect{row.x, row.y, controlW, row.height};
+  const fui::Rect plusRect{static_cast<int16_t>(row.right() - controlW), row.y, controlW, row.height};
+  stepProps_.label = "-";
+  stepProps_.icon = fui::BitmapRef{};
+  stepProps_.action = ACTION_FONT_MINUS;
+  stepProps_.inputMask = fui::InputTouch;
+  stepProps_.styles.explicitlySet = true;
+  stepProps_.styles.normal.background = fui::Paint::solid(fui::Color::White);
+  stepProps_.styles.normal.foreground = fui::Paint::solid(fui::Color::Black);
+  stepProps_.styles.normal.border = fui::Paint::solid(fui::Color::Black);
+  stepProps_.styles.normal.borderWidth = 1;
+  stepProps_.styles.normal.radius = tokens.controlRadius;
+  stepProps_.styles.selected = stepProps_.styles.normal;
+  stepProps_.styles.focused = stepProps_.styles.normal;
+  stepProps_.styles.disabled = stepProps_.styles.normal;
+  stepProps_.styles.active = stepProps_.styles.normal;
+  stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
+  stepProps_.styles.active.foreground = fui::Paint::solid(fui::Color::White);
+  stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
+  screen.button(stepProps_, minusRect);
+
+  stepProps_.label = "+";
+  stepProps_.action = ACTION_FONT_PLUS;
+  stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
+  stepProps_.styles.active.foreground = fui::Paint::solid(fui::Color::White);
+  screen.button(stepProps_, plusRect);
+
+  const fui::Rect textRect{static_cast<int16_t>(minusRect.right() + tokens.spaceSm), row.y,
+                           static_cast<int16_t>(plusRect.x - minusRect.right() - 2 * tokens.spaceSm), row.height};
+  fui::TextStyle valueStyle = tokens.bodyText;
+  valueStyle.bold = rowIndex == model_.quickSelected;
+  screen.target().text(textRect, label, valueStyle);
+  screen.frame().hit(textRect, ACTION_FONT_ROW, static_cast<int16_t>(rowIndex), fui::InputTouch);
+}
+
+void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {
+  const auto& tokens = screen.theme();
+  const fui::Rect safe = screen.frame().safeRect();
+
+  fui::SheetProps sheetProps;
+  sheetProps.anchor = fui::SheetEdge::Bottom;
+  sheetProps.dismissAction = ACTION_DISMISS;
+  sheetProps.grabberMargin = tokens.spaceLg;
+  sheetProps.grabberInset = static_cast<int16_t>(tokens.spaceLg + tokens.spaceMd);
+  const int16_t grabberBand =
+      static_cast<int16_t>(sheetProps.grabberMargin + sheetProps.grabberHeight + sheetProps.grabberInset);
+  const int16_t titleH = screen.target().lineHeight(tokens.smallText.font);
+  const int16_t bottomReserve = static_cast<int16_t>(std::max(0, model_.bottomReserve));
+  const int16_t contentH = static_cast<int16_t>(tokens.spaceMd + titleH + tokens.spaceSm + 2 * kQuickFontRowH +
+                                                tokens.spaceSm + bottomReserve);
+  screen.sheet(sheetProps, static_cast<int16_t>(contentH + grabberBand));
+  screen.insetContent(fui::Insets{0, tokens.spaceLg, 0, tokens.spaceLg});
+
+  const fui::Rect title = screen.takeTop(titleH, tokens.spaceMd).inset(fui::Insets{0, tokens.spaceSm, 0, 0});
+  fui::TextStyle titleStyle = tokens.smallText;
+  titleStyle.bold = true;
+  if (model_.panelTitle) screen.target().text(title, model_.panelTitle, titleStyle);
+
+  const fui::Rect sizeRow = screen.takeTop(kQuickFontRowH, tokens.spaceSm);
+  buildQuickFontRow(screen, sizeRow, 0, model_.sizeText ? model_.sizeText : "");
+  const fui::Rect familyRow = screen.takeTop(kQuickFontRowH, static_cast<int16_t>(tokens.spaceSm + bottomReserve));
+  buildQuickFontRow(screen, familyRow, 1, model_.familyText ? model_.familyText : "");
 }
 
 // The Contents / Text / More row: three equal slots, an icon centred in each,
