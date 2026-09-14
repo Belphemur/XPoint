@@ -3799,6 +3799,9 @@ void EpubReaderActivity::closeFontSheet() {
   overlayPopup.dismiss();
   discardOverlayPage();
   applyReaderTextSettings();  // one persisted save + full reflow on close
+  // The sheet hid a full-page relayout; ask the next render for a cleanup
+  // cycle rather than leaving a differential overlay refresh in the cadence.
+  pagesUntilFullRefresh = 1;
   requestUpdate();
 #endif
 }
