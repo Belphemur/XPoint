@@ -1,5 +1,7 @@
 // Host-test stub of HalStorage.h — in-memory file map with write/rename/
 // remove, so ProgressFile::writeAtomic and the load path run for real.
+// Host-only: this stub runs on the test host, so the firmware PSRAM policy
+// (Rule 19) does not apply to its std::string-backed file map.
 #pragma once
 
 #include <map>
@@ -16,8 +18,9 @@ class HalStorage {
   bool openFileForRead(const char*, const char* path, HalFile& file) {
     const auto it = files.find(path);
     if (it == files.end()) return false;
-    file.data = &it->second;
-    file.markOpen(true);
+    // Keep the string alive even if the map entry is erased or renamed while
+    // the handle is open: HalFile owns a copy and syncs on close.
+    file.openCopy(std::string(it->second), this, path);
     return true;
   }
   bool openFileForRead(const char* moduleName, const String& path, HalFile& file) {
@@ -30,10 +33,7 @@ class HalStorage {
       --failWriteCount;
       return false;
     }
-    file.data = &files[path];  // creates or opens
-    file.markOpen(true);
-    // Truncate like SdFat's open-for-write.
-    if (file.data) file.data->clear();
+    file.openCopy(std::string(), this, path);  // truncate like SdFat's open-for-write
     return true;
   }
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file) {
@@ -49,6 +49,10 @@ class HalStorage {
     files.erase(from);
     return true;
   }
+  bool saveToPath(const std::string& path, const std::string& bytes) {
+    files[path] = bytes;
+    return true;
+  }
 
   // Test control: path -> bytes.
   std::map<std::string, std::string> files;
@@ -61,3 +65,10 @@ class HalStorage {
 };
 
 #define Storage HalStorage::getInstance()
+
+inline bool HalFile::close() {
+  if (!open_) return false;
+  open_ = false;
+  if (storage_ != nullptr) storage_->saveToPath(path_, data_);
+  return true;
+}
