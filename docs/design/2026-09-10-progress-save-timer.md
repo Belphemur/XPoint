@@ -35,7 +35,7 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
 - Changing the `progress.bin` on-disk format for the legacy paths (stays the
   10-byte record of EpubReaderUtils.h; load path in `loadBook()` is untouched).
   **Phase 2a amendment (native-TTF reader, design
-  DESIGN_NATIVE_TTF_SUPPORT.md §3.5):** the TTF reader path appends a
+  `docs/design/ttf/2026-09-10-native-ttf-architecture.md`):** the TTF reader path appends a
   generation-tagged 16-byte record shape
   (`{u16 spine, u16 page, u16 pageCount, u32 charOffset, u32 generation,
   u16 reserved}`), encoded/decoded solely by

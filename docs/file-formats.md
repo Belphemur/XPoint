@@ -399,8 +399,8 @@ if (parsedSize != fileSize) {
 
 ## `ficache` — FreeInkBook native-TTF caches (CROSSPOINT_TTF_READER builds)
 
-PSRAM-class builds only (`x4pro`, `x4c`, `papermono` families; design
-`DESIGN_NATIVE_TTF_SUPPORT.md` §14.1). Everything lives under
+PSRAM-class builds only (`x4pro`, `x4c`, `papermono` families; see
+`docs/design/ttf/2026-09-10-font-architecture-and-ux.md`). Everything lives under
 `<book cache path>/ficache/`:
 
 ### `catalog.fibc`

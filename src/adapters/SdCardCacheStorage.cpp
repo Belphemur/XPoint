@@ -176,10 +176,10 @@ bool SdCardCacheStorage::endWrite() {
   // Rotate the previous final aside before publishing: SdFat's rename does
   // not overwrite an existing destination, so the old file must move first.
   // Renaming (instead of removing) preserves the last good cache across a
-  // power loss between the two renames — the doc contract at
-  // DESIGN_NATIVE_TTF_SUPPORT.md:503 ("mid-build failure retains previous
-  // final"). A rotate-rename failure is non-fatal for the .tmp: it is left
-  // in place and the whole publish is retried later.
+  // power loss between the two renames — the contract documented in
+  // docs/design/ttf/2026-09-10-native-ttf-architecture.md ("mid-build
+  // failure retains previous final"). A rotate-rename failure is non-fatal
+  // for the .tmp: it is left in place and the whole publish is retried later.
   const char* oldPath = nullptr;
   if (Storage.exists(writeFinalPath_)) {
     if (!pathBuf_) {
