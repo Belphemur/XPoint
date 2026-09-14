@@ -649,12 +649,12 @@ bool LibraryListActivity::handleButtons() {
       nav.selected = 0;
       nav.top = 0;
       requestUpdate();
+    } else if (groupsCollapsed) {
+      restoreExpandedList();
     } else if (!tabsFocused() && !degraded) {
       // Keep the current list and viewport while returning focus to the tabs.
       nav.selected = 0;
       requestUpdate();
-    } else if (groupsCollapsed) {
-      restoreExpandedList();
     } else {
       onGoHome();
     }
