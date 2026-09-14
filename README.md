@@ -81,8 +81,7 @@ ports directly.
 - **Progress on every home card.** "42% • 2h 30m" right under each book in
   *Recent books*, so you can pick up where you left off without opening it.
   Same Kindle-WPM engine as the chapter timer.
-- **Library workflow**: folder browser, hidden-file toggle, long-press delete,
-  recent books, SD-cache management.
+- **Library workflow**: indexed title/author search, recently-added and alphabetical views, multilingual grouping, folder browser, recent books, and SD-cache management.
 
 ### 📡 Wireless
 

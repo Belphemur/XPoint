@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <algorithm>
 
@@ -68,15 +69,7 @@ bool UiListActivity::routeListTouch() {
 }
 
 void UiListActivity::moveSelectionTo(const int index) {
-  // No render lock: `selected` is written only here, on the main task, and the
-  // viewport pull is deferred to the next build, where ListNav::syncToProps
-  // consumes followOnBuild. Taking the lock parked the main loop for a whole
-  // e-ink refresh, and the buttons are sampled once per loop pass from level
-  // state with no queue, so a press that started and ended inside that window
-  // was never seen at all.
-  auto& n = activeNav();
-  n.selected = index;
-  n.followOnBuild = true;  // the next build pulls the viewport to it
+  activeNav().requestSelection(index);
   requestUpdate();
 }
 
@@ -89,16 +82,11 @@ void UiListActivity::loop() {
   // off-screen) and button navigation pulls the view back to it.
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
-    bool moved = false;
-    {
-      // Same nav-vs-render race as moveSelectionTo: the render task writes
-      // pageRows/top mid-build, so read and mutate under one lock.
-      RenderLock lock(*this);
-      auto& n = activeNav();
-      const int delta = swipe == MappedInputManager::SwipeDir::Up ? n.pageRows() : -n.pageRows();
-      moved = n.scrollBy(delta, listCount());
-    }
-    if (moved) requestUpdate();
+    auto& n = activeNav();
+    const int delta = swipe == MappedInputManager::SwipeDir::Up ? n.inputPageRows() : -n.inputPageRows();
+    LOG_DBG("LIST", "%s swipe delta=%d count=%d", name.c_str(), delta, listCount());
+    n.requestScroll(delta);
+    requestUpdate();
     return;
   }
 
@@ -117,26 +105,14 @@ void UiListActivity::navigateButtons() {
   // can be one build old while a refresh is in flight; the next layout's
   // feedback corrects the viewport.
   buttonNavigator.onNextContinuous(
-      [this, count, &n] { moveSelectionTo(ButtonNavigator::nextPageIndex(n.selected, count, n.pageRows())); });
+      [this, count, &n] { moveSelectionTo(ButtonNavigator::nextPageIndex(n.selected, count, n.inputPageRows())); });
   buttonNavigator.onPreviousContinuous(
-      [this, count, &n] { moveSelectionTo(ButtonNavigator::previousPageIndex(n.selected, count, n.pageRows())); });
+      [this, count, &n] { moveSelectionTo(ButtonNavigator::previousPageIndex(n.selected, count, n.inputPageRows())); });
 }
 
-void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const bool hasSubtitle) {
-  int16_t rowHeight = screen.theme().rowHeight;
-  if (!mappedInput.hasTouch()) {
-    // Non-touch hardware (X3/X4) keeps the original, denser per-theme row
-    // height instead of FreeInkUI's touch-target-sized default, so lists fit
-    // as many rows per screen as they did before the FreeInkUI migration.
-    // props.rowHeight must be set explicitly: screen.list() otherwise falls
-    // back to the (touch-friendly) theme token, not this local value.
-    // A label that must wrap (labelText.maxLines > 1) grows only its own row:
-    // list() sizes wrapped items per-row, so the dense height stays.
-    const auto& metrics = UITheme::getInstance().getMetrics();
-    rowHeight = static_cast<int16_t>(hasSubtitle ? metrics.listWithSubtitleRowHeight : metrics.listRowHeight);
-    props.rowHeight = rowHeight;
-  }
-  activeNav().syncToProps(screen.body(), rowHeight, screen.theme().listRowGap, listCount(), props);
+void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, const int selectionOffset) {
+  props.partialTrailingRow = true;
+  screen.syncListViewport(activeNav(), props, listCount(), selectionOffset);
 }
 
 void UiListActivity::drawChrome() {

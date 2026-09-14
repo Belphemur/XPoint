@@ -138,7 +138,8 @@ enum UIIcon {
   Hotspot,
   Bookmark,
   Usb,
-  Chart
+  Chart,
+  Blocks
 };
 
 // Default theme implementation (Classic Theme)
