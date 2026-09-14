@@ -50,17 +50,12 @@ void UiTabListActivity::onRowAction(const fui::ActionEvent& event) {
 }
 
 void UiTabListActivity::moveRingTo(const int ringIndex) {
+  // Same deferral as UiListActivity::moveSelectionTo: syncTabListViewport
+  // already resolves the ring's viewport under followOnBuild, so the main task
+  // sets the position and leaves `top` to the render task that owns it.
   auto& n = activeNav();
   n.selected = ringIndex;
-  if (ringIndex == 0) {
-    n.top = 0;
-  } else {
-    // Pull the viewport to the row (ring - 1); ListNav::follow reads
-    // n.selected as a row index, so compute directly here.
-    const uint16_t rows = n.visibleRows > 0 ? static_cast<uint16_t>(n.visibleRows) : 1;
-    n.top = fui::listTopIndexFor(static_cast<int16_t>(ringIndex - 1), static_cast<uint16_t>(n.top < 0 ? 0 : n.top),
-                                 rows, static_cast<uint16_t>(listCount()));
-  }
+  n.followOnBuild = true;
   requestUpdate();
 }
 
@@ -91,8 +86,8 @@ void UiTabListActivity::syncTabListViewport(UiScreen& screen, fui::ListProps& pr
   const uint16_t rows = fui::listVisibleRows(screen.body(), rowHeight, screen.theme().listRowGap);
   n.visibleRows = rows > 0 ? rows : 1;
   if (n.followOnBuild) {
-    // Screen entry / tab switch: show the tab's remembered selection, or the
-    // top when the tab bar holds the focus.
+    // Screen entry, tab switch, or a ring move: show the tab's remembered
+    // selection, or the top when the tab bar holds the focus.
     n.followOnBuild = false;
     n.top = n.selected > 0 ? static_cast<int>(fui::listTopIndexFor(
                                  static_cast<int16_t>(n.selected - 1), static_cast<uint16_t>(n.top < 0 ? 0 : n.top),

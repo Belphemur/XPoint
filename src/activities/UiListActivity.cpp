@@ -68,14 +68,15 @@ bool UiListActivity::routeListTouch() {
 }
 
 void UiListActivity::moveSelectionTo(const int index) {
-  {
-    // The render task reads nav mid-build (syncToProps, layout feedback); a
-    // press landing during a render would otherwise tear selection/viewport.
-    RenderLock lock(*this);
-    auto& n = activeNav();
-    n.selected = index;
-    n.follow(listCount());
-  }
+  // No render lock: `selected` is written only here, on the main task, and the
+  // viewport pull is deferred to the next build, where ListNav::syncToProps
+  // consumes followOnBuild. Taking the lock parked the main loop for a whole
+  // e-ink refresh, and the buttons are sampled once per loop pass from level
+  // state with no queue, so a press that started and ended inside that window
+  // was never seen at all.
+  auto& n = activeNav();
+  n.selected = index;
+  n.followOnBuild = true;  // the next build pulls the viewport to it
   requestUpdate();
 }
 
@@ -112,7 +113,9 @@ void UiListActivity::navigateButtons() {
       [this, count, &n] { moveSelectionTo(ButtonNavigator::previousIndex(n.selected, count)); });
   // Page by the rows the last build actually drew (pageRows), not the
   // fixed-height visibleRows estimate: with wrapped labels the estimate
-  // overshoots and rows between pages would never be shown.
+  // overshoots and rows between pages would never be shown. The measurement
+  // can be one build old while a refresh is in flight; the next layout's
+  // feedback corrects the viewport.
   buttonNavigator.onNextContinuous(
       [this, count, &n] { moveSelectionTo(ButtonNavigator::nextPageIndex(n.selected, count, n.pageRows())); });
   buttonNavigator.onPreviousContinuous(
