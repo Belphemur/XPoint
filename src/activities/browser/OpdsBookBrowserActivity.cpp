@@ -193,6 +193,21 @@ void OpdsBookBrowserActivity::loop() {
   }
 }
 
+bool OpdsBookBrowserActivity::preventAutoSleep() {
+  switch (state) {
+    case BrowserState::CHECK_WIFI:
+    case BrowserState::WIFI_SELECTION:
+    case BrowserState::LOADING:
+    case BrowserState::DOWNLOADING:
+    case BrowserState::SEARCH_INPUT:
+      return true;
+    case BrowserState::BROWSING:
+    case BrowserState::ERROR:
+      return false;
+  }
+  return false;
+}
+
 void OpdsBookBrowserActivity::rootScreen(UiScreen& screen, void* user) {
   auto* self = static_cast<OpdsBookBrowserActivity*>(user);
   switch (self->state) {
