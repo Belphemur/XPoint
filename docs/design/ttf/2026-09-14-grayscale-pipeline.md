@@ -30,10 +30,11 @@ No capability flag is flipped: `stripUploads` stays false for the X4 driver,
 and its scan geometry / waveform are untouched. Both transports share the
 same base/cleanup contract (`ttfDisplayGrayBase()`).
 
-Full-frame plane buffers are `poolMakeBytes` (PSRAM on PSRAM builds; DRAM on
-C3 under the legacy non-tiled-dual heap gate), bounded by a 128KB/plane
-guard. Allocation happens before any refresh-state mutation; OOM falls back
-to a plain B/W display.
+Full-frame plane buffers are `poolMakeBytes` on the PSRAM-class builds that
+compile the TTF path (`CROSSPOINT_TTF_READER` is absent from every C3/sticky
+env, so no C3 allocation case exists), bounded by a 128KB/plane guard.
+Allocation happens before any refresh-state mutation; pool exhaustion
+(`nullptr`) falls back to a plain B/W display.
 
 ## 3. Uniform tone quantizer
 

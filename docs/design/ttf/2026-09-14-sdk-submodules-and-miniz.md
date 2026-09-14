@@ -42,14 +42,18 @@ on the linker to bind the tinfl/tdefl calls to the engine's own objects.
 
 ## 3. Single-miniz-in-firmware policy
 
-There is exactly one miniz in the firmware: FreeInkBook's. Consequences:
+There is exactly one miniz implementation in the firmware: FreeInkBook's
+shared miniz/ROM tinfl core. Consequences:
 
-- **FreeInkBook is the sole inflate consumer** for EPUB content (chapter
-  XML, images, any deflated ZIP member).
+- **One implementation, sanctioned callers.** FreeInkBook inflates EPUB
+  chapter content (chapter XML, images, any deflated ZIP member). The legacy
+  `Epub`/`ZipFile` extraction path inflates metadata, cover, and stylesheet
+  entries through the same shared implementation — a second miniz build
+  would be the violation, not the second caller.
 - No other subsystem may link its own miniz, zlib, or ROM tinfl/tdefl.
 - Image decoding (pngle/tjpgd), XML parsing, and EPUB container access all
-  funnel through the engine's `BookSource`/`Book`/`ChapterLayoutSession`
-  substrate instead of spawning a second inflate path.
+  reach inflate through either the engine's `BookSource`/`Book` substrate or
+  the legacy `ZipFile` path — both bound to the one implementation.
 
 This keeps the symbol surface unambiguous, avoids ROM/vendor collisions,
 and makes memory-profile tuning (arena sizing, inflate window ownership) a
