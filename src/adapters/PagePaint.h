@@ -7,14 +7,20 @@
 // GfxRenderer, so the renderer's orientation transform and the existing
 // tiled dual-plane strip machinery apply — zero engine changes.
 //
-// Tone quantization (§13 correction 11 — the .cpfont converter banding):
-//   >=144 -> tone 3 (solid ink: the BW base carries it, no plane bits)
-//   >=96  -> tone 2 (dark gray: LSB + MSB)
-//   >=48  -> tone 1 (light gray: MSB)
-//   else 0 (no plot, no plane bits)
+// Tone quantization (E-Ink AA research, 2026-09 — the uniform baseline
+// quantizer; the earlier 48/96/144 bands and the old 1/8/12 discussion
+// thresholds both misplace the boundaries):
+//   tone = (3*coverage + 127) / 255
+//   0-42   -> tone 0 (no plot, no plane bits)
+//   43-127 -> tone 1 (light gray: MSB)
+//   128-212-> tone 2 (dark gray: LSB + MSB)
+//   213-255-> tone 3 (solid ink: the BW base carries it, no plane bits)
 // The BW base plots every pixel with tone >= 1 (the tone-1 boundary), and
 // the plane passes flag gray tones via grayplanes::setMsb/setLsb — exactly
-// the contract GrayPlanes.h documents for the bitmap path.
+// the contract GrayPlanes.h documents for the bitmap path. This is the ONE
+// quantizer for base and planes; a future calibrated profile (256-byte LUT
+// from measured panel reflectance) replaces this function, never a local
+// threshold copy.
 
 #include <cstdint>
 
@@ -27,13 +33,10 @@ namespace freeink {
 namespace book {
 
 namespace pagepaint {
-// 2-bit tone from 8-bit glyph coverage (0=white .. 3=black).
-inline uint8_t grayTone(const uint8_t coverage) {
-  if (coverage >= 144) return 3;
-  if (coverage >= 96) return 2;
-  if (coverage >= 48) return 1;
-  return 0;
-}
+// 2-bit tone from 8-bit glyph coverage (0=white .. 3=black). Uniform
+// baseline: equally spaced darkness levels, no gamma — stb coverage is
+// linear pixel coverage, not gamma-encoded.
+inline uint8_t grayTone(const uint8_t coverage) { return static_cast<uint8_t>((3u * coverage + 127u) / 255u); }
 }  // namespace pagepaint
 
 class PagePaint {

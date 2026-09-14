@@ -887,3 +887,96 @@ tap; the normal render path restores AA plane parity on the final close/reflow.
 - **2026-09-14 — Tokenless Regular candidates:** a multi-file family keeps its
   lexicographically-first no-token file as a Regular candidate instead of
   skipping it and promoting Bold/Italic to Regular.
+
+## 16. Full-frame gray fallback + uniform tone quantizer (owner AA research, 2026-09-14)
+
+Owner-provided external research (`E-Ink_Anti-Aliasing_Algorithms_on_ESP32-S3`)
+showed the X4 Pro's promoted UC8279 X4 driver (LUT_VER=02, `kXtfAa02`)
+**advertises** Overlay 4-level gray (`GrayscaleEncoding::OverlayMasks`,
+separate base, external-LUT refresh implemented) but `stripUploads = false`.
+The grayParity gate keyed on `supportsStripGrayscale()` treated "cannot upload
+strips" as "cannot render gray" — an integration gap, not a hardware one: the
+pages fell back to 1bpp BW on the owner's device.
+
+### Transport split (stage 2 of the research plan)
+
+- `renderBookTtf()` selects the transport from
+  `grayscaleCapabilities()`: strips where `stripUploads` is true
+  (SSD1677-class), otherwise **full-frame plane buffers** — the same dual-plane
+  bits, one `GRAYSCALE_DUAL` walk over a full-frame target
+  (`beginStripTarget(lsb, 0, panelHeight, msb)`), submitted through the
+  driver's existing full-plane upload (`copyGrayscaleLsb/MsbBuffers` →
+  `displayGrayBuffer()` → `cleanupGrayscaleWithFrameBuffer()`).
+- No capability flag is flipped: `stripUploads` stays false; the X4 driver's
+  scan geometry/waveform are untouched. Base and cleanup contracts are the
+  same for both transports (`ttfDisplayGrayBase()`: cleanup cycle when due,
+  otherwise the grayscale base waveform).
+- Full-frame planes are `poolMakeBytes` (PSRAM on PSRAM builds — 2×48KB is
+  trivial for 8MB; DRAM on C3 under the legacy nontiled-dual heap gate
+  `free ≥ planeBytes+60000`, `maxAlloc ≥ planeBytes+16KB`), bounded by a
+  128KB/plane size guard (CWE-400 discipline). Allocation happens BEFORE any
+  refresh-state mutation; OOM falls back to a plain B/W display.
+
+### Tone quantization (research corrections applied)
+
+- `pagepaint::grayTone` is now the **uniform baseline quantizer**
+  `(3*coverage + 127)/255` → boundaries 43/128/213 (research §4 Step C).
+  stb coverage is linear pixel coverage — **no gamma 2.2** (research
+  correction). The previous 48/96/144 `.cpfont`-converter banding and the old
+  1/8/12 discussion thresholds are both retired.
+- One quantizer for base AND planes (DRY): `paintText` (base, tone ≥ 1) and
+  `paintPlanes` (MSB/LSB flags) both call `grayTone`; a future calibrated
+  profile (256-byte reflectance LUT, research §4 Step D) replaces that single
+  function — never a local threshold copy. Compositing note adopted: quantize
+  the completed pixel, not per draw-op; same-glyph outlines stay with the
+  rasterizer.
+
+### Host tests (`test/page_paint/`)
+
+- `PagePaintQuantizer.*`: boundary + exhaustive monotonicity for the uniform
+  quantizer.
+- `PagePaintConsistency.BaseAndPlanesAgreeWithSharedQuantizer`: base plots
+  tone ≥ 1; MSB = tones 1-2; LSB = tone 2; tone 3 base-only.
+- `PagePaintEquivalence.StripBandsMatchFullFrame`: band-aggregate plane bits
+  ≡ full-frame plane bits (the research "full-frame versus strip" row, at the
+  PagePaint/sink level — the renderer's rotate/clip is shared code).
+- `GrayPlanesTest` converter-banding assertions updated to the uniform
+  boundaries.
+
+Device validation still required (owner): four solid patches + coverage ramp
+through the exact `Uc8279X4Driver`/LUT-02 path (research stage 1), ghosting
+and gray↔BW transitions. OTF/CFF already proven on the host
+(`AtkinsonOtfCffRendersGlyphA`, PR fixtures).
+
+### Decision log
+
+- **2026-09-14 — Full-frame gray fallback (research stage 2):** non-strip
+  panels render the same dual-plane masks into full-frame plane buffers
+  instead of strips; no driver capability flags changed.
+- **2026-09-14 — Uniform baseline quantizer:** `grayTone` = `(3c+127)/255`;
+  base and planes share the single quantizer; calibrated LUT is a later
+  swappable profile, not a local threshold change.
+
+## 17. Dictionary restored on the TTF path (orchestrator wiring audit, 2026-09-14)
+
+The [P4-DICT] machinery (`TtfWordSelect`, the TTF `DictionaryWordSelectActivity`
+ctor with the reader repaint hook) shipped in e1f5c143, but the reader entry
+point still short-circuited to `STR_DICT_TTF_UNSUPPORTED` — dead code, and the
+last owner-listed parity gap.
+
+`openDictionaryWordSelect` now:
+
+1. Runs the no-dictionary-configured popup FIRST (behavior parity with the
+   legacy path — the popup check is engine-independent).
+2. In the `ttf_` branch: reads the current page through the runtime
+   (`readPage`, scratch-marked, RenderLock held), builds the word payload via
+   `buildTtfWordSelectData` with the chain from `makeLayoutParams`, attaches
+   the page's captured `currentPageFootnotes`, releases the scratch mark, and
+   launches the TTF-mode selector with the legacy `FootnoteResult` callback.
+   Touch coordinates pass straight through (the TTF ctor takes touch coords,
+   no oriented margins).
+3. The legacy `Page`-based path is unchanged for bitmap-engine books.
+
+Host test: `TtfWordSelect.SplitsRunsIntoWhitespaceTokens` (real Amazon Ember
+TtfFont — token split, trim-range semantics `textOffset/textLength` vs
+`rawLength`, line-box geometry from the same FontChain).

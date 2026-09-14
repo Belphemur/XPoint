@@ -872,20 +872,6 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
 }
 
 void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
-#if defined(CROSSPOINT_TTF_READER)
-  if (ttf_) {
-    // Native TTF word hit-testing is not available; keep the configured
-    // dictionary case distinct from the legacy no-dictionary message.
-    (void)mode;
-    (void)touchX;
-    (void)touchY;
-    showDictionaryMessage = true;
-    dictionaryMessageTtf = true;
-    dictionaryMessageTime = millis();
-    requestUpdate();
-    return;
-  }
-#endif
   if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTtf = false;
@@ -893,6 +879,48 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
     requestUpdate();
     return;
   }
+#if defined(CROSSPOINT_TTF_READER)
+  if (ttf_) {
+    // TTF word selection: prebuilt boxes from engine run geometry
+    // (TtfWordSelect). Run text lives in the runtime's scratch arena only
+    // for this block — buildTtfWordSelectData copies everything out, so the
+    // mark is released before the child activity runs.
+    RenderLock lock;  // the render task owns/uses the scratch arena
+    const size_t scratchMark = ttf_->scratch().mark();
+    freeink::book::Page page{};
+    if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
+      ttf_->scratch().release(scratchMark);
+      LOG_ERR("ERS", "TTF dictionary: page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
+      requestUpdate();
+      return;
+    }
+    freeink::book::LayoutParams params;
+    ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
+    freeink::book::TtfWordSelectData data;
+    if (params.font == nullptr ||
+        !freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(params.font), data)) {
+      ttf_->scratch().release(scratchMark);
+      LOG_ERR("ERS", "TTF dictionary: word extraction failed");
+      requestUpdate();
+      return;
+    }
+    // The page's footnote list was captured during the last render (§3.5
+    // item 8); the selector resolves bare numeric markers against it.
+    data.footnotes = currentPageFootnotes;
+    ttf_->scratch().release(scratchMark);
+
+    const DictionaryWordSelectActivity::PageRenderFn renderFn{this, &EpubReaderActivity::renderTtfSelectorPage};
+    startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(data),
+                                                                          renderFn, touchX, touchY, mode),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
+                               navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
+                             }
+                             requestUpdate();
+                           });
+    return;
+  }
+#endif
   if (!section) return;
   auto page = section->loadPage(section->currentPage);
   if (!page) return;
@@ -2753,50 +2781,24 @@ void EpubReaderActivity::renderBookTtf() {
 
 #if defined(CROSSPOINT_TTF_READER)
   // Same §11 Q7 predicate paintTtfPage used for the base pass above: images
-  // keep the 1bpp engine path (no plane bits), so the dual-plane strip block
-  // runs only for text-only AA pages on a strip-capable panel.
+  // keep the 1bpp engine path (no plane bits), so the dual-plane block runs
+  // only for text-only AA pages on a panel whose controller supports the
+  // 4-level gray mode at all.
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.supportsStripGrayscale();
+  const auto grayCaps = renderer.grayscaleCapabilities();
+  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && grayCaps.supported();
   if (grayParity) {
-    // §11 Q7 construction (a): dual-plane gray parity through the reader's
-    // tiled strip machinery. Base refresh ordering mirrors the legacy AA
-    // path: cleanup cycle when due, otherwise the grayscale base waveform;
-    // then per-band plane walks, the gray display, and the baseline cleanup.
-    constexpr int STRIP_ROWS = 80;
-    const int gh = renderer.getDisplayHeight();
-    const int gwBytes = renderer.getDisplayWidthBytes();
-    const size_t bandBytes = static_cast<size_t>(gwBytes) * STRIP_ROWS;
-    // Allocate both plane bands before mutating refresh state: if either
-    // allocation fails, the B/W fallback runs from untouched cadence state.
-    auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
-    auto msbScratch = scratch ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS) : nullptr;
-    if (!scratch || !msbScratch) {
-      LOG_ERR("ERS", "OOM: TTF plane bands (%d bytes); displaying B/W page", gwBytes * STRIP_ROWS);
-      renderer.cleanupGrayscaleWithFrameBuffer();
-      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, /*async=*/false);
+    // §11 Q7 construction (a): dual-plane gray parity. Base refresh ordering
+    // mirrors the legacy AA path: cleanup cycle when due, otherwise the
+    // grayscale base waveform; then the plane walks, the gray display, and
+    // the baseline cleanup. Transport follows the panel: strips where the
+    // driver supports them, full-frame plane buffers otherwise (UC8279 X4
+    // advertises Overlay gray with stripUploads=false — the full planes go
+    // through the same driver's full-plane upload, not a strip flag flip).
+    if (grayCaps.stripUploads) {
+      renderTtfGrayStrips(page, params, scratchMark);
     } else {
-      if (pagesUntilFullRefresh <= 1) {
-        renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-        renderer.preconditionGrayscale();
-        pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-      } else {
-        renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
-        pagesUntilFullRefresh--;
-      }
-
-      renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
-      for (int y = 0; y < gh; y += STRIP_ROWS) {
-        const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
-        renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
-        renderer.clearScreen(0x00);
-        freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
-        renderer.endStripTarget();
-        renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
-        renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
-      }
-      renderer.setRenderMode(GfxRenderer::BW);
-      renderer.displayGrayBuffer();
-      renderer.cleanupGrayscaleWithFrameBuffer();
+      renderTtfGrayFullFrame(page, params, scratchMark);
     }
     // The page's run text lives in the scratch arena: release only after
     // the last plane pass has walked it.
@@ -2838,14 +2840,103 @@ void EpubReaderActivity::renderBookTtf() {
   finishTtfPageRender();
 }
 
+void EpubReaderActivity::ttfDisplayGrayBase() {
+  if (pagesUntilFullRefresh <= 1) {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    renderer.preconditionGrayscale();
+    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+  } else {
+    renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+    pagesUntilFullRefresh--;
+  }
+}
+
+void EpubReaderActivity::renderTtfGrayStrips(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
+                                             size_t scratchMark) {
+  (void)scratchMark;  // released by the caller after this walk
+  constexpr int STRIP_ROWS = 80;
+  const int gh = renderer.getDisplayHeight();
+  const int gwBytes = renderer.getDisplayWidthBytes();
+  // Allocate both plane bands before mutating refresh state: if either
+  // allocation fails, the B/W fallback runs from untouched cadence state.
+  auto scratch = makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS);
+  auto msbScratch = scratch ? makeUniqueNoThrow<uint8_t[]>(static_cast<size_t>(gwBytes) * STRIP_ROWS) : nullptr;
+  if (!scratch || !msbScratch) {
+    LOG_ERR("ERS", "OOM: TTF plane bands (%d bytes); displaying B/W page", gwBytes * STRIP_ROWS);
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, /*async=*/false);
+    return;
+  }
+
+  ttfDisplayGrayBase();
+  renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+  for (int y = 0; y < gh; y += STRIP_ROWS) {
+    const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
+    renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
+    renderer.clearScreen(0x00);
+    freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+    renderer.endStripTarget();
+    renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
+    renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
+  }
+  renderer.setRenderMode(GfxRenderer::BW);
+  renderer.displayGrayBuffer();
+  renderer.cleanupGrayscaleWithFrameBuffer();
+}
+
+void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
+                                                const freeink::book::LayoutParams& params, size_t scratchMark) {
+  // Full-frame fallback for non-strip panels (UC8279 X4: Overlay gray with
+  // stripUploads=false). The dual-plane walk targets two complete plane
+  // buffers — the same bits the strip path produces, one DUAL walk instead
+  // of bands — submitted through the driver's full-plane upload. The panel's
+  // advertised restrictions are preserved: no strip flag is flipped.
+  (void)scratchMark;  // released by the caller after this walk
+  const int gh = renderer.getDisplayHeight();
+  const size_t planeBytes = static_cast<size_t>(renderer.getDisplayWidthBytes()) * static_cast<size_t>(gh);
+  // Size guard before the pool allocation (CWE-400 discipline); panel
+  // geometry bounds this (800x480 needs 48000/plane), the check keeps a
+  // future panel change honest.
+  constexpr size_t kMaxFullFrameGrayBytes = 128 * 1024;
+#if defined(BOARD_HAS_PSRAM)
+  // PSRAM builds: two 48KB planes are trivial for the 8MB pool.
+  const bool planesFit = planeBytes > 0 && planeBytes <= kMaxFullFrameGrayBytes;
+#else
+  // DRAM tier: the legacy reader's nontiled-dual heap gate.
+  const bool planesFit = planeBytes > 0 && planeBytes <= kMaxFullFrameGrayBytes &&
+                         ESP.getFreeHeap() >= planeBytes + 60000 && ESP.getMaxAllocHeap() >= planeBytes + 16 * 1024;
+#endif
+  auto lsbPlane = planesFit ? poolMakeBytes(planeBytes) : PoolBytes{};
+  auto msbPlane = lsbPlane ? poolMakeBytes(planeBytes) : PoolBytes{};
+  if (!lsbPlane || !msbPlane) {
+    LOG_ERR("ERS", "OOM: TTF full-frame gray planes (%u bytes); displaying B/W page", (unsigned)planeBytes);
+    ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh, /*async=*/false);
+    return;
+  }
+
+  ttfDisplayGrayBase();
+  renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
+  // One "full-frame strip" (origin 0, panel rows): drawGrayDualPixel lands
+  // each tone's plane bits in the two private buffers, orientation-aware.
+  renderer.beginStripTarget(lsbPlane.get(), 0, gh, msbPlane.get());
+  renderer.clearScreen(0x00);
+  freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+  renderer.endStripTarget();
+  renderer.setRenderMode(GfxRenderer::BW);
+  renderer.copyGrayscaleLsbBuffers(lsbPlane.get());
+  renderer.copyGrayscaleMsbBuffers(msbPlane.get());
+  renderer.displayGrayBuffer();
+  renderer.cleanupGrayscaleWithFrameBuffer();
+}
+
 void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
-  // §11 Q7 construction (a): with text AA on a strip-capable panel the base
-  // paints via PagePaint (threshold at the tone-1 boundary, >=48) and a dual
-  // plane walk supplies the two gray tones through the panel's AA waveform —
-  // the same 4-level pipeline the bitmap reader uses. Images keep the
-  // 1bpp engine path (no plane bits for image pixels, like legacy dualPlane).
+  // §11 Q7 construction (a): with text AA engaged the base paints via
+  // PagePaint (the tone-1 boundary of the shared uniform quantizer) and a
+  // dual plane walk supplies the two gray tones through the panel's AA
+  // waveform — the same 4-level pipeline the bitmap reader uses. Images
+  // keep the 1bpp engine path (no plane bits for image pixels).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.supportsStripGrayscale();
+  const bool grayParity =
+      SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
   if (grayParity) {
     freeink::book::PagePaint::paintText(page, *chain, renderer);

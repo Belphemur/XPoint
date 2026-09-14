@@ -199,6 +199,16 @@ class EpubReaderActivity final : public ReaderActivity {
   bool ttfPrefetchActive = false;     // session building the NEXT spine
   bool ttfReflowJumpPending = false;  // position restore via char offset
   void renderBookTtf();
+  // Grayscale base refresh shared by both TTF gray transports: cleanup cycle
+  // when due, otherwise the grayscale base waveform (§11 Q7).
+  void ttfDisplayGrayBase();
+  // Gray-parity transports (§11 Q7): strips where the panel supports them,
+  // full-frame plane buffers otherwise (UC8279 X4). Both share the base/
+  // cleanup contract; scratchMark releases after the caller's arena walk.
+  void renderTtfGrayStrips(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
+                           size_t scratchMark);
+  void renderTtfGrayFullFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
+                              size_t scratchMark);
   // Rasterizes an engine page through the active render mode (gray parity or
   // 1bpp): text + rubies + rules + images/placeholder. Shared by the reader's
   // own page render and the TTF dictionary selector's repaint hook.

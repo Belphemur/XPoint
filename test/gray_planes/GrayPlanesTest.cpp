@@ -69,20 +69,22 @@ TEST(GrayPlanesTest, BlockPlanGrayscaleMirrorsPixelMapping) {
 
 }  // namespace
 
-// ── PagePaint quantization (§11 Q7 construction (a), §13 correction 11) ──────
-// 8-bit engine coverage → the 2-bit GrayPlanes tones, using the .cpfont
-// converter banding (>=144/96/48), NOT uniform quartiles.
+// ── PagePaint quantization (§11 Q7 construction (a)) ─────────────────────
+// 8-bit engine coverage → the 2-bit GrayPlanes tones via the uniform
+// baseline quantizer (E-Ink AA research, 2026-09): (3*c + 127)/255, giving
+// the 43/128/213 boundaries. The earlier .cpfont converter banding
+// (>=144/96/48) misplaced the tone boundaries.
 
 #include "adapters/PagePaint.h"
 
-TEST(PagePaintTone, ConverterBandingThresholds) {
+TEST(PagePaintTone, UniformBaselineThresholds) {
   EXPECT_EQ(freeink::book::pagepaint::grayTone(0), 0);
-  EXPECT_EQ(freeink::book::pagepaint::grayTone(47), 0);
-  EXPECT_EQ(freeink::book::pagepaint::grayTone(48), 1);  // tone-1 boundary
-  EXPECT_EQ(freeink::book::pagepaint::grayTone(95), 1);
-  EXPECT_EQ(freeink::book::pagepaint::grayTone(96), 2);  // tone-2 boundary
-  EXPECT_EQ(freeink::book::pagepaint::grayTone(143), 2);
-  EXPECT_EQ(freeink::book::pagepaint::grayTone(144), 3);  // solid-ink boundary
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(42), 0);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(43), 1);  // tone-1 boundary
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(127), 1);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(128), 2);  // tone-2 boundary
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(212), 2);
+  EXPECT_EQ(freeink::book::pagepaint::grayTone(213), 3);  // solid-ink boundary
   EXPECT_EQ(freeink::book::pagepaint::grayTone(255), 3);
 }
 
