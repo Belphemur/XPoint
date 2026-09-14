@@ -8,7 +8,6 @@
 #include <cstring>
 
 #include "GfxRenderer.h"
-
 #include "PagePaint.h"
 
 namespace {
