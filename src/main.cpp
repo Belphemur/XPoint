@@ -776,6 +776,10 @@ void setup() {
   // is the visible smoke trace only where logging is compiled in.
   LOG_DBG("MAIN", "Book engine linked: bookStatusName(Ok)=%s, vendor=%s",
           freeink::book::bookStatusName(freeink::book::BookStatus::Ok), freeink::book::vendorVersions());
+  // Unconditional live reference: LOG_DBG compiles out below LOG_LEVEL 2, so
+  // this volatile read is what anchors the probe section against linker GC
+  // ([[gnu::used]] does not protect a section from garbage collection).
+  [[maybe_unused]] const volatile BookStatusProbe keepAlive = bookStatusProbe;
 
   // Brightness and warmth are always restored. A normal wake starts with the
   // light off unless Restore Light on Wake is enabled; silent maintenance

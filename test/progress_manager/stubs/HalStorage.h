@@ -19,8 +19,8 @@ class HalStorage {
     const auto it = files.find(path);
     if (it == files.end()) return false;
     // Keep the string alive even if the map entry is erased or renamed while
-    // the handle is open: HalFile owns a copy and syncs on close.
-    file.openCopy(std::string(it->second), this, path);
+    // the handle is open: HalFile owns a copy. Read handles never sync back.
+    file.openCopy(std::string(it->second), this, path, /*writable=*/false);
     return true;
   }
   bool openFileForRead(const char* moduleName, const String& path, HalFile& file) {
@@ -33,7 +33,7 @@ class HalStorage {
       --failWriteCount;
       return false;
     }
-    file.openCopy(std::string(), this, path);  // truncate like SdFat's open-for-write
+    file.openCopy(std::string(), this, path, /*writable=*/true);  // truncate like SdFat's open-for-write
     return true;
   }
   bool openFileForWrite(const char* moduleName, const String& path, HalFile& file) {
@@ -69,6 +69,6 @@ class HalStorage {
 inline bool HalFile::close() {
   if (!open_) return false;
   open_ = false;
-  if (storage_ != nullptr) storage_->saveToPath(path_, data_);
+  if (storage_ != nullptr && writable_) return storage_->saveToPath(path_, data_);
   return true;
 }

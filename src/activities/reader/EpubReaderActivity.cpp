@@ -910,14 +910,19 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
     ttf_->scratch().release(scratchMark);
 
     const DictionaryWordSelectActivity::PageRenderFn renderFn{this, &EpubReaderActivity::renderTtfSelectorPage};
-    startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(data),
-                                                                          renderFn, touchX, touchY, mode),
-                           [this](const ActivityResult& result) {
-                             if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
-                               navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
-                             }
-                             requestUpdate();
-                           });
+    auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(data), renderFn,
+                                                                    touchX, touchY, mode);
+    if (!selector) {
+      LOG_ERR("ERS", "OOM: dictionary word selector");
+      requestUpdate();
+      return;
+    }
+    startActivityForResult(std::move(selector), [this](const ActivityResult& result) {
+      if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
+        navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
+      }
+      requestUpdate();
+    });
     return;
   }
 #endif
@@ -931,15 +936,19 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
   orientedMarginTop += SETTINGS.screenMargin;
   orientedMarginLeft += SETTINGS.screenMargin;
 
-  startActivityForResult(
-      std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page), orientedMarginLeft,
-                                                     orientedMarginTop, touchX, touchY, mode),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
-          navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
-        }
-        requestUpdate();
-      });
+  auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(
+      renderer, mappedInput, std::move(page), orientedMarginLeft, orientedMarginTop, touchX, touchY, mode);
+  if (!selector) {
+    LOG_ERR("ERS", "OOM: dictionary word selector");
+    requestUpdate();
+    return;
+  }
+  startActivityForResult(std::move(selector), [this](const ActivityResult& result) {
+    if (!result.isCancelled && std::holds_alternative<FootnoteResult>(result.data)) {
+      navigateToHref(std::get<FootnoteResult>(result.data).href, /*savePosition=*/true);
+    }
+    requestUpdate();
+  });
 }
 
 void EpubReaderActivity::loop() {

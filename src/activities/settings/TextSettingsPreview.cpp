@@ -188,9 +188,13 @@ bool relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
 
     SampleBookSource source(sample);
     RunCollector sink;
-    (void)freeink::book::ChapterLayout::layoutPlainText(source, params, arena, sink, nullptr, nullptr);
-    collected = std::move(sink.runs);
-    ok = true;
+    const auto st = freeink::book::ChapterLayout::layoutPlainText(source, params, arena, sink, nullptr, nullptr);
+    // RunCollector's kMaxPreviewRuns early-stop still returns Ok — only a
+    // real layout failure (OOM) must keep the previous runs and key.
+    if (st == freeink::book::BookStatus::Ok) {
+      collected = std::move(sink.runs);
+      ok = true;
+    }
   } while (false);
 
   // Only a complete relayout replaces the previous runs and lets the caller

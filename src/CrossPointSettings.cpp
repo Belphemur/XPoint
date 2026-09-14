@@ -236,7 +236,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
   const char* ttfFamily = doc["ttfFontFamilyName"] | "";
   copyToField(ttfFontFamilyName, ttfFamily, sizeof(ttfFontFamilyName));
-  const uint8_t storedTtfPointSize = doc["ttfFontPointSize"] | DEFAULT_TTF_FONT_POINT_SIZE;
+  // Read through int: a uint8_t pipe would truncate 300 to 44 and slip
+  // past the range gate below.
+  const int storedTtfPointSize = doc["ttfFontPointSize"] | static_cast<int>(DEFAULT_TTF_FONT_POINT_SIZE);
   if (storedTtfPointSize >= TTF_FONT_POINT_SIZE_MIN && storedTtfPointSize <= TTF_FONT_POINT_SIZE_MAX) {
     ttfFontPointSize = storedTtfPointSize;
   } else {

@@ -169,11 +169,23 @@ TEST_F(ProgressManagerTest, CloseBookRejectsLateSave) {
   ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
   progressManager.save(4, 8, 20, true, 700);
 
-  // A save racing the close (render task still finishing) must not update
-  // the record after the close flush snapshot; closeBook() resets the
-  // session, and a subsequent openBook() re-enables saves.
+  // Force the close-time flush to fail: bookOpen_ stays true while closing_
+  // gates out later saves, so the pre-close record must survive. A successful
+  // close would not distinguish closing_ from bookOpen_ as the rejection
+  // cause, because save() changes nothing on disk by itself.
+  Storage.failWriteCount = 1;
   progressManager.closeBook();
   progressManager.save(9, 9, 20, true, 999);
+
+  // The distinguishing assertion lands only after the flush: clear the
+  // simulated error, flush, and require the PRE-CLOSE record on disk, not
+  // the late save values.
+  Storage.failWriteCount = 0;
+  ASSERT_TRUE(progressManager.flushNow());
+  const ProgressRecord rec = decodeDiskRecord(Storage.files.at("/cache/book/progress.bin"));
+  EXPECT_EQ(rec.spineIndex, 4u);
+  EXPECT_EQ(rec.pageNumber, 8u);
+  EXPECT_EQ(rec.visibleTextOffset, 700u);
 
   // Re-open: the disk baseline is the pre-close flush, not the late save.
   spine = 0;

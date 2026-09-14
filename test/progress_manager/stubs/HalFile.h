@@ -1,5 +1,6 @@
-// Host-test stub of HalFile — owns its bytes while open and syncs on close,
-// so the HalStorage stub can erase/rename map entries without dangling.
+// Host-test stub of HalFile — owns its bytes while open; only writable
+// handles sync back on close, so the HalStorage stub can erase/rename map
+// entries without dangling.
 #pragma once
 
 #include <cstddef>
@@ -10,13 +11,15 @@ class HalStorage;
 
 class HalFile {
  public:
-  // Wired by HalStorage::openFileFor{Read,Write}; syncs back on close.
-  void openCopy(std::string bytes, HalStorage* storage, std::string path) {
+  // Wired by HalStorage::openFileFor{Read,Write}; only a writable handle
+  // syncs back on close — a read handle never persists its copy.
+  void openCopy(std::string bytes, HalStorage* storage, std::string path, bool writable = false) {
     open_ = true;
     cursor = 0;
     data_ = std::move(bytes);
     storage_ = storage;
     path_ = std::move(path);
+    writable_ = writable;
   }
   size_t cursor = 0;
 
@@ -59,4 +62,5 @@ class HalFile {
   std::string path_;
   HalStorage* storage_ = nullptr;  // set only by the host stub on open
   bool open_ = false;
+  bool writable_ = false;
 };

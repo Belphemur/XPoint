@@ -491,11 +491,12 @@ TEST(ScanFontsTest, TokenlessCandidateDoesNotLeakToNextFamily) {
   EXPECT_STREQ(firstRegular->file, "/fonts/First/First Display.ttf");
 
   EXPECT_STREQ(fams[1].name, "Second");
-  // The single-file Second family may promote its own face to Regular, but
-  // it must never reuse First's tokenless candidate as that face.
-  for (uint8_t i = 0; i < fams[1].faceCount; ++i) {
-    EXPECT_STREQ(strstr(fams[1].faces[i].file, "/fonts/First/"), nullptr);
-  }
+  // The single-file Second family keeps exactly its own promoted face; a
+  // stale tokenless candidate from First must not survive into it. Asserting
+  // the full shape (count + path) catches a leak even when the candidate is
+  // copied under the SECOND family's own path prefix.
+  ASSERT_EQ(fams[1].faceCount, 1u);
+  EXPECT_STREQ(fams[1].faces[0].file, "/fonts/Second/Second-Bold.ttf");
 }
 
 TEST(ScanFontsTest, MissingRootIsQuietNoop) {

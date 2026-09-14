@@ -175,7 +175,9 @@ bool buildTtfWordSelectData(const Page& page, FontChain& fonts, TtfWordSelectDat
     memcpy(write, rawView.data(), rawView.size());
     write[rawView.size()] = '\0';
     write += rawView.size() + 1;
-    box.x = static_cast<int16_t>(penX);
+    // The box covers the trimmed token only: skip leading punctuation the
+    // trim stripped, so touch/highlight geometry matches the lookup text.
+    box.x = static_cast<int16_t>(penX + measure(text, 0, span.start, run.sizePx, run.styleFlags));
     box.y = static_cast<int16_t>(run.baselineY - fonts.ascent(run.sizePx));
     box.height = fonts.lineHeight(run.sizePx);
     box.width = static_cast<int16_t>(measure(text, span.start, span.start + span.length, run.sizePx, run.styleFlags));
