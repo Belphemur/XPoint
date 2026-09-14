@@ -154,7 +154,6 @@ void ReaderToolbarUi::buildQuickFontRow(UiScreen& screen, const fui::Rect& row, 
 
 void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {
   const auto& tokens = screen.theme();
-  const fui::Rect safe = screen.frame().safeRect();
 
   fui::SheetProps sheetProps;
   sheetProps.anchor = fui::SheetEdge::Bottom;

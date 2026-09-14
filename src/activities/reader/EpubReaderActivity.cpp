@@ -3885,9 +3885,11 @@ void EpubReaderActivity::openOverlay(Overlay target) {
       buildMoreActions();
       toolbarUi->nav().reset();
       break;
+#if defined(CROSSPOINT_TTF_READER)
     case Overlay::FontSheet:
       quickFontRow = 0;
       break;
+#endif
     default:
       break;
   }
@@ -4223,9 +4225,11 @@ void EpubReaderActivity::handleOverlayInput() {
     if (panelIndex < 0 || panelIndex >= count) return;
     if (overlay == Overlay::Text) {
       if (panelIndex == 0) {
+#if defined(CROSSPOINT_TTF_READER)
         // Family and size live in the compact quick sheet; the full picker
         // remains available from the Settings text screen.
         openFontSheet();
+#endif
       } else if (panelIndex == 4) {
         // Focus Reading is a genuine on/off: a tap toggles and applies live.
         SETTINGS.focusReadingEnabled = SETTINGS.focusReadingEnabled ? 0 : 1;
