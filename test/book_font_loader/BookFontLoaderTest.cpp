@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -473,6 +474,30 @@ TEST(ScanFontsTest, TokenlessCandidateBecomesRegularNotPromotedBold) {
   EXPECT_STREQ(bold->file, "/fonts/Bookerly-otf/Bookerly-Bold.ttf");
 }
 
+// A tokenless candidate belongs to the family that scanned it: the next
+// family's post-loop Regular resolution must not reuse it.
+TEST(ScanFontsTest, TokenlessCandidateDoesNotLeakToNextFamily) {
+  resetStorage();
+  seedFile("/fonts/First/First Display.ttf");
+  seedFile("/fonts/Second/Second-Bold.ttf");
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 2u);
+  EXPECT_STREQ(fams[0].name, "First");
+  const auto* firstRegular = findFace(fams[0], freeink::book::StyleNone);
+  ASSERT_NE(firstRegular, nullptr);
+  EXPECT_STREQ(firstRegular->file, "/fonts/First/First Display.ttf");
+
+  EXPECT_STREQ(fams[1].name, "Second");
+  // The single-file Second family may promote its own face to Regular, but
+  // it must never reuse First's tokenless candidate as that face.
+  for (uint8_t i = 0; i < fams[1].faceCount; ++i) {
+    EXPECT_STREQ(strstr(fams[1].faces[i].file, "/fonts/First/"), nullptr);
+  }
+}
+
 TEST(ScanFontsTest, MissingRootIsQuietNoop) {
   resetStorage();
   static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
@@ -630,19 +655,18 @@ TEST(TtfFaceMetrics, AtkinsonOtfCffRendersGlyphA) {
   int height = 0;
   int xoff = 0;
   int yoff = 0;
-  unsigned char* bitmap =
-      stbtt_GetCodepointBitmapSubpixel(&parsed.info, scale, scale, 0.0f, 0.0f, 'A', &width, &height, &xoff, &yoff);
+  const std::unique_ptr<unsigned char, decltype([](unsigned char* p) { stbtt_FreeBitmap(p, nullptr); })> bitmap(
+      stbtt_GetCodepointBitmapSubpixel(&parsed.info, scale, scale, 0.0f, 0.0f, 'A', &width, &height, &xoff, &yoff));
   ASSERT_NE(bitmap, nullptr);
   EXPECT_GT(width, 0);
   EXPECT_GT(height, 0);
   bool hasInk = false;
   for (int i = 0; i < width * height; ++i) {
-    if (bitmap[i] != 0) {
+    if (bitmap.get()[i] != 0) {
       hasInk = true;
       break;
     }
   }
-  stbtt_FreeBitmap(bitmap, nullptr);
   EXPECT_TRUE(hasInk);
 }
 

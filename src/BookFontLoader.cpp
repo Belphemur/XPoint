@@ -541,6 +541,15 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     char* const tokenlessLower = scratch->tokenlessLower;
     uint32_t& soloSize = scratch->soloSize;
     uint32_t& tokenlessSize = scratch->tokenlessSize;
+    // These candidates persist in the shared scratch across the outer family
+    // loop; reset them so one family's Regular candidates cannot leak into
+    // the next family's post-loop resolution.
+    soloFile[0] = '\0';
+    soloLower[0] = '\0';
+    soloSize = 0;
+    tokenlessFile[0] = '\0';
+    tokenlessLower[0] = '\0';
+    tokenlessSize = 0;
     uint8_t candidateCount = 0;
 
     while (true) {
