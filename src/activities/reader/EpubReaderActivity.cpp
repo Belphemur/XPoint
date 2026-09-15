@@ -2820,9 +2820,8 @@ void EpubReaderActivity::renderBookTtf() {
   nextPageNumber = ttfPage;
   cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
   renderStatusBar();
-  // The framebuffer now holds the complete page+status frame; overlay opens
-  // may paint chrome directly instead of triggering a full page re-render.
-  ttfFrameRenderComplete.store(true, std::memory_order_release);
+  // Do not mark the frame complete yet: the TTF gray/image-specific passes
+  // below may still be modifying the display planes.
 
 #if defined(CROSSPOINT_TTF_READER)
   // Same §11 Q7 predicate paintTtfPage used for the base pass above: images
@@ -2854,6 +2853,8 @@ void EpubReaderActivity::renderBookTtf() {
     // the last plane pass has walked it.
     ttf_->scratch().release(scratchMark);
     lastRenderCompleteMs = millis();
+    // Cleanup has restored the framebuffer after the final gray-plane pass.
+    ttfFrameRenderComplete.store(true, std::memory_order_release);
 #ifdef READING_STATS_ENABLED
     pageShownAtMs = millis();
 #endif
@@ -2881,6 +2882,9 @@ void EpubReaderActivity::renderBookTtf() {
     renderer.waitRefreshComplete();
   }
   lastRenderCompleteMs = millis();
+  // The B/W frame and status chrome are fully painted (and any async submit
+  // has completed) before overlay opens may paint directly onto this frame.
+  ttfFrameRenderComplete.store(true, std::memory_order_release);
 #ifdef READING_STATS_ENABLED
   pageShownAtMs = millis();
 #endif
