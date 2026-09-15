@@ -10,9 +10,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Cap the PlatformIO Core version the platform's penv bootstrap may install
-# (see .github/pio-constraints.txt). UV_CONSTRAINT reaches the penv's uv pip
-# install; PIP_CONSTRAINT covers the pip fallback path.
+# Keep the PlatformIO Core version the platform's penv bootstrap installs in
+# sync with the core pinned in "Install PlatformIO Core" (v6.2.0). platform.json
+# declares tool-scons 4.41101.0; a core/tool-scons mismatch gets wiped mid-build
+# (pioarduino/platform-espressif32#529). The constraint caps both the system
+# install and the penv's uv pip install.
 env:
   UV_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
   PIP_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
@@ -70,7 +72,7 @@ jobs:
 
       - name: Install PlatformIO Core
         run: |
-          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.2.0.zip
           # platform-espressif32's builder/main.py imports these unconditionally; its own
           # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
           # but isn't picking them up reliably in this runner image, so pin them explicitly.
@@ -134,7 +136,7 @@ jobs:
 
       - name: Install PlatformIO Core
         run: |
-          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+          uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.2.0.zip
           # platform-espressif32's builder/main.py imports these unconditionally; its own
           # penv bootstrap (builder/penv_setup.py) is supposed to install them automatically
           # but isn't picking them up reliably in this runner image, so pin them explicitly.
