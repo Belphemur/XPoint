@@ -1167,23 +1167,23 @@ void EpubReaderActivity::loop() {
   const bool confirmLongPressed = !endOfBookMenuOpen && confirmHoldMs != 0 &&
                                   mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, confirmHoldMs);
   if (confirmLongPressed) {
-    switch (SETTINGS.longPressMenuFunction) {
-      case CrossPointSettings::LP_MENU_BOOKMARK:
+    switch (static_cast<HomeButtonAction>(SETTINGS.homeButtonLongPressAction)) {
+      case HomeButtonAction::Bookmark:
         addBookmark();
         showBookmarkMessage = true;
         bookmarkMessageTime = millis();
         requestUpdate();
         break;
-      case CrossPointSettings::LP_MENU_KOSYNC:
+      case HomeButtonAction::Sync:
         if (launchKOReaderSync()) {
           return;
         }
         break;
-      case CrossPointSettings::LP_MENU_DICTIONARY:
+      case HomeButtonAction::Dictionary:
         openDictionaryWordSelect();
         return;
-      case CrossPointSettings::LP_MENU_READER_MENU:
-      case CrossPointSettings::LP_MENU_DISABLED:
+      case HomeButtonAction::ReaderMenu:
+      case HomeButtonAction::Ignore:
       default:
         break;
     }
@@ -1608,14 +1608,14 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
-  switch (SETTINGS.longPressMenuFunction) {
-    case CrossPointSettings::LP_MENU_BOOKMARK:
-    case CrossPointSettings::LP_MENU_DICTIONARY:
+  switch (static_cast<HomeButtonAction>(SETTINGS.homeButtonLongPressAction)) {
+    case HomeButtonAction::Bookmark:
+    case HomeButtonAction::Dictionary:
       return ReaderUtils::BOOKMARK_HOLD_MS;
-    case CrossPointSettings::LP_MENU_KOSYNC:
+    case HomeButtonAction::Sync:
       return KOREADER_STORE.hasCredentials() ? ReaderUtils::GO_HOME_MS : 0;
-    case CrossPointSettings::LP_MENU_READER_MENU:
-    case CrossPointSettings::LP_MENU_DISABLED:
+    case HomeButtonAction::ReaderMenu:
+    case HomeButtonAction::Ignore:
     default:
       return 0;
   }

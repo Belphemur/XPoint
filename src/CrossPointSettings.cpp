@@ -21,6 +21,28 @@ namespace {
 // allocation per obfuscated setting on every save and load.
 constexpr size_t OBF_KEY_BUF = 64;
 
+// Persisted by the fork's pre-unification HOME_ACT_* catalog. Presence of the
+// old double-click JSON key marks the whole home-field group as legacy; the
+// new catalog can also store values 0..6, so value inspection alone is unsafe.
+constexpr HomeButtonAction LEGACY_HOME_ACTIONS[] = {
+    HomeButtonAction::Ignore, HomeButtonAction::ToggleFrontlight, HomeButtonAction::Home,  HomeButtonAction::ReaderMenu,
+    HomeButtonAction::Sleep,  HomeButtonAction::Screenshot,       HomeButtonAction::GoBack};
+
+// Persisted by the fork's legacy Confirm-hold LP_MENU_* catalog.
+constexpr HomeButtonAction LEGACY_HOLD_ACTIONS[] = {HomeButtonAction::Sync, HomeButtonAction::Ignore,
+                                                    HomeButtonAction::Bookmark, HomeButtonAction::Dictionary,
+                                                    HomeButtonAction::ReaderMenu};
+
+HomeButtonAction migrateLegacyHomeAction(uint8_t value) {
+  return value < sizeof(LEGACY_HOME_ACTIONS) / sizeof(LEGACY_HOME_ACTIONS[0]) ? LEGACY_HOME_ACTIONS[value]
+                                                                              : HomeButtonAction::Ignore;
+}
+
+HomeButtonAction migrateLegacyHoldAction(uint8_t value) {
+  return value < sizeof(LEGACY_HOLD_ACTIONS) / sizeof(LEGACY_HOLD_ACTIONS[0]) ? LEGACY_HOLD_ACTIONS[value]
+                                                                              : HomeButtonAction::Ignore;
+}
+
 // Null-terminated copy into a fixed-size settings field.
 void copyToField(char* dest, const char* src, const size_t maxLen) {
   strncpy(dest, src, maxLen - 1);
@@ -173,7 +195,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
       if (info.type == SettingType::ENUM) {
-        v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
+        v = clamp(v, (uint8_t)info.enumLabels().size(), fieldDefault);
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {
@@ -215,6 +237,37 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+
+  // One-time migration from the fork's pre-unification catalogs. The old
+  // double-click key is the legacy marker: the new HomeButtonAction catalog
+  // legitimately stores 0..6 too, so value ranges alone cannot distinguish.
+  if (!doc["homeButtonDoubleClickAction"].isNull()) {
+    if (s.homeButtonTapAction < sizeof(LEGACY_HOME_ACTIONS) / sizeof(LEGACY_HOME_ACTIONS[0])) {
+      s.homeButtonTapAction = static_cast<uint8_t>(migrateLegacyHomeAction(s.homeButtonTapAction));
+      needsResave = true;
+    }
+    const uint8_t legacyDoubleTap = doc["homeButtonDoubleClickAction"] | (uint8_t)0;
+    if (legacyDoubleTap < sizeof(LEGACY_HOME_ACTIONS) / sizeof(LEGACY_HOME_ACTIONS[0])) {
+      s.homeButtonDoubleTapAction = static_cast<uint8_t>(migrateLegacyHomeAction(legacyDoubleTap));
+      needsResave = true;
+    }
+    if (s.homeButtonLongPressAction < sizeof(LEGACY_HOME_ACTIONS) / sizeof(LEGACY_HOME_ACTIONS[0])) {
+      s.homeButtonLongPressAction = static_cast<uint8_t>(migrateLegacyHomeAction(s.homeButtonLongPressAction));
+      needsResave = true;
+    }
+  }
+#if FREEINK_CAP_MENU_BUTTON
+  // Menu-button boards did not persist home fields; their Confirm-hold choice
+  // lived under longPressMenuFunction. Do not override a home-field migration.
+  if (doc["homeButtonDoubleClickAction"].isNull() && !doc["longPressMenuFunction"].isNull()) {
+    const uint8_t legacyHold = doc["longPressMenuFunction"] | (uint8_t)0;
+    if (legacyHold < sizeof(LEGACY_HOLD_ACTIONS) / sizeof(LEGACY_HOLD_ACTIONS[0])) {
+      s.homeButtonLongPressAction = static_cast<uint8_t>(migrateLegacyHoldAction(legacyHold));
+      needsResave = true;
+    }
+  }
+#endif
+
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);

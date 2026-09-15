@@ -14,6 +14,7 @@
 
 #include "BoardFeatures.h"
 #include "CrossPointSettings.h"
+#include "HomeButtonSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "ReaderFontSizes.h"
 #include "activities/settings/SettingsActivity.h"
@@ -198,18 +199,8 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   return s;
 }
 
-inline std::vector<StrId> buildLongPressMenuValues() {
-  static constexpr StrId VALUES[] = {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION,
-                                     StrId::STR_DICTIONARY, StrId::STR_READER_MENU};
-  const size_t count = BoardConfig::hasHomeKey() ? std::size(VALUES) : std::size(VALUES) - 1;
-  return {VALUES, VALUES + count};
-}
-
 inline std::vector<StrId> buildHomeButtonValues() {
-  static constexpr StrId VALUES[] = {StrId::STR_STATE_OFF,   StrId::STR_FRONTLIGHT, StrId::STR_GO_HOME_BUTTON,
-                                     StrId::STR_READER_MENU, StrId::STR_SLEEP,      StrId::STR_SCREENSHOT_BUTTON,
-                                     StrId::STR_GO_BACK};
-  return {VALUES, VALUES + std::size(VALUES)};
+  return {std::begin(home_button::ACTION_LABELS), std::end(home_button::ACTION_LABELS)};
 }
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -359,12 +350,6 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
                            StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
                           "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
-#if FREEINK_CAP_MENU_BUTTON
-        // Long-press Menu opens on a Confirm-button hold (EpubReaderActivity
-        // confirm-hold path). The runtime check below stays as defense-in-depth.
-        SettingInfo::Enum(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuFunction,
-                          buildLongPressMenuValues(), "longPressMenuFunction", StrId::STR_CAT_CONTROLS),
-#endif
 #if FREEINK_CAP_TOUCH
         SettingInfo::Enum(StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
                           {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH,
@@ -379,11 +364,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
 #if FREEINK_CAP_HOME_KEY
         SettingInfo::Enum(StrId::STR_HOME_BUTTON_TAP, &CrossPointSettings::homeButtonTapAction, buildHomeButtonValues(),
                           "homeButtonTapAction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_HOME_BUTTON_DOUBLE_CLICK, &CrossPointSettings::homeButtonDoubleClickAction,
-                          buildHomeButtonValues(), "homeButtonDoubleClickAction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_HOME_LONG_PRESS, &CrossPointSettings::homeButtonLongPressAction,
+        SettingInfo::Enum(StrId::STR_HOME_BUTTON_DOUBLE_TAP, &CrossPointSettings::homeButtonDoubleTapAction,
+                          buildHomeButtonValues(), "homeButtonDoubleTapAction", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_HOME_BUTTON_LONG_PRESS, &CrossPointSettings::homeButtonLongPressAction,
                           buildHomeButtonValues(), "homeButtonLongPressAction", StrId::STR_CAT_CONTROLS),
 #endif
+        // Erased below unless the board is an X4 Pro.
+        SettingInfo::Toggle(StrId::STR_DBL_CLICK_PWR_LIGHT, &CrossPointSettings::doubleClickPwrLight,
+                            "doubleClickPwrLight", StrId::STR_CAT_CONTROLS),
         // Erased below unless the QMI8658 IMU is present (X3).
         SettingInfo::Enum(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn,
                           {StrId::STR_STATE_OFF, StrId::STR_NORMAL, StrId::STR_INVERTED}, "tiltPageTurn",
@@ -530,6 +518,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     };
     // Tilt page turn needs the QMI8658 IMU (X3).
     if (!halTiltSensor.isAvailable()) eraseEntry(StrId::STR_TILT_PAGE_TURN);
+    // Double-click power frontlight shortcut only exists on the X4 Pro.
+    if (!BoardConfig::isX4Pro()) eraseEntry(StrId::STR_DBL_CLICK_PWR_LIGHT);
     return v;
   }();
 
@@ -553,8 +543,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) {
                              return s.nameId == StrId::STR_SHOW_READER_MENU || s.nameId == StrId::STR_HOME_BUTTON_TAP ||
-                                    s.nameId == StrId::STR_HOME_BUTTON_DOUBLE_CLICK ||
-                                    s.nameId == StrId::STR_HOME_LONG_PRESS;
+                                    s.nameId == StrId::STR_HOME_BUTTON_DOUBLE_TAP ||
+                                    s.nameId == StrId::STR_HOME_BUTTON_LONG_PRESS;
                            }),
             v.end());
   }
@@ -566,18 +556,6 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                     s.nameId == StrId::STR_BACK_SHORT_TO_FILE_BROWSER;
                            }),
             v.end());
-  }
-  // The Long-press Menu function opens on a long-press of the physical Confirm
-  // (menu) button (EpubReaderActivity confirm-hold path). Boards without a Confirm
-  // button — e.g. X4 Pro, which is touch + capacitive Home key only — have no menu
-  // button, so the control is unreachable (its Home-key hold path is shadowed by the
-  // Home long-press action) and would be a dead setting. Hide it there; it stays
-  // visible wherever a Confirm button exists or is synthesized (synthesizeConfirm).
-  if (BoardConfig::ACTIVE.input.confirm == BoardConfig::PIN_UNASSIGNED &&
-      !BoardConfig::ACTIVE.touch.synthesizeConfirm) {
-    v.erase(
-        std::remove_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
-        v.end());
   }
   if (registry && registry->getFamilyCount() > 0) {
     auto it = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_FONT_FAMILY; });

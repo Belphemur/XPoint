@@ -272,28 +272,28 @@ void enterDeepSleep(bool fromTimeout);
 void enterPowerOff();
 
 #if FREEINK_CAP_HOME_KEY
-bool executeHomeButtonAction(uint8_t action) {
+bool executeHomeButtonAction(HomeButtonAction action) {
   switch (action) {
-    case CrossPointSettings::HOME_ACT_OFF:
+    case HomeButtonAction::Ignore:
       return true;  // deliberately nothing
-    case CrossPointSettings::HOME_ACT_FRONTLIGHT:
+    case HomeButtonAction::ToggleFrontlight:
       toggleFrontlightByShortcut("home-button");
       return true;
-    case CrossPointSettings::HOME_ACT_GO_HOME:
+    case HomeButtonAction::Home:
       activityManager.goHome();
       return true;
-    case CrossPointSettings::HOME_ACT_READER_MENU:
+    case HomeButtonAction::ReaderMenu:
       return activityManager.openShortcutMenuOnCurrent();
-    case CrossPointSettings::HOME_ACT_SLEEP:
+    case HomeButtonAction::Sleep:
       LOG_INF("MAIN", "Sleep triggered by Home-key shortcut");
       enterDeepSleep(false);
       return true;
-    case CrossPointSettings::HOME_ACT_SCREENSHOT: {
+    case HomeButtonAction::Screenshot: {
       RenderLock lock;
       ScreenshotUtil::takeScreenshot(renderer);
       return true;
     }
-    case CrossPointSettings::HOME_ACT_GO_BACK:
+    case HomeButtonAction::GoBack:
       // The current activity gets first claim: in the reader this closes an
       // open popup/panel/toolbar sheet instead of leaving the book. At the top
       // of the stack it falls back to the home screen (mirroring the X4's
@@ -308,7 +308,7 @@ bool executeHomeButtonAction(uint8_t action) {
 #endif  // FREEINK_CAP_HOME_KEY
 
 bool handleX4ProFrontlightDoubleClick() {
-  if (!BoardConfig::isX4Pro() || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
+  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
     return false;
   }
 
@@ -341,17 +341,17 @@ bool handleX4ProHomeDoubleClick() {
   // nothing else dispatches on it.
   const bool hold = gpio.wasHomeKeyLongPressed();
   if (hold) {
-    if (SETTINGS.homeButtonLongPressAction != CrossPointSettings::HOME_ACT_OFF) {
+    if (static_cast<HomeButtonAction>(SETTINGS.homeButtonLongPressAction) != HomeButtonAction::Ignore) {
       homeTapTracker.disarm();  // a hold is never the second half of a double click
-      executeHomeButtonAction(SETTINGS.homeButtonLongPressAction);
+      executeHomeButtonAction(static_cast<HomeButtonAction>(SETTINGS.homeButtonLongPressAction));
       return true;
     }
     homeTapTracker.disarm();
     return false;  // Off: no consumer exists for the hold
   }
 
-  const bool tapArmed = SETTINGS.homeButtonTapAction != CrossPointSettings::HOME_ACT_OFF ||
-                        SETTINGS.homeButtonDoubleClickAction != CrossPointSettings::HOME_ACT_OFF;
+  const bool tapArmed = static_cast<HomeButtonAction>(SETTINGS.homeButtonTapAction) != HomeButtonAction::Ignore ||
+                        static_cast<HomeButtonAction>(SETTINGS.homeButtonDoubleTapAction) != HomeButtonAction::Ignore;
   if (!tapArmed) {
     // Disabled mid-window (settings can change under us, e.g. via the web API):
     // drop the armed state so re-enabling later cannot expire a stale window
@@ -373,7 +373,7 @@ bool handleX4ProHomeDoubleClick() {
   const auto step = homeTapTracker.update(tap, millis(), X4PRO_HOME_DOUBLE_CLICK_MS);
   switch (step) {
     case HomeTapTracker::Step::DoubleClick:
-      executeHomeButtonAction(SETTINGS.homeButtonDoubleClickAction);
+      executeHomeButtonAction(static_cast<HomeButtonAction>(SETTINGS.homeButtonDoubleTapAction));
       return true;
 
     case HomeTapTracker::Step::WindowExpired:
@@ -381,8 +381,9 @@ bool handleX4ProHomeDoubleClick() {
       // The device home screen consumes no action (and would leak the latch
       // into the next screen), so it stays off-limits to the deferred tap.
       // OFF taps are swallowed everywhere.
-      if (SETTINGS.homeButtonTapAction != CrossPointSettings::HOME_ACT_OFF && !activityManager.isOnHomeScreen()) {
-        executeHomeButtonAction(SETTINGS.homeButtonTapAction);
+      if (static_cast<HomeButtonAction>(SETTINGS.homeButtonTapAction) != HomeButtonAction::Ignore &&
+          !activityManager.isOnHomeScreen()) {
+        executeHomeButtonAction(static_cast<HomeButtonAction>(SETTINGS.homeButtonTapAction));
       }
       if (tap) {
         // A stalled loop can deliver the expiry and the next physical tap on
