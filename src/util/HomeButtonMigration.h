@@ -39,4 +39,28 @@ constexpr LegacySource legacySource(const bool hasLegacyHomeKey, const bool hasL
   return menuButtonCapable && hasLegacyHoldKey ? LegacySource::HoldCatalog : LegacySource::None;
 }
 
+// Sparse legacy files may omit a field entirely: absent means the new
+// initializer default, not the legacy catalog's index 0. Only serialized home
+// fields participate in the one-time value remap.
+struct MigratedAction {
+  bool migrated;
+  HomeButtonAction action;
+};
+
+constexpr MigratedAction migrateLegacyHomeField(const bool present, const uint8_t value) {
+  if (!present) return {false, static_cast<HomeButtonAction>(value)};
+  if (value >= sizeof(LEGACY_HOME_ACTIONS) / sizeof(LEGACY_HOME_ACTIONS[0])) {
+    return {false, static_cast<HomeButtonAction>(value)};
+  }
+  return {true, LEGACY_HOME_ACTIONS[value]};
+}
+
+constexpr MigratedAction migrateLegacyHoldField(const bool present, const uint8_t value) {
+  if (!present) return {false, static_cast<HomeButtonAction>(value)};
+  if (value >= sizeof(LEGACY_HOLD_ACTIONS) / sizeof(LEGACY_HOLD_ACTIONS[0])) {
+    return {false, static_cast<HomeButtonAction>(value)};
+  }
+  return {true, LEGACY_HOLD_ACTIONS[value]};
+}
+
 }  // namespace home_button_migration

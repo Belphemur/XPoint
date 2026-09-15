@@ -261,6 +261,8 @@ only `lib/I18n/translations/english.yaml`, not generated headers.
 
 The legacy maps and old-key precedence live in `src/util/HomeButtonMigration.h` as a pure seam so
 host tests can pin them without instantiating the settings singleton or ArduinoJson-backed loader.
+Sparse legacy files are covered at the same seam: omitted home fields keep their initializer defaults
+instead of being interpreted as legacy index 0.
 
 ## 11. Ordered implementation
 

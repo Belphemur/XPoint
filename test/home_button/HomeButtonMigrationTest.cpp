@@ -53,6 +53,35 @@ TEST(HomeButtonMigration, AlreadyMigratedValuesAreNotRemapped) {
   }
 }
 
+TEST(HomeButtonMigration, SparseLegacyFieldsKeepDefaults) {
+  const auto absentTap = home_button_migration::migrateLegacyHomeField(false, static_cast<uint8_t>(A::Home));
+  EXPECT_FALSE(absentTap.migrated);
+  EXPECT_EQ(absentTap.action, A::Home);
+
+  const auto presentTap = home_button_migration::migrateLegacyHomeField(true, 0);
+  EXPECT_TRUE(presentTap.migrated);
+  EXPECT_EQ(presentTap.action, A::Ignore);
+
+  const auto absentLongPress =
+      home_button_migration::migrateLegacyHomeField(false, static_cast<uint8_t>(A::ReaderMenu));
+  EXPECT_FALSE(absentLongPress.migrated);
+  EXPECT_EQ(absentLongPress.action, A::ReaderMenu);
+
+  const auto presentLongPress = home_button_migration::migrateLegacyHomeField(true, 3);
+  EXPECT_TRUE(presentLongPress.migrated);
+  EXPECT_EQ(presentLongPress.action, A::ReaderMenu);
+}
+
+TEST(HomeButtonMigration, SparseHoldFieldsKeepDefaults) {
+  const auto absent = home_button_migration::migrateLegacyHoldField(false, static_cast<uint8_t>(A::ReaderMenu));
+  EXPECT_FALSE(absent.migrated);
+  EXPECT_EQ(absent.action, A::ReaderMenu);
+
+  const auto present = home_button_migration::migrateLegacyHoldField(true, 0);
+  EXPECT_TRUE(present.migrated);
+  EXPECT_EQ(present.action, A::Sync);
+}
+
 TEST(HomeButtonMigration, LegacyHomeKeyTakesPrecedence) {
   EXPECT_EQ(home_button_migration::legacySource(true, true, true), LegacySource::HomeCatalog);
   EXPECT_EQ(home_button_migration::legacySource(true, true, false), LegacySource::HomeCatalog);

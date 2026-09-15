@@ -225,10 +225,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   const auto legacySource =
       home_button_migration::legacySource(hasLegacyHomeKey, hasLegacyHoldKey, FREEINK_CAP_MENU_BUTTON != 0);
   if (legacySource == home_button_migration::LegacySource::HomeCatalog) {
-    if (s.homeButtonTapAction <
-        sizeof(home_button_migration::LEGACY_HOME_ACTIONS) / sizeof(home_button_migration::LEGACY_HOME_ACTIONS[0])) {
-      s.homeButtonTapAction =
-          static_cast<uint8_t>(home_button_migration::migrateLegacyHomeAction(s.homeButtonTapAction));
+    const auto tap =
+        home_button_migration::migrateLegacyHomeField(!doc["homeButtonTapAction"].isNull(), s.homeButtonTapAction);
+    if (tap.migrated) {
+      s.homeButtonTapAction = static_cast<uint8_t>(tap.action);
       needsResave = true;
     }
     const uint8_t legacyDoubleTap = doc["homeButtonDoubleClickAction"] | (uint8_t)0;
@@ -238,19 +238,19 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
           static_cast<uint8_t>(home_button_migration::migrateLegacyHomeAction(legacyDoubleTap));
       needsResave = true;
     }
-    if (s.homeButtonLongPressAction <
-        sizeof(home_button_migration::LEGACY_HOME_ACTIONS) / sizeof(home_button_migration::LEGACY_HOME_ACTIONS[0])) {
-      s.homeButtonLongPressAction =
-          static_cast<uint8_t>(home_button_migration::migrateLegacyHomeAction(s.homeButtonLongPressAction));
+    const auto longPress = home_button_migration::migrateLegacyHomeField(!doc["homeButtonLongPressAction"].isNull(),
+                                                                         s.homeButtonLongPressAction);
+    if (longPress.migrated) {
+      s.homeButtonLongPressAction = static_cast<uint8_t>(longPress.action);
       needsResave = true;
     }
   } else if (legacySource == home_button_migration::LegacySource::HoldCatalog) {
     // Menu-button boards did not persist home fields; their Confirm-hold choice
     // lived under longPressMenuFunction. Do not override a home-field migration.
     const uint8_t legacyHold = doc["longPressMenuFunction"] | (uint8_t)0;
-    if (legacyHold <
-        sizeof(home_button_migration::LEGACY_HOLD_ACTIONS) / sizeof(home_button_migration::LEGACY_HOLD_ACTIONS[0])) {
-      s.homeButtonLongPressAction = static_cast<uint8_t>(home_button_migration::migrateLegacyHoldAction(legacyHold));
+    const auto hold = home_button_migration::migrateLegacyHoldField(!doc["longPressMenuFunction"].isNull(), legacyHold);
+    if (hold.migrated) {
+      s.homeButtonLongPressAction = static_cast<uint8_t>(hold.action);
       needsResave = true;
     }
   }

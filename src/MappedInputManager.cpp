@@ -33,10 +33,15 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       deferredHomeGesture = homeGesture;
     }
   } else if (deferredHomeAction != HomeButtonAction::Ignore) {
+    // A fresh action can be classified on the same pass that ends the
+    // transfer; replay the older action now and retain the newer one for the
+    // next loop pass instead of dropping it.
+    const HomeButtonAction nextAction = homeAction;
+    const HomeButtonGesture nextGesture = homeGesture;
     homeAction = deferredHomeAction;
     homeGesture = deferredHomeGesture;
-    deferredHomeAction = HomeButtonAction::Ignore;
-    deferredHomeGesture = HomeButtonGesture::None;
+    deferredHomeAction = nextAction;
+    deferredHomeGesture = nextGesture;
   }
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
     if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
