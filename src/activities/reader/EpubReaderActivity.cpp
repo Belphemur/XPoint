@@ -1470,11 +1470,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                  }
                                  section.reset();
                                }
+#if defined(CROSSPOINT_TTF_READER)
                                if (fontPickerFromQuickSheet) {
                                  fontPickerFromQuickSheet = false;
                                  openFontSheet();
                                  return;
                                }
+#endif
                                openReaderMenu();
                              });
       break;
