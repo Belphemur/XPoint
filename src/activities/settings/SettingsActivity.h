@@ -2,6 +2,7 @@
 #include <I18n.h>
 
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,7 @@ enum class SettingAction {
   SdFirmwareUpdate,
   Language,
   DownloadFonts,
+  HomeButton,
   TextSettings,
 #ifdef CROSSPOINT_TTF_DEBUG
   TtfDebugRender,
@@ -37,6 +39,7 @@ struct SettingInfo {
   SettingType type;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
+  std::span<const StrId> staticEnumValues;
   std::vector<std::string> enumStringValues;  // runtime alternative to StrId enumValues (for SD card fonts etc.)
   SettingAction action = SettingAction::None;
 
@@ -70,6 +73,24 @@ struct SettingInfo {
   SettingInfo& withTextSettings() {
     inTextSettings = true;
     return *this;
+  }
+
+  // One label source for device UI, web GET, and load-time clamping.
+  std::span<const StrId> enumLabels() const {
+    return staticEnumValues.empty() ? std::span<const StrId>(enumValues) : staticEnumValues;
+  }
+
+  // Flash-resident enum table (no per-instance std::vector allocation).
+  static SettingInfo StaticEnum(StrId nameId, uint8_t CrossPointSettings::* ptr, std::span<const StrId> values,
+                                const char* key = nullptr, StrId category = StrId::STR_NONE_OPT) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::ENUM;
+    s.valuePtr = ptr;
+    s.staticEnumValues = values;
+    s.key = key;
+    s.category = category;
+    return s;
   }
 
   static SettingInfo Toggle(StrId nameId, uint8_t CrossPointSettings::* ptr, const char* key = nullptr,

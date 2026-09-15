@@ -113,11 +113,6 @@ class ActivityManager {
   // ever consume a queued gesture.
   bool isOnHomeScreen() const;
 
-  // Run the current activity's contextual menu on behalf of a global shortcut.
-  // False when no activity is up, a transition is pending, or the screen has
-  // no menu (see Activity::openShortcutMenu).
-  bool openShortcutMenuOnCurrent();
-
   // Give the current activity first claim on a back-style gesture (the reader
   // closes its open chrome with it). False lets the caller pop as usual.
   bool handleBackOnCurrent();

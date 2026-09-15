@@ -722,12 +722,6 @@ bool EpubReaderActivity::loadBook() {
   return true;
 }
 
-bool EpubReaderActivity::openShortcutMenu() const {
-  // openReaderMenu() mutates reader state; the const-override just forwards.
-  const_cast<EpubReaderActivity*>(this)->openReaderMenu();
-  return true;
-}
-
 // Any reader chrome (toolbar sheet / panel / popup / open footnote) closes with
 // the global back gesture instead of the gesture leaving the book; with no
 // chrome the gesture falls through (caller pops / goes home as before).
@@ -1105,6 +1099,18 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  switch (mappedInput.homeButtonAction()) {
+    case HomeButtonAction::ReaderMenu:
+    case HomeButtonAction::Bookmark:
+    case HomeButtonAction::Sync:
+    case HomeButtonAction::Dictionary:
+    case HomeButtonAction::Footnotes:
+      automaticPageTurnActive = false;
+      break;
+    default:
+      break;
+  }
+
   if (automaticPageTurnActive) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back) ||
@@ -1157,38 +1163,69 @@ void EpubReaderActivity::loop() {
     }
   }
 
+  const bool endOfBookMenuOpen = endOfBookMenuActive();
 #if FREEINK_CAP_MENU_BUTTON
   // Long-press Confirm runs the user-selected long-press function. Boards
   // without any Confirm button (physical or synthesized) drop this entirely.
-  const bool endOfBookMenuOpen = endOfBookMenuActive();
   const unsigned long confirmHoldMs = confirmLongPressThreshold();
   // wasLongPressed() suppresses the release that follows it, so leave it unpolled while
   // the end-of-book menu owns Confirm -- otherwise the menu never sees that release.
   const bool confirmLongPressed = !endOfBookMenuOpen && confirmHoldMs != 0 &&
                                   mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, confirmHoldMs);
   if (confirmLongPressed) {
-    switch (SETTINGS.longPressMenuFunction) {
-      case CrossPointSettings::LP_MENU_BOOKMARK:
+    switch (static_cast<HomeButtonAction>(SETTINGS.homeButtonLongPressAction)) {
+      case HomeButtonAction::Bookmark:
         addBookmark();
         showBookmarkMessage = true;
         bookmarkMessageTime = millis();
         requestUpdate();
         break;
-      case CrossPointSettings::LP_MENU_KOSYNC:
+      case HomeButtonAction::Sync:
         if (launchKOReaderSync()) {
           return;
         }
         break;
-      case CrossPointSettings::LP_MENU_DICTIONARY:
+      case HomeButtonAction::Dictionary:
         openDictionaryWordSelect();
         return;
-      case CrossPointSettings::LP_MENU_READER_MENU:
-      case CrossPointSettings::LP_MENU_DISABLED:
+      case HomeButtonAction::ReaderMenu:
+      case HomeButtonAction::Ignore:
       default:
         break;
     }
   }
 #endif
+
+  if (!endOfBookMenuOpen) {
+    switch (mappedInput.homeButtonAction()) {
+      case HomeButtonAction::Bookmark:
+        if (!showBookmarkMessage) {
+          addBookmark();
+          showBookmarkMessage = true;
+          bookmarkMessageTime = millis();
+          requestUpdate();
+        }
+        return;
+      case HomeButtonAction::Sync:
+        if (launchKOReaderSync()) return;
+        break;
+      case HomeButtonAction::Dictionary:
+        if (!showDictionaryMessage) openDictionaryWordSelect();
+        return;
+      case HomeButtonAction::ReaderMenu:
+        if (usesToolbarMenu() && (section
+#if defined(CROSSPOINT_TTF_READER)
+                                  || ttf_
+#endif
+                                  ))
+          openOverlay(Overlay::Toolbar);
+        else
+          openReaderMenu();
+        return;
+      default:
+        break;
+    }
+  }
 
   const bool confirmReleased = mappedInput.wasReleased(MappedInputManager::Button::Confirm);
 
@@ -1213,9 +1250,10 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
-      mappedInput.wasReleased(MappedInputManager::Button::Power) &&
-      !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+  if ((!endOfBookMenuOpen && mappedInput.homeButtonAction() == HomeButtonAction::Footnotes) ||
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
+       mappedInput.wasReleased(MappedInputManager::Button::Power) &&
+       !mappedInput.wasReleased(MappedInputManager::Button::Down))) {
     if (footnoteDepth > 0) {
       restoreSavedPosition();
     } else {
@@ -1608,14 +1646,14 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
-  switch (SETTINGS.longPressMenuFunction) {
-    case CrossPointSettings::LP_MENU_BOOKMARK:
-    case CrossPointSettings::LP_MENU_DICTIONARY:
+  switch (static_cast<HomeButtonAction>(SETTINGS.homeButtonLongPressAction)) {
+    case HomeButtonAction::Bookmark:
+    case HomeButtonAction::Dictionary:
       return ReaderUtils::BOOKMARK_HOLD_MS;
-    case CrossPointSettings::LP_MENU_KOSYNC:
+    case HomeButtonAction::Sync:
       return KOREADER_STORE.hasCredentials() ? ReaderUtils::GO_HOME_MS : 0;
-    case CrossPointSettings::LP_MENU_READER_MENU:
-    case CrossPointSettings::LP_MENU_DISABLED:
+    case HomeButtonAction::ReaderMenu:
+    case HomeButtonAction::Ignore:
     default:
       return 0;
   }
@@ -4125,6 +4163,7 @@ void EpubReaderActivity::discardOverlayPage() {
 }
 
 void EpubReaderActivity::openOverlay(Overlay target) {
+  mappedInput.resetHomeButtonInput();
   const Overlay previous = overlay;
   overlay = target;
   if (!toolbarUi) toolbarUi = std::make_unique<ReaderToolbarUi>(renderer);
@@ -4215,6 +4254,7 @@ void EpubReaderActivity::openOverlay(Overlay target) {
 // grayscale-AA pass restore the page snapshot and push one FAST refresh -- no
 // re-render, no flash; Xteink boards re-render to restore the AA planes.
 void EpubReaderActivity::closeOverlayToPage() {
+  mappedInput.resetHomeButtonInput();
 #if defined(CROSSPOINT_TTF_READER)
   // FontSheet owns its close contract: persist once and force the full reflow.
   // The generic overlay close cannot handle the page-only preview state.

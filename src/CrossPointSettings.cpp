@@ -173,7 +173,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
       if (info.type == SettingType::ENUM) {
-        v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
+        v = clamp(v, (uint8_t)info.enumLabels().size(), fieldDefault);
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {
@@ -215,6 +215,16 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+
+  // The old fork reused the tap/long-press keys with a different value catalog.
+  // When that legacy group is present, discard its bytes and fall back to the
+  // unified defaults instead of reinterpreting valid-looking new-catalog values.
+  if (!doc["homeButtonDoubleClickAction"].isNull()) {
+    homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::GoBack);
+    homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
+    homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
+  }
+
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);

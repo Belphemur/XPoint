@@ -8,6 +8,7 @@
 #include <ctime>
 
 #include "BoardFeatures.h"
+#include "util/HomeButtonInput.h"
 
 // Forward declaration: the live offset resolver lives in lib/hal/HalTimeZone.cpp
 // (which pulls in the AceTime database). Declaring it here keeps CrossPointSettings.h
@@ -164,35 +165,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SHORT_PWRBTN_COUNT
   };
 
-  // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()). One
-  // shared catalog for tap / double click / long press. Persisted as uint8_t;
-  // APPEND-ONLY: the first three indices were shipped by the double-click-only
-  // version, so stored 0/1/2 must keep meaning Off/Frontlight/Go Home. New
-  // actions are appended at the end so older saved values keep their meaning.
-  enum HOME_BUTTON_ACTION {
-    HOME_ACT_OFF = 0,
-    HOME_ACT_FRONTLIGHT = 1,
-    HOME_ACT_GO_HOME = 2,
-    HOME_ACT_READER_MENU = 3,
-    HOME_ACT_SLEEP = 4,
-    HOME_ACT_SCREENSHOT = 5,
-    HOME_ACT_GO_BACK = 6,  // pop one activity level (falls to Home at the top)
-    HOME_BUTTON_ACTION_COUNT
-  };
-
-  // Long-press Confirm action while reading an EPUB. The setting cycles through these values.
-  // Persisted in settings.json by index: any new function (e.g. dictionary, bookmark) MUST use a
-  // value >= 2 and be appended at the END of the enumValues array in SettingsList.h, otherwise the
-  // stored indices shift and existing saves are silently misinterpreted.
-  enum LONG_PRESS_MENU_FUNCTION {
-    LP_MENU_KOSYNC = 0,
-    LP_MENU_DISABLED = 1,
-    LP_MENU_BOOKMARK = 2,
-    LP_MENU_DICTIONARY = 3,
-    LP_MENU_READER_MENU = 4,
-    LONG_PRESS_MENU_FUNCTION_COUNT
-  };
-
   // Hide battery percentage
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
@@ -343,9 +315,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Long-press page turn button behavior
   uint8_t longPressButtonBehavior = OFF;
-  // Long-press Confirm function in EPUB reader (cycles through LONG_PRESS_MENU_FUNCTION values).
-  // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
-  uint8_t longPressMenuFunction = LP_MENU_DISABLED;
   // UI Theme
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation
@@ -405,20 +374,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // up-swipe). Only surfaced on home-key boards, where Home is the capacitive
   // key and the bottom edge is free; elsewhere it stays at the Tap default.
   uint8_t showReaderMenu = READER_MENU_TAP;
-  // Capacitive Home-key actions (boards with BoardConfig::hasHomeKey()).
-  // OFF on the tap makes a single tap a no-op; the arbiter is fully bypassed
-  // (zero-latency legacy routing) only when BOTH tap and double-click are OFF.
-  // OFF on double click / long press just makes that gesture do nothing.
-  // Tap defaults to GO_BACK so a single press climbs one menu level, like
-  // the X4's back swipe (the old GO_HOME exit-to-main-menu stays selectable).
-  // Gated at compile time: boards without a capacitive Home key drop the
-  // fields entirely. HOME_BUTTON_ACTION stays ungated so stored JSON values
-  // keep compiling on every board.
-#if FREEINK_CAP_HOME_KEY
-  uint8_t homeButtonTapAction = HOME_ACT_GO_BACK;
-  uint8_t homeButtonDoubleClickAction = HOME_ACT_FRONTLIGHT;
-  uint8_t homeButtonLongPressAction = HOME_ACT_READER_MENU;
-#endif
+  // X4 Pro: double-click power toggles the frontlight. Disabling frees the
+  // power button for shortPwrBtn actions without the double-click wait.
+  uint8_t doubleClickPwrLight = 1;
+  // Capacitive Home-key actions. Persisted values are HomeButtonAction indices;
+  // fields are ungated so every board compiles the same catalog. UI rows are
+  // gated by board capability. Unknown or legacy fields fall back to defaults.
+  uint8_t homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::GoBack);
+  uint8_t homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
+  uint8_t homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
   // Frontlight quick-panel state. Category-less SettingsList entries persist
   // these without adding them to the regular Settings screen.
   uint8_t frontlightBrightness = 60;
