@@ -2420,6 +2420,11 @@ void EpubReaderActivity::ttfInvalidateCaches() {
   ttfFrameRenderComplete.store(false, std::memory_order_release);
 }
 
+void EpubReaderActivity::ttfShowIndexingPopup() {
+  GUI.drawPopup(renderer, tr(STR_INDEXING));
+  pagesUntilFullRefresh = 1;
+}
+
 // Resolves the pending navigation state into a chapter-local target page.
 // Returns false when more build output is needed first (jump states stay
 // pending and are retried on the next render pass). `needFullBuild` asks for
@@ -2694,9 +2699,13 @@ void EpubReaderActivity::renderBookTtf() {
   if ((needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount))) &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     const uint32_t spineBytes = ttf_->catalog().spineSize(static_cast<size_t>(currentSpineIndex));
-    if (!ttf_->cacheReady() && (spineBytes > BUILD_POPUP_BYTE_THRESHOLD || target > BUILD_POPUP_PAGE_THRESHOLD)) {
-      GUI.drawPopup(renderer, tr(STR_INDEXING));
-      pagesUntilFullRefresh = 1;
+    // Indexing popup mirrors the legacy engine: a cold or stale cache and a
+    // settings-driven reflow always rebuild across render passes, so show it;
+    // a warm top-up of a partial cache stays threshold-gated to avoid a flash.
+    const bool partialCache = ttf_->cacheReady() && ttf_->cachePartial();
+    if (!ttf_->cacheReady() || ttfReflowJumpPending || needFullBuild ||
+        (partialCache && (spineBytes > BUILD_POPUP_BYTE_THRESHOLD || target > BUILD_POPUP_PAGE_THRESHOLD))) {
+      ttfShowIndexingPopup();
     }
     const freeink::book::BookStatus st =
         ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, generation);
