@@ -104,7 +104,6 @@ class MappedInputManager {
     homeGesture = HomeButtonGesture::None;
     deferredHomeAction = HomeButtonAction::Ignore;
     deferredHomeGesture = HomeButtonGesture::None;
-    homeConfirmEdge = HomeConfirmEdge::None;
   }
   bool wasMenuGesture() const;
   // Bottom-edge up-swipe as the reader-menu gesture (SHOW_READER_MENU's Swipe
@@ -156,16 +155,11 @@ class MappedInputManager {
   void rememberTouchHeldTime() const;
   void suppressNextRelease(Button button) const;
 
-  // A mapped Home Confirm represents one logical event. Callers may query
-  // either edge, but only the first query in a frame may consume it.
-  enum class HomeConfirmEdge : uint8_t { None, Pressed, Released };
-
   mutable HomeButtonInput homeButtonInput;
   mutable HomeButtonAction homeAction = HomeButtonAction::Ignore;
   mutable HomeButtonGesture homeGesture = HomeButtonGesture::None;
   mutable HomeButtonAction deferredHomeAction = HomeButtonAction::Ignore;
   mutable HomeButtonGesture deferredHomeGesture = HomeButtonGesture::None;
-  mutable HomeConfirmEdge homeConfirmEdge = HomeConfirmEdge::None;
   mutable bool touchHeldOverrideValid = false;
   mutable unsigned long touchHeldOverrideMs = 0;
   mutable unsigned long touchHeldOverrideAt = 0;

@@ -46,7 +46,6 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       deferredHomeGesture = HomeButtonGesture::None;
     }
   }
-  homeConfirmEdge = HomeConfirmEdge::None;
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
     if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
   }
@@ -337,11 +336,7 @@ bool MappedInputManager::wasPowerConfirmClick() const {
 #endif
 
 bool MappedInputManager::wasPressed(const Button button) const {
-  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm &&
-      homeConfirmEdge == HomeConfirmEdge::None) {
-    homeConfirmEdge = HomeConfirmEdge::Pressed;
-    return true;
-  }
+  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm) return true;
   if (button == Button::Back && wasBackGesture()) return true;
 #if FREEINK_CAP_TOUCH
   if (button == Button::Confirm && wasPowerConfirmClick()) return true;
@@ -350,11 +345,7 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
-  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm &&
-      homeConfirmEdge == HomeConfirmEdge::None) {
-    homeConfirmEdge = HomeConfirmEdge::Released;
-    return true;
-  }
+  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm) return true;
   if (button == Button::Back && wasBackGesture()) return true;
 #if FREEINK_CAP_TOUCH
   if (button == Button::Confirm && wasPowerConfirmClick()) return true;

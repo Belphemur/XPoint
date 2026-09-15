@@ -161,9 +161,10 @@ The following fork behaviors are non-negotiable and remain in the adopted struct
    independent of the Home-key classifier and stays behind `FREEINK_CAP_MENU_BUTTON`.
 9. **A mapped action neutralizes held-time.** While the classifier has an action for this frame,
    `getHeldTime()` reports zero so a mapped Home event cannot also satisfy a generic long-press.
-10. **Confirm alias is one-shot per frame.** A Home action mapped to `Confirm` reports either the
-    pressed or released edge once; a second query in the same frame falls through to normal button
-    mapping so one gesture cannot drive both handlers.
+10. **Confirm alias follows upstream edges.** A Home action mapped to `Confirm` reports both the
+    pressed and released logical edges for that one-frame classifier event, matching upstream. This
+    gives consumers that model press/release (the keyboard) a complete cycle; repeated calls within
+    the same loop pass remain idempotent.
 
 ## 7. Dispatch placement
 
