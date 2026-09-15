@@ -2672,17 +2672,22 @@ void EpubReaderActivity::renderBookTtf() {
   wasBuilding = wasBuilding || ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
 
   if (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
-    // Build at most one page chunk per render pass; further chunks are driven
-    // by the next render/background tick so long jumps cannot freeze input.
-    constexpr uint8_t kSyncBuildChunksPerPass = 1;
+    // Build one page chunk per render pass on a warm chapter; allow a short
+    // cold-open burst so an empty chapter reaches a readable page faster.
+    // Further chunks are driven by the next render/background tick so long
+    // jumps still cannot freeze input.
+    constexpr uint8_t kWarmSyncBuildChunks = 1;
+    constexpr uint8_t kColdStartSyncBuildChunks = 4;
+    const uint8_t chunksPerPass = ttfPageCount == 0 ? kColdStartSyncBuildChunks : kWarmSyncBuildChunks;
     uint8_t chunksThisPass = 0;
     while (ttf_->sessionActive() &&
            (needFullBuild ? true
                           : (resolved && target >= static_cast<int>(ttf_->availablePageCount(
                                                        static_cast<uint16_t>(currentSpineIndex)))))) {
       if (!buildTickHeapGate()) break;
-      if (chunksThisPass++ >= kSyncBuildChunksPerPass) {
+      if (chunksThisPass++ >= chunksPerPass) {
         if (ttf_->sessionActive()) {
+          ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
           requestUpdate();
           return;
         }
