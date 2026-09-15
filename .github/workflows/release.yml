@@ -23,6 +23,13 @@ on:
     tags:
       - '*'
 
+# Cap the PlatformIO Core version the platform's penv bootstrap may install
+# (see .github/pio-constraints.txt). UV_CONSTRAINT reaches the penv's uv pip
+# install; PIP_CONSTRAINT covers the pip fallback path.
+env:
+  UV_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+  PIP_CONSTRAINT: ${{ github.workspace }}/.github/pio-constraints.txt
+
 permissions:
   contents: read
 

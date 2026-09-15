@@ -1,0 +1,8 @@
+# PlatformIO Core version constraints for CI.
+#
+# platform-espressif32's builder/penv_setup.py installs Python deps into .pio/penv
+# with an unpinned "pioarduino>=6.1.19" spec. Core 6.2.0 (published 2026-09-15)
+# swaps tool-scons to scons-local-4.11.1 via update_core_packages() mid-build,
+# which breaks the 55.03.311 linker step (SCons.Tool.FortranCommon import error).
+# Pin until pioarduino pins the penv spec or ships a compatible platform release.
+pioarduino==6.1.19
