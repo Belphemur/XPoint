@@ -887,11 +887,17 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
     // mark is released before the child activity runs.
     RenderLock lock;  // the render task owns/uses the scratch arena
     const size_t scratchMark = ttf_->scratch().mark();
+    const auto showTtfDictionaryError = [this] {
+      showDictionaryMessage = true;
+      dictionaryMessageTtf = true;
+      dictionaryMessageTime = millis();
+      requestUpdate();
+    };
     freeink::book::Page page{};
     if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
       ttf_->scratch().release(scratchMark);
       LOG_ERR("ERS", "TTF dictionary: page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
-      requestUpdate();
+      showTtfDictionaryError();
       return;
     }
     freeink::book::LayoutParams params;
@@ -901,7 +907,7 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
         !freeink::book::buildTtfWordSelectData(page, *static_cast<freeink::book::FontChain*>(params.font), data)) {
       ttf_->scratch().release(scratchMark);
       LOG_ERR("ERS", "TTF dictionary: word extraction failed");
-      requestUpdate();
+      showTtfDictionaryError();
       return;
     }
     // The page's footnote list was captured during the last render (§3.5
@@ -914,7 +920,7 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
                                                                     touchX, touchY, mode);
     if (!selector) {
       LOG_ERR("ERS", "OOM: dictionary word selector");
-      requestUpdate();
+      showTtfDictionaryError();
       return;
     }
     startActivityForResult(std::move(selector), [this](const ActivityResult& result) {
@@ -2666,11 +2672,22 @@ void EpubReaderActivity::renderBookTtf() {
   wasBuilding = wasBuilding || ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
 
   if (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+    // Build at most one page chunk per render pass; further chunks are driven
+    // by the next render/background tick so long jumps cannot freeze input.
+    constexpr uint8_t kSyncBuildChunksPerPass = 1;
+    uint8_t chunksThisPass = 0;
     while (ttf_->sessionActive() &&
            (needFullBuild ? true
                           : (resolved && target >= static_cast<int>(ttf_->availablePageCount(
                                                        static_cast<uint16_t>(currentSpineIndex)))))) {
       if (!buildTickHeapGate()) break;
+      if (chunksThisPass++ >= kSyncBuildChunksPerPass) {
+        if (ttf_->sessionActive()) {
+          requestUpdate();
+          return;
+        }
+        break;
+      }
       const freeink::book::BookStatus st = ttf_->stepBuild(BUILD_PAGES_PER_CHUNK);
       if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone() &&
           !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
@@ -4032,6 +4049,27 @@ void EpubReaderActivity::showTextRowPopup(const int row) {
   }
 #endif
   switch (row) {
+    case 0: {
+      // Non-TTF builds (and a TTF build whose runtime failed to open) keep
+      // the full-screen family picker; only a live TTF runtime uses the sheet.
+      auto settings = makeUniqueNoThrow<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
+                                                              TextSettingsActivity::Tab::Family);
+      if (!settings) {
+        LOG_ERR("ERS", "OOM: text settings activity");
+        return;
+      }
+      overlay = Overlay::None;
+      overlayPopup.dismiss();
+      discardOverlayPage();
+      startActivityForResult(std::move(settings), [this](const ActivityResult&) {
+        applyReaderTextSettings();
+        overlay = Overlay::Text;
+        panelIndex = 0;
+        if (toolbarUi) toolbarUi->begin();
+        requestUpdate();
+      });
+      return;
+    }
     case 1: {
       // The point sizes the active family actually ships.
       const auto sizes = readerFontPointSizes(&sdFontSystem.registry(), SETTINGS.sdFontFamilyName);

@@ -242,7 +242,9 @@ BookStatus TtfBookRuntime::beginChapterSession(const uint16_t spineIndex, const 
   if (st != BookStatus::Ok) {
     LOG_ERR("TTFB", "Session begin failed: %s (%s)", bookStatusName(st), spineHref_);
     session_.abort();
-    writer_.finish();  // Discard an open write if begin failed after storage acquisition.
+    if (!writer_.finish()) {
+      LOG_ERR("TTFB", "Failed to discard writer temp for %s", cacheName_);
+    }
     writer_ = PageCacheWriter{};
     scratch_.reset();
     parseArena_.reset();
@@ -251,7 +253,9 @@ BookStatus TtfBookRuntime::beginChapterSession(const uint16_t spineIndex, const 
   if (!writer_.begin(cacheStorage_, cacheName_, generation, scratch_)) {
     LOG_ERR("TTFB", "Writer begin failed for %s", cacheName_);
     session_.abort();
-    writer_.finish();  // Close/remove the active .tmp before the next build can reuse it.
+    if (!writer_.finish()) {
+      LOG_ERR("TTFB", "Failed to close/remove writer temp for %s", cacheName_);
+    }
     writer_ = PageCacheWriter{};
     scratch_.reset();
     parseArena_.reset();
@@ -284,6 +288,9 @@ BookStatus TtfBookRuntime::stepBuild(const uint16_t minNewPages) {
 
 bool TtfBookRuntime::finishSession() {
   if (sessionSpine_ == kNoSpine) return false;
+  // The rename publish below replaces the cache file; release any prefetch
+  // reader for this spine before its backing file changes.
+  dropPrefetch();
   writer_.setTotalChars(session_.totalChars());
   const bool ok = writer_.finish();
   if (!ok) {

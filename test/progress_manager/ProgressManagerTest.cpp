@@ -169,11 +169,11 @@ TEST_F(ProgressManagerTest, CloseBookRejectsLateSave) {
   ASSERT_TRUE(progressManager.openBook("/cache/book", spine, page, count, offset));
   progressManager.save(4, 8, 20, true, 700);
 
-  // Force the close-time flush to fail: bookOpen_ stays true while closing_
-  // gates out later saves, so the pre-close record must survive. A successful
+  // Exhaust the retry budget so the close-time flush genuinely fails and
+  // bookOpen_ stays true while closing_ gates out later saves. A successful
   // close would not distinguish closing_ from bookOpen_ as the rejection
   // cause, because save() changes nothing on disk by itself.
-  Storage.failWriteCount = 1;
+  Storage.failWriteCount = ProgressManager::kMaxFlushAttempts;
   progressManager.closeBook();
   progressManager.save(9, 9, 20, true, 999);
 

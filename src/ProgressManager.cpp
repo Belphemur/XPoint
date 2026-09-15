@@ -181,7 +181,7 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
     LOG_DBG(MUTEX_TAG, "openBook(): empty path, disabled");
     return false;
   }
-  char localPath[sizeof(cachePath_)];
+  char localPath[sizeof(cachePath_)] = {};
   const int written = snprintf(localPath, sizeof(localPath), "%s", cachePath);
   if (written < 0 || static_cast<size_t>(written) >= sizeof(localPath)) {
     // Truncated path would scatter progress.bin into a wrong directory;
@@ -575,8 +575,8 @@ bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, con
   // and the write.
   if (!adopt) {
     xSemaphoreTake(stateMutex_, portMAX_DELAY);
-    const bool active = bookOpen_ && strncmp(cachePath_, cachePath, sizeof(cachePath_)) == 0 &&
-                        (generation == 0 || bookGeneration_ == generation);
+    const bool active =
+        bookOpen_ && strcmp(cachePath_, cachePath) == 0 && (generation == 0 || bookGeneration_ == generation);
     xSemaphoreGive(stateMutex_);
     if (!active) {
       xSemaphoreGive(diskMutex_);
@@ -587,7 +587,7 @@ bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, con
   const bool ok = saveRecord(cachePath, rec);
   if (ok) {
     xSemaphoreTake(stateMutex_, portMAX_DELAY);
-    const bool sameBook = bookOpen_ && strncmp(cachePath_, cachePath, sizeof(cachePath_)) == 0;
+    const bool sameBook = bookOpen_ && strcmp(cachePath_, cachePath) == 0;
     if (sameBook) {
       if (*current_ == rec) {
         *lastFlushed_ = rec;

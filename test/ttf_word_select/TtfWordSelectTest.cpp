@@ -46,8 +46,11 @@ TEST(TtfWordSelect, SplitsRunsIntoWhitespaceTokens) {
   static uint8_t arena[64 * 1024];
   freeink::book::Arena glyphArena(arena, sizeof(arena));
   freeink::book::TtfFont font;
-  ASSERT_TRUE(font.init(reinterpret_cast<const uint8_t*>(emberBytes().data()),
-                        static_cast<uint32_t>(emberBytes().size()), glyphArena));
+  const std::string& bytes = emberBytes();
+  if (bytes.empty()) GTEST_SKIP() << "Missing Amazon Ember fixture";
+  ASSERT_GE(bytes.size(), 16u);
+  ASSERT_TRUE(
+      font.init(reinterpret_cast<const uint8_t*>(bytes.data()), static_cast<uint32_t>(bytes.size()), glyphArena));
   freeink::book::FontChain chain;
   chain.add(&font, freeink::book::StyleNone);
 

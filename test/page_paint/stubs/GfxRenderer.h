@@ -43,7 +43,8 @@ class GfxRenderer {
   void drawGrayDualPixel(int x, int y, bool msb, bool lsb) const {
     if (!msb && !lsb) return;
     if (_dualBuf == nullptr) return;  // real contract: dual writes need an active dual target
-    if (y < _stripY0 || y >= _stripY0 + _stripRows) return;
+    if (y < _stripY0 || static_cast<int64_t>(y) >= static_cast<int64_t>(_stripY0) + static_cast<int64_t>(_stripRows))
+      return;
     const int idx = (y - _stripY0) * kStride + x / 8;
     const uint8_t mask = static_cast<uint8_t>(0x80 >> (x & 7));
     if (lsb) _stripBuf[idx] |= mask;

@@ -479,11 +479,16 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
   };
   // sizeof() on the decayed pointers would measure the pointer, not the
   // buffer — the walk uses the struct's member sizes everywhere.
-  const auto scratch = makeUniqueNoThrow<ScanScratch>();
-  if (!scratch) {
+  // >1 KB of transient scan state: try PSRAM first, with an explicit DRAM
+  // fallback for exhausted/no-PSRAM hosts.
+  PoolBytes scratchPool = poolMakeBytes(sizeof(ScanScratch));
+  std::unique_ptr<ScanScratch> scratchDram;
+  if (!scratchPool) scratchDram = makeUniqueNoThrow<ScanScratch>();
+  if (!scratchPool && !scratchDram) {
     LOG_ERR("BFNT", "OOM: scan scratch");
     return;
   }
+  ScanScratch* scratch = scratchPool ? new (scratchPool.get()) ScanScratch : scratchDram.get();
   char* dirName = scratch->dirName;
   char* fileName = scratch->fileName;
   char* lower = scratch->lower;

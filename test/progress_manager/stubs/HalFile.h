@@ -24,7 +24,7 @@ class HalFile {
   size_t cursor = 0;
 
   bool isOpen() const { return open_; }
-  uint64_t fileSize64() const { return data_.size(); }
+  uint64_t fileSize64() const { return open_ ? data_.size() : 0; }
   size_t position() const { return cursor; }
   bool seek64(uint64_t pos) {
     if (!open_ || pos > data_.size()) return false;
@@ -55,7 +55,12 @@ class HalFile {
   bool close();
   // Mirrors DESTRUCTOR_CLOSES_FILE=1: the firmware handle closes at scope
   // exit, and the stub syncs its owned bytes back to the map at that point.
-  ~HalFile() { close(); }
+  ~HalFile() {
+    if (!close()) {
+      // Host stub: close is in-memory and cannot fail in practice, but keep
+      // the contract explicit instead of silently dropping the return value.
+    }
+  }
 
  private:
   std::string data_;
