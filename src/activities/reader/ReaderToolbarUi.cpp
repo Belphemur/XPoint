@@ -25,6 +25,8 @@ constexpr fui::ActionId ACTION_ROW = 6;         // panel list row, value = row i
 constexpr fui::ActionId ACTION_FONT_MINUS = 7;  // quick font row's - control
 constexpr fui::ActionId ACTION_FONT_PLUS = 8;   // quick font row's + control
 constexpr fui::ActionId ACTION_FONT_ROW = 9;    // select a quick-font row
+static_assert(ACTION_FONT_ROW - ACTION_DISMISS + 1 <= UiAppHost::kMaxActionHandlers,
+              "ReaderToolbarUi needs a handler slot for every action");
 
 // Scrub row: two small round-cornered chapter buttons flanking a thin progress
 // track with a round knob -- the reading page's chrome is light, so the
