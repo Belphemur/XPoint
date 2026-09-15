@@ -199,10 +199,6 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   return s;
 }
 
-inline std::vector<StrId> buildHomeButtonValues() {
-  return {std::begin(home_button::ACTION_LABELS), std::end(home_button::ACTION_LABELS)};
-}
-
 // Shared settings list used by both the device settings UI and the web settings API.
 // Each entry has a key (for JSON API) and category (for grouping).
 // ACTION-type entries and entries without a key are device-only.
@@ -361,13 +357,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES},
             "shortPwrBtn", StrId::STR_CAT_CONTROLS),
 #endif
-#if FREEINK_CAP_HOME_KEY
-        SettingInfo::Enum(StrId::STR_HOME_BUTTON_TAP, &CrossPointSettings::homeButtonTapAction, buildHomeButtonValues(),
-                          "homeButtonTapAction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_HOME_BUTTON_DOUBLE_TAP, &CrossPointSettings::homeButtonDoubleTapAction,
-                          buildHomeButtonValues(), "homeButtonDoubleTapAction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_HOME_BUTTON_LONG_PRESS, &CrossPointSettings::homeButtonLongPressAction,
-                          buildHomeButtonValues(), "homeButtonLongPressAction", StrId::STR_CAT_CONTROLS),
+#if FREEINK_CAP_HOME_KEY || FREEINK_CAP_MENU_BUTTON
+        SettingInfo::StaticEnum(home_button::GESTURE_LABELS[0], home_button::FIELDS[0], home_button::ACTION_LABELS,
+                                home_button::KEYS[0], StrId::STR_CAT_CONTROLS),
+        SettingInfo::StaticEnum(home_button::GESTURE_LABELS[1], home_button::FIELDS[1], home_button::ACTION_LABELS,
+                                home_button::KEYS[1], StrId::STR_CAT_CONTROLS),
+        SettingInfo::StaticEnum(home_button::GESTURE_LABELS[2], home_button::FIELDS[2], home_button::ACTION_LABELS,
+                                home_button::KEYS[2], StrId::STR_CAT_CONTROLS),
 #endif
         // Erased below unless the board is an X4 Pro.
         SettingInfo::Toggle(StrId::STR_DBL_CLICK_PWR_LIGHT, &CrossPointSettings::doubleClickPwrLight,
@@ -539,13 +535,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   // reachable without the tap and the bottom edge is free (the capacitive
   // Home key); everywhere else the bottom-edge up-swipe is Home and the
   // center tap is the primary path, so the setting stays at its Tap default.
+  // Home-button catalog rows stay available to the web API on every board
+  // that can act on them (Home key or front-menu button).
   if (!BoardConfig::hasHomeKey()) {
     v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) {
-                             return s.nameId == StrId::STR_SHOW_READER_MENU || s.nameId == StrId::STR_HOME_BUTTON_TAP ||
-                                    s.nameId == StrId::STR_HOME_BUTTON_DOUBLE_TAP ||
-                                    s.nameId == StrId::STR_HOME_BUTTON_LONG_PRESS;
-                           }),
+                           [](const SettingInfo& s) { return s.nameId == StrId::STR_SHOW_READER_MENU; }),
             v.end());
   }
   if (BoardConfig::hasTouch()) {

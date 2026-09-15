@@ -26,6 +26,7 @@ enum class SettingAction {
   SdFirmwareUpdate,
   Language,
   DownloadFonts,
+  HomeButton,
   TextSettings,
 #ifdef CROSSPOINT_TTF_DEBUG
   TtfDebugRender,
@@ -77,6 +78,19 @@ struct SettingInfo {
   // One label source for device UI, web GET, and load-time clamping.
   std::span<const StrId> enumLabels() const {
     return staticEnumValues.empty() ? std::span<const StrId>(enumValues) : staticEnumValues;
+  }
+
+  // Flash-resident enum table (no per-instance std::vector allocation).
+  static SettingInfo StaticEnum(StrId nameId, uint8_t CrossPointSettings::* ptr, std::span<const StrId> values,
+                                const char* key = nullptr, StrId category = StrId::STR_NONE_OPT) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::ENUM;
+    s.valuePtr = ptr;
+    s.staticEnumValues = values;
+    s.key = key;
+    s.category = category;
+    return s;
   }
 
   static SettingInfo Toggle(StrId nameId, uint8_t CrossPointSettings::* ptr, const char* key = nullptr,
