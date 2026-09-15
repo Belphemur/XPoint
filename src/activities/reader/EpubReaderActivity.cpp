@@ -2677,7 +2677,7 @@ void EpubReaderActivity::renderBookTtf() {
     // Further chunks are driven by the next render/background tick so long
     // jumps still cannot freeze input.
     constexpr uint8_t kWarmSyncBuildChunks = 1;
-    constexpr uint8_t kColdStartSyncBuildChunks = 4;
+    constexpr uint8_t kColdStartSyncBuildChunks = 2;
     const uint8_t chunksPerPass = ttfPageCount == 0 ? kColdStartSyncBuildChunks : kWarmSyncBuildChunks;
     uint8_t chunksThisPass = 0;
     while (ttf_->sessionActive() &&
