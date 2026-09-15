@@ -145,7 +145,6 @@ class BookFontLoader {
   // Native-TTF PSRAM budget (all well within the 8MB pool):
   //   glyph arenas: 4 x kGlyphArenaBytes (12/32/48KB by profile) = 48–192KB
   //   builtin BitmapBookFont fallback: 4 x sizeof(BitmapBookFont) ≈ 16.4KB
-  //   debug-rig scratch: 256KB transient (TtfRenderDebugActivity)
   //   font file bytes: up to kMaxPsramFontBytes (2MB) per face
 #include "BookProfile.h"
 #if FREEINK_BOOK_PROFILE == FREEINK_BOOK_PROFILE_SMALL

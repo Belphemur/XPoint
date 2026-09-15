@@ -28,9 +28,6 @@ enum class SettingAction {
   DownloadFonts,
   HomeButton,
   TextSettings,
-#ifdef CROSSPOINT_TTF_DEBUG
-  TtfDebugRender,
-#endif
   About,
 };
 
