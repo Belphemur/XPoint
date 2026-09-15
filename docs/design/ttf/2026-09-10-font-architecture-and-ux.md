@@ -111,12 +111,19 @@ opens `Overlay::FontSheet`.
 
 ### UX contract
 
-- Two-row `+/-` surface (`ReaderToolbarUi::buildQuickFont`) anchored to the
+- Two-row quick sheet (`ReaderToolbarUi::buildQuickFont`) anchored to the
   bottom edge.
-- Row 0 adjusts point size; row 1 cycles built-in → scanned families.
-- The selected row is outlined; the full picker remains in Settings.
-- A tap or button step applies to the currently displayed page and refreshes
-  it in place. No full-screen activity push.
+- Row 0 adjusts point size with `-` / `+`; each step applies to the displayed
+  page before a FAST refresh.
+- Row 1 is a family chooser, not a stepper. Tapping (or confirming) it opens
+  the standard modal `OptionPopup`: built-in first, then the discovered TTF
+  families in scanner order. The popup lists 8 rows at a time, scrolls by
+  drag/button navigation, dismisses on a selection, and returns to the open
+  sheet. Unavailable families do not apply a selection.
+- The selected row is outlined; the full Settings picker remains available for
+  style/coverage details.
+- A size step or family selection applies to the currently displayed page and
+  refreshes it in place. No full-screen activity push.
 - Dismissing the sheet persists settings once and performs the normal full
   reflow / cache invalidation.
 
@@ -147,6 +154,10 @@ normal render path restores AA plane parity on the final close/reflow.
 - 2026-09-14 — manifest path cap 160 bytes, matching
   `SdCardCacheStorage::kDirMax`; longer paths are rejected explicitly.
 - 2026-09-14 — two-root family merge; hidden root precedence on conflicts.
+- 2026-09-15 — quick-sheet family selection changed from `FontPrev`/`FontNext`
+  cycling to the shared `OptionPopup`; the sheet remains open for size/family
+  combinations. The picker virtualizes 8 rows so it can expose the scanner's
+  33-entry logical list without growing its touch table.
 - 2026-09-14 — tokenless Regular candidates retained in multi-file families.
 
 ## Cross-links

@@ -76,7 +76,7 @@ class EpubReaderMenuActivity final : public UiListActivity {
   // Fixed menu layout
   std::vector<MenuItem> menuItems;
 
-  OptionPopup optionPopup;
+  OptionPopup<> optionPopup;
   std::string title = "Reader Menu";
   uint8_t pendingOrientation = 0;
   uint8_t selectedPageTurnOption = 0;

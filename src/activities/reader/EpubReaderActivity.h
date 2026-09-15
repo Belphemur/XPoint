@@ -106,16 +106,18 @@ class EpubReaderActivity final : public ReaderActivity {
   // released when it closes.
   std::unique_ptr<ReaderToolbarUi> toolbarUi;
   // Modal option picker over the panel (same component the Settings screens
-  // use), for enum rows: font size / line spacing / alignment / orientation /
-  // auto page turn. Toggle rows stay one-tap toggles, as in Settings.
-  OptionPopup overlayPopup;
+  // use), for enum rows: font family / size / line spacing / alignment /
+  // orientation / auto page turn. Capacity 33 covers built-in + the TTF
+  // scanner's 32-family cap; only the popup's visible page has touch targets.
+  // Toggle rows stay one-tap toggles, as in Settings.
+  OptionPopup<33, 8> overlayPopup;
 #if defined(CROSSPOINT_TTF_READER)
-  // Quick font sheet focus: 0 = size, 1 = family. The sheet applies each +/-
-  // step to the displayed page before pushing a FAST refresh; caches are
-  // invalidated only when the sheet closes (SD write + full reflow are
-  // deliberately not per-tap costs).
+  // Quick font sheet focus: 0 = size, 1 = family. Size applies each +/- step
+  // to the displayed page before pushing a FAST refresh; family opens the
+  // modal picker. Caches are invalidated only when the sheet closes (SD write
+  // + full reflow are deliberately not per-tap costs).
   int quickFontRow = 0;
-  bool fontPickerFromQuickSheet = false;
+  bool quickFontFamilyPending = false;
   void openFontSheet();
   void openFontFamilyPicker();
   void quickFontStep(int direction);

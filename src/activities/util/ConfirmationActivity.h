@@ -11,7 +11,7 @@ class ConfirmationActivity : public Activity {
   std::string heading;
   std::string body;
 
-  OptionPopup confirmPopup;
+  OptionPopup<> confirmPopup;
 
  public:
   ConfirmationActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::string& heading,
