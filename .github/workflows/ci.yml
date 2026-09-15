@@ -85,10 +85,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-cppcheck-${{ hashFiles('platformio.ini') }}
+          key: pio-v3-${{ runner.os }}-cppcheck-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio-${{ runner.os }}-cppcheck-
-            pio-${{ runner.os }}-
+            pio-v3-${{ runner.os }}-cppcheck-
 
       - name: Install cppcheck runtime dependency
         run: |
@@ -149,10 +148,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini') }}
+          key: pio-v3-${{ runner.os }}-${{ matrix.env }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio-${{ runner.os }}-${{ matrix.env }}-
-            pio-${{ runner.os }}-
+            pio-v3-${{ runner.os }}-${{ matrix.env }}-
 
       - name: Build ${{ matrix.env }} firmware
         run: |
