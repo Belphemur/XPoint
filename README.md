@@ -38,9 +38,6 @@ Check the [devices page](https://crosspointreader.com/devices) for the full list
   80–900 wpm clamps — Kindle's algorithm). Show it left, right, or hide it.
 - **Formats**: native handling for `.epub`, `.xtc/.xtch`, `.txt`, and `.bmp`.
 - **Tilt page turn** (X3 and Sticky).
-- **Custom fonts**: use any font you love — drop raw TTF/OTF files on the SD card
-  (rendered natively, right on the device) or install pre-built `.cpfont` packs.
-  See [Custom fonts](#custom-fonts).
 
 ### 📊 Reading statistics
 
@@ -76,6 +73,38 @@ ports directly.
   leaving while on the final page (or at ~100%) asks "Mark as Finished?" once —
   a decline is remembered until you read further, so a jump or trailing material
   never silently finishes a book.
+
+### 🔤 Custom fonts
+
+Your e-reader shouldn't dictate your typography. On PSRAM-equipped devices
+(X4 Pro, M5PaperMono), XPoint ships a true vector font engine: take any `.ttf` or
+`.otf` file — from Google Fonts, your OS, or that foundry you've been saving up for —
+copy it to the SD card, and it just works. No firmware reflash, no rebuild, no
+compromises.
+
+1. Create a folder for your family on the SD card: `/fonts/YourFont/`
+   (or `/.fonts/YourFont/` to keep it out of the way).
+2. Drop in up to four styles: regular, bold, italic, bold-italic.
+3. Select the family in the reader's font panel — done.
+
+What makes it special:
+
+- **Crisp at every size.** Glyphs are rasterized from vector outlines at render time,
+  so you get true anti-aliased grayscale text at *any* point size — a continuous
+  size picker, not a fixed list. Pixel-peep at 8pt or read at 24pt; it's sharp.
+- **A real safety net.** A family missing a bold face or an exotic glyph? The reader
+  silently falls back to the built-in font for just that piece — you never see
+  missing-glyph boxes mid-sentence.
+- **Instant previews.** A quick font sheet in the reader lets you flip families and
+  sizes and see the actual page re-typeset in under a second — try before you commit.
+- **The whole toolkit keeps working.** Dictionary lookups, footnotes, CJK ruby
+  annotations, focus reading, and hyphenation all run on your chosen font.
+- **Up to 32 families** discoverable straight from the SD card, indexed on device.
+
+Under the hood, font data lives in the X4 Pro's 8MB of PSRAM and rendered chapters
+are cached on the SD card keyed to your exact font and settings — so switching fonts
+only re-typesets what actually changed. (Curious about the engine? The design docs
+live in [docs/design/ttf](./docs/design/ttf).)
 
 ### 🏠 Home & library
 
@@ -225,60 +254,6 @@ esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash 0x10000 
 ### Manual
 
 See [Development quick start](#development-quick-start) below.
-
----
-
-## Custom fonts
-
-Your e-reader shouldn't dictate your typography. XPoint renders books with the fonts
-*you* choose — either raw TTF/OTF files rendered natively on the device, or pre-built
-`.cpfont` packs on any device. No firmware reflash, no rebuild, no compromises.
-
-### Native TTF/OTF rendering (X4 Pro, M5PaperMono)
-
-On PSRAM-equipped devices, XPoint ships a true vector font engine. Take any `.ttf` or
-`.otf` file — from Google Fonts, your OS, or that foundry you've been saving up for —
-copy it to the SD card, and it just works:
-
-1. Create a folder for your family on the SD card: `/fonts/YourFont/`
-   (or `/.fonts/YourFont/` to keep it out of the way).
-2. Drop in up to four styles: regular, bold, italic, bold-italic.
-3. Select the family in the reader's font panel — done.
-
-What makes it special:
-
-- **Crisp at every size.** Glyphs are rasterized from vector outlines at render time,
-  so you get true anti-aliased grayscale text at *any* point size — a continuous
-  size picker, not a fixed list. Pixel-peep at 8pt or read at 24pt; it's sharp.
-- **A real safety net.** A family missing a bold face or an exotic glyph? The reader
-  silently falls back to the built-in font for just that piece — you never see
-  missing-glyph boxes mid-sentence.
-- **Instant previews.** A quick font sheet in the reader lets you flip families and
-  sizes and see the actual page re-typeset in under a second — try before you commit.
-- **The whole toolkit keeps working.** Dictionary lookups, footnotes, CJK ruby
-  annotations, focus reading, and hyphenation all run on your chosen font.
-- **Up to 32 families** discoverable straight from the SD card, indexed on device.
-
-Under the hood, font data lives in the X4 Pro's 8MB of PSRAM and rendered chapters
-are cached on the SD card keyed to your exact font and settings — so switching fonts
-only re-typesets what actually changed. (Curious about the engine? The design docs
-live in [docs/design/ttf](./docs/design/ttf).)
-
-### Bitmap `.cpfont` packs (all devices)
-
-Every supported device can use pre-rendered bitmap fonts. Convert your own TTF/OTF
-files into `.cpfont` files that load from the SD card:
-
-1. Go to https://crosspointreader.com/fonts and open the "SD-card font builder" form.
-2. Upload up to four styles (regular, bold, italic, bold-italic), set the family name,
-   point sizes, and Unicode range.
-3. Download the generated `.cpfont` files.
-4. Copy them to your SD card under `/fonts/YourFont/` (or `/.fonts/YourFont/` to hide
-   the folder).
-5. Select the font on the device from the font settings.
-
-Conversion runs the firmware repo's `lib/EpdFont/scripts/fontconvert_sdcard.py` script
-unmodified, so output matches a local host build.
 
 ---
 
