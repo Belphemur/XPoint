@@ -33,16 +33,20 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       deferredHomeGesture = homeGesture;
     }
   } else if (deferredHomeAction != HomeButtonAction::Ignore) {
-    // A fresh action can be classified on the same pass that ends the
-    // transfer; replay the older action now and retain the newer one for the
-    // next loop pass instead of dropping it.
-    const HomeButtonAction nextAction = homeAction;
-    const HomeButtonGesture nextGesture = homeGesture;
-    homeAction = deferredHomeAction;
-    homeGesture = deferredHomeGesture;
-    deferredHomeAction = nextAction;
-    deferredHomeGesture = nextGesture;
+    // A fresh gesture is newer than anything captured during a blocking
+    // transfer; otherwise replaying stale input could dispatch actions out of
+    // order. Keep only the fresh action and drop the stale latch.
+    if (homeAction != HomeButtonAction::Ignore) {
+      deferredHomeAction = HomeButtonAction::Ignore;
+      deferredHomeGesture = HomeButtonGesture::None;
+    } else {
+      homeAction = deferredHomeAction;
+      homeGesture = deferredHomeGesture;
+      deferredHomeAction = HomeButtonAction::Ignore;
+      deferredHomeGesture = HomeButtonGesture::None;
+    }
   }
+  homeConfirmEdge = HomeConfirmEdge::None;
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
     if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
   }
@@ -333,7 +337,11 @@ bool MappedInputManager::wasPowerConfirmClick() const {
 #endif
 
 bool MappedInputManager::wasPressed(const Button button) const {
-  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm) return true;
+  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm &&
+      homeConfirmEdge == HomeConfirmEdge::None) {
+    homeConfirmEdge = HomeConfirmEdge::Pressed;
+    return true;
+  }
   if (button == Button::Back && wasBackGesture()) return true;
 #if FREEINK_CAP_TOUCH
   if (button == Button::Confirm && wasPowerConfirmClick()) return true;
@@ -342,7 +350,11 @@ bool MappedInputManager::wasPressed(const Button button) const {
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
-  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm) return true;
+  if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm &&
+      homeConfirmEdge == HomeConfirmEdge::None) {
+    homeConfirmEdge = HomeConfirmEdge::Released;
+    return true;
+  }
   if (button == Button::Back && wasBackGesture()) return true;
 #if FREEINK_CAP_TOUCH
   if (button == Button::Confirm && wasPowerConfirmClick()) return true;

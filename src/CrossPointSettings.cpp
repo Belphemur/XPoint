@@ -216,6 +216,15 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
 
+  // The old fork reused the tap/long-press keys with a different value catalog.
+  // When that legacy group is present, discard its bytes and fall back to the
+  // unified defaults instead of reinterpreting valid-looking new-catalog values.
+  if (!doc["homeButtonDoubleClickAction"].isNull()) {
+    homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::GoBack);
+    homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
+    homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
+  }
+
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";
   strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);

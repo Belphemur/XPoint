@@ -121,9 +121,10 @@ not change any upstream return value or state transition.
 ## 5. Persisted settings policy
 
 There is no one-time migration. `CrossPointSettings::fromJson()` loads the new upstream keys through
-the normal generic path; absent or old fork keys leave the unified fields at their initial defaults.
-A subsequent save writes only the new keys, so the old fork representation is intentionally dropped.
-This is a breaking change accepted by the owner to avoid compatibility code in the firmware.
+the normal generic path. If the old fork's `homeButtonDoubleClickAction` marker is present, all three
+home fields are reset to the unified defaults rather than reusing its old-catalog numeric values;
+absent keys also keep the defaults. A subsequent save writes only the new keys. This is a breaking
+change accepted by the owner to avoid compatibility code in the firmware.
 
 Unified defaults:
 
@@ -160,6 +161,9 @@ The following fork behaviors are non-negotiable and remain in the adopted struct
    independent of the Home-key classifier and stays behind `FREEINK_CAP_MENU_BUTTON`.
 9. **A mapped action neutralizes held-time.** While the classifier has an action for this frame,
    `getHeldTime()` reports zero so a mapped Home event cannot also satisfy a generic long-press.
+10. **Confirm alias is one-shot per frame.** A Home action mapped to `Confirm` reports either the
+    pressed or released edge once; a second query in the same frame falls through to normal button
+    mapping so one gesture cannot drive both handlers.
 
 ## 7. Dispatch placement
 
@@ -278,9 +282,10 @@ There is no settings-loader host test because no home-button state is migrated.
   old-key precedence in a pure header; full JSON-loader tests would drag firmware storage and I18n
   dependencies into host tests without covering additional persisted behavior. Superseded by D9.
 - **2026-09-15 — D9: owner override — no state migration.** KISS wins for the current user base: the
-  owner accepted a breaking settings change and directed removal of all fork-state migration. Old
-  fork keys are ignored and the unified fields keep their defaults; D3 and D8 are superseded.
-  Defaults are Tap=`GoBack`, Double=`ReaderMenu`, Long=`ToggleFrontlight`.
+  owner accepted a breaking settings change and directed removal of all fork-state migration. The
+  legacy marker causes the reused tap/long-press keys to reset to defaults instead of being
+  reinterpreted; D3 and D8 are superseded. Defaults are Tap=`GoBack`, Double=`ReaderMenu`,
+  Long=`ToggleFrontlight`.
 - **2026-09-15 — historical docs.** Older design documents naming `HOME_ACT_*`, `HomeTapTracker`,
   or `longPressMenuFunction` are historical records. This document supersedes them; their stale
   terminology is not rewritten, but removed code must not leave live docs behind.
