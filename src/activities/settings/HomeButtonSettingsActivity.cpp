@@ -43,9 +43,8 @@ void HomeButtonSettingsActivity::buildScreen(UiScreen& screen) {
     rows[i].label = I18N.get(home_button::GESTURE_LABELS[i]);
     rows[i].actionValue = static_cast<int16_t>(i);
     const uint8_t value = SETTINGS.*home_button::FIELDS[i];
-    rows[i].value = value < static_cast<uint8_t>(HomeButtonAction::Count)
-                        ? I18N.get(home_button::ACTION_LABELS[value])
-                        : I18N.get(home_button::ACTION_LABELS[0]);
+    rows[i].value = value < static_cast<uint8_t>(HomeButtonAction::Count) ? I18N.get(home_button::ACTION_LABELS[value])
+                                                                          : I18N.get(home_button::ACTION_LABELS[0]);
   }
   fui::ListProps props;
   props.items = rows;

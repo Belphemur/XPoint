@@ -259,6 +259,9 @@ only `lib/I18n/translations/english.yaml`, not generated headers.
 5. Gate every push on: whole-tree `clang-format-fix`, `bin/cppcheck-check`, host `ctest`, and
    `pio run -e x4pro` plus `pio run -e default`.
 
+The legacy maps and old-key precedence live in `src/util/HomeButtonMigration.h` as a pure seam so
+host tests can pin them without instantiating the settings singleton or ArduinoJson-backed loader.
+
 ## 11. Ordered implementation
 
 1. **Enums + settings + migration:** classifier/catalog headers, upstream fields/keys, migration,
@@ -306,6 +309,9 @@ only `lib/I18n/translations/english.yaml`, not generated headers.
   win; the migration table preserves meaning for files that already exist.
 - **2026-09-15 — D7: reuse IDs before adding keys.** DRY wins in translation space; generated
   headers stay out of git.
+- **2026-09-15 — D8: test the migration policy, not the singleton.** KISS keeps the maps and
+  old-key precedence in a pure header; full JSON-loader tests would drag firmware storage and I18n
+  dependencies into host tests without covering additional persisted behavior.
 - **2026-09-15 — historical docs.** Older design documents naming `HOME_ACT_*`, `HomeTapTracker`,
   or `longPressMenuFunction` are historical records. This document supersedes them; their stale
   terminology is not rewritten, but removed code must not leave live docs behind.
