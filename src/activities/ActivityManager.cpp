@@ -37,10 +37,6 @@ static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
 bool ActivityManager::isOnHomeScreen() const { return currentActivity && currentActivity->isHomeActivity(); }
 
-bool ActivityManager::openShortcutMenuOnCurrent() {
-  return currentActivity && pendingAction == PendingAction::None && currentActivity->openShortcutMenu();
-}
-
 bool ActivityManager::handleBackOnCurrent() {
   return currentActivity && pendingAction == PendingAction::None && currentActivity->handleHomeGesture();
 }

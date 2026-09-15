@@ -2,6 +2,8 @@
 
 #include <HalGPIO.h>
 
+#include "util/HomeButtonInput.h"
+
 class GfxRenderer;
 namespace freeink {
 namespace ui {
@@ -39,7 +41,10 @@ class MappedInputManager {
 
   MappedInputManager(HalGPIO& gpio, const GfxRenderer& renderer) : gpio(gpio), renderer(renderer) {}
 
-  void update() const;
+  // Blocking transfer loops pump physical input themselves. Defer configured
+  // Home-key actions so the next main-loop pass can dispatch them, while the
+  // current action remains available for immediate Home cancellation.
+  void update(bool deferHomeButtonAction = false) const;
 #if FREEINK_CAP_TOUCH
   // X4 Pro delays a single power click until its frontlight double-click window
   // expires. The main loop supplies that one-frame event here.
@@ -88,14 +93,18 @@ class MappedInputManager {
   // is intentionally unused. Other boards retain the bottom-edge Home gesture.
   // The reader menu remains on its existing top-edge gesture and middle tap.
   bool wasHomeGesture() const;
-  // Queue a single Home-key tap to be reported by wasHomeGesture() on a later
-  // frame. Used by the main-loop double-click arbiter when the 300 ms window
-  // expires without a second tap.
-  void queueDeferredHomeGesture();
-  // Clear any queued deferred Home-key tap (e.g. when a long-press cancels it).
-  void clearDeferredHomeGesture() const;
-  // A Home-key hold runs the configured long-press action in the reader.
-  bool wasHomeKeyHold() const;
+  // Configured one-frame action, independent of the gesture that triggered it.
+  HomeButtonAction homeButtonAction() const { return homeAction; }
+  // Which transition produced this frame's action; used by the fork invariant
+  // that single taps are inert on the device home screen.
+  HomeButtonGesture homeButtonGesture() const { return homeGesture; }
+  void resetHomeButtonInput() const {
+    homeButtonInput.reset();
+    homeAction = HomeButtonAction::Ignore;
+    homeGesture = HomeButtonGesture::None;
+    deferredHomeAction = HomeButtonAction::Ignore;
+    deferredHomeGesture = HomeButtonGesture::None;
+  }
   bool wasMenuGesture() const;
   // Bottom-edge up-swipe as the reader-menu gesture (SHOW_READER_MENU's Swipe
   // Up option). Only meaningful on home-key boards, where Home lives on the
@@ -146,14 +155,16 @@ class MappedInputManager {
   void rememberTouchHeldTime() const;
   void suppressNextRelease(Button button) const;
 
+  mutable HomeButtonInput homeButtonInput;
+  mutable HomeButtonAction homeAction = HomeButtonAction::Ignore;
+  mutable HomeButtonGesture homeGesture = HomeButtonGesture::None;
+  mutable HomeButtonAction deferredHomeAction = HomeButtonAction::Ignore;
+  mutable HomeButtonGesture deferredHomeGesture = HomeButtonGesture::None;
   mutable bool touchHeldOverrideValid = false;
   mutable unsigned long touchHeldOverrideMs = 0;
   mutable unsigned long touchHeldOverrideAt = 0;
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
-  // Latched single Home-key tap set by queueDeferredHomeGesture() and consumed
-  // by wasHomeGesture(). Mutable so clearDeferredHomeGesture() can be const.
-  mutable bool deferredHomeGesture = false;
 #if FREEINK_CAP_TOUCH
   bool powerConfirmClickFrame = false;
 #endif

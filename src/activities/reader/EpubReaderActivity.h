@@ -283,9 +283,6 @@ class EpubReaderActivity final : public ReaderActivity {
   std::string moreRowName(int row) const;
   std::string moreRowValue(int row) const;
   void activateMoreRow(int row);
-  // Activity override: the reader's contextual menu is what a Home-key
-  // long press opens (CrossInk-style configurable long-press action).
-  bool openShortcutMenu() const override;
   // TouchLongPressMode (see TouchLongPressMode.h) is passed to
   // openDictionaryWordSelect so the activity never reads the mutable
   // SETTINGS.touchLongPressAction global.

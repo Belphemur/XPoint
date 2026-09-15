@@ -123,9 +123,11 @@ inside the store mutex.
 
 ### 5.1 Legacy fork `HOME_ACT_*` value map
 
-Applies to values `0..6` loaded from old fork-written home fields. A settings file written by the
-new firmware stores the mapped value; on the next load it is outside `0..6` and is not remapped.
-No extra schema marker is needed.
+Applies to values `0..6` loaded from old fork-written home fields. Because the unified catalog also
+uses `0..6`, the old double-click JSON key (`homeButtonDoubleClickAction`) is the legacy marker: a
+file carrying it was written by the fork's pre-unification firmware. On menu-button-only builds
+with no home fields, `longPressMenuFunction` is the marker. This avoids remapping a fresh or
+already-unified settings file on every load.
 
 | Old `HOME_ACT_*` | Old value | New `HomeButtonAction` | New value |
 | --- | ---: | --- | ---: |
@@ -211,8 +213,9 @@ The reader switch runs after overlay/end-of-book ownership checks and before ord
 handling, as upstream does. Non-page-turn reader actions clear `automaticPageTurnActive`, matching
 upstream. TTF builds additionally treat `ttf_` as a valid book runtime alongside `section`.
 
-`openShortcutMenuOnCurrent()` is scheduled for deletion once the reader consumes `ReaderMenu`
-directly and grep confirms no remaining caller.
+The reader switch consumes `ReaderMenu` directly. The former
+`openShortcutMenuOnCurrent()` / `Activity::openShortcutMenu()` helper has no remaining caller and is
+deleted.
 
 ## 8. Settings UI and persistence plumbing
 
@@ -277,7 +280,9 @@ only `lib/I18n/translations/english.yaml`, not generated headers.
   saved bytes must not be silently reinterpreted. Reordering/reusing upstream values would corrupt
   user data.
 - **2026-09-15 — D3: migrate in `fromJson` and request one resave.** DRY plus SOLID: `fromJson` is
-  already the single legacy-format funnel and cannot corrupt by saving under `storeMutex`.
+  already the single legacy-format funnel and cannot corrupt by saving under `storeMutex`. The old
+  double-click JSON key is the legacy marker because the new values 0..6 are valid too; value range
+  alone would corrupt already-unified saves.
 - **2026-09-15 — D3 gate deviation from upstream.** Upstream gates the LP-menu migration on
   `hasHomeKey()`, but fork Confirm hold lived on menu-button-only boards. Use
   `FREEINK_CAP_MENU_BUTTON` for that migration; extend the Home Button settings surface to home-or-
@@ -285,6 +290,13 @@ only `lib/I18n/translations/english.yaml`, not generated headers.
 - **2026-09-15 — D4: keep fork guards inside upstream structure.** SOLID wins over upstream's
   shorter path: screen ownership, stale-window invalidation, stalled-loop recovery, and physical
   Confirm hold are correctness invariants. Additive gesture provenance is the minimum mechanism.
+- **2026-09-15 — D4: classifier gesture provenance.** DRY plus SOLID: `HomeButtonInput` records the
+  transition (tap, double tap, hold) that produced an action so main.cpp can enforce the fork's
+  home-screen tap guard without reclassifying GPIO state. Upstream return values are unchanged.
+- **2026-09-15 — D4: global/reader dispatch split.** DRY keeps one action source; placement preserves
+  ownership. ToggleFrontlight, Refresh, Sleep, Screenshot, and GoBack run globally; NextPage and the
+  book actions run in the reader; Confirm aliases the logical button; Home remains ActivityManager's
+  navigation path. The obsolete shortcut-menu forwarding helper is deleted once callerless.
 - **2026-09-15 — D4: delete duplicate gesture machinery.** KISS after DRY: once
   `HomeButtonInput::update()` has the same behavior, `HomeTapTracker`,
   `handleX4ProHomeDoubleClick()`, `deferredHomeGesture`, and `wasHomeKeyHold()` have no job.

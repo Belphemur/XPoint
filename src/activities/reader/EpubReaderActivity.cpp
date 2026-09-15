@@ -722,12 +722,6 @@ bool EpubReaderActivity::loadBook() {
   return true;
 }
 
-bool EpubReaderActivity::openShortcutMenu() const {
-  // openReaderMenu() mutates reader state; the const-override just forwards.
-  const_cast<EpubReaderActivity*>(this)->openReaderMenu();
-  return true;
-}
-
 // Any reader chrome (toolbar sheet / panel / popup / open footnote) closes with
 // the global back gesture instead of the gesture leaving the book; with no
 // chrome the gesture falls through (caller pops / goes home as before).
