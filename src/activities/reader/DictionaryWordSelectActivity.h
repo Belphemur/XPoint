@@ -10,6 +10,9 @@
 #include "activities/Activity.h"
 #include "activities/ActivityResult.h"
 #include "util/Dictionary.h"
+#if defined(CROSSPOINT_TTF_READER)
+#include "TtfWordSelect.h"
+#endif
 
 // Word selection over the current reader page: Left/Right step through words
 // in reading order, Up/Down jump rows, Confirm looks the word up and opens
@@ -27,6 +30,30 @@ class DictionaryWordSelectActivity final : public Activity {
         initialX(initialX),
         initialY(initialY),
         mode(mode) {}
+
+#if defined(CROSSPOINT_TTF_READER)
+  // TTF path: word boxes come prebuilt from engine run geometry
+  // (TtfWordSelect), and the page is re-rasterized through the reader's
+  // render hook — engine run text lives in the reader's scratch arena and
+  // cannot outlive the openDictionaryWordSelect call.
+  struct PageRenderFn {
+    void* ctx;
+    void (*renderPage)(void*, GfxRenderer&);
+  };
+  explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                        freeink::book::TtfWordSelectData&& ttfData, PageRenderFn renderPage,
+                                        int initialX = -1, int initialY = -1,
+                                        TouchLongPressMode mode = TouchLongPressMode::Dictionary)
+      : Activity("DictionaryWordSelect", renderer, mappedInput),
+        marginLeft(0),
+        marginTop(0),
+        initialX(initialX),
+        initialY(initialY),
+        mode(mode),
+        ttfMode(true),
+        ttfData(std::move(ttfData)),
+        ttfRender(renderPage) {}
+#endif
 
   void onEnter() override;
   void loop() override;
@@ -51,6 +78,9 @@ class DictionaryWordSelectActivity final : public Activity {
     EpdFontFamily::Style style;
     uint32_t selectionGroup;
     bool syntheticHyphen;
+    // Line-box height of this word's row: the legacy font's line height, or
+    // the engine font's per-run height on the TTF path (headings differ).
+    int16_t height = 0;
   };
 
   // A logical word may contain several rendered boxes when pagination split it
@@ -65,6 +95,9 @@ class DictionaryWordSelectActivity final : public Activity {
   enum class Popup : uint8_t { None, Busy, NotFound, Error };
 
   void extractWords();
+#if defined(CROSSPOINT_TTF_READER)
+  void extractWordsTtf();
+#endif
   int closestInRow(uint16_t row, int centerX, int excludeSelection = -1) const;
   int wordAt(int x, int y) const;
   std::string selectionText(int selectionIndex) const;
@@ -93,6 +126,12 @@ class DictionaryWordSelectActivity final : public Activity {
   const TouchLongPressMode mode;
   int fontId = 0;
   int lineHeight = 0;
+
+#if defined(CROSSPOINT_TTF_READER)
+  bool ttfMode = false;                      // boxes prebuilt from engine runs
+  freeink::book::TtfWordSelectData ttfData;  // owns the token text
+  PageRenderFn ttfRender{};                  // reader's page repaint hook
+#endif
 
   std::vector<WordBox> words;
   std::vector<WordSelection> selections;

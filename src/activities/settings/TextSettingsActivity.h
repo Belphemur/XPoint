@@ -76,6 +76,9 @@ class TextSettingsActivity final : public UiTabListActivity {
     std::string name;
     bool isBuiltin;
     uint8_t settingIndex;
+    // TTF picker rows only (§12): a family failing the static gates
+    // (PSRAM / per-face 2MB guard) is listed but disabled.
+    bool available = true;
   };
 
   struct SizeEntry {
@@ -84,7 +87,7 @@ class TextSettingsActivity final : public UiTabListActivity {
   };
 
   const SdCardFontRegistry* registry_;
-  OptionPopup optionPopup_;
+  OptionPopup<> optionPopup_;
   std::vector<FontEntry> fonts_;
   std::vector<SizeEntry> sizes_;
   textsettings::PreviewLayout previewLayout_;  // cached preview line layout; relaid only on setting/geometry change

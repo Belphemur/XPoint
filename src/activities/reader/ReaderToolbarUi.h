@@ -24,7 +24,18 @@ class MappedInputManager;
 // clears the screen: the page stays visible around the chrome.
 class ReaderToolbarUi : public UiAppHost {
  public:
-  enum class Event { None = 0, Dismiss = 1, Tool = 2, PrevChapter = 3, NextChapter = 4, Scrub = 5, Row = 6 };
+  enum class Event {
+    None = 0,
+    Dismiss = 1,
+    Tool = 2,
+    PrevChapter = 3,
+    NextChapter = 4,
+    Scrub = 5,
+    Row = 6,
+    FontMinus = 7,
+    FontPlus = 8,
+    FontRow = 9,
+  };
 
   struct Model {
     bool panel = false;  // false = toolbar, true = a Contents/Text/More panel
@@ -38,6 +49,11 @@ class ReaderToolbarUi : public UiAppHost {
     int selectedIndex = -1;  // row the buttons' cursor sits on; -1 = none shown
     std::function<std::string(int)> rowText;
     std::function<std::string(int)> rowValue;
+    // Quick font sheet: two compact +/- rows over the still-visible page.
+    bool quickFont = false;
+    int quickSelected = 0;  // 0 = Size, 1 = Family
+    const char* sizeText = nullptr;
+    const char* familyText = nullptr;
     // Tile row: the tool in focus (toolbar) / the open panel (panel). 0..2.
     int activeTool = 0;
     // Pixels kept free along the screen's bottom edge under the panel sheet
@@ -82,6 +98,8 @@ class ReaderToolbarUi : public UiAppHost {
   static void onAction(const freeink::ui::ActionEvent& event, void* user);
   void buildToolbar(UiScreen& screen);
   void buildPanel(UiScreen& screen);
+  void buildQuickFont(UiScreen& screen);
+  void buildQuickFontRow(UiScreen& screen, const freeink::ui::Rect& row, int rowIndex, const char* label);
   void buildToolRow(UiScreen& screen, freeink::ui::LayoutAnchor anchor, int16_t sideInset);
 
   Model model_;

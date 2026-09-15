@@ -1,0 +1,35 @@
+add_executable(TtfWordSelectTest
+  TtfWordSelectTest.cpp
+  ${REPO_ROOT}/src/activities/reader/TtfWordSelect.cpp
+  ${REPO_ROOT}/src/util/DictionarySelection.cpp
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/TtfFont.cpp
+  ${REPO_ROOT}/lib/Utf8/Utf8.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/hyphenation/HyphenationCommon.cpp
+)
+
+target_include_directories(TtfWordSelectTest PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${REPO_ROOT}/src
+  ${REPO_ROOT}/src/activities/reader
+  ${REPO_ROOT}/src/util
+  ${REPO_ROOT}/lib
+  ${REPO_ROOT}/lib/Memory
+  ${REPO_ROOT}/lib/hal
+  ${REPO_ROOT}/lib/Utf8
+  ${REPO_ROOT}/lib/Epub
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
+)
+
+target_compile_definitions(TtfWordSelectTest PRIVATE
+  HOST_TEST=1
+  CROSSPOINT_TTF_READER=1
+  EMBER_FIXTURES_DIR="${REPO_ROOT}/test/fixtures/fonts/amazon-ember"
+)
+
+target_link_libraries(TtfWordSelectTest PRIVATE
+  crosspoint_test_common
+  GTest::gtest_main
+)
+
+gtest_discover_tests(TtfWordSelectTest)

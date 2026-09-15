@@ -22,6 +22,8 @@ class SdCardCacheStorageTest : public ::testing::Test {
     Storage.failOnRenameCall = 0;
     Storage.renameCallCount = 0;
     HalFile::testFailClose = false;
+    HalFile::testFailWrite = false;
+    HalFile::testFailSync = false;
   }
 };
 
@@ -155,6 +157,51 @@ TEST_F(SdCardCacheStorageTest, CloseFailureLeavesTmpForRetry) {
   EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
 }
 
+TEST_F(SdCardCacheStorageTest, CloseFailureRetriesRetainedTmp) {
+  Storage.files["/cache/page1.fibp"] = "old-generation";
+  SdCardCacheStorage s(kDir);
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("new-generation", 14));
+
+  HalFile::testFailClose = true;
+  EXPECT_FALSE(s.endWrite());
+  HalFile::testFailClose = false;
+
+  // beginWrite retries the close, then truncates the retained temporary file.
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("retry", 5));
+  ASSERT_TRUE(s.endWrite());
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "retry");
+}
+
+// A failed sync followed by a successful close must still mark the write as
+// failed: PageCacheWriter's finish-cleanup calls remove() after the handle
+// closes, and remove() only retains the last good final while a failed write
+// is visible. Without the flag the good cache would be deleted.
+TEST_F(SdCardCacheStorageTest, SyncFailurePreservesFinalDuringCleanup) {
+  Storage.files["/cache/page1.fibp"] = "old-generation";
+  SdCardCacheStorage s(kDir);
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("new-generation", 14));
+
+  HalFile::testFailSync = true;
+  EXPECT_FALSE(s.endWrite());
+  HalFile::testFailSync = false;
+
+  // The close succeeded, so the .tmp handle is closed — but the failed-write
+  // state must keep remove() from deleting the active final.
+  EXPECT_TRUE(s.remove("page1.fibp"));
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "old-generation");
+  EXPECT_TRUE(Storage.exists("/cache/page1.fibp.tmp"));
+  EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
+
+  // The retained .tmp is retryable on the next beginWrite.
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("retry", 5));
+  ASSERT_TRUE(s.endWrite());
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "retry");
+}
+
 // ── stale .old cleanup at beginWrite ────────────────────────────────────────
 
 TEST_F(SdCardCacheStorageTest, BeginWriteRemovesStaleOld) {
@@ -167,6 +214,35 @@ TEST_F(SdCardCacheStorageTest, BeginWriteRemovesStaleOld) {
 
   EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
   EXPECT_TRUE(Storage.exists("/cache/page1.fibp"));
+}
+
+TEST_F(SdCardCacheStorageTest, BeginWriteRestoresOldWhenFinalIsMissing) {
+  Storage.files["/cache/page1.fibp.old"] = "last-good-cache";
+  SdCardCacheStorage s(kDir);
+  EXPECT_TRUE(s.beginWrite("page1.fibp"));
+
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "last-good-cache");
+  EXPECT_FALSE(Storage.exists("/cache/page1.fibp.old"));
+  EXPECT_TRUE(Storage.exists("/cache/page1.fibp.tmp"));
+}
+
+TEST_F(SdCardCacheStorageTest, WriteFailurePreservesFinalDuringCleanup) {
+  Storage.files["/cache/page1.fibp"] = "last-good-cache";
+  SdCardCacheStorage s(kDir);
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  HalFile::testFailWrite = true;
+  EXPECT_FALSE(s.write("bad", 3));
+  HalFile::testFailWrite = false;
+
+  EXPECT_FALSE(s.endWrite());
+  EXPECT_TRUE(s.remove("page1.fibp"));
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "last-good-cache");
+  EXPECT_TRUE(Storage.exists("/cache/page1.fibp.tmp"));
+
+  ASSERT_TRUE(s.beginWrite("page1.fibp"));
+  ASSERT_TRUE(s.write("retry", 5));
+  ASSERT_TRUE(s.endWrite());
+  EXPECT_EQ(Storage.files["/cache/page1.fibp"], "retry");
 }
 
 // ── write/readBack basics over the write handle ─────────────────────────────

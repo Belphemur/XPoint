@@ -32,11 +32,15 @@ There are three ways to install fonts:
    - `/fonts/` — visible directory (use this if your OS hides dot-files
      and you'd rather see the folder in your file manager)
 
-   Both roots are always scanned at boot and the results are merged: a
-   family installed in `/fonts/` shows up even when `/.fonts/` also
-   exists, and vice versa. The two roots only collide if the same family
-   name appears in both — in that case the copy in `/.fonts/` wins and
-   the duplicate in `/fonts/` is ignored.
+   Both roots are always scanned at boot. Native TTF/OTF families are
+   merged across roots: a family installed in `/fonts/` shows up even when
+   `/.fonts/` also exists, and vice versa. If the same family name appears
+   in both, the family is merged: `/.fonts/` wins for any style it
+   provides, and styles available only in `/fonts/` are added to the same
+   family. `.cpfont` bundles are different: the bundled-font registry
+   de-duplicates by family name and keeps the `/.fonts/` copy when the
+   same name exists in both roots (files from `/fonts/` are not merged
+   into that family).
 
        SD Card Root/
        ├── .fonts/                     ← Hidden root (preferred)

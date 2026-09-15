@@ -25,8 +25,11 @@ class UiAppHost {
   // the screens used to pick individually): FreeInkApp, Screen and Frame are
   // capacity-templated, so per-screen capacities each minted a fresh copy of
   // that code in flash. The wider interaction buffer costs ~300 bytes of RAM
-  // per live host, bounded by the activity stack depth.
-  using UiApp = freeink::ui::FreeInkApp<24, 6>;
+  // per live host, bounded by the activity stack depth. The handler capacity
+  // must cover ReaderToolbarUi's 9 quick-sheet/toolbar actions; a shorter
+  // array silently drops later registrations.
+  static constexpr size_t kMaxActionHandlers = 10;
+  using UiApp = freeink::ui::FreeInkApp<24, kMaxActionHandlers>;
   using UiScreen = UiApp::ScreenType;
 
   explicit UiAppHost(const GfxRenderer& renderer);

@@ -29,7 +29,7 @@ class OpdsServerListActivity final : public UiListActivity {
   const char* headerTitle() const override;
 
   bool pickerMode = false;
-  OptionPopup optionPopup;
+  OptionPopup<> optionPopup;
 
   // Row structure (labels, actionValue; server subtitles), rebuilt only when
   // the server list itself reloads (rebuildRowItems(), called from onEnter()

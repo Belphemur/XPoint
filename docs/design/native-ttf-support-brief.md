@@ -5,83 +5,95 @@
 Add native `.ttf`/`.otf` font support to the CrossPoint X reader: users can
 drop a font file in `/fonts/` on the SD card and use it to render book text,
 with on-the-fly settings changes (family, size, line spacing, anti-aliasing),
-replacing the current bitmap-only `EpdFont` text pipeline.
+replacing the bitmap-only `EpdFont` text pipeline on PSRAM-class builds.
 
-**Full design:** see `DESIGN_NATIVE_TTF_SUPPORT.md` in this repository.
+**Full design:** see `docs/design/ttf/` in this repository.
 
-## Architecture Change
+## Current state
 
-The reader text path moves from the local `Epub` library's bitmap pipeline
-(`ParsedText` → `TextBlock` → `Section .bin` cache → `GfxRenderer::drawText`
-with `EpdFont` glyphs) to the **FreeInkBook** engine (`freeink-sdk/libs/book/`):
+Shipped on PSRAM-class builds (`x4pro`, `x4c`, `papermono`):
+
+- FreeInkBook reader path live (`EpubReaderActivity` → `TtfBookRuntime`).
+- FIBP page caches live (`catalog.fibc` + `s<spine>-<hash8>.fibp`).
+- TTF family loading, continuous size, and chain-tail Atkinson fallback live.
+- Reader quick font sheet live (page-only relayout + FAST refresh).
+- Dictionary / footnotes / anchors live on the TTF path.
+- Ruby, focus reading, links, and synthetic bold live.
+- Full-frame dual-plane gray fallback + uniform tone quantizer live.
+
+The legacy bitmap reader path remains in the tree as the rollback path;
+PSRAM-less builds (C3 / sticky) do not link the TTF stack.
+
+## Architecture change
 
 ```
 Before:  EpubReaderActivity → Section.bin → ParsedText → TextBlock → GfxRenderer/EpdFont  (1-bit bitmap)
-After:   EpubReaderActivity → FIBP cache → ChapterLayout → PageRenderer → TtfFont/stb_truetype  (TTF)
+After:   EpubReaderActivity → TtfBookRuntime → FIBP cache → ChapterLayout → PagePaint/gray planes  (TTF)
 ```
 
-`GfxRenderer` and `EpdFont` are **retained** for UI chrome (menus, headers,
-popups). Only the book-text rendering path switches to FreeInkBook.
+`GfxRenderer` and `EpdFont` remain for UI chrome (menus, headers, popups).
+Only the book-text rendering path switched to FreeInkBook on the TTF device
+class.
 
-## Two-Phase Rollout
+## Memory strategy
 
-- **Phases 0–1**: Wire up the FreeInkBook engine as a submodule library, add
-  `BookFontLoader` (TTF discovery + loading) and `SdCardBookSource`/
-  `SdCardCacheStorage`/`FrameTargetFactory` adapters. No reader changes.
-- **Phase 2**: Integrate into `EpubReaderActivity` behind
-  `-DCROSSPOINT_TTF_READER=1` (kill switch). FIBP page cache replaces the
-  Section `.bin` cache.
-- **Phase 3**: Settings UI — TTF family section in the Font tab, continuous
-  size picker, anti-aliasing row stays (maps to engine `FrameFormat`).
-- **Phase 4**: Remove the legacy bitmap reader path (`ParsedText`, `blocks/`,
-  `Section`); keep `GfxRenderer`/`EpdFont` for UI, `SdCardFontSystem` for
-  UI CJK fallback.
+All runtime arenas are `PoolBytes` (PSRAM-backed on `BOARD_HAS_PSRAM`), with
+no static BSS. Font bytes are PSRAM-first with a bounded loader fallback.
+The TTF stack is compile-gated to PSRAM-class builds only; PSRAM-less
+binaries keep the legacy reader and do not allocate TTF arenas.
 
-## Memory Strategy
+## Caches
 
-The engine is free-standing (no stdlib/malloc); all buffers are caller-owned
-`Arena`s. Two tiers are probed at runtime via
-`heap_caps_get_total_size(MALLOC_CAP_SPIRAM)` (not `get_free_size` — total
-capacity, not free, is the PSRAM-presence discriminator):
-
-| Tier | Hardware | Strategy |
-|------|----------|----------|
-| `DramC3` | ESP32-C3 (PSRAM-less) | All arenas in DRAM; `-DFREEINK_BOOK_SMALL=1`; 256KB font-size gate |
-| `PsramS3` | ESP32-S3 + PSRAM (X4 Pro, Paper Mono) | Arenas in PSRAM via `heap_caps_malloc`; ~1MB per-face budget |
-
-## Cache
-
-FIBP (FreeInkBook page cache, `PageCacheWriter`/`PageCacheReader`) replaces the
-Section `.bin` cache. Cache validity is keyed on
+FIBP replaces the Section `.bin` cache. Validity is keyed on
 `layoutGenerationHash(params, fontFingerprint())` — any settings change
 (family, size, line spacing, alignment, orientation) produces a different
-hash, causing only affected spines to rebuild.
+hash, so only affected spines rebuild.
 
-## Anti-Aliasing
+## Anti-aliasing
 
-The engine rasterizes true 8-bit glyph coverage via `stb_truetype`. CrossPoint
-panels are 1-bit controllers but support 4-level text AA via dual LSB/MSB plane
-RAM + the panel AA waveform (the current bitmap path already uses this when
-`SETTINGS.textAntiAliasing` is ON). TTF v1 ships with the engine's native
-dithered 1bpp AA (`FrameFormat::Mono1Dithered`); a no-engine-change 4-level
-parity path via tiled Gray8 quantization is tracked in the design doc
-(§11 Q7).
+The engine rasterizes true 8-bit glyph coverage. The reader reaches 4-level
+gray parity through its existing dual-plane LSB/MSB machinery, with a
+uniform tone quantizer `(3*coverage + 127)/255`. Full-frame fallback covers
+non-strip panels; strip panels keep the existing per-band walk. Details in
+`docs/design/ttf/2026-09-14-grayscale-pipeline.md`.
+
+## Design corpus
+
+| Document | Scope |
+|---|---|
+| `docs/design/ttf/2026-09-10-native-ttf-architecture.md` | runtime, caches, font loading, build gating |
+| `docs/design/ttf/2026-09-10-font-architecture-and-ux.md` | device-class split, picker, quick sheet |
+| `docs/design/ttf/2026-09-14-grayscale-pipeline.md` | dual-plane gray transport + quantizer |
+| `docs/design/ttf/2026-09-10-implementation-plan.md` | historical plan, decisions, risks, rollback |
+| `docs/design/ttf/2026-09-14-dictionary-and-word-selection.md` | dictionary flow on the TTF path |
+| `docs/design/ttf/2026-09-14-sdk-submodules-and-miniz.md` | SDK pinning, nested miniz, inflate ownership |
 
 ## Files
 
-- `DESIGN_NATIVE_TTF_SUPPORT.md` — full design document
-- `src/BookFontLoader.{h,cpp}` — TTF discovery, loading, chain management (new)
+- `src/BookFontLoader.{h,cpp}` — TTF discovery, loading, chain management
 - `src/adapters/` — `SdCardBookSource`, `SdCardCacheStorage`,
-  `FrameTargetFactory`, `PagePaint` (no SD-`.cpfont` reader CJK fallback —
-  documented v1 limitation, design doc §3.6)
+  `FrameTargetFactory`, `PagePaint`, `EpdBookFont`
 - `src/activities/reader/EpubReaderActivity.{h,cpp}` — reader integration
+- `src/activities/reader/TtfBookRuntime.{h,cpp}` — chapter pipeline
+- `src/activities/reader/TtfWordSelect.{h,cpp}` — word selection payload
 - `src/activities/settings/TextSettingsActivity.{h,cpp}` — UI extensions
-- `src/CrossPointSettings.{h,cpp}` — new settings keys + migration
+- `src/CrossPointSettings.{h,cpp}` — TTF settings keys + migration
+
+## Reader quick font sheet
+
+Reader size/family adjustment uses a compact two-row bottom sheet over the
+still-visible page: `Size 28 [ - ] [ + ]` and `Family [ - ] [ + ]`. A step
+performs a transient page-only ChapterLayout pass through the real engine,
+paints the page, and FAST-refreshes; it does not rebuild the page cache. The
+sheet closes with one settings save and a full reflow. `TextSettingsActivity`
+remains the full advanced picker. Details in
+`docs/design/ttf/2026-09-10-font-architecture-and-ux.md`.
 
 ## Prerequisites
 
-Initialize git submodules to inspect engine references:
+Initialize git submodules recursively to inspect engine references;
+FreeInkBook vendors `esp_full_miniz` as a nested submodule:
 
 ```bash
-git submodule update --init
+git submodule update --init --recursive
 ```

@@ -17,7 +17,7 @@ class StatusBarSettingsActivity final : public UiListActivity {
   void render(RenderLock&&) override;
 
  private:
-  OptionPopup optionPopup;
+  OptionPopup<> optionPopup;
 
   // Decided in onEnter() based on halClock.isAvailable(): rows are hidden if
   // the RTC probe failed (runtime fault, not a per-board compile-time gate).

@@ -34,7 +34,8 @@ BUILD NOTES:
 - Kanban materializes YOUR worktree at .worktrees/<task-id> on the branch
   above before you start. Do NOT pre-create branches/worktrees manually
   (causes branch-already-checked-out conflicts).
-- After claiming: git submodule update --init freeink-sdk, then wire the
+- After claiming: git submodule update --init --recursive freeink-sdk (FreeInkBook
+  now vendors esp_full_miniz as a nested submodule), then wire the
   shared build cache per the crosspoint-reader-dev skill (platformio.local.ini
   -> .pio-build-cache).
 - Build gate: pio run -e default unless stated otherwise. Format:
@@ -64,6 +65,5 @@ full, then proceed." < /tmp/brief.md > /tmp/oc_<slug>.log 2>&1.
 kimi-k3 is reserved for heavy design review (audit task only). Never commit
 investigation artifacts.
 
-AUTHORITATIVE DESIGN: DESIGN_NATIVE_TTF_SUPPORT.md on branch
-  design/native-ttf-support (worktree crosspoint-x-reader-design-ttf).
-Cite file:line from it.
+AUTHORITATIVE DESIGN: docs/design/ttf/ (ISO-dated current-state docs).
+Cite file:line from the matching document.

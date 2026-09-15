@@ -11,47 +11,43 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
+#include "components/lists/list.h"
 
-// Modal option picker drawn over the current screen (no clear) via
-// fui::optionDialog. Touch hit-testing is the SDK's InteractionBuffer: each
-// render registers the option buttons (plus a chrome guard rect) on the render
-// task, and handleInput routes touch snapshots against that table on the loop
-// task, gated by the uiReady handshake (same pattern as UiListActivity).
-// render() builds into InteractionBuffer's non-published generation
-// (beginPublishCycle()) and publishes it only once every hit() call for the
-// frame is done (publish()), so handleInput()'s routePublished()/
+// Modal option picker drawn over the current screen (no clear) via a scrolling
+// option dialog. Touch hit-testing is the SDK's InteractionBuffer: each render
+// registers only the visible option rows (plus a chrome guard rect) on the
+// render task, and handleInput routes touch snapshots against that table on
+// the loop task, gated by the uiReady handshake (same pattern as
+// UiListActivity). render() builds into InteractionBuffer's non-published
+// generation (beginPublishCycle()) and publishes it only once every hit() call
+// for the frame is done (publish()), so handleInput()'s routePublished()/
 // publishedData() reads on the loop task always see a complete table, never
 // one render is mid-rebuilding. uiReady closes when show() replaces the
 // popup's data, then stays open across ordinary repaints after the first
 // publication so a release cannot be dropped during a highlight repaint.
+template <size_t MaxOptions = 16, size_t MaxVisibleOptions = 8>
 class OptionPopup {
  public:
   void show(StrId titleId, const StrId* optionIds, int optionCount, int currentIndex,
             std::function<void(int)> onSelect) {
+    if (!beginShow(optionCount)) return;
     title = I18N.get(titleId);
     headline.clear();
-    ownedStrings.resize(optionCount);
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = I18N.get(optionIds[i]);
     }
-    selectedIndex = currentIndex;
-    onSelectCallback = std::move(onSelect);
-    uiReady = false;
-    active = true;
+    finishShow(currentIndex, std::move(onSelect));
   }
 
   void show(const char* titleStr, const char* const* options, int optionCount, int currentIndex,
             std::function<void(int)> onSelect) {
+    if (!beginShow(optionCount)) return;
     title = titleStr;
     headline.clear();
-    ownedStrings.resize(optionCount);
     for (int i = 0; i < optionCount; i++) {
       ownedStrings[i] = options[i];
     }
-    selectedIndex = currentIndex;
-    onSelectCallback = std::move(onSelect);
-    uiReady = false;
-    active = true;
+    finishShow(currentIndex, std::move(onSelect));
   }
 
   // As above, plus a subject line inside the dialog (a book or event title).
@@ -59,50 +55,67 @@ class OptionPopup {
   void show(const char* titleStr, const char* headlineStr, const char* const* options, int optionCount,
             int currentIndex, std::function<void(int)> onSelect) {
     show(titleStr, options, optionCount, currentIndex, std::move(onSelect));
-    headline = headlineStr ? headlineStr : "";
+    if (active) headline = headlineStr ? headlineStr : "";
   }
 
   void show(StrId titleId, const std::vector<std::string>& options, int currentIndex,
             std::function<void(int)> onSelect) {
+    if (!beginShow(static_cast<int>(options.size()))) return;
     title = I18N.get(titleId);
     headline.clear();
     ownedStrings = options;
-    selectedIndex = currentIndex;
-    onSelectCallback = std::move(onSelect);
-    uiReady = false;
-    active = true;
+    finishShow(currentIndex, std::move(onSelect));
   }
 
   bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
 
-    // Match the render cap: only the first MAX_OPTIONS rows exist on screen,
-    // so button wrap-around must not select an invisible option.
     const int total = static_cast<int>(ownedStrings.size());
-    const int count = total > MAX_OPTIONS ? MAX_OPTIONS : total;
     const freeink::ui::InputSnapshot snap = touchSnapshotFrom(input);
     if (snap.touchPressed || snap.touchReleased || snap.touchHeld) {
       // Interactions are registered on the render task; only route once the
       // first render after show() has populated the table (uiReady handshake).
       if (uiReady) {
         const freeink::ui::ActionEvent event = interactions.routePublished(snap);
-        if (event && event.action == ACTION_OPTION) {
-          // Tap released on an option: select it, fire, dismiss.
-          selectedIndex = event.value;
-          active = false;
-          if (onSelectCallback) onSelectCallback(selectedIndex);
-          requestUpdate();
+        if (snap.touchPressed) {
+          dragTop_ = scrollTop_;
+          dragStartY_ = snap.touchY;
+          dragMoved_ = false;
+          dragActive_ = true;
+        } else if (snap.touchHeld && dragActive_ && rowStride_ > 0) {
+          const int delta = dragStartY_ - snap.touchY;
+          if (delta > kDragStartPx || delta < -kDragStartPx) dragMoved_ = true;
+          if (dragMoved_) {
+            const int rows = delta / rowStride_;
+            if (scrollTo(dragTop_ + rows)) requestUpdate();
+          }
           return true;
         }
-        if (event && event.action == ACTION_CHROME) {
-          // Taps on the dialog chrome (title, padding) keep the popup open.
-          return true;
-        }
-        if (snap.touchReleased && snap.touchX >= 0) {
-          // Tap released outside the dialog: dismiss without firing. Swipe-end
-          // releases arrive with -1,-1 coords and fall through (no dismiss).
-          active = false;
-          requestUpdate();
+        if (snap.touchReleased) {
+          dragActive_ = false;
+          // A drag was a scroll gesture, even if the finger happened to end on
+          // a row: never turn it into a selection or an outside dismiss.
+          if (!dragMoved_) {
+            if (event && event.action == ACTION_OPTION) {
+              // Tap released on an option: select it, fire, dismiss.
+              selectedIndex = event.value;
+              active = false;
+              if (onSelectCallback) onSelectCallback(selectedIndex);
+              requestUpdate();
+              return true;
+            }
+            if (event && event.action == ACTION_CHROME) {
+              // Taps on the dialog chrome (title, scroll strip) keep open.
+              return true;
+            }
+            if (snap.touchX >= 0) {
+              // Tap released outside the dialog: dismiss without firing.
+              // Swipe-end releases arrive with -1,-1 coords and fall through.
+              active = false;
+              requestUpdate();
+              return true;
+            }
+          }
           return true;
         }
         if (snap.touchPressed) {
@@ -122,11 +135,13 @@ class OptionPopup {
     }
 
     if (input.wasPressed(MappedInputManager::Button::NavPrevious)) {
-      selectedIndex = (selectedIndex - 1 + count) % count;
+      selectedIndex = (selectedIndex - 1 + total) % total;
+      scrollToSelected();
       requestUpdate();
       return true;
     } else if (input.wasPressed(MappedInputManager::Button::NavNext)) {
-      selectedIndex = (selectedIndex + 1) % count;
+      selectedIndex = (selectedIndex + 1) % total;
+      scrollToSelected();
       requestUpdate();
       return true;
     } else if (input.wasReleased(MappedInputManager::Button::Confirm)) {
@@ -177,21 +192,27 @@ class OptionPopup {
 
     const auto& metrics = UITheme::getInstance().getMetrics();
     const int totalOptions = static_cast<int>(ownedStrings.size());
-    const uint8_t count = static_cast<uint8_t>(totalOptions > MAX_OPTIONS ? MAX_OPTIONS : totalOptions);
+    const int top = std::clamp(scrollTop_.load(std::memory_order_acquire), 0,
+                               std::max(0, totalOptions - static_cast<int>(MaxVisibleOptions)));
+    const int visibleOptions = std::clamp(totalOptions - top, 1, static_cast<int>(MaxVisibleOptions));
 
-    fui::DialogOption options[MAX_OPTIONS];
-    for (uint8_t i = 0; i < count; ++i) {
-      options[i].label = ownedStrings[i].c_str();
-      options[i].action = ACTION_OPTION;
-      options[i].value = static_cast<int16_t>(i);
-      options[i].state = (i == selectedIndex) ? fui::StateFocused : fui::StateNormal;
+    // Materialise only the visible window. Values stay absolute so a routed
+    // tap maps directly to the logical option and the caller needs no offset.
+    fui::DialogOption visibleRows[MaxVisibleOptions];
+    for (int i = 0; i < visibleOptions; ++i) {
+      const int optionIndex = top + i;
+      visibleRows[i].label = ownedStrings[optionIndex].c_str();
+      visibleRows[i].action = ACTION_OPTION;
+      visibleRows[i].value = static_cast<int16_t>(optionIndex);
+      visibleRows[i].state = (optionIndex == selectedIndex) ? fui::StateFocused : fui::StateNormal;
+      visibleRows[i].enabled = true;
     }
 
     fui::OptionDialogProps props;
     props.title = title.c_str();
     props.headline = headline.empty() ? nullptr : headline.c_str();
-    props.options = options;
-    props.optionCount = count;
+    props.options = visibleRows;
+    props.optionCount = static_cast<uint8_t>(visibleOptions);
     props.verticalOptions = true;
     // Touch only: physical buttons stay on the legacy wrap/confirm path above,
     // so the buffer never competes with it for focus/confirm dispatch.
@@ -207,7 +228,11 @@ class OptionPopup {
     props.headlineText.maxLines = 3;
     props.buttonText.font = fui::GfxRendererTarget::FONT_BODY;
     const int16_t innerPadding = static_cast<int16_t>(metrics.optionPopupInnerPadding);
-    props.padding = fui::Insets{innerPadding, innerPadding, innerPadding, innerPadding};
+    const bool overflows = totalOptions > visibleOptions;
+    // Reserve a slim strip for the scroll indicator without overlapping rows.
+    props.padding =
+        fui::Insets{innerPadding, static_cast<int16_t>(innerPadding + (overflows ? kScrollIndicatorGap : 0)),
+                    innerPadding, innerPadding};
     props.gap = static_cast<int16_t>(metrics.optionPopupItemSpacing);
     // Rounded invert-fill themes use a black pill, not the default gray focus cursor.
     if (theme.listSelectionStyle == fui::SelectionStyle::InvertFill && theme.listRowRadius > 0) {
@@ -239,6 +264,17 @@ class OptionPopup {
     // option buttons win inside the dialog and the guard absorbs the rest.
     frame.hit(dialogRect, ACTION_CHROME, 0, fui::InputTouch);
     fui::optionDialog(frame, dialogRect, props);
+    rowStride_.store(props.buttonHeight + props.gap, std::memory_order_release);
+
+    if (overflows) {
+      const int16_t trackX = static_cast<int16_t>(dialogRect.right() - kScrollIndicatorWidth - 2);
+      const int16_t trackY = static_cast<int16_t>(dialogRect.y + innerPadding);
+      const int16_t trackHeight = static_cast<int16_t>(dialogRect.height - 2 * innerPadding);
+      fui::drawListScrollIndicator(target, fui::Rect{trackX, trackY, kScrollIndicatorWidth, trackHeight},
+                                   static_cast<uint32_t>(totalOptions), static_cast<uint32_t>(visibleOptions),
+                                   static_cast<uint32_t>(top), kScrollIndicatorWidth);
+    }
+
     // Atomically make this generation the one handleInput() reads, now that
     // every hit() call for this frame is done.
     interactions.publish();
@@ -255,11 +291,53 @@ class OptionPopup {
   }
 
  private:
-  // The dialog has no scrolling, so options past MAX_OPTIONS would render off
-  // screen anyway; a fixed cap keeps the DialogOption array on the stack and
-  // the interaction table small. +1 slot for the chrome guard rect.
-  static constexpr int MAX_OPTIONS = 16;
-  static constexpr size_t INTERACTION_CAPACITY = MAX_OPTIONS + 1;
+  bool beginShow(const int optionCount) {
+    // Fail closed rather than silently truncating an enum: callers list real
+    // settings and a truncated list could make the desired value unreachable.
+    if (optionCount <= 0 || static_cast<size_t>(optionCount) > MaxOptions) return false;
+    ownedStrings.resize(static_cast<size_t>(optionCount));
+    return true;
+  }
+
+  void finishShow(const int currentIndex, std::function<void(int)> onSelect) {
+    selectedIndex = std::clamp(currentIndex, 0, static_cast<int>(ownedStrings.size()) - 1);
+    scrollTop_.store(selectedIndex >= static_cast<int>(MaxVisibleOptions)
+                         ? selectedIndex - static_cast<int>(MaxVisibleOptions) + 1
+                         : 0,
+                     std::memory_order_release);
+    dragActive_ = false;
+    dragMoved_ = false;
+    rowStride_.store(0, std::memory_order_release);
+    onSelectCallback = std::move(onSelect);
+    uiReady = false;
+    active = true;
+  }
+
+  bool scrollTo(const int requestedTop) {
+    const int maxTop = std::max(0, static_cast<int>(ownedStrings.size()) - static_cast<int>(MaxVisibleOptions));
+    const int next = std::clamp(requestedTop, 0, maxTop);
+    if (next == scrollTop_.load(std::memory_order_acquire)) return false;
+    scrollTop_.store(next, std::memory_order_release);
+    return true;
+  }
+
+  void scrollToSelected() {
+    // This runs before the next render knows the exact on-screen page size;
+    // using the render cap is conservative and is corrected by the next
+    // render's viewport clamp if the panel happens to fit fewer rows.
+    const int visible = static_cast<int>(MaxVisibleOptions);
+    const int top = scrollTop_.load(std::memory_order_acquire);
+    if (selectedIndex < top) {
+      scrollTop_.store(selectedIndex, std::memory_order_release);
+    } else if (selectedIndex >= top + visible) {
+      scrollTop_.store(selectedIndex - visible + 1, std::memory_order_release);
+    }
+  }
+
+  static constexpr size_t INTERACTION_CAPACITY = MaxVisibleOptions + 1;
+  static constexpr int kDragStartPx = 10;
+  static constexpr int16_t kScrollIndicatorWidth = 3;
+  static constexpr int16_t kScrollIndicatorGap = 6;
   static constexpr freeink::ui::ActionId ACTION_OPTION = 1;
   static constexpr freeink::ui::ActionId ACTION_CHROME = 2;
 
@@ -268,9 +346,21 @@ class OptionPopup {
   std::string headline;
   std::vector<std::string> ownedStrings;
   int selectedIndex = 0;
+  // Render task reads the viewport; loop task writes it during drag/button
+  // scrolling. Atomics close the data race without taking the render mutex.
+  std::atomic<int> scrollTop_{0};
   std::function<void(int)> onSelectCallback;
   // Written by the render task (frame registration), routed by the loop task;
   // uiReady closes the rebuild window exactly like UiListActivity::uiReady.
   mutable freeink::ui::InteractionBuffer<INTERACTION_CAPACITY> interactions;
   mutable std::atomic<bool> uiReady{false};
+
+  // Live drag state + render-measured row stride. Row stride crosses the
+  // render/loop-task boundary but is only used as a scroll quantizer.
+  int16_t dragStartY_ = 0;
+  int dragTop_ = 0;
+  bool dragActive_ = false;
+  bool dragMoved_ = false;
+  // Measured by render task, read by the loop task to quantize drag distance.
+  mutable std::atomic<int16_t> rowStride_{0};
 };
