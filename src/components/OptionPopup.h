@@ -192,7 +192,8 @@ class OptionPopup {
 
     const auto& metrics = UITheme::getInstance().getMetrics();
     const int totalOptions = static_cast<int>(ownedStrings.size());
-    const int top = std::clamp(scrollTop_, 0, std::max(0, totalOptions - static_cast<int>(MaxVisibleOptions)));
+    const int top = std::clamp(scrollTop_.load(std::memory_order_acquire), 0,
+                               std::max(0, totalOptions - static_cast<int>(MaxVisibleOptions)));
     const int visibleOptions = std::clamp(totalOptions - top, 1, static_cast<int>(MaxVisibleOptions));
 
     // Materialise only the visible window. Values stay absolute so a routed
@@ -263,7 +264,7 @@ class OptionPopup {
     // option buttons win inside the dialog and the guard absorbs the rest.
     frame.hit(dialogRect, ACTION_CHROME, 0, fui::InputTouch);
     fui::optionDialog(frame, dialogRect, props);
-    rowStride_ = props.buttonHeight + props.gap;
+    rowStride_.store(props.buttonHeight + props.gap, std::memory_order_release);
 
     if (overflows) {
       const int16_t trackX = static_cast<int16_t>(dialogRect.right() - kScrollIndicatorWidth - 2);
@@ -300,12 +301,13 @@ class OptionPopup {
 
   void finishShow(const int currentIndex, std::function<void(int)> onSelect) {
     selectedIndex = std::clamp(currentIndex, 0, static_cast<int>(ownedStrings.size()) - 1);
-    scrollTop_ = selectedIndex >= static_cast<int>(MaxVisibleOptions)
-                     ? selectedIndex - static_cast<int>(MaxVisibleOptions) + 1
-                     : 0;
+    scrollTop_.store(selectedIndex >= static_cast<int>(MaxVisibleOptions)
+                         ? selectedIndex - static_cast<int>(MaxVisibleOptions) + 1
+                         : 0,
+                     std::memory_order_release);
     dragActive_ = false;
     dragMoved_ = false;
-    rowStride_ = 0;
+    rowStride_.store(0, std::memory_order_release);
     onSelectCallback = std::move(onSelect);
     uiReady = false;
     active = true;
@@ -314,8 +316,8 @@ class OptionPopup {
   bool scrollTo(const int requestedTop) {
     const int maxTop = std::max(0, static_cast<int>(ownedStrings.size()) - static_cast<int>(MaxVisibleOptions));
     const int next = std::clamp(requestedTop, 0, maxTop);
-    if (next == scrollTop_) return false;
-    scrollTop_ = next;
+    if (next == scrollTop_.load(std::memory_order_acquire)) return false;
+    scrollTop_.store(next, std::memory_order_release);
     return true;
   }
 
@@ -324,10 +326,11 @@ class OptionPopup {
     // using the render cap is conservative and is corrected by the next
     // render's viewport clamp if the panel happens to fit fewer rows.
     const int visible = static_cast<int>(MaxVisibleOptions);
-    if (selectedIndex < scrollTop_) {
-      scrollTop_ = selectedIndex;
-    } else if (selectedIndex >= scrollTop_ + visible) {
-      scrollTop_ = selectedIndex - visible + 1;
+    const int top = scrollTop_.load(std::memory_order_acquire);
+    if (selectedIndex < top) {
+      scrollTop_.store(selectedIndex, std::memory_order_release);
+    } else if (selectedIndex >= top + visible) {
+      scrollTop_.store(selectedIndex - visible + 1, std::memory_order_release);
     }
   }
 
@@ -343,7 +346,9 @@ class OptionPopup {
   std::string headline;
   std::vector<std::string> ownedStrings;
   int selectedIndex = 0;
-  int scrollTop_ = 0;
+  // Render task reads the viewport; loop task writes it during drag/button
+  // scrolling. Atomics close the data race without taking the render mutex.
+  std::atomic<int> scrollTop_{0};
   std::function<void(int)> onSelectCallback;
   // Written by the render task (frame registration), routed by the loop task;
   // uiReady closes the rebuild window exactly like UiListActivity::uiReady.
@@ -356,5 +361,6 @@ class OptionPopup {
   int dragTop_ = 0;
   bool dragActive_ = false;
   bool dragMoved_ = false;
-  mutable int16_t rowStride_ = 0;
+  // Measured by render task, read by the loop task to quantize drag distance.
+  mutable std::atomic<int16_t> rowStride_{0};
 };

@@ -193,8 +193,9 @@ class EpubReaderActivity final : public ReaderActivity {
   uint32_t ttfPageCount = 0;  // pages available for the current chapter
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
-  bool ttfRestoreLastPage = false;   // back-navigation into the previous chapter
-  uint32_t ttfCurrentCharStart = 0;  // charStart of the last rendered page
+  bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
+  std::atomic<bool> ttfFrameRenderComplete{false};  // framebuffer holds the last rendered page
+  uint32_t ttfCurrentCharStart = 0;                 // charStart of the last rendered page
   // Progress-record restore data (consumed on the chapter's first open).
   bool ttfHasSavedPosition = false;
   uint16_t ttfSavedSpine = 0;

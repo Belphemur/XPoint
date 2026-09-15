@@ -43,14 +43,13 @@ chain tail. Fallback semantics:
 
 The TTF scanner walks the same roots the legacy bitmap registry uses:
 
-```
+```text
 /fonts/                      visible root
   <Family>/
     <Family>-Regular.ttf
     <Family>-Bold.ttf
     <Family>_14.cpfont      legacy file: ignored by the TTF scanner
-  /.fonts/                   hidden root
-  free-fonts.json             optional metadata; disk scan wins
+/.fonts/                     hidden root
 ```
 
 Rules:

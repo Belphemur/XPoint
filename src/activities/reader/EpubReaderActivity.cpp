@@ -1849,6 +1849,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 bool EpubReaderActivity::skipPages(int amount) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
+    ttfFrameRenderComplete.store(false, std::memory_order_release);
     if (amount > 0) {
       if (currentSpineIndex + 1 >= epub->getSpineItemsCount()) return false;
       RenderLock lock;
@@ -2372,6 +2373,7 @@ void EpubReaderActivity::ttfInvalidateCaches() {
   ttfPage = -1;
   ttfPageCount = 0;
   ttfGenerationValid = false;
+  ttfFrameRenderComplete.store(false, std::memory_order_release);
 }
 
 // Resolves the pending navigation state into a chapter-local target page.
@@ -2566,6 +2568,9 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 
 void EpubReaderActivity::renderBookTtf() {
   if (!epub || !ttf_) return;
+  // Any render attempt makes the previous framebuffer state provisional: only
+  // a successful page+status render below may restore the fast-open flag.
+  ttfFrameRenderComplete.store(false, std::memory_order_release);
 
   const auto showPendingSyncSaveError = [this]() {
     if (!pendingSyncSaveError) return;
@@ -2607,6 +2612,7 @@ void EpubReaderActivity::renderBookTtf() {
   if (ttfSpine != currentSpineIndex) {
     ttfPrefetchActive = false;
     ttf_->dropPrefetch();
+    ttfFrameRenderComplete.store(false, std::memory_order_release);
     if (ttfHasSavedPosition && currentSpineIndex != ttfSavedSpine) {
       ttfHasSavedPosition = false;
     }
@@ -2715,7 +2721,9 @@ void EpubReaderActivity::renderBookTtf() {
   updateBookmarkFlag();
 
   // 5) Read + rasterize the page. Run text lives in the runtime's scratch
-  // arena for exactly this block.
+  // arena for exactly this block. A failed read must not expose the prior
+  // frame through overlay fast paths.
+  ttfFrameRenderComplete.store(false, std::memory_order_release);
   const size_t scratchMark = ttf_->scratch().mark();
   freeink::book::Page page{};
   if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
@@ -2795,6 +2803,9 @@ void EpubReaderActivity::renderBookTtf() {
   nextPageNumber = ttfPage;
   cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
   renderStatusBar();
+  // The framebuffer now holds the complete page+status frame; overlay opens
+  // may paint chrome directly instead of triggering a full page re-render.
+  ttfFrameRenderComplete.store(true, std::memory_order_release);
 
 #if defined(CROSSPOINT_TTF_READER)
   // Same §11 Q7 predicate paintTtfPage used for the base pass above: images
@@ -3146,6 +3157,8 @@ void EpubReaderActivity::ttfPrefetchTick() {
 
 bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   if (!ttf_ || !epub) return false;
+  // Navigation invalidates the displayed frame until the next successful render.
+  ttfFrameRenderComplete.store(false, std::memory_order_release);
 
 #ifdef READING_STATS_ENABLED
   uint32_t dwellSeconds = 0;
@@ -4115,7 +4128,15 @@ void EpubReaderActivity::openOverlay(Overlay target) {
   // Xteink-class panels, whose close path re-renders the page. If text or
   // images ever visibly ghost through the chrome, restore a HALF cleanup on
   // the first open (see #2190 for the mechanism).
-  if (section) {
+  bool hasRenderedPage = section != nullptr;
+#if defined(CROSSPOINT_TTF_READER)
+  // The TTF path keeps no Section mirror. Use only a frame that renderBookTtf
+  // has completed for the current chapter; failed reads/navigation clear the
+  // flag so a stale framebuffer can never be reused.
+  hasRenderedPage = hasRenderedPage || (ttf_ && ttfFrameRenderComplete.load(std::memory_order_acquire) &&
+                                        ttfSpine == currentSpineIndex && ttfPage >= 0 && ttfPageCount > 0);
+#endif
+  if (hasRenderedPage) {
     // Serialize against the render task: renderBook may be mid-page (status
     // bar included) in the shared framebuffer, and painting the chrome from
     // the loop task at the same time interleaves the two frames.
@@ -4147,6 +4168,14 @@ void EpubReaderActivity::openOverlay(Overlay target) {
 // grayscale-AA pass restore the page snapshot and push one FAST refresh -- no
 // re-render, no flash; Xteink boards re-render to restore the AA planes.
 void EpubReaderActivity::closeOverlayToPage() {
+#if defined(CROSSPOINT_TTF_READER)
+  // FontSheet owns its close contract: persist once and force the full reflow.
+  // The generic overlay close cannot handle the page-only preview state.
+  if (overlay == Overlay::FontSheet) {
+    closeFontSheet();
+    return;
+  }
+#endif
   overlay = Overlay::None;
   overlayPopup.dismiss();  // an option picker cannot outlive its panel
   toolbarUi.reset();       // ~1 KB of interaction table + props, only needed while open
