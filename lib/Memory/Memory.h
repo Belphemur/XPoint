@@ -126,16 +126,19 @@ using PoolBytes = std::unique_ptr<uint8_t[], PoolDeleter>;
 
 inline PoolBytes poolMakeBytes(size_t size) { return PoolBytes{static_cast<uint8_t*>(poolMalloc(size))}; }
 
-// Largest block the default allocator can currently serve for a `size`-byte
-// allocation. On PSRAM builds the framework sdkconfig routes allocations above
-// its internal-only threshold (SPIRAM_MALLOC_ALWAYSINTERNAL = 4096) to PSRAM
-// first, so a large request's fate is decided by PSRAM while a small one's is
-// decided by DRAM. Non-PSRAM builds always answer with the DRAM largest block.
+// Largest block the default allocator can currently serve for a heap
+// allocation. With SPIRAM_USE_MALLOC the sdkconfig's internal-only threshold
+// (SPIRAM_MALLOC_ALWAYSINTERNAL) only sets preference order — ≤threshold tries
+// DRAM first, >threshold tries PSRAM first — and both fall back to the other
+// heap, so an allocation succeeds if either pool can serve it. Non-PSRAM
+// builds always answer with the DRAM largest block.
 #ifdef ESP_PLATFORM
 inline uint32_t poolMaxAllocFor(size_t size) {
 #if defined(BOARD_HAS_PSRAM)
-  constexpr size_t INTERNAL_ONLY_MAX_BYTES = 4096;  // sdkconfig SPIRAM_MALLOC_ALWAYSINTERNAL
-  return size > INTERNAL_ONLY_MAX_BYTES ? ESP.getMaxAllocPsram() : ESP.getMaxAllocHeap();
+  (void)size;
+  const uint32_t psram = ESP.getMaxAllocPsram();
+  const uint32_t dram = ESP.getMaxAllocHeap();
+  return psram > dram ? psram : dram;
 #else
   (void)size;
   return ESP.getMaxAllocHeap();
