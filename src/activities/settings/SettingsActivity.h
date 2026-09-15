@@ -28,6 +28,7 @@ enum class SettingAction {
 #ifdef CROSSPOINT_TTF_DEBUG
   TtfDebugRender,
 #endif
+  About,
 };
 
 struct SettingInfo {

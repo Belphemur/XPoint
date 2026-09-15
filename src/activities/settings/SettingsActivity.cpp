@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "AboutActivity.h"
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "ClockSyncActivity.h"
@@ -97,6 +98,7 @@ void SettingsActivity::rebuildSettingsLists() {
   // asset isn't published yet just report no update available.
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_ABOUT, SettingAction::About));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
 #if defined(CROSSPOINT_TTF_DEBUG)
   // Hidden engine bring-up row; compiled out of release builds.
@@ -404,6 +406,13 @@ void SettingsActivity::toggleCurrentSetting() {
                                  SETTINGS.saveToFile();
                                  rebuildSettingsLists();
                                });
+        break;
+      case SettingAction::About:
+        if (auto activity = makeUniqueNoThrow<AboutActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), nullptr);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: AboutActivity");
+        }
         break;
       case SettingAction::None:
         // Do nothing
