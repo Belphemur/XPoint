@@ -1,6 +1,5 @@
-#include <gtest/gtest.h>
-
 #include <FreeInkApp.h>
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
