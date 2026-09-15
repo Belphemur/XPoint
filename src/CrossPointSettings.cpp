@@ -14,7 +14,6 @@
 #include "ReaderFontSizes.h"
 #include "SettingsList.h"
 #include "fontIds.h"
-#include "util/HomeButtonMigration.h"
 
 namespace {
 
@@ -216,44 +215,6 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
-
-  // One-time migration from the fork's pre-unification catalogs. The old
-  // double-click key is the legacy marker: the new HomeButtonAction catalog
-  // legitimately stores 0..6 too, so value ranges alone cannot distinguish.
-  const bool hasLegacyHomeKey = !doc["homeButtonDoubleClickAction"].isNull();
-  const bool hasLegacyHoldKey = !doc["longPressMenuFunction"].isNull();
-  const auto legacySource =
-      home_button_migration::legacySource(hasLegacyHomeKey, hasLegacyHoldKey, FREEINK_CAP_MENU_BUTTON != 0);
-  if (legacySource == home_button_migration::LegacySource::HomeCatalog) {
-    const auto tap =
-        home_button_migration::migrateLegacyHomeField(!doc["homeButtonTapAction"].isNull(), s.homeButtonTapAction);
-    if (tap.migrated) {
-      s.homeButtonTapAction = static_cast<uint8_t>(tap.action);
-      needsResave = true;
-    }
-    const uint8_t legacyDoubleTap = doc["homeButtonDoubleClickAction"] | (uint8_t)0;
-    if (legacyDoubleTap <
-        sizeof(home_button_migration::LEGACY_HOME_ACTIONS) / sizeof(home_button_migration::LEGACY_HOME_ACTIONS[0])) {
-      s.homeButtonDoubleTapAction =
-          static_cast<uint8_t>(home_button_migration::migrateLegacyHomeAction(legacyDoubleTap));
-      needsResave = true;
-    }
-    const auto longPress = home_button_migration::migrateLegacyHomeField(!doc["homeButtonLongPressAction"].isNull(),
-                                                                         s.homeButtonLongPressAction);
-    if (longPress.migrated) {
-      s.homeButtonLongPressAction = static_cast<uint8_t>(longPress.action);
-      needsResave = true;
-    }
-  } else if (legacySource == home_button_migration::LegacySource::HoldCatalog) {
-    // Menu-button boards did not persist home fields; their Confirm-hold choice
-    // lived under longPressMenuFunction. Do not override a home-field migration.
-    const uint8_t legacyHold = doc["longPressMenuFunction"] | (uint8_t)0;
-    const auto hold = home_button_migration::migrateLegacyHoldField(!doc["longPressMenuFunction"].isNull(), legacyHold);
-    if (hold.migrated) {
-      s.homeButtonLongPressAction = static_cast<uint8_t>(hold.action);
-      needsResave = true;
-    }
-  }
 
   // SD card font family name — not in SettingsList, load manually
   const char* sfn = doc["sdFontFamilyName"] | "";

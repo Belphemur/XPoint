@@ -7,6 +7,8 @@
   fork-only action and behavioral guard.
 - **Owner directive:** "We should use the new namings of the upstream, but be sure we don't lose
   features that we created — so this will simplify following merges from upstream."
+- **Owner override:** Do not migrate the fork's persisted home-button state. Existing settings fall
+  back to the unified defaults; breaking the old settings shape is accepted.
 
 ## 1. Goal and success criteria
 
@@ -23,7 +25,8 @@ Success means:
    structure.
 3. The fork's duplicate catalog (`HOME_ACT_*` + `LP_MENU_*`) and duplicate gesture machinery
    (`HomeTapTracker`, `deferredHomeGesture`) are deleted, not retained behind a compatibility layer.
-4. Existing `settings.json` keeps its meaning after a one-time migration and resave.
+4. Home-button fields are reset to the unified defaults when absent or persisted by an older fork
+   release; no one-time migration is performed.
 5. Both firmware feature classes build: `FREEINK_CAP_HOME_KEY` (X4 Pro) and
    `FREEINK_CAP_MENU_BUTTON` (X4/X3/X4 Classic/Sticky).
 
@@ -65,7 +68,7 @@ Upstream `32f2b2aa` supplies the adopted core:
 | `src/main.cpp` | `toggleFrontlight()` and global ToggleFrontlight/Refresh dispatch |
 | `src/activities/reader/*` | Reader actions and `NextPage` arm |
 | `src/activities/settings/{SettingsActivity,HomeButtonSettingsActivity}.*` | Dedicated Home Button screen and `StaticEnum` |
-| `src/CrossPointSettings.{h,cpp}` | Persisted fields/keys, legacy hold migration, static-enum clamp |
+| `src/CrossPointSettings.{h,cpp}` | Persisted fields/keys and static-enum clamp |
 | `src/network/CrossPointWebServer.cpp` | Web API uses the same labels and clamp |
 | `test/home_button/` | Classifier tests |
 
@@ -82,11 +85,10 @@ Upstream `32f2b2aa` supplies the adopted core:
 | `x4pro` | 1 | 0 | Home key; no dedicated Confirm hold |
 | `papermono` | 0 | 0 | Neither surface |
 
-This disproves using upstream's migration gate verbatim
-(`BoardConfig::hasHomeKey()`): it would skip the `longPressMenuFunction` migration on exactly the
-boards where that setting was exposed and used. The fork-specific gate is therefore
-`FREEINK_CAP_MENU_BUTTON` for the legacy Confirm-hold value. The Home-key fields are made ungated so
-one catalog and one Confirm-hold reader exist on every firmware feature class.
+This matrix is why the fork cannot use upstream's Confirm-hold UI gate verbatim: upstream gates on
+`BoardConfig::hasHomeKey()`, while the fork exposes Confirm hold on `FREEINK_CAP_MENU_BUTTON`
+boards. The unified catalog therefore compiles ungated, and the Home Button settings surface appears
+on home-or-menu-button boards.
 
 ## 4. Unified catalog
 
@@ -116,57 +118,20 @@ a double tap, or a hold. This is required to enforce the fork's old invariant th
 is suppressed on the Home screen while double-tap and hold actions remain available there. It does
 not change any upstream return value or state transition.
 
-## 5. Persisted settings migration
+## 5. Persisted settings policy
 
-`CrossPointSettings::fromJson()` performs the migration before `requestResave()`; it never saves
-inside the store mutex.
+There is no one-time migration. `CrossPointSettings::fromJson()` loads the new upstream keys through
+the normal generic path; absent or old fork keys leave the unified fields at their initial defaults.
+A subsequent save writes only the new keys, so the old fork representation is intentionally dropped.
+This is a breaking change accepted by the owner to avoid compatibility code in the firmware.
 
-### 5.1 Legacy fork `HOME_ACT_*` value map
+Unified defaults:
 
-Applies to values `0..6` loaded from old fork-written home fields. Because the unified catalog also
-uses `0..6`, the old double-click JSON key (`homeButtonDoubleClickAction`) is the legacy marker: a
-file carrying it was written by the fork's pre-unification firmware. On menu-button-only builds
-with no home fields, `longPressMenuFunction` is the marker. This avoids remapping a fresh or
-already-unified settings file on every load.
-
-| Old `HOME_ACT_*` | Old value | New `HomeButtonAction` | New value |
-| --- | ---: | --- | ---: |
-| `OFF` | 0 | `Ignore` | 1 |
-| `FRONTLIGHT` | 1 | `ToggleFrontlight` | 10 |
-| `GO_HOME` | 2 | `Home` | 0 |
-| `READER_MENU` | 3 | `ReaderMenu` | 9 |
-| `SLEEP` | 4 | `Sleep` | 11 |
-| `SCREENSHOT` | 5 | `Screenshot` | 12 |
-| `GO_BACK` | 6 | `GoBack` | 13 |
-
-### 5.2 Legacy key rename
-
-Old double-click field/key: `homeButtonDoubleClickAction` (current `CrossPointSettings.h:419`,
-`SettingsList.h:382-383`). New upstream field/key: `homeButtonDoubleTapAction`
-(`git show 32f2b2aa:src/CrossPointSettings.h`, `src/HomeButtonSettings.h`). The old key is read only
-when the new key is absent, and its value passes through the table in §5.1.
-
-`homeButtonTapAction` and `homeButtonLongPressAction` keep the same JSON keys as upstream.
-
-### 5.3 Legacy Confirm-hold map
-
-Old `LP_MENU_*` values (`CrossPointSettings.h:188-192`) map to the unified long-press field:
-
-| Old | Old value | New | New value |
-| --- | ---: | --- | ---: |
-| `KOSYNC` | 0 | `Sync` | 6 |
-| `DISABLED` | 1 | `Ignore` | 1 |
-| `BOOKMARK` | 2 | `Bookmark` | 7 |
-| `DICTIONARY` | 3 | `Dictionary` | 8 |
-| `READER_MENU` | 4 | `ReaderMenu` | 9 |
-
-Gate this migration with `FREEINK_CAP_MENU_BUTTON`, not upstream's `BoardConfig::hasHomeKey()`.
-The old row (`SettingsList.h:362-367`) was shown only on menu-button boards. Migration order:
-
-1. If the new `homeButtonLongPressAction` key is present, map its `0..6` fork value.
-2. Else, on a menu-button build, map `longPressMenuFunction`.
-3. Delete `LP_MENU_*`, `longPressMenuFunction`, `buildLongPressMenuValues()`, and its Settings row
-   in the same change.
+| Field | Default |
+| --- | --- |
+| `homeButtonTapAction` | `GoBack` |
+| `homeButtonDoubleTapAction` | `ReaderMenu` |
+| `homeButtonLongPressAction` | `ToggleFrontlight` |
 
 ## 6. Gesture model and fork invariants
 
@@ -224,18 +189,19 @@ Adopt upstream's `SettingInfo::StaticEnum`, backed by `std::span<const StrId>` a
 source. `home_button::isSetting()` keeps the raw static rows out of the ordinary category lists so
 the dedicated Home Button activity is the only on-device editor.
 
-Fresh-install defaults adopt upstream:
+Fresh installs and older fork settings use these defaults:
 
 | Gesture | Default |
 | --- | --- |
-| Tap | `Home` |
-| Double tap | `ToggleFrontlight` |
-| Long press | `ReaderMenu` |
+| Tap | `GoBack` |
+| Double tap | `ReaderMenu` |
+| Long press | `ToggleFrontlight` |
 
-Existing files retain their meaning through §5. For menu-button-only boards, the Home Button
-settings entry is shown on `FREEINK_CAP_HOME_KEY || FREEINK_CAP_MENU_BUTTON`; without that
-extension, deleting the old Confirm-hold row would remove the only UI that drives
-`homeButtonLongPressAction` on X4/X3/X4 Classic/Sticky.
+Older fork keys are not migrated: they are ignored and fields fall back to these defaults. For
+menu-button-only boards, the Home Button settings entry is shown on
+`FREEINK_CAP_HOME_KEY || FREEINK_CAP_MENU_BUTTON`; without that extension, deleting the old
+Confirm-hold row would remove the only UI that drives `homeButtonLongPressAction` on
+X4/X3/X4 Classic/Sticky.
 
 ## 9. Internationalization
 
@@ -251,30 +217,27 @@ only `lib/I18n/translations/english.yaml`, not generated headers.
 
 1. Port upstream `test/home_button/HomeButtonInputTest.cpp`, including window expiry, double tap,
    hold, swipe reset, second contact, millisecond wrap, and disabled double-tap latency.
-2. Pin persisted enum values: upstream `0..10` and fork `11..13` / `Count=14` must not move.
-3. Pin both migration maps from §5.1 and §5.3 as pure constants/helpers, including old-key fallback
-   precedence and no remapping of already-migrated values `7..13`.
-4. Keep/replace gesture tests so stall recovery and swipe reset are covered after
+2. Pin persisted enum values in the classifier test target: upstream `0..10` and fork `11..13` /
+   `Count=14` must not move. Do not keep migration maps.
+3. Keep/replace gesture tests so stall recovery and swipe reset are covered after
    `HomeTapTracker` is deleted.
-5. Gate every push on: whole-tree `clang-format-fix`, `bin/cppcheck-check`, host `ctest`, and
+4. Gate every push on: whole-tree `clang-format-fix`, `bin/cppcheck-check`, host `ctest`, and
    `pio run -e x4pro` plus `pio run -e default`.
 
-The legacy maps and old-key precedence live in `src/util/HomeButtonMigration.h` as a pure seam so
-host tests can pin them without instantiating the settings singleton or ArduinoJson-backed loader.
-Sparse legacy files are covered at the same seam: omitted home fields keep their initializer defaults
-instead of being interpreted as legacy index 0.
+The classifier tests live in `test/home_button/`; enum-index stability is pinned there as well.
+There is no settings-loader host test because no home-button state is migrated.
 
 ## 11. Ordered implementation
 
-1. **Enums + settings + migration:** classifier/catalog headers, upstream fields/keys, migration,
-   generic clamp, LP removal with consumers rewired in the same commit.
+1. **Enums + settings:** classifier/catalog headers, upstream fields/keys, generic clamp, LP removal
+   with consumers rewired in the same commit.
 2. **Gesture engine swap:** MappedInput integration; delete `HomeTapTracker` and fork gesture latch;
    main-loop global dispatch with invariant guards.
 3. **Reader/activity wiring:** reader switch, page turn, transition resets, transfer deferral,
    physical Confirm hold.
 4. **Settings UI + i18n:** dedicated activity, `SettingAction::HomeButton`, static rows, web clamp,
    YAML keys.
-5. **Tests:** upstream port plus fork value/migration pins and CMake wiring.
+5. **Tests:** upstream classifier port, enum-value pins, and CMake wiring.
 
 ## 12. Decision log (append-only)
 
@@ -308,12 +271,16 @@ instead of being interpreted as legacy index 0.
 - **2026-09-15 — D5: one dedicated settings screen.** DRY wins over repeating three enum rows;
   `home_button::ACTION_LABELS` is the only action-label source.
 - **2026-09-15 — D6: upstream defaults for fresh installs.** KISS and upstream-merge compatibility
-  win; the migration table preserves meaning for files that already exist.
+  win; the migration table preserves meaning for files that already exist. Superseded by D9.
 - **2026-09-15 — D7: reuse IDs before adding keys.** DRY wins in translation space; generated
   headers stay out of git.
 - **2026-09-15 — D8: test the migration policy, not the singleton.** KISS keeps the maps and
   old-key precedence in a pure header; full JSON-loader tests would drag firmware storage and I18n
-  dependencies into host tests without covering additional persisted behavior.
+  dependencies into host tests without covering additional persisted behavior. Superseded by D9.
+- **2026-09-15 — D9: owner override — no state migration.** KISS wins for the current user base: the
+  owner accepted a breaking settings change and directed removal of all fork-state migration. Old
+  fork keys are ignored and the unified fields keep their defaults; D3 and D8 are superseded.
+  Defaults are Tap=`GoBack`, Double=`ReaderMenu`, Long=`ToggleFrontlight`.
 - **2026-09-15 — historical docs.** Older design documents naming `HOME_ACT_*`, `HomeTapTracker`,
   or `longPressMenuFunction` are historical records. This document supersedes them; their stale
   terminology is not rewritten, but removed code must not leave live docs behind.

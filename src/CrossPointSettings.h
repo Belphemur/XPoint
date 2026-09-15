@@ -378,12 +378,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // power button for shortPwrBtn actions without the double-click wait.
   uint8_t doubleClickPwrLight = 1;
   // Capacitive Home-key actions. Persisted values are HomeButtonAction indices;
-  // fields are ungated so migrated settings keep compiling on every board. UI
-  // rows are gated by board capability. Fresh installs adopt upstream defaults;
-  // legacy saves are mapped by fromJson() instead of reinterpreting their bytes.
-  uint8_t homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::Home);
-  uint8_t homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
-  uint8_t homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
+  // fields are ungated so every board compiles the same catalog. UI rows are
+  // gated by board capability. Unknown or legacy fields fall back to defaults.
+  uint8_t homeButtonTapAction = static_cast<uint8_t>(HomeButtonAction::GoBack);
+  uint8_t homeButtonDoubleTapAction = static_cast<uint8_t>(HomeButtonAction::ReaderMenu);
+  uint8_t homeButtonLongPressAction = static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight);
   // Frontlight quick-panel state. Category-less SettingsList entries persist
   // these without adding them to the regular Settings screen.
   uint8_t frontlightBrightness = 60;

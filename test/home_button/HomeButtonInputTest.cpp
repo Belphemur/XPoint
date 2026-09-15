@@ -93,4 +93,22 @@ TEST_F(HomeButtonInputTest, DisabledDoubleTapRemovesDelay) {
   EXPECT_EQ(input.lastGesture(), HomeButtonGesture::Tap);
 }
 
+TEST(HomeButtonValues, UpstreamAndForkIndicesAreStable) {
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Home), 0);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Ignore), 1);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::NextPage), 2);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Refresh), 3);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Footnotes), 4);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Confirm), 5);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Sync), 6);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Bookmark), 7);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Dictionary), 8);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::ReaderMenu), 9);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::ToggleFrontlight), 10);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Sleep), 11);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Screenshot), 12);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::GoBack), 13);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Count), 14);
+}
+
 }  // namespace
