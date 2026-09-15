@@ -5,9 +5,7 @@
 #include <I18n.h>
 
 #include <cstring>
-#include <memory>
 
-#include "ClockSyncActivity.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/reader/ReadingStatsUtils.h"
@@ -29,11 +27,7 @@ enum MenuItem {
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
   ITEM_CLOCK,  // every device, but only visible when _sdkRtc.begin() succeeds (onEnter() truncates visibleItemCount to
-               // BASE_MENU_ITEMS otherwise)
-  ITEM_CLOCK_FORMAT,  // every device; same runtime gate as ITEM_CLOCK
-  ITEM_TIME_ZONE,     // every device; same runtime gate as ITEM_CLOCK
-  ITEM_CLOCK_SYNC,    // every device; same runtime gate as ITEM_CLOCK — on RTC-failed boards the row is hidden, so use
-                      // the web UI or reconnect Wi-Fi to auto-sync
+               // BASE_MENU_ITEMS otherwise; zone/format/sync rows moved to ClockSettingsActivity)
   ITEM_COUNT
 };
 
@@ -52,13 +46,7 @@ const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_BATTERY,
     StrId::STR_XTC_STATUS_BAR,
     StrId::STR_CLOCK,
-    StrId::STR_CLOCK_FORMAT,
-    StrId::STR_TIMEZONE,
-    StrId::STR_CLOCK_SYNC_NOW,
 };
-
-constexpr int CLOCK_FORMAT_ITEMS = 2;
-const StrId clockFormatNames[CLOCK_FORMAT_ITEMS] = {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H};
 
 constexpr int PROGRESS_BAR_ITEMS = 3;
 const StrId progressBarNames[PROGRESS_BAR_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
@@ -106,10 +94,6 @@ void StatusBarSettingsActivity::onEnter() {
 
   if (SETTINGS.xtcStatusBarMode >= XTC_STATUS_BAR_ITEMS) {
     SETTINGS.xtcStatusBarMode = CrossPointSettings::XTC_STATUS_BAR_MODE::XTC_STATUS_BAR_HIDE;
-  }
-
-  if (SETTINGS.clockFormat >= CLOCK_FORMAT_ITEMS) {
-    SETTINGS.clockFormat = 0;
   }
 
   if (SETTINGS.statusBarClock >= STATUS_BAR_CLOCK_ITEMS) {
@@ -191,15 +175,6 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_CLOCK:
       SETTINGS.statusBarClock = (SETTINGS.statusBarClock + 1) % STATUS_BAR_CLOCK_ITEMS;
       break;
-    case ITEM_CLOCK_FORMAT:
-      SETTINGS.clockFormat = (SETTINGS.clockFormat + 1) % CLOCK_FORMAT_ITEMS;
-      break;
-    case ITEM_TIME_ZONE:
-      // Read-only: the zone is auto-detected on sync. "Sync clock now" re-detects it.
-      return;
-    case ITEM_CLOCK_SYNC:
-      startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), nullptr);
-      return;
     default:
       return;
   }
@@ -228,26 +203,6 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
       return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
     case ITEM_CLOCK:
       return I18N.get(statusBarClockNames[SETTINGS.statusBarClock]);
-    case ITEM_CLOCK_FORMAT: {
-      const uint8_t fmt = SETTINGS.clockFormat < CLOCK_FORMAT_ITEMS ? SETTINGS.clockFormat : 0;
-      return std::string(I18N.get(clockFormatNames[fmt]));
-    }
-    case ITEM_TIME_ZONE: {
-      if (SETTINGS.clockTimeZoneId[0] == '\0') {
-        return std::string(tr(STR_NOT_SET));
-      }
-      // Show e.g. "America/Toronto (UTC-4)" with a DST badge when in effect.
-      const int off = SETTINGS.clockEffectiveOffsetMin();
-      const bool neg = off < 0;
-      const int absOff = neg ? -off : off;
-      const char* dstBadge = SETTINGS.clockTzIsDst ? tr(STR_DST) : "";
-      char val[64];
-      snprintf(val, sizeof(val), "%s (%s%c%d:%02d%s)", SETTINGS.clockTimeZoneId, tr(STR_UTC), neg ? '-' : '+',
-               absOff / 60, absOff % 60, dstBadge);
-      return std::string(val);
-    }
-    case ITEM_CLOCK_SYNC:
-      return SETTINGS.clockHasBeenSynced ? tr(STR_CLOCK_SYNCED) : tr(STR_NOT_SET);
     default:
       return tr(STR_HIDE);
   }
