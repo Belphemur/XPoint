@@ -251,8 +251,6 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_HIDE_BATTERY, &CrossPointSettings::hideBatteryPercentage,
                           {StrId::STR_NEVER, StrId::STR_IN_READER, StrId::STR_ALWAYS}, "hideBatteryPercentage",
                           StrId::STR_CAT_DISPLAY),
-        SettingInfo::Toggle(StrId::STR_HEADER_CLOCK, &CrossPointSettings::headerClock, "headerClock",
-                            StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_REFRESH_FREQ, &CrossPointSettings::refreshFrequency,
                           {StrId::STR_PAGES_1, StrId::STR_PAGES_5, StrId::STR_PAGES_10, StrId::STR_PAGES_15,
                            StrId::STR_PAGES_30, StrId::STR_NEVER},
@@ -502,6 +500,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat,
                           {StrId::STR_CLOCK_FORMAT_24H, StrId::STR_CLOCK_FORMAT_12H}, "clockFormat",
                           StrId::STR_CUSTOMISE_STATUS_BAR),
+        // Device UI edits this in the Clock settings menu (System > Clock).
+        SettingInfo::Toggle(StrId::STR_HEADER_CLOCK, &CrossPointSettings::headerClock, "headerClock",
+                            StrId::STR_CUSTOMISE_STATUS_BAR),
         // Persistence flag for NTP debounce. Resetting from the web UI forces a re-sync
         // on next WiFi connect, which is useful when crossing time zones.
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
