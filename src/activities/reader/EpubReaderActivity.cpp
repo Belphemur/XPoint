@@ -1051,7 +1051,10 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
-  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  // The open overlay owns the touch latch; page-turn tap detection must not
+  // consume a tap that FUI will route to the sheet.
+  const auto touch = overlay == Overlay::None ? ReaderUtils::detectTouchPageTurn(renderer, mappedInput)
+                                              : ReaderUtils::TouchPageTurn{false, false, 0};
 
   if (showBookmarkMessage && (millis() - bookmarkMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showBookmarkMessage = false;
@@ -1466,6 +1469,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
                                    nextPageNumber = section->currentPage;
                                  }
                                  section.reset();
+                               }
+                               if (fontPickerFromQuickSheet) {
+                                 fontPickerFromQuickSheet = false;
+                                 openFontSheet();
+                                 return;
                                }
                                openReaderMenu();
                              });
@@ -2331,6 +2339,10 @@ void EpubReaderActivity::ttfSaveProgress() {
 }
 
 void EpubReaderActivity::finishTtfPageRender() {
+  // Book profiling trace: confirm the normal AA page turn performs no extra
+  // application-level refresh after cleanup (the SDK's cleanup is RAM-only).
+  const bool grayExtraDisplay = overlay != Overlay::None && usesToolbarMenu();
+  LOG_DBG("GRS", "finishTtfPageRender: extraDisplay=%d", grayExtraDisplay);
   if (pendingScreenshot) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
@@ -2344,6 +2356,7 @@ void EpubReaderActivity::finishTtfPageRender() {
   if (overlay != Overlay::None && usesToolbarMenu()) {
     // The page just re-rendered under the overlay: refresh the snapshot that
     // backs panel->toolbar restores (any previous copy is stale).
+    LOG_DBG("GRS", "ttf finish: overlay FAST after gray cleanup overlay=%d", static_cast<int>(overlay));
     if (renderer.hasFrameBuffer()) overlayPageStored = renderer.storeBwBuffer();
     renderOverlay();
     if (overlayPopup.isActive()) overlayPopup.render(renderer);
@@ -2796,6 +2809,8 @@ void EpubReaderActivity::renderBookTtf() {
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
   const auto grayCaps = renderer.grayscaleCapabilities();
   const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && grayCaps.supported();
+  LOG_DBG("GRS", "ttfGrayPath: aa=%d images=%d strip=%d cadence=%d/%d", grayParity, pageHasImages,
+          grayCaps.stripUploads, pagesUntilFullRefresh, SETTINGS.getRefreshFrequency());
   if (grayParity) {
     // §11 Q7 construction (a): dual-plane gray parity. Base refresh ordering
     // mirrors the legacy AA path: cleanup cycle when due, otherwise the
@@ -2804,6 +2819,9 @@ void EpubReaderActivity::renderBookTtf() {
     // driver supports them, full-frame plane buffers otherwise (UC8279 X4
     // advertises Overlay gray with stripUploads=false — the full planes go
     // through the same driver's full-plane upload, not a strip flag flip).
+    LOG_DBG("GRS", "ttf gray route: transport=%s pagesUntilFullRefresh=%d refreshFrequency=%d images=%d",
+            grayCaps.stripUploads ? "strips" : "full-frame", pagesUntilFullRefresh, SETTINGS.getRefreshFrequency(),
+            pageHasImages);
     if (grayCaps.stripUploads) {
       renderTtfGrayStrips(page, params, scratchMark);
     } else {
@@ -2850,19 +2868,39 @@ void EpubReaderActivity::renderBookTtf() {
 }
 
 void EpubReaderActivity::ttfDisplayGrayBase() {
+  // GRS: base-entry diagnostic — request mode, cadence state, and driver state flags.
+  // The overlay base path is used for all TTF text AA pages: the owner's research
+  // recommends Fast base + sparse overlay masks + stock short AA waveform. Direct
+  // combined (absolute planes + quality bank) is reserved for full-screen images
+  // and sleep covers; selecting it for text pages causes the jarring quality
+  // waveform flash the research describes.
+  //
+  // Cadence knob: SETTINGS.refreshFrequency controls how many consecutive AA
+  // pages run before the deliberate Half scrub. The first AA page and any
+  // driver-invalid state still take a real B/W activation.
   if (pagesUntilFullRefresh <= 1) {
+    LOG_DBG("GRS", "ttfDisplayGrayBase: cadence=full (pages<=1) requesting HALF+precondition");
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     renderer.preconditionGrayscale();
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else {
-    renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
-    pagesUntilFullRefresh--;
+    return;
   }
+  LOG_DBG("GRS", "ttfDisplayGrayBase: cadence=fast pagesUntilFullRefresh=%d requesting overlay FAST base",
+          pagesUntilFullRefresh);
+  // Overlay mode: uses Fast base transition when the driver state allows
+  // (_grayRefreshedOnce && _oldPlaneValid && !_needFullClear), otherwise falls
+  // back to a real B/W display(). Always uses overlay masks — never Direct
+  // combined for text pages (see SDK Uc8279X4Driver::displayGrayscaleBase).
+  renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+  pagesUntilFullRefresh--;
 }
 
 void EpubReaderActivity::renderTtfGrayStrips(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
                                              size_t scratchMark) {
   (void)scratchMark;  // released by the caller after this walk
+#ifdef BOOK_PROFILE
+  const unsigned long renderStartMs = millis();
+#endif
   constexpr int STRIP_ROWS = 80;
   const int gh = renderer.getDisplayHeight();
   const int gwBytes = renderer.getDisplayWidthBytes();
@@ -2877,6 +2915,9 @@ void EpubReaderActivity::renderTtfGrayStrips(const freeink::book::Page& page, co
   }
 
   ttfDisplayGrayBase();
+#ifdef BOOK_PROFILE
+  const unsigned long tBaseMs = millis();
+#endif
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
   for (int y = 0; y < gh; y += STRIP_ROWS) {
     const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
@@ -2887,9 +2928,20 @@ void EpubReaderActivity::renderTtfGrayStrips(const freeink::book::Page& page, co
     renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
     renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
   }
+#ifdef BOOK_PROFILE
+  const unsigned long tPlanesMs = millis();
+#endif
   renderer.setRenderMode(GfxRenderer::BW);
   renderer.displayGrayBuffer();
+#ifdef BOOK_PROFILE
+  const unsigned long tGrayMs = millis();
+#endif
   renderer.cleanupGrayscaleWithFrameBuffer();
+#ifdef BOOK_PROFILE
+  LOG_DBG("PROF", "phase=ttf_gray transport=strips bands=%d base=%lums planes=%lums gray=%lums cleanup=%lums",
+          (gh + STRIP_ROWS - 1) / STRIP_ROWS, tBaseMs - renderStartMs, tPlanesMs - tBaseMs, tGrayMs - tPlanesMs,
+          millis() - tGrayMs);
+#endif
 }
 
 void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
@@ -2900,6 +2952,9 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
   // of bands — submitted through the driver's full-plane upload. The panel's
   // advertised restrictions are preserved: no strip flag is flipped.
   (void)scratchMark;  // released by the caller after this walk
+#ifdef BOOK_PROFILE
+  const unsigned long renderStartMs = millis();
+#endif
   const int gh = renderer.getDisplayHeight();
   const size_t planeBytes = static_cast<size_t>(renderer.getDisplayWidthBytes()) * static_cast<size_t>(gh);
   // Size guard before the pool allocation (CWE-400 discipline); panel
@@ -2923,6 +2978,9 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
   }
 
   ttfDisplayGrayBase();
+#ifdef BOOK_PROFILE
+  const unsigned long tBaseMs = millis();
+#endif
   renderer.setRenderMode(GfxRenderer::GRAYSCALE_DUAL);
   // One "full-frame strip" (origin 0, panel rows): drawGrayDualPixel lands
   // each tone's plane bits in the two private buffers, orientation-aware.
@@ -2930,11 +2988,21 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
   renderer.clearScreen(0x00);
   freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
   renderer.endStripTarget();
+#ifdef BOOK_PROFILE
+  const unsigned long tPlanesMs = millis();
+#endif
   renderer.setRenderMode(GfxRenderer::BW);
   renderer.copyGrayscaleLsbBuffers(lsbPlane.get());
   renderer.copyGrayscaleMsbBuffers(msbPlane.get());
   renderer.displayGrayBuffer();
+#ifdef BOOK_PROFILE
+  const unsigned long tGrayMs = millis();
+#endif
   renderer.cleanupGrayscaleWithFrameBuffer();
+#ifdef BOOK_PROFILE
+  LOG_DBG("PROF", "phase=ttf_gray transport=full_frame plane_bytes=%u base=%lums planes=%lums gray=%lums cleanup=%lums",
+          (unsigned)planeBytes, tBaseMs - renderStartMs, tPlanesMs - tBaseMs, tGrayMs - tPlanesMs, millis() - tGrayMs);
+#endif
 }
 
 void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
@@ -3771,9 +3839,35 @@ void EpubReaderActivity::openFontSheet() {
   openOverlay(Overlay::FontSheet);
 }
 
-void EpubReaderActivity::quickFontSelectRow(const int row) {
+void EpubReaderActivity::openFontFamilyPicker() {
+  if (!ttf_) return;
+  fontPickerFromQuickSheet = true;
+  closeFontSheet();
+  startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
+                                                                TextSettingsActivity::Tab::Family),
+                         [this](const ActivityResult& result) {
+                           {
+                             RenderLock lock;
+                             if (section) {
+                               rememberCurrentContentOffset();
+                               cachedSpineIndex = currentSpineIndex;
+                               cachedChapterTotalPageCount = section->pageCount;
+                               nextPageNumber = section->currentPage;
+                             }
+                             section.reset();
+                           }
+                           if (fontPickerFromQuickSheet) {
+                             fontPickerFromQuickSheet = false;
+                             openFontSheet();
+                             return;
+                           }
+                           openReaderMenu();
+                         });
+}
+
+void EpubReaderActivity::quickFontSelectRow(const int row, const bool refresh) {
   quickFontRow = std::clamp(row, 0, 1);
-  if (!toolbarUi) return;
+  if (!refresh || !toolbarUi) return;
   RenderLock lock;
   renderOverlay();
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -3893,6 +3987,9 @@ void EpubReaderActivity::renderQuickFontPage() {
 
   // The page-only layout succeeded. Mirror the page cursor for the status bar,
   // snapshot the new clean page for overlay transitions, then draw the sheet.
+  // The sheet preview is intentionally base-only (design §6): the final close
+  // reflow restores the AA gray planes so per-tap cost stays FAST.
+  LOG_DBG("GRS", "quickFont preview: base-only FAST (AA restored on close)");
   ttfPage = static_cast<int>(pageIndex);
   nextPageNumber = ttfPage;
   {
@@ -3985,6 +4082,10 @@ void EpubReaderActivity::openOverlay(Overlay target) {
   overlay = target;
   if (!toolbarUi) toolbarUi = std::make_unique<ReaderToolbarUi>(renderer);
   if (previous == Overlay::None) toolbarUi->begin();
+#if defined(CROSSPOINT_TTF_READER)
+  LOG_DBG("ERS", "overlay open target=%d previous=%d uiReady=%d", static_cast<int>(target), static_cast<int>(previous),
+          toolbarUi->routingReady());
+#endif
   // Buttons show a cursor from the start; touch boards only once a button moves it.
   panelCursorShown = !mappedInput.hasTouch();
   switch (target) {
@@ -4046,6 +4147,9 @@ void EpubReaderActivity::openOverlay(Overlay target) {
       overlayPageStored = renderer.storeBwBuffer();
     }
     renderOverlay();
+#if defined(CROSSPOINT_TTF_READER)
+    LOG_DBG("ERS", "overlay rendered=%d uiReady=%d", static_cast<int>(overlay), toolbarUi->routingReady());
+#endif
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     requestUpdate();  // no page yet: renderBook() draws the overlay once it is
@@ -4231,6 +4335,12 @@ void EpubReaderActivity::handleOverlayInput() {
   // Touch first: FreeInkUI routes the frame against the tap targets the last
   // render registered and hands back the action it mapped to.
   const auto routed = toolbarUi->route(mappedInput);
+#if defined(CROSSPOINT_TTF_READER)
+  if (routed.routed) {
+    LOG_DBG("ERS", "overlay=%d uiReady=%d routed event=%d value=%d", static_cast<int>(overlay),
+            toolbarUi->routingReady(), static_cast<int>(routed.event), routed.value);
+  }
+#endif
 
 #if defined(CROSSPOINT_TTF_READER)
   if (overlay == Overlay::FontSheet) {
@@ -4239,15 +4349,24 @@ void EpubReaderActivity::handleOverlayInput() {
         closeFontSheet();
         return;
       case ReaderToolbarUi::Event::FontMinus:
-        if (routed.value >= 0 && routed.value <= 1) quickFontSelectRow(routed.value);
-        quickFontStep(-1);
+        if (routed.value == 0) quickFontStep(-1);
         return;
       case ReaderToolbarUi::Event::FontPlus:
-        if (routed.value >= 0 && routed.value <= 1) quickFontSelectRow(routed.value);
-        quickFontStep(1);
+        if (routed.value == 0) quickFontStep(1);
+        return;
+      case ReaderToolbarUi::Event::FontPrev:
+        if (routed.value == 1) quickFontStep(-1);
+        return;
+      case ReaderToolbarUi::Event::FontNext:
+        if (routed.value == 1) quickFontStep(1);
         return;
       case ReaderToolbarUi::Event::FontRow:
-        quickFontSelectRow(routed.value);
+        if (routed.value == 1) {
+          quickFontSelectRow(1, false);
+          openFontFamilyPicker();
+        } else {
+          quickFontSelectRow(0);
+        }
         return;
       default:
         break;

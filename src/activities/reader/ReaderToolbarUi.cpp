@@ -3,6 +3,7 @@
 #include <FreeInkUIIcon.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -24,6 +25,8 @@ constexpr fui::ActionId ACTION_ROW = 6;         // panel list row, value = row i
 constexpr fui::ActionId ACTION_FONT_MINUS = 7;  // quick font row's - control
 constexpr fui::ActionId ACTION_FONT_PLUS = 8;   // quick font row's + control
 constexpr fui::ActionId ACTION_FONT_ROW = 9;    // select a quick-font row
+constexpr fui::ActionId ACTION_FONT_PREV = 10;  // quick font family's previous control
+constexpr fui::ActionId ACTION_FONT_NEXT = 11;  // quick font family's next control
 
 // Scrub row: two small round-cornered chapter buttons flanking a thin progress
 // track with a round knob -- the reading page's chrome is light, so the
@@ -55,7 +58,7 @@ void ReaderToolbarUi::begin() {
   resetUi();
   pending_ = Routed{};
   nav_.reset();
-  for (fui::ActionId id = ACTION_DISMISS; id <= ACTION_FONT_ROW; ++id) {
+  for (fui::ActionId id = ACTION_DISMISS; id <= ACTION_FONT_NEXT; ++id) {
     app.on(id, &ReaderToolbarUi::onAction, this);
   }
   app.setScreen(&ReaderToolbarUi::screenFn, this);
@@ -88,7 +91,7 @@ void ReaderToolbarUi::onAction(const fui::ActionEvent& event, void* user) {
   Routed& out = self->pending_;
   out.value = event.value;
   out.permille = event.dragPermille;
-  if (event.action >= ACTION_DISMISS && event.action <= ACTION_FONT_ROW) out.event = static_cast<Event>(event.action);
+  if (event.action >= ACTION_DISMISS && event.action <= ACTION_FONT_NEXT) out.event = static_cast<Event>(event.action);
   if (out.event == Event::Scrub && event.dragPermille < 0) out.event = Event::None;
   // A handled action repaints through the reader's own fast path, not through
   // app.invalidate(): the page underneath is the reader's to draw.
@@ -119,9 +122,13 @@ void ReaderToolbarUi::buildQuickFontRow(UiScreen& screen, const fui::Rect& row, 
   const int16_t controlW = 44;
   const fui::Rect minusRect{row.x, row.y, controlW, row.height};
   const fui::Rect plusRect{static_cast<int16_t>(row.right() - controlW), row.y, controlW, row.height};
-  stepProps_.label = "-";
+
   stepProps_.icon = fui::BitmapRef{};
-  stepProps_.action = ACTION_FONT_MINUS;
+  stepProps_.action = rowIndex == 0 ? ACTION_FONT_MINUS : ACTION_FONT_PREV;
+  stepProps_.value = static_cast<int16_t>(rowIndex);
+  stepProps_.label = rowIndex == 0 ? "-" : nullptr;
+  stepProps_.icon = rowIndex == 0 ? fui::BitmapRef{} : fui::bitmapFromIcon(icon_reader_back_24);
+  stepProps_.iconSize = rowIndex == 0 ? 0 : 24;
   stepProps_.inputMask = fui::InputTouch;
   stepProps_.styles.explicitlySet = true;
   stepProps_.styles.normal.background = fui::Paint::solid(fui::Color::White);
@@ -135,13 +142,12 @@ void ReaderToolbarUi::buildQuickFontRow(UiScreen& screen, const fui::Rect& row, 
   stepProps_.styles.active = stepProps_.styles.normal;
   stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
   stepProps_.styles.active.foreground = fui::Paint::solid(fui::Color::White);
-  stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
   screen.button(stepProps_, minusRect);
 
-  stepProps_.label = "+";
-  stepProps_.action = ACTION_FONT_PLUS;
-  stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
-  stepProps_.styles.active.foreground = fui::Paint::solid(fui::Color::White);
+  stepProps_.action = rowIndex == 0 ? ACTION_FONT_PLUS : ACTION_FONT_NEXT;
+  stepProps_.label = rowIndex == 0 ? "+" : nullptr;
+  stepProps_.icon = rowIndex == 0 ? fui::BitmapRef{} : fui::bitmapFromIcon(icon_reader_next_24);
+  stepProps_.iconSize = rowIndex == 0 ? 0 : 24;
   screen.button(stepProps_, plusRect);
 
   const fui::Rect textRect{static_cast<int16_t>(minusRect.right() + tokens.spaceSm), row.y,

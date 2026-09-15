@@ -77,7 +77,26 @@ same-glyph outlines stay with the rasterizer.
   bits ≡ full-frame plane bits.
 - `GrayPlanesTest` converter-banding assertions use the uniform boundaries.
 
-## 6. Open calibration work
+## 6. Refresh policy and cadence
+
+Text AA pages use the overlay encoding (not Direct/Absolute) with a FAST base.
+On the UC8279 X4, the driver can then use its non-flashing previous→current
+base transition when the previous gray page left a valid reference. A real
+B/W activation is still expected for the first AA page, after `requestResync`,
+or after invalid state.
+
+The deliberate cleanup cadence is `SETTINGS.refreshFrequency`. Every
+`refreshFrequency` pages, `ttfDisplayGrayBase()` performs a HALF scrub before
+the gray pass;
+this is intentional ghosting cleanup and must not be removed without waveform
+validation. Quick-sheet per-tap preview is base-only FAST by design; the final
+close reflow restores AA plane parity.
+
+After an overlay gray page, the driver intentionally flags the next B/W page
+for a cheap full-frame re-drive (`_redriveAfterGray`). This scrubs gray edge
+charge and is also intentional; the SDK owner should validate before removing.
+
+## 7. Open calibration work
 
 Device validation remains owner/manual: four solid patches + a coverage ramp
 through the exact `Uc8279X4Driver` / LUT-02 path, ghosting, and gray↔BW

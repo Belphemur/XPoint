@@ -35,6 +35,8 @@ class ReaderToolbarUi : public UiAppHost {
     FontMinus = 7,
     FontPlus = 8,
     FontRow = 9,
+    FontPrev = 10,
+    FontNext = 11,
   };
 
   struct Model {

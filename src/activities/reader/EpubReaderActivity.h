@@ -115,9 +115,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // invalidated only when the sheet closes (SD write + full reflow are
   // deliberately not per-tap costs).
   int quickFontRow = 0;
+  bool fontPickerFromQuickSheet = false;
   void openFontSheet();
+  void openFontFamilyPicker();
   void quickFontStep(int direction);
-  void quickFontSelectRow(int row);
+  void quickFontSelectRow(int row, bool refresh = true);
   void renderQuickFontPage();
   void closeFontSheet();
 #endif
