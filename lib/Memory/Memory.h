@@ -5,6 +5,7 @@
 // does NOT define ESP_PLATFORM / BOARD_HAS_PSRAM) compiles cleanly with the
 // non-PSRAM makeUniqueNoThrow overloads only.
 #ifdef ESP_PLATFORM
+#include <Arduino.h>
 #include <esp_heap_caps.h>
 #endif
 
@@ -124,6 +125,26 @@ struct PoolDeleter {
 using PoolBytes = std::unique_ptr<uint8_t[], PoolDeleter>;
 
 inline PoolBytes poolMakeBytes(size_t size) { return PoolBytes{static_cast<uint8_t*>(poolMalloc(size))}; }
+
+// Largest block the default allocator can currently serve for a heap
+// allocation. With SPIRAM_USE_MALLOC the sdkconfig's internal-only threshold
+// (SPIRAM_MALLOC_ALWAYSINTERNAL) only sets preference order — ≤threshold tries
+// DRAM first, >threshold tries PSRAM first — and both fall back to the other
+// heap, so an allocation succeeds if either pool can serve it. Non-PSRAM
+// builds always answer with the DRAM largest block.
+#ifdef ESP_PLATFORM
+inline uint32_t poolMaxAllocFor(size_t size) {
+#if defined(BOARD_HAS_PSRAM)
+  (void)size;
+  const uint32_t psram = ESP.getMaxAllocPsram();
+  const uint32_t dram = ESP.getMaxAllocHeap();
+  return psram > dram ? psram : dram;
+#else
+  (void)size;
+  return ESP.getMaxAllocHeap();
+#endif
+}
+#endif  // ESP_PLATFORM
 
 // Helper struct to call a cleanup function on exit from any scope.
 // Use with a lambda to avoid unnecessary allocations from std::function/std::bind:

@@ -180,11 +180,13 @@ bool parse(HalFile& file, Info* info, ExtractError* outError) {
 
       info->chunkLength = chunkLen;
       // vector reserve() aborts under -fno-exceptions if it can't allocate;
-      // refuse up front (like Dictionary::readDefinition's guard) so a fragmented
-      // heap surfaces LowMemory instead of crashing. chunkCount <= MAX_CHUNK_COUNT
-      // caps this at ~32KB.
+      // refuse up front (like Dictionary::readDefinition's guard) so a
+      // fragmented heap surfaces LowMemory instead of crashing. chunkCount <=
+      // MAX_CHUNK_COUNT caps this at ~32KB. poolMaxAllocFor consults PSRAM on
+      // PSRAM builds, where a table over the internal-only threshold would be
+      // served from PSRAM anyway.
       const size_t chunkTableBytes = (static_cast<size_t>(chunkCount) + 1) * sizeof(uint32_t);
-      if (ESP.getMaxAllocHeap() < chunkTableBytes + CHUNK_TABLE_HEAP_HEADROOM_BYTES)
+      if (poolMaxAllocFor(chunkTableBytes) < chunkTableBytes + CHUNK_TABLE_HEAP_HEADROOM_BYTES)
         return fail(ExtractError::LowMemory);
       info->chunkOffsets.reserve(static_cast<size_t>(chunkCount) + 1);
       info->chunkOffsets.push_back(0);
