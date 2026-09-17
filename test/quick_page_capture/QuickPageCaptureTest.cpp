@@ -30,16 +30,25 @@ class FileSource final : public freeink::book::BookSource {
  public:
   explicit FileSource(const std::string& path) : f_(fopen(path.c_str(), "rb")) {
     if (f_ == nullptr) return;
-    fseek(f_, 0, SEEK_END);
-    size_ = ftell(f_);
-    fseek(f_, 0, SEEK_SET);
+    if (fseek(f_, 0, SEEK_END) != 0) {
+      fclose(f_);
+      f_ = nullptr;
+      return;
+    }
+    const long end = ftell(f_);
+    if (end < 0 || fseek(f_, 0, SEEK_SET) != 0) {
+      fclose(f_);
+      f_ = nullptr;
+      return;
+    }
+    size_ = static_cast<uint64_t>(end);
   }
   ~FileSource() override {
     if (f_ != nullptr) fclose(f_);
   }
   int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
     if (f_ == nullptr) return 0;
-    fseek(f_, static_cast<long>(offset), SEEK_SET);
+    if (fseek(f_, static_cast<long>(offset), SEEK_SET) != 0) return 0;
     return static_cast<int32_t>(fread(dst, 1, len, f_));
   }
   uint64_t size() const override { return size_; }
@@ -247,10 +256,17 @@ class QuickPageCaptureTest : public ::testing::Test {
     FILE* f =
         fopen((std::string(TESTDATA_DIR) + "/fixtures/fonts/amazon-ember/Amazon_Ember_Regular.ttf").c_str(), "rb");
     if (f == nullptr) return {};
-    fseek(f, 0, SEEK_END);
+    std::vector<uint8_t> data;
+    if (fseek(f, 0, SEEK_END) != 0) {
+      fclose(f);
+      return data;
+    }
     const long len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    std::vector<uint8_t> data(static_cast<size_t>(len));
+    if (len < 0 || fseek(f, 0, SEEK_SET) != 0) {
+      fclose(f);
+      return data;
+    }
+    data.resize(static_cast<size_t>(len));
     const size_t got = fread(data.data(), 1, data.size(), f);
     fclose(f);
     data.resize(got);

@@ -12,16 +12,22 @@ bool QuickPageCapture::capture(const freeink::book::Page& page) {
   }
 
   // Validate the string budget up front so a failed capture cannot leave a
-  // partially overwritten bump region behind.
-  size_t stringNeed = 0;
+  // partially overwritten bump region behind. Null strings contribute
+  // nothing and stay null through copyString; the 64-bit accumulator keeps
+  // the bound check overflow-free.
+  uint64_t stringNeed = 0;
   for (uint16_t i = 0; i < page.runCount; ++i) stringNeed += page.runs[i].len;
   for (uint16_t i = 0; i < page.linkCount; ++i) {
-    stringNeed += strlen(page.links[i].target) + 1;
+    if (page.links[i].target != nullptr) stringNeed += strlen(page.links[i].target) + 1;
     if (page.links[i].fragment != nullptr) stringNeed += strlen(page.links[i].fragment) + 1;
   }
-  for (uint16_t i = 0; i < page.imageCount; ++i) stringNeed += strlen(page.images[i].href) + 1;
-  for (uint16_t i = 0; i < page.rubyCount; ++i) stringNeed += strlen(page.rubies[i].text) + 1;
-  if (kStringsOff + stringNeed > cap_) return false;
+  for (uint16_t i = 0; i < page.imageCount; ++i) {
+    if (page.images[i].href != nullptr) stringNeed += strlen(page.images[i].href) + 1;
+  }
+  for (uint16_t i = 0; i < page.rubyCount; ++i) {
+    if (page.rubies[i].text != nullptr) stringNeed += strlen(page.rubies[i].text) + 1;
+  }
+  if (cap_ < kStringsOff || stringNeed > cap_ - kStringsOff) return false;
 
   auto* runs = reinterpret_cast<freeink::book::PageTextRun*>(buffer_ + kRunsOff);
   auto* links = reinterpret_cast<freeink::book::PageLink*>(buffer_ + kLinksOff);
