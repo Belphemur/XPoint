@@ -50,10 +50,12 @@ class QuickPageCapture {
 
   // Installs the backing buffer (one allocation, reused across captures).
   // Must be max-aligned (malloc/poolMalloc) — the record arrays sit at
-  // fixed offsets from it.
+  // fixed offsets from it. Any previously captured page pointed into the
+  // old buffer, so it is invalidated.
   void attach(uint8_t* buffer, size_t cap) {
     buffer_ = buffer;
     cap_ = cap;
+    valid_ = false;
   }
   bool attached() const { return buffer_ != nullptr; }
 
