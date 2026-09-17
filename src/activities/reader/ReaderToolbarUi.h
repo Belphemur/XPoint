@@ -56,8 +56,8 @@ class ReaderToolbarUi : public UiAppHost {
     const char* familyText = nullptr;
     // Tile row: the tool in focus (toolbar) / the open panel (panel). 0..2.
     int activeTool = 0;
-    // Pixels kept free along the screen's bottom edge under the panel sheet
-    // (the button-hint row on boards without touch). 0 on touch boards.
+    // Pixels kept free along the screen's bottom edge under the quick-font
+    // sheet (the button-hint row on boards without touch). 0 on touch boards.
     int bottomReserve = 0;
     // Button boards keep the theme's denser list row height (as every other
     // list does there); touch boards use FreeInkUI's finger-sized rows.
