@@ -29,6 +29,15 @@ if(NOT x4pro_fixture_ok)
     file(SHA256 "${X4PRO_FIXTURE}" x4pro_fixture_hash)
     if(x4pro_fixture_hash STREQUAL X4PRO_FIXTURE_SHA256)
       set(x4pro_fixture_ok ON)
+    else()
+      # The download succeeded but the bytes are wrong: a captive portal, a
+      # proxy, or a changed upstream asset. Silence here would skip every
+      # fixture-dependent validation test invisibly, so fail loudly.
+      message(FATAL_ERROR "Firmware fixture download from ${X4PRO_FIXTURE_URL} "
+                          "does not match the pinned SHA-256 (got ${x4pro_fixture_hash}). "
+                          "Refusing to skip the upstream-image validation tests silently. "
+                          "Override with -DX4PRO_FIXTURE_URL=file:///path/to/crosspoint-1.6.0-x4pro.bin "
+                          "if you have a trusted copy.")
     endif()
   else()
     list(GET x4pro_dl_status 1 x4pro_dl_message)
