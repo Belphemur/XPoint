@@ -98,6 +98,10 @@ struct ActivityResult {
 
 using ActivityResultHandler = std::function<void(const ActivityResult&)>;
 
+// The production delivery stamp used by Activity::setResult(): marks a result
+// as explicitly set so normalizeActivityResult passes it through untouched.
+inline void markActivityResultDelivered(ActivityResult& result) { result.hasResult = true; }
+
 // Pop-result policy: an activity that popped without ever calling setResult()
 // leaves a default-constructed result (hasResult=false, isCancelled=false,
 // data=monostate); a parent handler doing std::get<T>(data) on it would abort

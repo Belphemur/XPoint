@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <string>
 
 #include "FirmwareFlasher.h"
@@ -10,6 +11,9 @@
 #include "esp_ota_ops.h"
 
 namespace {
+
+// Chip id compiled into the synthetic image and the stub's reset default.
+constexpr uint16_t kSyntheticChipId = 0x1234;
 
 // A minimal ESP app image with one segment and no SHA trailer. Its total size
 // is the 16-byte aligned body plus the checksum byte, and its embedded board
@@ -22,8 +26,7 @@ std::string buildValidImage() {
   std::string image(kTotalSize, '\0');
   image[0] = '\xE9';  // ESP_IMAGE_MAGIC
   image[1] = 1;       // one segment
-  constexpr uint16_t kChipId = 0x1234;
-  std::memcpy(image.data() + 12, &kChipId, sizeof(kChipId));
+  std::memcpy(image.data() + 12, &kSyntheticChipId, sizeof(kSyntheticChipId));
   image[23] = 0;  // no appended SHA-256 trailer
 
   std::memcpy(image.data() + 24 + 4, &kSegmentDataLen, sizeof(kSegmentDataLen));
@@ -39,10 +42,18 @@ std::string buildValidImage() {
 
 }  // namespace
 
+// testSetRunningChipId() writes a process-global that validateImageFile reads
+// per call under HOST_TEST. Reset it around every test so --gtest_shuffle can
+// never leak chip state (e.g. the fixture's 0x0009) into another test.
+struct FirmwareFlasherValidateImageFile : public ::testing::Test {
+  void SetUp() override { testSetRunningChipId(kSyntheticChipId); }
+  void TearDown() override { testSetRunningChipId(kSyntheticChipId); }
+};
+
 // The SD picker filters by .bin only; validateImageFile must therefore judge
 // firmware by its bytes, not by whether its filename follows a release-asset
 // convention.
-TEST(FirmwareFlasherValidateImageFile, AcceptsAnyBinFilenameForIdenticalImageBytes) {
+TEST_F(FirmwareFlasherValidateImageFile, AcceptsAnyBinFilenameForIdenticalImageBytes) {
   const std::string image = buildValidImage();
   constexpr size_t kPartitionSize = 2 * 1024 * 1024;
   auto& files = Storage.files;
@@ -66,9 +77,9 @@ constexpr uint16_t kX4ProChipId = 0x0009;  // ESP32-S3 (esp_image_header_t offse
 constexpr size_t kExpectedFixtureSize = 5341040;
 constexpr size_t kX4ProOtaPartitionSize = 6 * 1024 * 1024;
 
-std::string readFixtureImage() {
+std::optional<std::string> readFixtureImage() {
   std::ifstream in(X4PRO_FIXTURE_PATH, std::ios::binary);
-  EXPECT_TRUE(in.good()) << "fixture missing at configure-time path: " << X4PRO_FIXTURE_PATH;
+  if (!in.good()) return std::nullopt;
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
@@ -83,8 +94,10 @@ uint32_t firstSegmentDataLen(const std::string& image) {
 // The locked-user escape hatch: an untagged upstream image must pass every
 // validation gate (magic, chip id, segment walk, XOR checksum, SHA-256
 // trailer, board-tag scan) on an x4pro-class device.
-TEST(FirmwareFlasherValidateImageFile, AcceptsRealUpstreamX4ProReleaseImage) {
-  const std::string image = readFixtureImage();
+TEST_F(FirmwareFlasherValidateImageFile, AcceptsRealUpstreamX4ProReleaseImage) {
+  const std::optional<std::string> fixture = readFixtureImage();
+  if (!fixture) GTEST_SKIP() << "fixture not downloaded at configure time";
+  const std::string& image = *fixture;
   ASSERT_EQ(image.size(), kExpectedFixtureSize);
   ASSERT_EQ(static_cast<uint8_t>(image[0]), 0xE9) << "fixture is not an ESP app image";
   uint16_t chip = 0;
@@ -99,8 +112,10 @@ TEST(FirmwareFlasherValidateImageFile, AcceptsRealUpstreamX4ProReleaseImage) {
 
 // A single flipped data byte must be caught by the XOR checksum — guards
 // against a validation test that would trivially pass on any input.
-TEST(FirmwareFlasherValidateImageFile, RejectsRealImageWithFlippedByteAsBadChecksum) {
-  const std::string image = readFixtureImage();
+TEST_F(FirmwareFlasherValidateImageFile, RejectsRealImageWithFlippedByteAsBadChecksum) {
+  const std::optional<std::string> fixture = readFixtureImage();
+  if (!fixture) GTEST_SKIP() << "fixture not downloaded at configure time";
+  const std::string& image = *fixture;
   std::string corrupted = image;
   // Flip a byte in the middle of segment 0's data so only the checksum (not
   // the segment table) is affected.
@@ -116,8 +131,10 @@ TEST(FirmwareFlasherValidateImageFile, RejectsRealImageWithFlippedByteAsBadCheck
 // A tag naming another board (sticky) must fail the board scan on the x4pro
 // class. The tag is planted straddling a 4096-byte feed-chunk boundary to also
 // prove the streaming scanner reassembles needles split across chunks.
-TEST(FirmwareFlasherValidateImageFile, RejectsForeignBoardTagOnX4Pro) {
-  const std::string image = readFixtureImage();
+TEST_F(FirmwareFlasherValidateImageFile, RejectsForeignBoardTagOnX4Pro) {
+  const std::optional<std::string> fixture = readFixtureImage();
+  if (!fixture) GTEST_SKIP() << "fixture not downloaded at configure time";
+  const std::string& image = *fixture;
   std::string tagged = image;
   constexpr char kStickyTag[] = "CROSSPOINT-BOARD-V1:sticky;";
   // Segment 0's data starts at file offset 32; the scanner's first feed chunk

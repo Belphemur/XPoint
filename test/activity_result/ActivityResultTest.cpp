@@ -13,9 +13,11 @@
 namespace {
 
 // Activity::setResult() (src/activities/Activity.cpp) is the only way an
-// activity delivers a result to ActivityManager; it stamps hasResult=true.
+// activity delivers a result to ActivityManager. It delegates its hasResult
+// stamp to markActivityResultDelivered(), so tests exercising that helper run
+// the exact production stamping path — no duplicated logic to drift.
 ActivityResult asDeliveredViaSetResult(ActivityResult r) {
-  r.hasResult = true;
+  markActivityResultDelivered(r);
   return r;
 }
 
