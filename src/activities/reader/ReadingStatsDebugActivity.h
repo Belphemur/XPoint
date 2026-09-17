@@ -46,10 +46,10 @@ class ReadingStatsDebugActivity final : public Activity {
 
   GlobalReadingStats globalStats;
   std::vector<BookLine> books;
-  int cursor = 0;        // selected book line (list level)
+  int cursor = 0;  // selected book line (list level)
   // Scroll clamp runs inside const render(); sequenced with loop() through
   // requestUpdate, so no locking beyond what cursor already relies on.
-  mutable int offset = 0;  // first visible book line (list level)
+  mutable int offset = 0;    // first visible book line (list level)
   bool showingBook = false;  // true: full dump of books[detailIndex]
   int detailIndex = 0;
   GfxRenderer::Orientation previousOrientation = GfxRenderer::Orientation::Portrait;

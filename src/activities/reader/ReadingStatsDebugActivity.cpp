@@ -2,23 +2,23 @@
 
 #if defined(READING_STATS_ENABLED) && defined(ENABLE_SERIAL_LOG) && LOG_LEVEL >= 2
 
+#include <GfxRenderer.h>
+#include <LibraryBuilder.h>
+#include <LibraryIndexFile.h>
+#include <Logging.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <utility>
 
-#include <GfxRenderer.h>
-#include <Logging.h>
-
 #include "BookCachePath.h"
-#include <LibraryBuilder.h>
-#include <LibraryIndexFile.h>
 #include "MappedInputManager.h"
 #include "fontIds.h"
 
 namespace {
 // Samples are grouped 8 per line so a full WPM window (15) takes two lines.
 constexpr size_t kSamplesPerLine = 8;
-constexpr size_t kTitleChars = 38;    // full-dump title line
+constexpr size_t kTitleChars = 38;     // full-dump title line
 constexpr size_t kRowTitleChars = 22;  // compact list row
 constexpr int kLeftX = 4;
 
@@ -31,8 +31,8 @@ void formatSampleLine(char* buf, size_t len, size_t first, size_t last, const ui
   for (size_t i = first; i <= last && i < count; ++i) {
     int written;
     if (full && i == pos) {
-      written = snprintf(buf + used, len - used, " %u<%u", static_cast<unsigned>(samples[i]),
-                         static_cast<unsigned>(pos));
+      written =
+          snprintf(buf + used, len - used, " %u<%u", static_cast<unsigned>(samples[i]), static_cast<unsigned>(pos));
     } else {
       written = snprintf(buf + used, len - used, " %u", static_cast<unsigned>(samples[i]));
     }
@@ -239,7 +239,8 @@ void ReadingStatsDebugActivity::renderBookDump(const int lineH) const {
   renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
   // Cache dir basename identifies the stats file being dumped.
   const size_t slash = book.cachePath.find_last_of('/');
-  snprintf(buf, sizeof(buf), "dir: %s", slash == std::string::npos ? book.cachePath.c_str() : book.cachePath.c_str() + slash + 1);
+  snprintf(buf, sizeof(buf), "dir: %s",
+           slash == std::string::npos ? book.cachePath.c_str() : book.cachePath.c_str() + slash + 1);
   renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
 
   // Re-loaded per render of the detail level: at most one SD record read, and
