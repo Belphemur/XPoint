@@ -2,7 +2,7 @@ add_executable(TtfWordSelectTest
   TtfWordSelectTest.cpp
   ${REPO_ROOT}/src/activities/reader/TtfWordSelect.cpp
   ${REPO_ROOT}/src/util/DictionarySelection.cpp
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/TtfFont.cpp
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/TtfFont.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/Epub/Epub/hyphenation/HyphenationCommon.cpp
 )
@@ -18,6 +18,8 @@ target_include_directories(TtfWordSelectTest PRIVATE
   ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
 )
 

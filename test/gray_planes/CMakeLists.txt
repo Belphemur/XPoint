@@ -5,6 +5,7 @@ add_executable(GrayPlanesTest
 target_include_directories(GrayPlanesTest PRIVATE
   ${REPO_ROOT}/src
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
 )
 
 target_link_libraries(GrayPlanesTest PRIVATE

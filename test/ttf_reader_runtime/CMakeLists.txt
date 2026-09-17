@@ -5,6 +5,7 @@ add_executable(TtfReaderRuntimeTest
 
 target_include_directories(TtfReaderRuntimeTest PRIVATE
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
   ${REPO_ROOT}/src
 )
 

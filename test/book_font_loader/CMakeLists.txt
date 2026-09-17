@@ -1,7 +1,7 @@
 add_executable(BookFontLoaderTest
   BookFontLoaderTest.cpp
   ${REPO_ROOT}/src/BookFontLoader.cpp
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/TtfFont.cpp
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/TtfFont.cpp
   stubs/Stubs.cpp
 )
 
@@ -13,6 +13,8 @@ target_include_directories(BookFontLoaderTest PRIVATE
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/hal
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
   ${REPO_ROOT}/freeink-sdk/libs/ui/FreeInkUI/include
 )

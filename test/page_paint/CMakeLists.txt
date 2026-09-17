@@ -1,7 +1,7 @@
 add_executable(PagePaintTest
   PagePaintTest.cpp
   ${REPO_ROOT}/src/adapters/PagePaint.cpp
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/TtfFont.cpp
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/TtfFont.cpp
 )
 
 target_include_directories(PagePaintTest PRIVATE
@@ -11,6 +11,8 @@ target_include_directories(PagePaintTest PRIVATE
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
 )
 

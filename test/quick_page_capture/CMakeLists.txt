@@ -2,7 +2,7 @@ add_executable(QuickPageCaptureTest
   QuickPageCaptureTest.cpp
   ${REPO_ROOT}/src/activities/reader/QuickPageCapture.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/layout/ChapterLayout.cpp
-  ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/TtfFont.cpp
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/TtfFont.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/PageRenderer.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/render/ImageRenderer.cpp
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/src/epub/ZipCatalog.cpp
@@ -26,6 +26,8 @@ target_include_directories(QuickPageCaptureTest PRIVATE
   ${REPO_ROOT}
   ${REPO_ROOT}/src
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/expat
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/libunibreak
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include

@@ -11,6 +11,7 @@ target_include_directories(SdCardCacheStorageTest PRIVATE
   ${REPO_ROOT}/src/adapters
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
 )
 
 target_compile_definitions(SdCardCacheStorageTest PRIVATE
