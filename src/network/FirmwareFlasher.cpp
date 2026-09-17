@@ -69,20 +69,30 @@ const char* resultName(Result r) {
   return "?";
 }
 
+namespace {
+uint16_t readRunningChipId() {
+  const esp_partition_t* run = esp_ota_get_running_partition();
+  if (!run) return static_cast<uint16_t>(0xFFFF);
+  uint16_t id = 0xFFFF;
+  // chip_id sits at offset 12 of esp_image_header_t. memcpy target is a
+  // uint16_t local, so RISC-V alignment is guaranteed.
+  if (esp_partition_read(run, 12, &id, sizeof(id)) != ESP_OK) return static_cast<uint16_t>(0xFFFF);
+  return id;
+}
+}  // namespace
+
 uint16_t runningPartitionChipId() {
+#if defined(HOST_TEST)
+  // Host tests validate fixture images with different chip ids; re-read the
+  // (stubbed) partition header on every call instead of caching.
+  return readRunningChipId();
+#else
   // esp_partition_read hits SPI flash; cache the running slot's chip_id so we
   // only pay that cost once per boot. The running image is immutable at
   // runtime, so a function-local static is safe here.
-  static uint16_t cached = [] {
-    const esp_partition_t* run = esp_ota_get_running_partition();
-    if (!run) return static_cast<uint16_t>(0xFFFF);
-    uint16_t id = 0xFFFF;
-    // chip_id sits at offset 12 of esp_image_header_t. memcpy target is a
-    // uint16_t local, so RISC-V alignment is guaranteed.
-    if (esp_partition_read(run, 12, &id, sizeof(id)) != ESP_OK) return static_cast<uint16_t>(0xFFFF);
-    return id;
-  }();
+  static const uint16_t cached = readRunningChipId();
   return cached;
+#endif
 }
 
 namespace {

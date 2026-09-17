@@ -19,6 +19,9 @@ void Activity::startActivityForResult(std::unique_ptr<Activity>&& activity, Acti
   activityManager.pushActivity(std::move(activity));
 }
 
-void Activity::setResult(ActivityResult&& result) { this->result = std::move(result); }
+void Activity::setResult(ActivityResult&& result) {
+  this->result = std::move(result);
+  markActivityResultDelivered(this->result);
+}
 
 void Activity::finish() { activityManager.popActivity(); }

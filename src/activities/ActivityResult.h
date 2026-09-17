@@ -81,6 +81,11 @@ using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, D
 
 struct ActivityResult {
   bool isCancelled = false;
+  // True once setResult() has been called. Distinguishes an explicit empty
+  // (monostate) result — e.g. ConfirmationActivity's Confirm — from a
+  // default-constructed result left by an activity that popped without
+  // calling setResult().
+  bool hasResult = false;
   ResultVariant data;
 
   explicit ActivityResult() = default;
@@ -88,7 +93,26 @@ struct ActivityResult {
   template <typename ResultType>
     requires std::is_constructible_v<ResultVariant, ResultType&&>
   // cppcheck-suppress noExplicitConstructor
-  ActivityResult(ResultType&& result) : data{std::forward<ResultType>(result)} {}
+  ActivityResult(ResultType&& result) : hasResult{true}, data{std::forward<ResultType>(result)} {}
 };
 
 using ActivityResultHandler = std::function<void(const ActivityResult&)>;
+
+// The production delivery stamp used by Activity::setResult(): marks a result
+// as explicitly set so normalizeActivityResult passes it through untouched.
+inline void markActivityResultDelivered(ActivityResult& result) { result.hasResult = true; }
+
+// Pop-result policy: an activity that popped without ever calling setResult()
+// leaves a default-constructed result (hasResult=false, isCancelled=false,
+// data=monostate); a parent handler doing std::get<T>(data) on it would abort
+// with std::bad_variant_access. normalizeActivityResult rewrites that case to
+// cancelled so the handler takes its safe branch, and reports whether it did.
+// An explicit setResult() call (hasResult=true) always passes through — even
+// an empty-data Confirm from ConfirmationActivity.
+inline bool normalizeActivityResult(ActivityResult& result) {
+  if (!result.hasResult && !result.isCancelled) {
+    result.isCancelled = true;
+    return true;
+  }
+  return false;
+}
