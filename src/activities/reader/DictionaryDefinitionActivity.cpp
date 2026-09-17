@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "ReaderUtils.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -276,25 +277,34 @@ void DictionaryDefinitionActivity::loop() {
     return;
   }
 
-  // Same tap zones as the reader page turns: left third = previous page,
-  // the rest = next. Back is the usual left-edge swipe.
+  // Chrome taps stay active in every touch mode so swipe-mode users can still
+  // close and search by touch. A swipe never reports as a tap, so this cannot
+  // swallow page turns.
   int tx = 0;
   int ty = 0;
   if (mappedInput.wasScreenTapped(tx, ty)) {
     if (closeButtonContains(tx, ty)) {
       finish();
-    } else if (searchButtonContains(tx, ty)) {
+      return;
+    }
+    if (searchButtonContains(tx, ty)) {
       openSearch();
-    } else if (tx < renderer.getScreenWidth() / 3) {
-      if (currentPage > 0) {
-        currentPage--;
-        requestUpdate();
-      }
-    } else if (currentPage + 1 < totalPages) {
+      return;
+    }
+  }
+
+  // Page turns follow the reader's touch setting (off / swipe / tap zones).
+  const ReaderUtils::TouchPageTurn turn = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
+  if (turn.prev) {
+    if (currentPage > 0) {
+      currentPage--;
+      requestUpdate();
+    }
+  } else if (turn.next) {
+    if (currentPage + 1 < totalPages) {
       currentPage++;
       requestUpdate();
     }
-    return;
   }
 
   buttonNavigator.onNext([this] {
