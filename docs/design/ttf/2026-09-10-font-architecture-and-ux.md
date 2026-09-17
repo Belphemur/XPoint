@@ -132,8 +132,12 @@ opens `Overlay::FontSheet`.
 with the current layout params and a `PageSink` budget:
 
 - skips ahead by `Page::charStart`;
-- paints through the real `PageRenderer`;
-- stops once it has passed the displayed anchor (bounded to the first 64
+- captures each candidate page out of the engine's per-page arena
+  (`QuickPageCapture` deep-copies the run text and records, whose pointers
+  die with the callback) instead of painting it — only the last scanned
+  page is ever displayed, so one tap costs one layout scan plus a single
+  post-scan paint;
+- stops once it has passed the displayed anchor (bounded to the first 128
   pages; otherwise the reader falls back to a full reflow);
 - uses the runtime's existing scratch/parse arenas, resets them on return;
 - never writes or invalidates the committed page cache.
@@ -148,8 +152,11 @@ normal render path restores AA plane parity on the final close/reflow.
 - 2026-09-10 — one font stack per device class; no dual-mode UX.
 - 2026-09-14 — quick bottom sheet replaces full-screen TTF size/family pushes
   in the reader; live page feedback per tap.
-- 2026-09-14 — page-only transient layout with a 64-page anchor budget; full
+- 2026-09-14 — page-only transient layout with a bounded anchor budget; full
   reflow and cache invalidation deferred until sheet close.
+- 2026-09-17 — quick-sheet scan captures instead of paints (issue #137):
+  one paint per tap after the scan, anchor budget 64 → 128 pages, and
+  family selection re-focuses the size row so +/- work without a re-tap.
 - 2026-09-14 — manifest path cap 160 bytes, matching
   `SdCardCacheStorage::kDirMax`; longer paths are rejected explicitly.
 - 2026-09-14 — two-root family merge; hidden root precedence on conflicts.

@@ -3987,34 +3987,52 @@ void EpubReaderActivity::renderQuickFontPage() {
     return;
   }
 
+  // One backing buffer per sheet session: allocated on the first relayout,
+  // freed on close, so taps never churn the PSRAM pool. Without it the sink
+  // falls back to painting every scanned page inline.
+  if (!quickFontPreview.attached()) {
+    if (!quickFontPreviewBuf) quickFontPreviewBuf = poolMakeBytes(QuickPageCapture::kBufferBytes);
+    if (quickFontPreviewBuf) {
+      quickFontPreview.attach(quickFontPreviewBuf.get(), QuickPageCapture::kBufferBytes);
+    } else {
+      LOG_ERR("ERS", "OOM: quick font preview buffer");
+    }
+  }
+
   const uint32_t targetChar = ttfCurrentCharStart;
   bool found = false;
   uint32_t pageIndex = 0;
   class QuickSink final : public freeink::book::PageSink {
    public:
     QuickSink(EpubReaderActivity* owner, const void* font, const uint32_t target, const uint8_t maxPages,
-              bool& foundRef, uint32_t& pageIndexRef)
+              bool& foundRef, uint32_t& pageIndexRef, QuickPageCapture& captureRef)
         : owner_(owner),
           font_(font),
           target_(target),
           maxPages_(maxPages),
           found_(foundRef),
-          pageIndex_(pageIndexRef) {}
+          pageIndex_(pageIndexRef),
+          capture_(captureRef) {}
 
     bool onPage(const freeink::book::Page& page) override {
       if (page.charStart > target_) {
-        // The previous painted page is the target page: it ended before the
+        // The previous captured page is the target page: it ended before the
         // first page past the anchor. Stop with a confirmed preview.
         if (sawCandidate_) found_ = true;
         return false;
       }
-      // Later pages also match until the first page past the anchor; each
-      // paint overwrites the previous one, so the framebuffer ends on the
-      // target page. Painting here avoids copying the engine-owned runs.
-      owner_->renderer.clearScreen(0xFF);
-      owner_->paintTtfPage(page, const_cast<void*>(font_));
+      // Later pages also match until the first page past the anchor, so only
+      // the last capture matters. Pages are captured (deep-copied out of the
+      // engine's per-page arena) instead of painted here; the target page is
+      // painted once after the scan. A page that does not fit the capture
+      // buffer is painted inline, as the pre-capture path did.
       sawCandidate_ = true;
       pageIndex_ = page.pageIndex;
+      if (!capture_.capture(page)) {
+        owner_->renderer.clearScreen(0xFF);
+        owner_->paintTtfPage(page, const_cast<void*>(font_));
+        capture_.reset();
+      }
       if (page.pageIndex + 1 >= maxPages_) {
         budgetStopped_ = true;
         return false;
@@ -4032,23 +4050,35 @@ void EpubReaderActivity::renderQuickFontPage() {
     uint8_t maxPages_;
     bool& found_;
     uint32_t& pageIndex_;
+    QuickPageCapture& capture_;
     bool sawCandidate_ = false;
     bool budgetStopped_ = false;
   };
-  constexpr uint8_t kQuickRelayoutPageBudget = 64;
-  QuickSink sink(this, params.font, targetChar, kQuickRelayoutPageBudget, found, pageIndex);
+  // The scan is paint-free (pages are captured, not painted), so the budget
+  // bounds only layout work; a deeper budget keeps more chapters on the fast
+  // page-only path instead of the full-reflow fallback.
+  constexpr uint8_t kQuickRelayoutPageBudget = 128;
+  QuickSink sink(this, params.font, targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
 
   {
     RenderLock lock;
     const auto st =
         ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
-    // A page past the anchor confirms the last painted page as the target;
+    // A page past the anchor confirms the last captured page as the target;
     // a natural end-of-chapter without that confirmation means the anchor
     // page itself was the last page. Budget exhaustion always falls back.
     if (sink.sawCandidate() && !sink.budgetStopped()) found = true;
     if (!found) {
       LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s); falling back to full reflow", bookStatusName(st));
+    } else if (quickFontPreview.ready()) {
+      // Paint the captured target page once. Base-only preview by design
+      // (§6): the final close reflow restores the AA gray planes so per-tap
+      // cost stays FAST.
+      renderer.clearScreen(0xFF);
+      paintTtfPage(quickFontPreview.page(), params.font);
     }
+    // With the capture not ready the target page was painted inline by the
+    // sink; the framebuffer already shows it.
   }
 
   if (!found) {
@@ -4085,6 +4115,8 @@ void EpubReaderActivity::closeFontSheet() {
   overlay = Overlay::None;
   overlayPopup.dismiss();
   quickFontFamilyPending = false;
+  quickFontPreview.attach(nullptr, 0);  // buffer freed below
+  quickFontPreviewBuf.reset();
   discardOverlayPage();
   applyReaderTextSettings();  // one persisted save + full reflow on close
   // The sheet hid a full-page relayout; ask the next render for a cleanup
@@ -4400,9 +4432,12 @@ void EpubReaderActivity::handleOverlayInput() {
       }
 #if defined(CROSSPOINT_TTF_READER)
       // Family selection was applied in the popup callback; now the sheet is
-      // back on top and the quick page-only relayout paints behind it.
+      // back on top and the quick page-only relayout paints behind it. Focus
+      // returns to the size row so +/- act on the next tap without the user
+      // having to select that row again (issue #137).
       if (quickFontFamilyPending) {
         quickFontFamilyPending = false;
+        quickFontRow = 0;
         renderQuickFontPage();
         return;
       }
