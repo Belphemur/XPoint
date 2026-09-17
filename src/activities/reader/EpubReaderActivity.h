@@ -4,6 +4,7 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/PageLink.h>
 #include <Epub/Section.h>
+#include <Memory.h>
 
 #include <atomic>
 #include <memory>
@@ -20,6 +21,7 @@
 #include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
 #if defined(CROSSPOINT_TTF_READER)
+#include "QuickPageCapture.h"
 #include "TtfBookRuntime.h"
 #endif
 #ifdef READING_STATS_ENABLED
@@ -118,6 +120,12 @@ class EpubReaderActivity final : public ReaderActivity {
   // + full reflow are deliberately not per-tap costs).
   int quickFontRow = 0;
   bool quickFontFamilyPending = false;
+  // Paint-once preview state: the capture buffer is allocated on the first
+  // quick relayout and lives until the sheet closes, so taps never churn
+  // the PSRAM pool. The capture carries the candidate page out of the
+  // engine's per-page arena for the single post-scan paint.
+  QuickPageCapture quickFontPreview;
+  PoolBytes quickFontPreviewBuf;
   void openFontSheet();
   void openFontFamilyPicker();
   void quickFontStep(int direction);
