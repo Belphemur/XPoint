@@ -42,6 +42,9 @@ class ReadingStatsDebugActivity final : public Activity {
                    uint16_t avg, int& y) const;
   void renderList(int lineH) const;
   void renderBookDump(int lineH) const;
+  // Screen draw clipped to the panel width + LOG_DBG of the full line (the
+  // serial log is the complete dump; the screen only shows what fits).
+  void drawDumpLine(const char* text, int y) const;
 
   GlobalReadingStats globalStats;
   std::vector<BookLine> books;

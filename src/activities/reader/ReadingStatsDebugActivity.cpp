@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <utility>
 
 #include "BookCachePath.h"
@@ -42,6 +43,28 @@ void formatSampleLine(char* buf, size_t len, size_t first, size_t last, const ui
   }
 }
 }  // namespace
+
+// Draws one dump line and mirrors the FULL text to the serial DBG log: the
+// screen can only show what fits the panel width, the log always shows
+// everything (device log 2026-09-17: long header/sample lines ran past the
+// 480px panel and flooded [ERR][GFX] Outside-range spam after rotation).
+void ReadingStatsDebugActivity::drawDumpLine(const char* text, const int y) const {
+  LOG_DBG("RSDBG", "%s", text);
+  const int maxY = renderer.getScreenWidth() - kLeftX - 2;
+  if (renderer.getTextWidth(SMALL_FONT_ID, text) <= maxY) {
+    renderer.drawText(SMALL_FONT_ID, kLeftX, y, text);
+    return;
+  }
+  // Byte-wise truncate until it fits (dev page, ASCII labels; a split
+  // multi-byte tail is dropped by the renderer).
+  char clipped[128];
+  snprintf(clipped, sizeof(clipped), "%s", text);
+  size_t len = strlen(clipped);
+  while (len > 1 && renderer.getTextWidth(SMALL_FONT_ID, clipped) > maxY) {
+    clipped[--len] = '\0';
+  }
+  renderer.drawText(SMALL_FONT_ID, kLeftX, y, clipped);
+}
 
 ReadingStatsDebugActivity::ReadingStatsDebugActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
     : Activity("ReadingStatsDebug", renderer, mappedInput) {}
@@ -148,18 +171,18 @@ void ReadingStatsDebugActivity::dumpSamples(const char* label, const uint16_t* s
 
   if (count == 0) {
     snprintf(buf, sizeof(buf), "%s avg=%u cnt=0 (empty)", label, avg);
-    renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+    drawDumpLine(buf, nextY());
     return;
   }
 
   const bool full = count >= windowSize;
   snprintf(buf, sizeof(buf), "%s avg=%u cnt=%u pos=%u", label, avg, static_cast<unsigned>(count),
            static_cast<unsigned>(pos));
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  drawDumpLine(buf, nextY());
   for (size_t first = 0; first < count; first += kSamplesPerLine) {
     const size_t last = first + kSamplesPerLine - 1 < windowSize ? first + kSamplesPerLine - 1 : windowSize - 1;
     formatSampleLine(buf, sizeof(buf), first, last, samples, count, pos, full);
-    renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+    drawDumpLine(buf, nextY());
   }
 }
 
@@ -171,11 +194,12 @@ void ReadingStatsDebugActivity::renderList(const int lineH) const {
     return y;
   };
 
-  snprintf(buf, sizeof(buf), "RS DEBUG  wpm w=%u trim=%u floor=%u cap=%u | sess w=%u trim=%u min=%us",
-           static_cast<unsigned>(WPM_WINDOW_SIZE), static_cast<unsigned>(WPM_TRIM_COUNT), WPM_FLOOR, WPM_HARD_CAP,
-           static_cast<unsigned>(SESSION_WINDOW_SIZE), static_cast<unsigned>(SESSION_TRIM_COUNT),
-           static_cast<unsigned>(SESSION_MIN_SECONDS));
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  snprintf(buf, sizeof(buf), "RS DEBUG  wpm w=%u trim=%u floor=%u cap=%u", static_cast<unsigned>(WPM_WINDOW_SIZE),
+           static_cast<unsigned>(WPM_TRIM_COUNT), WPM_FLOOR, WPM_HARD_CAP);
+  drawDumpLine(buf, nextY());
+  snprintf(buf, sizeof(buf), "sess w=%u trim=%u min=%us", static_cast<unsigned>(SESSION_WINDOW_SIZE),
+           static_cast<unsigned>(SESSION_TRIM_COUNT), static_cast<unsigned>(SESSION_MIN_SECONDS));
+  drawDumpLine(buf, nextY());
 
   dumpSamples("GLOB wpm", globalStats.wpm.samples.data(), WPM_WINDOW_SIZE, globalStats.wpm.count, globalStats.wpm.pos,
               globalStats.wpm.avg, y);
@@ -183,12 +207,12 @@ void ReadingStatsDebugActivity::renderList(const int lineH) const {
               globalStats.sessionWindow.count, globalStats.sessionWindow.pos, globalStats.sessionWindow.avg, y);
   snprintf(buf, sizeof(buf), "GLOB turns=%u sess=%u", static_cast<unsigned>(globalStats.totalPagesTurned),
            static_cast<unsigned>(globalStats.totalSessions));
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  drawDumpLine(buf, nextY());
 
   // Compact per-book lines below the global dump, scrolled to keep the cursor
   // visible. Up/Down move the cursor, Confirm opens the full dump.
   if (books.empty()) {
-    renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), "no books with stats data");
+    drawDumpLine("no books with stats data", nextY());
     return;
   }
 
@@ -207,7 +231,7 @@ void ReadingStatsDebugActivity::renderList(const int lineH) const {
     const BookLine& book = books[offset + row];
     snprintf(buf, sizeof(buf), "%s%.22s w=%u/%u s=%u/%u", offset + row == cursor ? ">" : " ", book.title.c_str(),
              book.stats.wpm.avg, book.stats.wpm.count, book.stats.sessionWindow.avg, book.stats.sessionWindow.count);
-    renderer.drawText(SMALL_FONT_ID, kLeftX, rowsTop + row * rowStride, buf);
+    drawDumpLine(buf, rowsTop + row * rowStride);
   }
 }
 
@@ -220,11 +244,12 @@ void ReadingStatsDebugActivity::renderBookDump(const int lineH) const {
     return y;
   };
 
-  snprintf(buf, sizeof(buf), "RS DEBUG  wpm w=%u trim=%u floor=%u cap=%u | sess w=%u trim=%u min=%us",
-           static_cast<unsigned>(WPM_WINDOW_SIZE), static_cast<unsigned>(WPM_TRIM_COUNT), WPM_FLOOR, WPM_HARD_CAP,
-           static_cast<unsigned>(SESSION_WINDOW_SIZE), static_cast<unsigned>(SESSION_TRIM_COUNT),
-           static_cast<unsigned>(SESSION_MIN_SECONDS));
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  snprintf(buf, sizeof(buf), "RS DEBUG  wpm w=%u trim=%u floor=%u cap=%u", static_cast<unsigned>(WPM_WINDOW_SIZE),
+           static_cast<unsigned>(WPM_TRIM_COUNT), WPM_FLOOR, WPM_HARD_CAP);
+  drawDumpLine(buf, nextY());
+  snprintf(buf, sizeof(buf), "sess w=%u trim=%u min=%us", static_cast<unsigned>(SESSION_WINDOW_SIZE),
+           static_cast<unsigned>(SESSION_TRIM_COUNT), static_cast<unsigned>(SESSION_MIN_SECONDS));
+  drawDumpLine(buf, nextY());
 
   // Dev-only page, plain ASCII labels; a byte-wise truncation of the title is
   // good enough (invalid mid-codepoint tails are dropped by the renderer).
@@ -233,12 +258,12 @@ void ReadingStatsDebugActivity::renderBookDump(const int lineH) const {
   } else {
     snprintf(buf, sizeof(buf), "BOOK: %s", book.title.c_str());
   }
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  drawDumpLine(buf, nextY());
   // Cache dir basename identifies the stats file being dumped.
   const size_t slash = book.cachePath.find_last_of('/');
   snprintf(buf, sizeof(buf), "dir: %s",
            slash == std::string::npos ? book.cachePath.c_str() : book.cachePath.c_str() + slash + 1);
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  drawDumpLine(buf, nextY());
 
   // Loaded once in enumerateBooks() and kept resident in BookLine; render()
   // must never touch SD (it can run once per display refresh).
@@ -252,7 +277,7 @@ void ReadingStatsDebugActivity::renderBookDump(const int lineH) const {
     snprintf(buf, sizeof(buf), "BOOK turns=%u progress=%u%%", static_cast<unsigned>(stats.totalPagesTurned),
              static_cast<unsigned>(stats.lastBookProgressPercent));
   }
-  renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
+  drawDumpLine(buf, nextY());
 }
 
 void ReadingStatsDebugActivity::render(RenderLock&&) {
