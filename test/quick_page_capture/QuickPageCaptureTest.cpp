@@ -4,12 +4,12 @@
 // scan is pixel-identical to the paint-every-page behavior it replaces
 // (issue #137). Also covers overwrite semantics and overflow rejection.
 
+#include <gtest/gtest.h>
+
 #include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
-
-#include <gtest/gtest.h>
 
 #include "BookArena.h"
 #include "BookStorage.h"
@@ -75,18 +75,16 @@ class BookFixture {
     const char* opfPath = nullptr;
     std::vector<uint8_t> scratchBytes(64 * 1024);
     freeink::book::Arena scratch(scratchBytes.data(), scratchBytes.size());
-    if (container == nullptr ||
-        freeink::book::parseContainer(source_, *container, bookArena_, scratch, &opfPath) !=
-            freeink::book::BookStatus::Ok) {
+    if (container == nullptr || freeink::book::parseContainer(source_, *container, bookArena_, scratch, &opfPath) !=
+                                    freeink::book::BookStatus::Ok) {
       return;
     }
     char opfDir[256];
     freeink::book::dirName(opfPath, opfDir, sizeof(opfDir));
     const auto* opf = zip_.find(opfPath);
     freeink::book::PackageResult pkg;
-    if (opf == nullptr ||
-        freeink::book::parsePackage(source_, *opf, opfDir, bookArena_, scratch, &pkg) !=
-            freeink::book::BookStatus::Ok) {
+    if (opf == nullptr || freeink::book::parsePackage(source_, *opf, opfDir, bookArena_, scratch, &pkg) !=
+                              freeink::book::BookStatus::Ok) {
       return;
     }
     uint32_t bestSize = 0;
@@ -246,7 +244,8 @@ class QuickPageCaptureTest : public ::testing::Test {
   }
 
   std::vector<uint8_t> readFont() const {
-    FILE* f = fopen((std::string(TESTDATA_DIR) + "/fixtures/fonts/amazon-ember/Amazon_Ember_Regular.ttf").c_str(), "rb");
+    FILE* f =
+        fopen((std::string(TESTDATA_DIR) + "/fixtures/fonts/amazon-ember/Amazon_Ember_Regular.ttf").c_str(), "rb");
     if (f == nullptr) return {};
     fseek(f, 0, SEEK_END);
     const long len = ftell(f);

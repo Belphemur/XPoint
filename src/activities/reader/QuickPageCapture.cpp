@@ -52,9 +52,8 @@ bool QuickPageCapture::capture(const freeink::book::Page& page) {
     rubies[i].text = copyString(page.rubies[i].text);
   }
 
-  page_ = freeink::book::Page{runs,           page.runCount, images,    page.imageCount,
-                              links,          page.linkCount, rules,    page.ruleCount,
-                              rubies,         page.rubyCount, page.pageIndex, page.charStart};
+  page_ = freeink::book::Page{runs,  page.runCount,  images, page.imageCount, links,          page.linkCount,
+                              rules, page.ruleCount, rubies, page.rubyCount,  page.pageIndex, page.charStart};
   valid_ = true;
   return true;
 }

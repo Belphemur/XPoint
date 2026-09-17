@@ -19,9 +19,7 @@
 #include "layout/ChapterLayout.h"  // Page + record types
 
 namespace {
-constexpr size_t alignUp(size_t offset, size_t alignment) {
-  return (offset + alignment - 1) & ~(alignment - 1);
-}
+constexpr size_t alignUp(size_t offset, size_t alignment) { return (offset + alignment - 1) & ~(alignment - 1); }
 }  // namespace
 
 class QuickPageCapture {
