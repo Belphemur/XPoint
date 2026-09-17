@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -376,4 +377,188 @@ TEST(PageCacheRestoreTest, PartialSuspendServesBuiltPagesAndReportsPartial) {
   // A suspended partial still restores the position within its prefix.
   EXPECT_EQ(reader.pageForChar(200), 2u);
   EXPECT_EQ(reader.pageForChar(100000), 2u);  // watermark clamp, not the total
+}
+
+// ── Reading-stats word-count hypothesis tests ───────────────────────────────
+//
+// Device symptom: reading-speed card stuck at exactly 80 WPM (the WPM_FLOOR).
+// The pace sampler rejects wordsOnPage == 0 outright (WpmWindow::record), and
+// the WPM cell renders '-' when the window is empty — so a stuck 80 can only
+// be produced by RECORDED samples whose wpm landed at/below the floor, i.e.
+// undercounted words or inflated dwell. These tests pin the storage/tokenizer
+// half of that chain: the FIBP round-trip must preserve run text verbatim so
+// the page-word tokenizer in EpubReaderActivity::renderBookTtf (replicated
+// below) sees every word on both fresh-build and cache-served pages.
+namespace {
+
+// Exact replica of the whitespace-token counter in
+// src/activities/reader/EpubReaderActivity.cpp::renderBookTtf
+// (READING_STATS_ENABLED block, "Reading-stats approximation" comment).
+// Keep in sync — it is the code under test, byte for byte.
+uint16_t countPageWords(const book::Page& page) {
+  uint16_t words = 0;
+  bool inWord = false;
+  for (uint16_t r = 0; r < page.runCount; ++r) {
+    const char* p = page.runs[r].text;
+    for (uint16_t i = 0; i < page.runs[r].len; ++i) {
+      const bool ws = p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r';
+      if (!ws && !inWord) {
+        ++words;
+        inWord = true;
+      } else if (ws) {
+        inWord = false;
+      }
+    }
+  }
+  return words;
+}
+
+// A realistic rendered page: ~14 lines of prose across 5 style runs, mixed
+// ASCII + multi-byte UTF-8, leading/trailing/inter-run whitespace.
+struct SyntheticPage {
+  std::array<std::string, 5> runText;
+  std::vector<book::PageTextRun> runs;
+  book::Page page{};  // zero-init: counts/pointers the writer walks must be 0
+
+  explicit SyntheticPage(uint32_t charStart) {
+    runText[0] =
+        "It was a bright cold day in April, and the clocks were striking "
+        "thirteen. Winston Smith, his chin nuzzled into his breast in an";
+    runText[1] =
+        " effort\xe2\x80\x91ful shade \xc3\xa9vit\xe9 le vent — the telex "
+        "screened with garbled tales;\n  twice the messenger re-wrote it ";
+    runText[2] =
+        "and still the sentence would not end the way he wanted it to, the "
+        "clause curling back on itself like smoke in a shut room where";
+    runText[3] =
+        "\tthe window had been painted black for the winter and the "
+        "light came down the stairwell in measured rations,";
+    runText[4] =
+        " a spoonful at a time, until the landing below was only a "
+        "rumour and the coat rack a silhouette of somebody waiting.";
+    uint32_t chars = charStart;
+    for (int i = 0; i < 5; ++i) {
+      book::PageTextRun run{};
+      run.text = runText[i].data();
+      run.len = static_cast<uint16_t>(runText[i].size());
+      run.charStart = chars;
+      run.charLen = static_cast<uint16_t>(runText[i].size());
+      run.x = 12;
+      run.baselineY = static_cast<int16_t>(60 + i * 40);
+      run.sizePx = 25;
+      run.styleFlags = 0;
+      run.layoutFlags = 0;
+      chars += run.charLen;
+      runs.push_back(run);
+    }
+    page.runs = runs.data();
+    page.runCount = static_cast<uint16_t>(runs.size());
+    page.pageIndex = 0;
+    page.charStart = charStart;
+  }
+};
+
+}  // namespace
+
+TEST(FibpWordCountTest, RoundTripPreservesWordsOnCacheServedPages) {
+  const auto arenaBuf = std::make_unique<uint8_t[]>(256 * 1024);
+  const auto scratchBuf = std::make_unique<uint8_t[]>(256 * 1024);
+  book::Arena arena(arenaBuf.get(), 256 * 1024);
+  book::Arena scratch(scratchBuf.get(), 256 * 1024);
+
+  MemCacheStorage storage;
+  SyntheticPage original(0);
+  const uint16_t directWords = countPageWords(original.page);
+  ASSERT_GT(directWords, 100u) << "fixture must model a real prose page";
+
+  book::PageCacheWriter writer;
+  ASSERT_TRUE(writer.begin(storage, "s4-wc.fibp", 0x33U, arena));
+  ASSERT_TRUE(writer.onPage(original.page));
+  writer.setTotalChars(original.runText[0].size() + original.runText[1].size() + original.runText[2].size() +
+                       original.runText[3].size() + original.runText[4].size());
+  ASSERT_TRUE(writer.finish());
+
+  // Cache-served path: the FIBP blob must reconstruct the runs so the
+  // tokenizer sees the same words the fresh layout delivered.
+  book::PageCacheReader reader;
+  ASSERT_EQ(reader.open(storage, "s4-wc.fibp", 0x33U, arena), book::BookStatus::Ok);
+  book::Page decoded{};
+  ASSERT_EQ(reader.readPage(0, scratch, &decoded), book::BookStatus::Ok);
+  ASSERT_EQ(decoded.runCount, original.page.runCount);
+  EXPECT_EQ(decoded.charStart, 0u);
+
+  const uint16_t cachedWords = countPageWords(decoded);
+  EXPECT_EQ(cachedWords, directWords);
+  EXPECT_GT(cachedWords, 100u);
+}
+
+TEST(FibpWordCountTest, MidBuildReadBackPreservesWords) {
+  // PageCacheWriter::readPage (mid-build read-back of the open write stream)
+  // must decode the same words — readers render pages while the build runs.
+  const auto arenaBuf = std::make_unique<uint8_t[]>(256 * 1024);
+  const auto scratchBuf = std::make_unique<uint8_t[]>(256 * 1024);
+  book::Arena arena(arenaBuf.get(), 256 * 1024);
+  book::Arena scratch(scratchBuf.get(), 256 * 1024);
+
+  MemCacheStorage storage;
+  SyntheticPage original(0);
+  const uint16_t directWords = countPageWords(original.page);
+
+  book::PageCacheWriter writer;
+  ASSERT_TRUE(writer.begin(storage, "s5-wc.fibp", 0x44U, arena));
+  ASSERT_TRUE(writer.onPage(original.page));
+  writer.setTotalChars(1);
+
+  book::Page midBuild{};
+  ASSERT_EQ(writer.readPage(0, scratch, &midBuild), book::BookStatus::Ok);
+  EXPECT_EQ(countPageWords(midBuild), directWords);
+  EXPECT_GT(directWords, 100u);
+  ASSERT_TRUE(writer.finish());
+}
+
+TEST(FibpWordCountTest, ImageOnlyPageYieldsZeroWordsAndIsRoundTripped) {
+  // A page with no text runs (full-page image) counts 0 words; the pace
+  // sampler rejects those (WpmWindow::record wordsOnPage==0 guard) and the
+  // WPM cell would show '-' on an empty window — it must never fabricate a
+  // floor value from a zero-word page.
+  const auto arenaBuf = std::make_unique<uint8_t[]>(64 * 1024);
+  const auto scratchBuf = std::make_unique<uint8_t[]>(64 * 1024);
+  book::Arena arena(arenaBuf.get(), 64 * 1024);
+  book::Arena scratch(scratchBuf.get(), 64 * 1024);
+
+  MemCacheStorage storage;
+  book::Page imagePage{};
+  book::PageImage img{};
+  static const char href[] = "images/cover.png";
+  img.href = href;
+  book::PageImage images[1] = {img};
+  imagePage.images = images;
+  imagePage.imageCount = 1;
+
+  book::PageCacheWriter writer;
+  ASSERT_TRUE(writer.begin(storage, "s6-img.fibp", 0x55U, arena));
+  ASSERT_TRUE(writer.onPage(imagePage));
+  writer.setTotalChars(0);
+  ASSERT_TRUE(writer.finish());
+
+  book::PageCacheReader reader;
+  ASSERT_EQ(reader.open(storage, "s6-img.fibp", 0x55U, arena), book::BookStatus::Ok);
+  book::Page decoded{};
+  ASSERT_EQ(reader.readPage(0, scratch, &decoded), book::BookStatus::Ok);
+  EXPECT_EQ(decoded.runCount, 0u);
+  EXPECT_EQ(countPageWords(decoded), 0u);
+}
+
+TEST(FibpWordCountTest, TokenizerTreatsNonBreakingSpaceAsWordContent) {
+  // Documented approximation: only ASCII whitespace splits words. U+00A0 is
+  // word content (counted), matching the firmware block byte-for-byte.
+  const auto arenaBuf = std::make_unique<uint8_t[]>(64 * 1024);
+  book::Arena arena(arenaBuf.get(), 64 * 1024);
+
+  SyntheticPage page(0);
+  page.runText[0] = "word\xc2\xa0word word";
+  page.runs[0].text = page.runText[0].data();
+  page.runs[0].len = static_cast<uint16_t>(page.runText[0].size());
+  page.page.runCount = 1;
+  EXPECT_EQ(countPageWords(page.page), 2u);
 }

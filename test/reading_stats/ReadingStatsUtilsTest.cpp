@@ -226,6 +226,77 @@ TEST(ReadingStatsUtilsTest, WpmZeroInputIgnored) {
   EXPECT_EQ(w.avg, 0u);
 }
 
+// ── "Stuck at 80 WPM" hypothesis tests ──────────────────────────────────────
+//
+// Device symptom: the reading-speed card stays pinned at exactly 80 WPM.
+// The WPM cell renders '-' when count == 0, so a displayed 80 can only come
+// from RECORDED samples whose per-sample wpm landed at/below WPM_FLOOR (each
+// such sample is stored as 80). These tests pin which input pathologies
+// produce that signature and which cannot.
+
+TEST(ReadingStatsUtilsTest, WpmZeroWordPagesFreezeWindowAtEmpty) {
+  // H3: if the engine delivered 0 words per page (e.g. runs lost in the
+  // cache round-trip), every sample is REJECTED and the window stays empty
+  // (avg == 0 -> the UI shows '-'). This CANNOT display a stuck 80.
+  WpmWindow w;
+  for (int i = 0; i < 15; ++i) {
+    w.record(60, 0);  // 0-word page: rejected outright
+  }
+  EXPECT_EQ(w.count, 0u);
+  EXPECT_EQ(w.avg, 0u);
+}
+
+TEST(ReadingStatsUtilsTest, WpmUndercountedWordsPinsAvgAtFloor) {
+  // H2a: a ~4x word undercount (real ~250 words/page tokenized as ~60)
+  // at a normal 45 s/page dwell yields 60*60/45 = 80 WPM per sample ->
+  // every sample stores exactly the floor -> avg == 80 forever, matching
+  // the device symptom. This is the signature of undercounted words.
+  WpmWindow w;
+  for (int i = 0; i < 15; ++i) {
+    w.record(45, 60);
+  }
+  ASSERT_EQ(w.count, 15u);
+  EXPECT_EQ(w.avg, 80u);  // "stuck at 80" reproduced by undercounting alone
+}
+
+TEST(ReadingStatsUtilsTest, WpmInflatedDwellAlsoPinsAtFloor) {
+  // H2b: correct words with inflated dwell (e.g. pageShownAtMs refreshed
+  // once per chapter instead of per page) drives per-sample wpm below the
+  // floor the same way — the observed 80 cannot distinguish H2a from H2b
+  // without on-device word/dwell logging.
+  WpmWindow w;
+  for (int i = 0; i < 15; ++i) {
+    w.record(600, 250);  // 25 WPM — 600 s dwell cap -> every sample floored
+  }
+  ASSERT_EQ(w.count, 15u);
+  EXPECT_EQ(w.avg, 80u);
+}
+
+TEST(ReadingStatsUtilsTest, WpmHealthyPlumbingNeverPinsAtFloor) {
+  // Control: realistic prose pages (180-320 words) at realistic dwells
+  // (25-95 s) span 115-500 WPM. If words and dwell were delivered
+  // correctly, the window average CANNOT stick at exactly 80.
+  WpmWindow w;
+  const uint32_t dwells[] = {30, 45, 60, 75, 95, 50, 40, 65, 25, 85, 55, 35, 70, 90, 45};
+  const uint16_t words[] = {250, 220, 300, 200, 320, 180, 260, 240, 280, 190, 310, 210, 230, 270, 250};
+  for (int i = 0; i < 15; ++i) {
+    w.record(dwells[i], words[i]);
+  }
+  ASSERT_EQ(w.count, 15u);
+  EXPECT_GT(w.avg, 80u);
+  EXPECT_NE(w.avg, 80u);
+}
+
+TEST(ReadingStatsUtilsTest, WpmFastFlipsAreRejectedNotFloored) {
+  // The 900 hard cap DISCARDS fast samples rather than flooring them, so
+  // skimming cannot flood the window; only dwells >= ~17 s for a 250-word
+  // page are recorded at all.
+  WpmWindow w;
+  w.record(3, 250);  // 5000 WPM -> discarded
+  EXPECT_EQ(w.count, 0u);
+  EXPECT_EQ(w.avg, 0u);
+}
+
 TEST(ReadingStatsUtilsTest, SessionWindowMinSecondsGate) {
   SessionWindow w;
   w.record(29);  // below the 30 s gate -> rejected
