@@ -24,15 +24,14 @@ class ReadingStatsDebugActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
-  // Compact list entry: only what the one-line summary needs; the full record
-  // is re-loaded from the cache dir when the book is opened.
+  // Full record kept resident: enumerateBooks() loads each book's stats once
+  // from SD and render()/renderBookDump() only format already-resident data
+  // (render() runs once per display refresh; re-reading the 5-candidate
+  // stats-file probe chain per frame stalls the UI on device hardware).
   struct BookLine {
     std::string title;
     std::string cachePath;
-    uint16_t wpmAvg = 0;
-    uint8_t wpmCount = 0;
-    uint16_t sessAvg = 0;
-    uint8_t sessCount = 0;
+    BookReadingStats stats;
   };
 
   void enumerateBooks();

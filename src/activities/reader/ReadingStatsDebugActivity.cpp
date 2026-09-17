@@ -96,10 +96,7 @@ void ReadingStatsDebugActivity::enumerateBooks() {
     BookLine line;
     line.title = !title.empty() ? std::move(title) : std::move(path);
     line.cachePath = cachePath;
-    line.wpmAvg = stats.wpm.avg;
-    line.wpmCount = stats.wpm.count;
-    line.sessAvg = stats.sessionWindow.avg;
-    line.sessCount = stats.sessionWindow.count;
+    line.stats = stats;
     books.push_back(std::move(line));
   }
 }
@@ -209,7 +206,7 @@ void ReadingStatsDebugActivity::renderList(const int lineH) const {
   for (int row = 0; row < visibleRows && offset + row < static_cast<int>(books.size()); ++row) {
     const BookLine& book = books[offset + row];
     snprintf(buf, sizeof(buf), "%s%.22s w=%u/%u s=%u/%u", offset + row == cursor ? ">" : " ", book.title.c_str(),
-             book.wpmAvg, book.wpmCount, book.sessAvg, book.sessCount);
+             book.stats.wpm.avg, book.stats.wpm.count, book.stats.sessionWindow.avg, book.stats.sessionWindow.count);
     renderer.drawText(SMALL_FONT_ID, kLeftX, rowsTop + row * rowStride, buf);
   }
 }
@@ -243,9 +240,9 @@ void ReadingStatsDebugActivity::renderBookDump(const int lineH) const {
            slash == std::string::npos ? book.cachePath.c_str() : book.cachePath.c_str() + slash + 1);
   renderer.drawText(SMALL_FONT_ID, kLeftX, nextY(), buf);
 
-  // Re-loaded per render of the detail level: at most one SD record read, and
-  // render() can run once per display refresh.
-  const BookReadingStats stats = BookReadingStats::load(book.cachePath);
+  // Loaded once in enumerateBooks() and kept resident in BookLine; render()
+  // must never touch SD (it can run once per display refresh).
+  const BookReadingStats& stats = book.stats;
   dumpSamples("BOOK wpm", stats.wpm.samples.data(), WPM_WINDOW_SIZE, stats.wpm.count, stats.wpm.pos, stats.wpm.avg, y);
   dumpSamples("BOOK sess", stats.sessionWindow.samples.data(), SESSION_WINDOW_SIZE, stats.sessionWindow.count,
               stats.sessionWindow.pos, stats.sessionWindow.avg, y);
