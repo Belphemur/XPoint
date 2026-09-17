@@ -16,7 +16,9 @@ bool QuickPageCapture::capture(const freeink::book::Page& page) {
   // nothing and stay null through copyString; the 64-bit accumulator keeps
   // the bound check overflow-free.
   uint64_t stringNeed = 0;
-  for (uint16_t i = 0; i < page.runCount; ++i) stringNeed += page.runs[i].len;
+  for (uint16_t i = 0; i < page.runCount; ++i) {
+    if (page.runs[i].text != nullptr) stringNeed += page.runs[i].len;
+  }
   for (uint16_t i = 0; i < page.linkCount; ++i) {
     if (page.links[i].target != nullptr) stringNeed += strlen(page.links[i].target) + 1;
     if (page.links[i].fragment != nullptr) stringNeed += strlen(page.links[i].fragment) + 1;
@@ -37,6 +39,7 @@ bool QuickPageCapture::capture(const freeink::book::Page& page) {
 
   for (uint16_t i = 0; i < page.runCount; ++i) {
     runs[i] = page.runs[i];
+    if (page.runs[i].text == nullptr) continue;  // stays null, like copyString
     char* dst = reinterpret_cast<char*>(buffer_ + kStringsOff + stringUsed_);
     memcpy(dst, page.runs[i].text, page.runs[i].len);
     stringUsed_ += page.runs[i].len;
