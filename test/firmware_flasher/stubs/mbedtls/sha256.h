@@ -4,7 +4,12 @@
 #include <cstdint>
 
 struct mbedtls_sha256_context {
-  int unused = 0;
+  // Real FIPS 180-4 state so the host validator verifies the SHA-256 trailer
+  // of real release images (see Stubs.cpp for the implementation).
+  uint32_t h[8];
+  uint64_t bitLen;
+  uint8_t block[64];
+  size_t blockLen;
 };
 
 void mbedtls_sha256_init(mbedtls_sha256_context* ctx);

@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 #include "FirmwareFlasher.h"
 #include "HalStorage.h"
+#include "esp_ota_ops.h"
 
 namespace {
 
@@ -52,4 +55,79 @@ TEST(FirmwareFlasherValidateImageFile, AcceptsAnyBinFilenameForIdenticalImageByt
             firmware_flash::Result::OK);
   EXPECT_EQ(firmware_flash::validateImageFile("/locally-built-firmware.bin", kPartitionSize),
             firmware_flash::Result::OK);
+}
+
+namespace {
+
+// The real upstream CrossPoint 1.6.0 release image for the x4pro — the exact
+// file a locked X4 Pro owner would copy to SD to downgrade. CMake fetches it
+// at configure time and verifies the pinned SHA-256.
+constexpr uint16_t kX4ProChipId = 0x0009;  // ESP32-S3 (esp_image_header_t offset 12)
+constexpr size_t kExpectedFixtureSize = 5341040;
+constexpr size_t kX4ProOtaPartitionSize = 6 * 1024 * 1024;
+
+std::string readFixtureImage() {
+  std::ifstream in(X4PRO_FIXTURE_PATH, std::ios::binary);
+  EXPECT_TRUE(in.good()) << "fixture missing at configure-time path: " << X4PRO_FIXTURE_PATH;
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+uint32_t firstSegmentDataLen(const std::string& image) {
+  uint32_t len = 0;
+  std::memcpy(&len, image.data() + 24 + 4, sizeof(len));  // seg header: load addr(4) + len(4)
+  return len;
+}
+
+}  // namespace
+
+// The locked-user escape hatch: an untagged upstream image must pass every
+// validation gate (magic, chip id, segment walk, XOR checksum, SHA-256
+// trailer, board-tag scan) on an x4pro-class device.
+TEST(FirmwareFlasherValidateImageFile, AcceptsRealUpstreamX4ProReleaseImage) {
+  const std::string image = readFixtureImage();
+  ASSERT_EQ(image.size(), kExpectedFixtureSize);
+  ASSERT_EQ(static_cast<uint8_t>(image[0]), 0xE9) << "fixture is not an ESP app image";
+  uint16_t chip = 0;
+  std::memcpy(&chip, image.data() + 12, sizeof(chip));
+  ASSERT_EQ(chip, kX4ProChipId) << "fixture chip_id mismatch";
+
+  testSetRunningChipId(kX4ProChipId);
+  Storage.files["/upstream-crosspoint-1.6.0-x4pro.bin"] = image;
+  EXPECT_EQ(firmware_flash::validateImageFile("/upstream-crosspoint-1.6.0-x4pro.bin", kX4ProOtaPartitionSize),
+            firmware_flash::Result::OK);
+}
+
+// A single flipped data byte must be caught by the XOR checksum — guards
+// against a validation test that would trivially pass on any input.
+TEST(FirmwareFlasherValidateImageFile, RejectsRealImageWithFlippedByteAsBadChecksum) {
+  const std::string image = readFixtureImage();
+  std::string corrupted = image;
+  // Flip a byte in the middle of segment 0's data so only the checksum (not
+  // the segment table) is affected.
+  const size_t flipOffset = 24 + 8 + firstSegmentDataLen(image) / 2;
+  corrupted[flipOffset] = static_cast<char>(corrupted[flipOffset] ^ 0xFF);
+
+  testSetRunningChipId(kX4ProChipId);
+  Storage.files["/corrupted.bin"] = corrupted;
+  EXPECT_EQ(firmware_flash::validateImageFile("/corrupted.bin", kX4ProOtaPartitionSize),
+            firmware_flash::Result::BAD_CHECKSUM);
+}
+
+// A tag naming another board (sticky) must fail the board scan on the x4pro
+// class. The tag is planted straddling a 4096-byte feed-chunk boundary to also
+// prove the streaming scanner reassembles needles split across chunks.
+TEST(FirmwareFlasherValidateImageFile, RejectsForeignBoardTagOnX4Pro) {
+  const std::string image = readFixtureImage();
+  std::string tagged = image;
+  constexpr char kStickyTag[] = "CROSSPOINT-BOARD-V1:sticky;";
+  // Segment 0's data starts at file offset 32; the scanner's first feed chunk
+  // covers [32, 32+4096), so a tag starting at 4118 spans the chunk boundary.
+  constexpr size_t kTagOffset = 4118;
+  static_assert(kTagOffset + sizeof(kStickyTag) - 1 > 32 + 4096, "tag must straddle the feed boundary");
+  std::memcpy(tagged.data() + kTagOffset, kStickyTag, sizeof(kStickyTag) - 1);
+
+  testSetRunningChipId(kX4ProChipId);
+  Storage.files["/sticky-tagged.bin"] = tagged;
+  EXPECT_EQ(firmware_flash::validateImageFile("/sticky-tagged.bin", kX4ProOtaPartitionSize),
+            firmware_flash::Result::WRONG_BOARD);
 }

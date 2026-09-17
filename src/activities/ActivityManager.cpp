@@ -158,14 +158,14 @@ void ActivityManager::loop() {
       ActivityResult pendingResult = std::move(currentActivity->result);
 
       // An activity popped without calling setResult() leaves its result in
-      // the default-constructed state (isCancelled=false, data=monostate).
-      // A parent handler that reads a typed alternative via std::get<T>(data)
-      // would throw std::bad_variant_access and abort; treat that case as
-      // cancelled so the handler takes its safe branch.
-      if (!pendingResult.isCancelled && std::holds_alternative<std::monostate>(pendingResult.data)) {
+      // the default-constructed state (hasResult=false). A parent handler that
+      // reads a typed alternative via std::get<T>(data) would throw
+      // std::bad_variant_access and abort; treat that case as cancelled so the
+      // handler takes its safe branch. An explicit setResult() — including an
+      // empty-data Confirm from ConfirmationActivity — is never rewritten.
+      if (normalizeActivityResult(pendingResult)) {
         LOG_DBG("ACT", "Popped activity '%s' returned default-constructed result; treating as cancelled",
                 currentActivity->name.c_str());
-        pendingResult.isCancelled = true;
       }
 
       // Destroy the current activity
