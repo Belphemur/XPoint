@@ -10,6 +10,7 @@
 #include <numeric>
 #include <utility>
 
+#include "BookCachePath.h"
 #include "FsHelpers.h"
 
 #ifndef READING_STATS_TEST
@@ -244,16 +245,6 @@ bool loadPath(const char* path, std::vector<FinishedBookEntry>& entries) {
     entries.clear();
   }
   return ok;
-}
-
-std::string cachePathForBookPath(const std::string& path) {
-  if (FsHelpers::hasEpubExtension(std::string_view{path})) {
-    return std::string("/.crosspoint/epub_") + std::to_string(std::hash<std::string>{}(path));
-  }
-  if (FsHelpers::hasXtcExtension(std::string_view{path})) {
-    return std::string("/.crosspoint/xtc_") + std::to_string(std::hash<std::string>{}(path));
-  }
-  return {};
 }
 
 #ifdef READING_STATS_TEST

@@ -9,6 +9,9 @@
 #include "GlobalReadingStats.h"
 #include "MappedInputManager.h"
 #include "ReadingRhythmActivity.h"
+#if READING_STATS_DEBUG_PAGE
+#include "ReadingStatsDebugActivity.h"
+#endif
 #include "activities/settings/GlobalStatsActivity.h"
 #include "components/UITheme.h"
 
@@ -52,6 +55,9 @@ void ReadingStatsMenuActivity::rebuildRowItems() {
   addRow(tr(STR_STATS_THIS_DEVICE_SCREEN), StatsEntry::ThisDevice);
   addRow(tr(STR_STATS_READING_RHYTHM), StatsEntry::ReadingRhythm);
   addRow(tr(STR_STATS_FINISHED_BOOKS), StatsEntry::FinishedBooks);
+#if READING_STATS_DEBUG_PAGE
+  addRow("Debug: raw windows", StatsEntry::DebugRaw);
+#endif
   rowCount = static_cast<int>(index);
 }
 
@@ -86,6 +92,11 @@ void ReadingStatsMenuActivity::activateIndex(const int index) {
     case StatsEntry::FinishedBooks:
       openFinishedBooks();
       break;
+#if READING_STATS_DEBUG_PAGE
+    case StatsEntry::DebugRaw:
+      openDebugRaw();
+      break;
+#endif
   }
 }
 
@@ -142,3 +153,16 @@ void ReadingStatsMenuActivity::openFinishedBooks() {
   }
   startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
 }
+
+#if READING_STATS_DEBUG_PAGE
+void ReadingStatsMenuActivity::openDebugRaw() {
+  // The page self-enumerates global + all-book windows from the library
+  // index, so it needs no book context (reachable from Home too).
+  auto activity = makeUniqueNoThrow<ReadingStatsDebugActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("RSM", "OOM: ReadingStatsDebugActivity");
+    return;
+  }
+  startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+}
+#endif
