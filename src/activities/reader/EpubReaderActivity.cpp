@@ -15,6 +15,7 @@
 #include <Memory.h>
 #include <SdCardFont.h>
 #include <esp_system.h>
+#include <freertos/task.h>
 
 #include <algorithm>
 #include <functional>
@@ -4106,6 +4107,10 @@ void EpubReaderActivity::renderQuickFontPage() {
     }
     renderOverlay();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    LOG_DBG("ERS", "quickFont render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u loopStackHW=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+            static_cast<unsigned>(ESP.getMinFreePsram()), static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   }
 }
 
@@ -4287,6 +4292,10 @@ void EpubReaderActivity::openOverlay(Overlay target) {
     renderOverlay();
 #if defined(CROSSPOINT_TTF_READER)
     LOG_DBG("ERS", "overlay rendered=%d uiReady=%d", static_cast<int>(overlay), toolbarUi->routingReady());
+    LOG_DBG("ERS", "overlay mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u loopStackHW=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 #endif
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {

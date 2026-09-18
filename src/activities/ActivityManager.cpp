@@ -7,6 +7,7 @@
 #include <HalDisplay.h>
 #include <HalPowerManager.h>
 #include <Memory.h>
+#include <freertos/task.h>
 
 #include <algorithm>
 #include <ctime>
@@ -48,7 +49,10 @@ void ActivityManager::begin() {
   constexpr BaseType_t renderTaskCore = 0;
 #endif
   xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender",
-                          8192,               // Stack size
+                          12288,  // Stack size: FreeType render path (esp. the
+                          // Adobe CFF engine used for .otf faces) needs several
+                          // KB more than stb did; 8KB overflowed and corrupted
+                          // neighboring DRAM (IDLE0 stack / TWDT entries).
                           this,               // Parameters
                           1,                  // Priority
                           &renderTaskHandle,  // Task handle
@@ -74,6 +78,17 @@ void ActivityManager::renderTaskLoop() {
       // The sleep screen forces normal polarity itself (SleepActivity).
       display.setInverted(SETTINGS.screenInverted != 0);
       currentActivity->render(std::move(lock));
+#if defined(CROSSPOINT_TTF_READER)
+      // FreeType render depth varies by face type (Adobe CFF engine vs TT);
+      // watch the high-water so the stack sizing above stays evidence-based.
+      LOG_DBG("REND", "render stack high-water=%u bytes", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+      // Heap/PSRAM budget across renders: catches FT-side leaks (faces,
+      // glyph backing) and DRAM pressure from the larger task stack.
+      LOG_DBG("REND", "render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u",
+              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+              static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+              static_cast<unsigned>(ESP.getMinFreePsram()));
+#endif
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.
     TaskHandle_t waiter = nullptr;
