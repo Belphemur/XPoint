@@ -2906,7 +2906,7 @@ void EpubReaderActivity::renderBookTtf() {
     // the last plane pass has walked it.
     ttf_->scratch().release(scratchMark);
     lastRenderCompleteMs = millis();
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     LOG_DBG("REND", "reader gray render stack high-water=%u bytes",
             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
     memSentinelCheck("reader gray render");
@@ -2940,7 +2940,7 @@ void EpubReaderActivity::renderBookTtf() {
     renderer.waitRefreshComplete();
   }
   lastRenderCompleteMs = millis();
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // In-render stack probe: the post-render REND telemetry never ran for the
   // crashing reader renders — measure the reader path's own high-water HERE,
   // before render() returns (the deepest path: rebuild + FT paint + chrome).

@@ -919,7 +919,8 @@ void loop() {
 
   renderer.setFadingFix(SETTINGS.fadingFix);
 
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT && defined(CROSSPOINT_MEM_SENTINEL) && \
+    CROSSPOINT_MEM_SENTINEL
   // Memory sentinel (FT bring-up, PR #146): the on-device crash (IDLE0 stack
   // canary + corrupted TWDT entry, LoadProhibited at 0x10c/0x1c9) is a silent
   // DRAM corruption whose faulting frames point at IDLE0, not the culprit.
@@ -938,17 +939,18 @@ void loop() {
         if (hwm < 256) {
           LOG_ERR("SENT", "Task %s stack HWM=%u (overflow suspect)", name, static_cast<unsigned>(hwm));
         }
-#if defined(CROSSPOINT_TTF_READER)
         // Victim-stack time series: IDLE0 (core 0) and the render task have
         // both carried wild-write scars during quick-font repros. Log their
         // HWM every tick so the write can be dated against the log phases.
-        if (name != nullptr && (strcmp(name, "IDLE0") == 0 || strcmp(name, "ActivityManagerRender") == 0)) {
+        // FreeRTOS truncates names to configMAX_TASK_NAME_LEN (16), so match
+        // the shared prefix instead of the full "ActivityManagerRender".
+        if (name != nullptr && (strcmp(name, "IDLE0") == 0 || strncmp(name, "ActivityManager", 15) == 0)) {
           LOG_DBG("SENT", "%s stack HWM=%u", name, static_cast<unsigned>(hwm));
         }
-#endif
       }
     }
-    if (!heap_caps_check_integrity_all(false)) {
+    // print_errors=true: the whole point is naming the smashed block.
+    if (!heap_caps_check_integrity_all(true)) {
       LOG_ERR("SENT", "Heap integrity check FAILED (see dump above)");
     }
   }

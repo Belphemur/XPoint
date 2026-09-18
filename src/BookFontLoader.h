@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <memory>
 
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
 #include <FtFont.h>
 #endif
 
@@ -23,7 +23,7 @@ namespace book {
 // Active native-TTF backend face (design D2): FreeType under the FT backend
 // flag, stb_truetype otherwise. Both satisfy the RasterFont contract the
 // FontChain consumes; the stb path stays compilable for rollback.
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
 using NativeFace = freeink::font::FtFont;
 #else
 using NativeFace = TtfFont;
@@ -90,7 +90,7 @@ class BookFontLoader {
   // Per-face PSRAM size guard (CWE-400); picker rows above it are greyed out.
   static constexpr uint32_t kMaxFaceBytes = 2u * 1024u * 1024u;
 
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // Initial pixel size for FreeType faces. Per-run sizes (ruby, preview) adapt
   // at runtime through FtFont::ensureSize — the face is size-agnostic. Mirrors
   // CrossPointSettings::DEFAULT_TTF_FONT_POINT_SIZE without coupling the

@@ -157,6 +157,7 @@ TEST(FontBackendInvariants, RejectsGarbageAndTruncation) {
 
   const auto bytes = readFile(DEJAVU_FIXTURE);
   ASSERT_FALSE(bytes.empty());
+  ASSERT_GE(bytes.size(), 16u);  // fixtures are committed; guard the truncation anyway
   InvariantFace truncated;
   std::vector<uint8_t> cut(bytes.begin(), bytes.begin() + 16);
   EXPECT_FALSE(loadFace(truncated, cut));

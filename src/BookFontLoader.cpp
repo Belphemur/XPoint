@@ -61,7 +61,7 @@
 namespace freeink {
 namespace book {
 
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
 // Style → FreeType axis coordinate (design §4.1): bold = wght 700, else 400.
 // Italic is passed separately; FT synthesizes oblique/embolden when an axis
 // is absent.
@@ -379,7 +379,7 @@ uint32_t BookFontLoader::computeFingerprint() const {
   }
   if (!anyLoaded) return 0;
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // D4: backend tag ("FTU1"). FreeType's advances/kerning differ from stb's
   // (different hinting), so a stale stb-layout section cache must invalidate.
   // Folding the tag into the byte-hash touches only TTF-family caches; the
@@ -869,7 +869,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // TtfFont allocates GlyphSlot (uint64_t key) through it. Pool blocks come
   // from heap_caps_malloc (≥4-byte aligned), which covers GlyphSlot's
   // uint64_t key on ESP32 (its natural alignment is 4 on this 32-bit ABI).
-#if defined(CROSSPOINT_FONT_BACKEND_FT)
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // D6: FreeType owns the glyph slot (FontAlloc routes all FT heap to PSRAM
   // when present), so the caller-side glyph arena and its backing pool are
   // skipped entirely on this backend.

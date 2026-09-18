@@ -4,11 +4,11 @@
 **Status:** Approved for implementation
 **Branch:** `feat/freetype-font-backend` (firmware), SDK PR per §6 Task 1
 **Related:** `references/ttf-native-fonts-directives.md` (standing directives),
-`references/sdk-fork-pr-workflow.md`, SDK PR #25 (FreeInkFont split, pin 660dc91)
+`references/sdk-fork-pr-workflow.md`, SDK PR #25 (FreeInkFont split; its pin `660dc91` is the historical base this document was written against — the live gitlink is tracked in the submodule and has since advanced through SDK PR #26 (`6a8addc`, `FtFont::glyphBounds`) to PR #27 (`5b52bfc1`, 4KB render pool))
 
 ## 1. Executive summary
 
-The freeink-sdk fork (at pin `660dc91`) ships a second font backend in the
+The freeink-sdk fork (written against pin `660dc91`; see the header note for the live pin) ships a second font backend in the
 standalone `FreeInkFont` library: `freeink::font::FtFont`, a FreeType-backed
 implementation of the same `RasterFont` interface the reader already consumes
 (`TtfFont`, stb_truetype-backed). Both backends implement the identical vtable
@@ -48,7 +48,7 @@ one small SDK PR (`FtFont::glyphBounds`). Estimated firmware-side delta:
 |---|---|---|
 | D1 | **Full backend replacement** on the TTF device class, compile-time. No runtime toggle, no stb/FT hybrid. | KISS: both backends satisfy the same `RasterFont` contract; a hybrid doubles the parity/test matrix for no user value; the only capability stb lacks (streaming) is also FT-only. stb `TtfFont` stays in the SDK (rollback = flip one constant). |
 | D2 | Backend selection = `CROSSPOINT_FONT_BACKEND_FT` compile flag in the same device-class gate as `CROSSPOINT_TTF_READER` (PSRAM builds: x4pro/x4c/papermono). Default `1`. Under the flag `BookFontLoader::tryLoadFace` constructs `FtFont` instead of `TtfFont`; the stb path remains compilable. | Mirrors the compile-time device-class split directive; C3/legacy class never sees FreeType code in its link. |
-| D3 | **SDK fork PR #1:** add `FtFont::glyphBounds` (override returning real ink bounds from `FT_Load_Char(FT_LOAD_DEFAULT)` + `face->glyph->metrics`, no render) with host tests, merged to `Belphemur/freeink-sdk` main before the firmware PR's final pin. | Restores `PagePaint`'s band-cull parity (~30 lines). The fork owns the SDK; engine gaps go through `sdk-fork-pr-workflow`. |
+| D3 | **SDK fork PR #1:** add `FtFont::glyphBounds` (override deriving the ink box from `FT_Load_Char(FT_LOAD_DEFAULT)` — outline only, no render. Implementation detail as merged in PR #26: the box comes from `FT_Outline_Get_CBox` on the loaded outline — which reflects the `FT_Set_Transform` shear the metrics fields miss — rounded outward and padded so the box contains the `rasterize()` bitmap) with host tests, merged to `Belphemur/freeink-sdk` main before the firmware PR's final pin. | Restores `PagePaint`'s band-cull parity. The fork owns the SDK; engine gaps go through `sdk-fork-pr-workflow`. |
 | D4 | `computeFingerprint()` mixes in a backend tag (`FNV-1a ^ 0x46545531` under the FT flag) on top of the existing byte-hash. `SECTION_FILE_VERSION` unchanged. | Backend switch can change advances/kerning (different hinting) → a stale section cache would render FT layout over stb metrics. Folding the tag into the fingerprint invalidates only TTF-family caches (bitmap fallback chains keep fingerprint 0 and stay cached). Format unchanged → no version bump. |
 | D5 | **Streaming (`initStream` via a `HalFile` ReadFn) is out of scope** — follow-up design doc after Phase 1 ships on-device. Phase 1 keeps the ≤2 MiB PSRAM-borrow guard and the current byte-loading path unchanged. | Smallest-first parity gate: mutex-per-SD-read latency under `storageMutex` is unmeasured; borrowing bytes keeps `tryLoadFace`'s validation and lifetime story identical to today. |
 | D6 | Under the FT flag, `tryLoadFace` skips the per-face glyph `Arena` + `glyphBacking_` pool allocation entirely (FT owns glyph memory). The stb path keeps them. | Direct PSRAM budget win per face; less state. Arena plumbing stays for the stb path. |
