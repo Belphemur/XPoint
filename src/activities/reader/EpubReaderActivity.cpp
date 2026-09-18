@@ -4291,8 +4291,10 @@ void EpubReaderActivity::settleOverlayRefresh() {
     }
     vTaskDelay(1);
   }
-  overlayRefreshPending.store(false, std::memory_order_relaxed);
   renderer.cleanupGrayscaleWithFrameBuffer();  // waits, then reseeds the baseline
+  // Clear only after the baseline reseed: while it runs, the refresh is not
+  // yet fully drained as far as the next settle/push is concerned.
+  overlayRefreshPending.store(false, std::memory_order_relaxed);
 }
 
 void EpubReaderActivity::openOverlay(Overlay target) {
