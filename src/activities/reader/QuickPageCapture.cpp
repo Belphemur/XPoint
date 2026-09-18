@@ -62,7 +62,8 @@ bool QuickPageCapture::capture(const freeink::book::Page& page) {
   }
 
   page_ = freeink::book::Page{runs,  page.runCount,  images, page.imageCount, links,          page.linkCount,
-                              rules, page.ruleCount, rubies, page.rubyCount,  page.pageIndex, page.charStart};
+                              rules, page.ruleCount, rubies, page.rubyCount,  page.pageIndex, page.wordCount,
+                              page.charStart};
   valid_ = true;
   return true;
 }
