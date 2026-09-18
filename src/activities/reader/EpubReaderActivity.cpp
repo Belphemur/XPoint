@@ -4120,18 +4120,21 @@ void EpubReaderActivity::renderQuickFontPage() {
 
 void EpubReaderActivity::closeFontSheet() {
 #if defined(CROSSPOINT_TTF_READER)
-  if (!ttf_) return;
+  // Teardown is unconditional: a FontSheet left in `overlay` keeps
+  // isChromeOpen() true, so every back gesture re-enters this close path and
+  // is swallowed with no visible effect. Only the reflow work needs ttf_.
   overlay = Overlay::None;
   overlayPopup.dismiss();
   quickFontFamilyPending = false;
   quickFontPreview.attach(nullptr, 0);  // buffer freed below
   quickFontPreviewBuf.reset();
   discardOverlayPage();
+  requestUpdate();
+  if (!ttf_) return;
   applyReaderTextSettings();  // one persisted save + full reflow on close
   // The sheet hid a full-page relayout; ask the next render for a cleanup
   // cycle rather than leaving a differential overlay refresh in the cadence.
   pagesUntilFullRefresh = 1;
-  requestUpdate();
 #endif
 }
 #endif
