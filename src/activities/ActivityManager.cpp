@@ -44,65 +44,48 @@ bool ActivityManager::handleBackOnCurrent() {
 }
 
 void ActivityManager::begin() {
-#if defined(configNUM_CORES) && configNUM_CORES > 1
-  constexpr BaseType_t renderTaskCore = 1;
-#else
-  constexpr BaseType_t renderTaskCore = 0;
-#endif
-  xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender",
-                          16384,  // Stack size: reader-page renders are the
-                          // deepest path (ChapterLayout rebuild + FreeType
-                          // paint + status chrome); measured via the
-                          // renderBookTtf high-water probe. stb fit in 8KB,
-                          // FT render depth (~5.7KB rasterize after SDK PR
-                          // #27's 4KB pool) overflowed 8KB AND 12KB.
-                          this,               // Parameters
-                          1,                  // Priority
-                          &renderTaskHandle,  // Task handle
-                          renderTaskCore  // Keep long renders/cover decodes off CPU 0's idle watchdog when available
-  );
-  assert(renderTaskHandle != nullptr && "Failed to create render task");
+  // All rendering runs on the Arduino loop task: the Adobe CFF engine needs
+  // an unbounded, multi-KB caller stack (see the 48KB loopTask override in
+  // main.cpp), and rebuilds are UX-modal anyway (the "Indexing" popup), so a
+  // second render task only doubled the stack bill. Renders that must happen
+  // while the main task is blocked in a tight loop (OTA/SD-flash progress)
+  // are rendered synchronously from the progress callback — the flash driver
+  // critical-sections its writes, so display work between writes is safe.
+  mainTaskHandle = xTaskGetCurrentTaskHandle();
 }
 
-void ActivityManager::renderTaskTrampoline(void* param) {
-  auto* self = static_cast<ActivityManager*>(param);
-  self->renderTaskLoop();
-}
-
-void ActivityManager::renderTaskLoop() {
-  while (true) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    // Acquire the lock before reading currentActivity to avoid a TOCTOU race
-    // where the main task deletes the activity between the null-check and render().
-    RenderLock lock;
-    if (currentActivity) {
-      HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
-      // Night mode is a global output polarity applied to every activity.
-      // The sleep screen forces normal polarity itself (SleepActivity).
-      display.setInverted(SETTINGS.screenInverted != 0);
-      currentActivity->render(std::move(lock));
+void ActivityManager::performRender() {
+  // Acquire the lock before reading currentActivity so out-of-loop callers
+  // (requestUpdate(true) from progress callbacks) stay serialized with any
+  // RenderLock scope the activity itself holds.
+  RenderLock lock;
+  if (currentActivity) {
+    HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
+    // Night mode is a global output polarity applied to every activity.
+    // The sleep screen forces normal polarity itself (SleepActivity).
+    display.setInverted(SETTINGS.screenInverted != 0);
+    currentActivity->render(std::move(lock));
 #if defined(CROSSPOINT_TTF_READER)
-      // FreeType render depth varies by face type (Adobe CFF engine vs TT);
-      // watch the high-water so the stack sizing above stays evidence-based.
-      LOG_DBG("REND", "render stack high-water=%u bytes", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-      // Heap/PSRAM budget across renders: catches FT-side leaks (faces,
-      // glyph backing) and DRAM pressure from the larger task stack.
-      LOG_DBG("REND", "render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u",
-              static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
-              static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
-              static_cast<unsigned>(ESP.getMinFreePsram()));
-      memSentinelCheck("renderTask render");
+    // FreeType render depth varies by face type (Adobe CFF engine vs TT);
+    // watch the high-water so the stack sizing stays evidence-based.
+    LOG_DBG("REND", "render stack high-water=%u bytes", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    // Heap/PSRAM budget across renders: catches FT-side leaks (faces,
+    // glyph backing) and DRAM pressure from the larger task stack.
+    LOG_DBG("REND", "render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+            static_cast<unsigned>(ESP.getMinFreePsram()));
+    memSentinelCheck("main render");
 #endif
-    }
-    // Notify any task blocked in requestUpdateAndWait() that the render is done.
-    TaskHandle_t waiter = nullptr;
-    taskENTER_CRITICAL(&activityManagerSpinlock);
-    waiter = waitingTaskHandle;
-    waitingTaskHandle = nullptr;
-    taskEXIT_CRITICAL(&activityManagerSpinlock);
-    if (waiter) {
-      xTaskNotify(waiter, 1, eIncrement);
-    }
+  }
+  // Notify any task blocked in requestUpdateAndWait() that the render is done.
+  TaskHandle_t waiter = nullptr;
+  taskENTER_CRITICAL(&activityManagerSpinlock);
+  waiter = waitingTaskHandle;
+  waitingTaskHandle = nullptr;
+  taskEXIT_CRITICAL(&activityManagerSpinlock);
+  if (waiter) {
+    xTaskNotify(waiter, 1, eIncrement);
   }
 }
 
@@ -114,8 +97,8 @@ void ActivityManager::loop() {
     // An exclusive-storage activity must restart rather than navigate away:
     // processing a pending action here could re-enable filesystem users while
     // the USB host still owns the raw SD card.
-    if (requestedUpdate.exchange(false) && renderTaskHandle) {
-      xTaskNotify(renderTaskHandle, 1, eIncrement);
+    if (requestedUpdate.exchange(false)) {
+      performRender();
     }
     return;
   }
@@ -250,11 +233,8 @@ void ActivityManager::loop() {
   }
 
   if (requestedUpdate.exchange(false)) {
-    // Using direct notification to signal the render task to update
-    // Increment counter so multiple rapid calls won't be lost
-    if (renderTaskHandle) {
-      xTaskNotify(renderTaskHandle, 1, eIncrement);
-    }
+    // The loop task renders inline now — no render task to notify.
+    performRender();
   }
 }
 
@@ -469,18 +449,31 @@ ScreenshotInfo ActivityManager::getScreenshotInfo() const {
 }
 
 void ActivityManager::requestUpdate(bool immediate) {
-  if (immediate) {
-    if (renderTaskHandle) {
-      xTaskNotify(renderTaskHandle, 1, eIncrement);
-    }
-  } else {
+  if (!immediate) {
     // Deferring the update until current loop is finished
-    // This is to avoid multiple updates being requested in the same loop
+    // This is to avoid multiple updates being rendered in the same loop
+    requestedUpdate = true;
+    return;
+  }
+  // From the main task: render synchronously. Progress callbacks inside
+  // tight loops (OTA/SD flash) block the loop task, so a deferred flag would
+  // never drain — the caller relies on the render happening right here.
+  // Re-entrant calls (already inside a render or a RenderLock scope) defer:
+  // the mutex is not recursive, rendering inline would deadlock.
+  if (xTaskGetCurrentTaskHandle() == mainTaskHandle &&
+      xSemaphoreGetMutexHolder(renderingMutex) != xTaskGetCurrentTaskHandle()) {
+    performRender();
+  } else {
     requestedUpdate = true;
   }
 }
 void ActivityManager::requestUpdateAndWait() {
-  if (!renderTaskHandle) {
+  // Main thread is the renderer: render synchronously unless already inside
+  // a RenderLock scope (the mutex is not recursive — that would deadlock).
+  if (xTaskGetCurrentTaskHandle() == mainTaskHandle) {
+    assert(xSemaphoreGetMutexHolder(renderingMutex) != xTaskGetCurrentTaskHandle() &&
+           "Cannot call requestUpdateAndWait() while holding RenderLock");
+    performRender();
     return;
   }
 
@@ -488,16 +481,12 @@ void ActivityManager::requestUpdateAndWait() {
   taskENTER_CRITICAL(&activityManagerSpinlock);
   auto currTaskHandler = xTaskGetCurrentTaskHandle();
   auto mutexHolder = xSemaphoreGetMutexHolder(renderingMutex);
-  bool isRenderTask = (currTaskHandler == renderTaskHandle);
   bool alreadyWaiting = (waitingTaskHandle != nullptr);
   bool holdingRenderLock = (mutexHolder == currTaskHandler);
-  if (!alreadyWaiting && !isRenderTask && !holdingRenderLock) {
+  if (!alreadyWaiting && !holdingRenderLock) {
     waitingTaskHandle = currTaskHandler;
   }
   taskEXIT_CRITICAL(&activityManagerSpinlock);
-
-  // Render task cannot call requestUpdateAndWait() or it will cause a deadlock
-  assert(!isRenderTask && "Render task cannot call requestUpdateAndWait()");
 
   // There should never be the case where 2 tasks are waiting for a render at the same time
   assert(!alreadyWaiting && "Already waiting for a render to complete");
@@ -505,7 +494,8 @@ void ActivityManager::requestUpdateAndWait() {
   // Cannot call while holding RenderLock or it will cause a deadlock
   assert(!holdingRenderLock && "Cannot call requestUpdateAndWait() while holding RenderLock");
 
-  xTaskNotify(renderTaskHandle, 1, eIncrement);
+  // The next loop() iteration drains requestedUpdate, renders, and notifies us.
+  requestedUpdate = true;
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 

@@ -542,11 +542,15 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
-// loopTask override: the reader's quick-font overlay renders (ChapterLayout
-// + FreeType paint) run on the loop task; at the 16KB default the font sheet
-// measured loopStackHW=3444 and deeper renders (size steps, family switches)
-// overflowed it — canary on loopTask, PR #146. 32KB keeps ~16KB headroom.
-SET_LOOP_TASK_STACK_SIZE(32768)
+// loopTask override: ALL rendering runs on the loop task since the Adobe CFF
+// engine (faster; chosen over the old "freetype" CFF engine, SDK PR #29/#30)
+// interprets charstrings with an unbounded, multi-KB caller stack. 40KB is
+// the EPub-InkPlate-proven size for the Adobe engine on ESP32; 48KB adds
+// margin for the reader's ChapterLayout rebuild + paint on top of it.
+// Replaces the ActivityManagerRender task (16KB) — net task-stack budget
+// unchanged, one fewer task, no cross-task FreeType calls. Rebuilds are
+// UX-modal anyway ("Indexing" popup), so blocking the loop is accepted.
+SET_LOOP_TASK_STACK_SIZE(49152)
 
 void setup() {
   BoardConfig::holdPowerRails();

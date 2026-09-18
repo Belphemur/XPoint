@@ -54,13 +54,18 @@ class ActivityManager {
   enum class PendingAction { None, Push, Pop, Replace };
   PendingAction pendingAction = PendingAction::None;
 
-  // Task to render and display the activity
-  TaskHandle_t renderTaskHandle = nullptr;
-  static void renderTaskTrampoline(void* param);
-  [[noreturn]] virtual void renderTaskLoop();
+  // The loop task is the renderer: it captures its own handle in begin()
+  // so requestUpdate(true)/requestUpdateAndWait() can render synchronously
+  // when called from the main thread (e.g. progress callbacks inside tight
+  // OTA/SD-flash loops that never return to loop()).
+  TaskHandle_t mainTaskHandle = nullptr;
 
-  // Set by requestUpdateAndWait(); read and cleared by the render task after render completes.
-  // Note: only one waiting task is supported at a time
+  // Render the current activity now and wake any requestUpdateAndWait()
+  // waiter. Main-thread only; takes the RenderLock itself.
+  void performRender();
+
+  // Set by requestUpdateAndWait(); read and cleared by performRender() after
+  // the render completes. Note: only one waiting task is supported at a time
   TaskHandle_t waitingTaskHandle = nullptr;
 
   // Mutex to protect rendering operations from race conditions
@@ -137,7 +142,7 @@ class ActivityManager {
   void requestUpdate(bool immediate = false);
 
   // Trigger a render and block until it completes.
-  // Must NOT be called from the render task or while holding a RenderLock.
+  // Must NOT be called while holding a RenderLock.
   void requestUpdateAndWait();
 };
 
