@@ -399,6 +399,14 @@ void EpubReaderActivity::recordCurrentPageReadingTime() {
 }
 
 void EpubReaderActivity::recordForwardPagePaceSample(uint32_t seconds, uint16_t wordsOnPage) {
+#if defined(ENABLE_SERIAL_LOG) && LOG_LEVEL >= 2
+  // Raw inputs of every pace sample (accepted or rejected): the WpmWindow
+  // stores the floor-clamped value, so a stuck-at-80 device dump cannot show
+  // whether words were undercounted or dwell inflated — this line can.
+  const uint32_t rawWpm = (seconds > 0 && wordsOnPage > 0) ? (static_cast<uint32_t>(wordsOnPage) * 60U) / seconds : 0;
+  LOG_DBG("RSDBG", "sample dwell=%us words=%u rawWpm=%lu", static_cast<unsigned>(seconds),
+          static_cast<unsigned>(wordsOnPage), static_cast<unsigned long>(rawWpm));
+#endif
   if (seconds < MIN_READING_PACE_SAMPLE_SECONDS) return;
   stats.recordForwardPageRead(seconds, wordsOnPage);
   globalStats.recordGlobalPageRead(seconds, wordsOnPage);
