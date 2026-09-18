@@ -204,15 +204,18 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
     xSemaphoreGive(paramsMux_);
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
-  // re-index under the new generation.
+  // re-index under the new generation. The existing semaphore is consumed
+  // (not replaced) first: the previous task's final give must land before a
+  // replacement task can start, or the old task could signal the fresh
+  // handle (timing-dependent use-after-free).
   if (!running_.load(std::memory_order_acquire) && !cancel_.load(std::memory_order_acquire)) {
-    if (exitedSem_ != nullptr) {
-      vSemaphoreDelete(exitedSem_);
-      exitedSem_ = nullptr;
-    }
-    exitedSem_ = xSemaphoreCreateBinary();
+    if (exitedSem_ == nullptr) exitedSem_ = xSemaphoreCreateBinary();
     if (exitedSem_ == nullptr) {
       LOG_ERR("PREF", "OOM: respawn semaphore");
+      return;
+    }
+    if (xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
+      LOG_DBG("PREF", "Previous worker still exiting — respawn skipped");
       return;
     }
     running_.store(true, std::memory_order_release);
@@ -220,22 +223,25 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
         pdPASS) {
       LOG_ERR("PREF", "Task respawn failed");
       running_.store(false, std::memory_order_release);
-      vSemaphoreDelete(exitedSem_);
+      vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
       exitedSem_ = nullptr;
       task_ = nullptr;
     }
   }
 }
 
-void FibpPrefetchWorker::cancel() {
+bool FibpPrefetchWorker::cancel() {
   cancel_.store(true, std::memory_order_release);
-  if (running_.load(std::memory_order_acquire) && exitedSem_ != nullptr) {
+  // Join whenever a task could exist (semaphore alive), regardless of the
+  // running_ snapshot — the exiting task gives as its final act.
+  if (exitedSem_ != nullptr) {
     if (xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
-      // Pathological: the worker is wedged inside a step. Leak the task and
-      // its state rather than free memory it still touches (the book-close
-      // path degrades to a logged leak instead of a use-after-free).
-      LOG_ERR("PREF", "Join timeout — leaking worker resources");
-      return;
+      // Pathological: the worker is wedged inside a step. Report failure so
+      // the caller RELEASES ownership without destroying: freeing state the
+      // task still touches would be a use-after-free (the logged leak is the
+      // safer failure mode for firmware).
+      LOG_ERR("PREF", "Join timeout — worker state intentionally leaked");
+      return false;
     }
   }
   if (exitedSem_ != nullptr) {
@@ -257,6 +263,7 @@ void FibpPrefetchWorker::cancel() {
   sessionGen_ = 0;
   running_.store(false, std::memory_order_release);
   LOG_DBG("PREF", "Worker cancelled");
+  return true;
 }
 
 // ── worker task ────────────────────────────────────────────────────────────

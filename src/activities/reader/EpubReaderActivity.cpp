@@ -3289,8 +3289,14 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
 
 void EpubReaderActivity::stopFibpWorker() {
   if (fibpWorker_ == nullptr) return;
-  fibpWorker_->cancel();
-  fibpWorker_.reset();
+  if (fibpWorker_->cancel()) {
+    fibpWorker_.reset();
+  } else {
+    // Wedged join: the worker object owns state a live task still touches —
+    // release ownership WITHOUT destroying (logged leak beats use-after-free).
+    LOG_ERR("ERS", "FIBP worker did not stop — releasing without destroy");
+    (void)fibpWorker_.release();
+  }
   fibpBegun_ = false;
   fibpFamily_[0] = '\0';
   fibpDeferred_ = false;

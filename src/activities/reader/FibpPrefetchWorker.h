@@ -70,6 +70,8 @@ class FibpPrefetchWorker {
   };
 
 #if FIBP_WORKER_ENABLED
+  ~FibpPrefetchWorker() { cancel(); }  // safety net; the owner must cancel() first
+
   // Main thread. Builds the worker's own face chain from the selected
   // family (reading the same font bytes) and spawns the worker task.
   // Returns false (worker inert, sync path unchanged) when the family is
@@ -84,8 +86,10 @@ class FibpPrefetchWorker {
   // Respawns the task when it had already finished ("fully indexed").
   void notifyGeneration(uint32_t generation, const LayoutParams& pods);
   // Main thread. Stops the task (bounded join) and frees the worker's
-  // faces, bytes, and runtime. Must be called before the owner dies.
-  void cancel();
+  // faces, bytes, and runtime. Returns false when the join times out: the
+  // caller must then RELEASE ownership without destroying the object (its
+  // state is still touched by the wedged task — leak beats use-after-free).
+  bool cancel();
   // True while the worker task is alive (spawning → joined).
   bool active() const { return running_.load(std::memory_order_acquire); }
   // Spine the task is currently laying out (fibp::kNoChapter when idle) —
@@ -165,8 +169,9 @@ class FibpPrefetchWorker {
   bool begin(const BeginContext&) { return false; }
   void notifyChapterEntered(uint16_t) {}
   void notifyGeneration(uint32_t, const LayoutParams&) {}
-  void cancel() {}
+  bool cancel() { return true; }
   bool active() const { return false; }
+  uint16_t buildingSpine() const { return fibp::kNoChapter; }
 #endif  // FIBP_WORKER_ENABLED
 };
 
