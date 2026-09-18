@@ -298,6 +298,10 @@ void EpubReaderActivity::onEnter() {
 }
 
 void EpubReaderActivity::onExit() {
+#if defined(CROSSPOINT_TTF_READER)
+  // R1: transient worker lifetime — cancel + join + free before teardown.
+  stopFibpWorker();
+#endif
 #ifdef READING_STATS_ENABLED
   if (epub && SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
@@ -2691,11 +2695,14 @@ void EpubReaderActivity::renderBookTtf() {
   const uint32_t generation = freeink::book::layoutGenerationHash(params, freeink::book::fontLoader.fontFingerprint());
   ttfGeneration = generation;
   ttfGenerationValid = true;
+  // Index-ahead worker: spawn/notify under the current generation + chapter.
+  updateFibpWorker(generation, params);
 
   // 2) Chapter transition. A running session for the chapter we enter (a
   // prefetch build) keeps laying out; anything else aborts (partial commit).
   if (ttfSpine != currentSpineIndex) {
     ttfPrefetchActive = false;
+    fibpDeferred_ = false;
     ttf_->dropPrefetch();
     ttfFrameRenderComplete.store(false, std::memory_order_release);
     if (ttfHasSavedPosition && currentSpineIndex != ttfSavedSpine) {
@@ -2724,7 +2731,29 @@ void EpubReaderActivity::renderBookTtf() {
 
   ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
 
-  // 3) Resolve the target page (jump states may need more build first).
+  // 3) Single-writer handoff (R4 optional polish): while the worker builds
+  // the chapter we are on, wait for its commit instead of racing a second
+  // writer onto the same FIBP file; once it lands, reopen the cache so the
+  // resolve/build decisions below see the worker's page count — no sync
+  // rebuild, no popup stall beyond the wait.
+  if (fibpWorker_ != nullptr && fibpWorker_->active() &&
+      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
+    if (!fibpDeferred_) {
+      fibpDeferred_ = true;
+      LOG_DBG("ERS", "Chapter %d build delegated to prefetch worker", currentSpineIndex);
+      ttfShowIndexingPopup();
+    }
+    requestUpdate();
+    return;
+  }
+  if (fibpDeferred_) {
+    // The delegated build finished (or failed): pick up the committed cache.
+    fibpDeferred_ = false;
+    ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+  }
+
+  // 4) Resolve the target page (jump states may need more build first).
   bool needFullBuild = false;
   int target = -1;
   const bool resolved = ttfResolveTargetPage(target, params, needFullBuild);
@@ -3224,8 +3253,54 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   }
 }
 
+void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freeink::book::LayoutParams& params) {
+  if (!ttf_ || !epub) return;
+  const char* family = SETTINGS.ttfFontFamilyName;
+  if (fibpWorker_ != nullptr && fibpBegun_ && strncmp(fibpFamily_, family, sizeof(fibpFamily_)) != 0) {
+    // Family swap: the worker's face set must be rebuilt for the new bytes.
+    stopFibpWorker();
+  }
+  if (fibpWorker_ == nullptr) {
+    fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
+    if (fibpWorker_ == nullptr) return;
+  }
+  if (!fibpBegun_) {
+    // Single-writer: a legacy prefetch/sync session in flight owns its spine
+    // — wait for it to drain before spawning the worker.
+    if (ttf_->sessionActive()) return;
+    freeink::book::FibpPrefetchWorker::BeginContext ctx;
+    snprintf(ctx.epubPath, sizeof(ctx.epubPath), "%s", bookPath.c_str());
+    snprintf(ctx.cacheDir, sizeof(ctx.cacheDir), "%s/ficache", epub->getCachePath().c_str());
+    snprintf(ctx.familyName, sizeof(ctx.familyName), "%s", family);
+    ctx.spineCount = static_cast<uint16_t>(epub->getSpineItemsCount());
+    ctx.generation = generation;
+    ctx.layout = params;  // scalar fields used; the worker re-binds pointers
+    fibpBegun_ = fibpWorker_->begin(ctx);
+    if (fibpBegun_) {
+      snprintf(fibpFamily_, sizeof(fibpFamily_), "%s", family);
+      fibpNotifiedGen_ = generation;
+    }
+  } else if (generation != fibpNotifiedGen_) {
+    fibpWorker_->notifyGeneration(generation, params);
+    fibpNotifiedGen_ = generation;
+  }
+  if (fibpBegun_) fibpWorker_->notifyChapterEntered(static_cast<uint16_t>(currentSpineIndex));
+}
+
+void EpubReaderActivity::stopFibpWorker() {
+  if (fibpWorker_ == nullptr) return;
+  fibpWorker_->cancel();
+  fibpWorker_.reset();
+  fibpBegun_ = false;
+  fibpFamily_[0] = '\0';
+  fibpDeferred_ = false;
+}
+
 void EpubReaderActivity::ttfPrefetchTick() {
   if (!ttf_ || !epub || buildHeapPaused) return;
+  // Single-writer: the index-ahead worker owns spine prefetching while it
+  // runs; the legacy in-activity next-chapter build stays for inert builds.
+  if (fibpWorker_ != nullptr && fibpWorker_->active()) return;
   if (ttf_->sessionActive()) return;  // the current chapter's build wins
 
   const int nextSpine = currentSpineIndex + 1;

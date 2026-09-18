@@ -21,6 +21,7 @@
 #include "TouchLongPressMode.h"
 #include "components/OptionPopup.h"
 #if defined(CROSSPOINT_TTF_READER)
+#include "FibpPrefetchWorker.h"
 #include "QuickPageCapture.h"
 #include "TtfBookRuntime.h"
 #endif
@@ -211,9 +212,17 @@ class EpubReaderActivity final : public ReaderActivity {
   // in sync with the TTF page state so renderStatusBar/KOReader/bookmarks
   // read the same values on both paths.
   std::unique_ptr<freeink::book::TtfBookRuntime> ttf_;
-  int ttfSpine = -1;          // spine the runtime's reader/session belong to
-  int ttfPage = 0;            // chapter-local page index
-  uint32_t ttfPageCount = 0;  // pages available for the current chapter
+  // Index-ahead prefetch worker (R1): transient, per book. Created lazily on
+  // the first TTF render (generation known), cancelled in onExit(). Inert on
+  // non-PSRAM/stb builds (stub).
+  std::unique_ptr<freeink::book::FibpPrefetchWorker> fibpWorker_;
+  bool fibpBegun_ = false;
+  char fibpFamily_[48] = {};  // family the worker's faces were built for
+  uint32_t fibpNotifiedGen_ = 0;
+  bool fibpDeferred_ = false;  // a build is delegated to the worker
+  int ttfSpine = -1;           // spine the runtime's reader/session belong to
+  int ttfPage = 0;             // chapter-local page index
+  uint32_t ttfPageCount = 0;   // pages available for the current chapter
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
@@ -247,6 +256,11 @@ class EpubReaderActivity final : public ReaderActivity {
   bool ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params, bool& needFullBuild);
   void ttfBackgroundBuildTick();
   void ttfPrefetchTick();
+  // Index-ahead worker wiring (R3/R4): (re)spawn/notify on the current
+  // generation and chapter, stop on exit. Single-writer handoff: while the
+  // worker builds the entered chapter, the sync path defers to its commit.
+  void updateFibpWorker(uint32_t generation, const freeink::book::LayoutParams& params);
+  void stopFibpWorker();
   void ttfInvalidateCaches();
   void ttfShowIndexingPopup();
   void ttfSaveProgress();

@@ -88,6 +88,9 @@ class FibpPrefetchWorker {
   void cancel();
   // True while the worker task is alive (spawning → joined).
   bool active() const { return running_.load(std::memory_order_acquire); }
+  // Spine the task is currently laying out (fibp::kNoChapter when idle) —
+  // the reader defers its own build of that chapter to the worker.
+  uint16_t buildingSpine() const { return building_.load(std::memory_order_acquire); }
 
   // R1 stack budget: 24KB DRAM start (Adobe CFF frames are deep even for
   // advance-only loads). Validated via the per-spine HWM telemetry.
@@ -124,8 +127,9 @@ class FibpPrefetchWorker {
   std::atomic<bool> running_{false};
   std::atomic<uint32_t> gen_{0};
   std::atomic<uint16_t> notifiedSpine_{fibp::kNoChapter};
-  SemaphoreHandle_t exitedSem_ = nullptr;  // worker gives before self-delete
-  SemaphoreHandle_t paramsMux_ = nullptr;  // guards params_ scalar swaps
+  std::atomic<uint16_t> building_{fibp::kNoChapter};  // spine the task is laying out
+  SemaphoreHandle_t exitedSem_ = nullptr;             // worker gives before self-delete
+  SemaphoreHandle_t paramsMux_ = nullptr;             // guards params_ scalar swaps
   TaskHandle_t task_ = nullptr;
 
   char epubPath_[BeginContext::kEpubPathCap] = {};

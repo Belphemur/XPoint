@@ -278,6 +278,7 @@ void FibpPrefetchWorker::run() {
   uint16_t lastNotifiedSeen = notifiedSpine_.load(std::memory_order_acquire);
   for (;;) {
     if (cancel_.load(std::memory_order_acquire)) break;
+    building_.store(fibp::kNoChapter, std::memory_order_release);
     const uint32_t gen = gen_.load(std::memory_order_acquire);
     if (gen != sessionGen_) {
       // Generation bump (settings change): retry everything under the new
@@ -296,7 +297,20 @@ void FibpPrefetchWorker::run() {
     while (queueCursor_ < queue_.size()) {
       const uint16_t candidate = queue_[queueCursor_++];
       if (failed_[candidate]) continue;
-      if (spineHasCache(candidate, gen)) continue;
+      if (candidate == notifiedSpine_.load(std::memory_order_acquire)) {
+        // The entered chapter belongs to the reader (its sync rebuild owns
+        // the spine while it is on screen) — the worker skips it here and
+        // re-plans later if it is still unwritten.
+        continue;
+      }
+      // Claim BEFORE the cache check so the reader's handoff sees a stable
+      // claim; the plan is re-verified after claiming to close the race
+      // against a chapter entry landing between the two checks.
+      building_.store(candidate, std::memory_order_release);
+      if (candidate == notifiedSpine_.load(std::memory_order_acquire) || spineHasCache(candidate, gen)) {
+        building_.store(fibp::kNoChapter, std::memory_order_release);
+        continue;
+      }
       spine = candidate;
       break;
     }
