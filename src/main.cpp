@@ -542,6 +542,12 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
+// loopTask override: the reader's quick-font overlay renders (ChapterLayout
+// + FreeType paint) run on the loop task; at the 16KB default the font sheet
+// measured loopStackHW=3444 and deeper renders (size steps, family switches)
+// overflowed it — canary on loopTask, PR #146. 32KB keeps ~16KB headroom.
+SET_LOOP_TASK_STACK_SIZE(32768)
+
 void setup() {
   BoardConfig::holdPowerRails();
 
