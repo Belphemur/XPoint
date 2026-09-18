@@ -455,6 +455,7 @@ struct SyntheticPage {
     page.runCount = static_cast<uint16_t>(runs.size());
     page.pageIndex = 0;
     page.charStart = charStart;
+    page.wordCount = 123;  // pinned through the round-trip below
   }
 };
 
@@ -486,6 +487,7 @@ TEST(FibpWordCountTest, RoundTripPreservesWordsOnCacheServedPages) {
   ASSERT_EQ(reader.readPage(0, scratch, &decoded), book::BookStatus::Ok);
   ASSERT_EQ(decoded.runCount, original.page.runCount);
   EXPECT_EQ(decoded.charStart, 0u);
+  EXPECT_EQ(decoded.wordCount, 123u);  // wordCount survives the FIBP round-trip
 
   const uint16_t cachedWords = countPageWords(decoded);
   EXPECT_EQ(cachedWords, directWords);

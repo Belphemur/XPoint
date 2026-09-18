@@ -2860,26 +2860,10 @@ void EpubReaderActivity::renderBookTtf() {
   renderer.clearScreen(0xFF);
   paintTtfPage(page, params.font);
 #ifdef READING_STATS_ENABLED
-  // Reading-stats approximation: whitespace-token count over the page runs
-  // (§3.5 v1 parity note — engine runs carry no per-word data). Must run
-  // before the scratch release: the run pointers live in the arena.
-  {
-    uint16_t words = 0;
-    bool inWord = false;
-    for (uint16_t r = 0; r < page.runCount; ++r) {
-      const char* p = page.runs[r].text;
-      for (uint16_t i = 0; i < page.runs[r].len; ++i) {
-        const bool ws = p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r';
-        if (!ws && !inWord) {
-          ++words;
-          inWord = true;
-        } else if (ws) {
-          inWord = false;
-        }
-      }
-    }
-    currentPageWordsOnPage = words;
-  }
+  // Engine-computed word count (ChapterLayout counts over the paragraph text
+  // before run segmentation; justified runs carry no spaces — counting run
+  // text collapsed a justified page to ~2 words).
+  currentPageWordsOnPage = page.wordCount;
 #endif
 
   // 6) Chrome after the page: keep the legacy position mirrors in sync so
