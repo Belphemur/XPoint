@@ -141,8 +141,9 @@ class FibpPrefetchWorker {
   // Own face set (R2): created on the main thread, used by the worker task,
   // destroyed on the main thread after the join. Bytes are PSRAM-only
   // (poolMakeBytes with the loader's per-face size guard) so the fingerprint
-  // the worker derives is content-identical to the loader's.
-  NativeFace* faces_[4] = {};
+  // the worker derives is content-identical to the loader's. The chain holds
+  // non-owning pointers; the owners outlive it (reset after chain teardown).
+  std::unique_ptr<NativeFace> faceOwners_[4] = {};
   FontChain chain_;
   PoolBytes fontBytes_[4];
   uint32_t fingerprint_ = 0;  // content parity with BookFontLoader::computeFingerprint()

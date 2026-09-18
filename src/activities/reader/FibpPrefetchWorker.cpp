@@ -52,7 +52,7 @@ bool FibpPrefetchWorker::buildFaces() {
       fontBytes_[i].reset();
       continue;
     }
-    auto* face = new (std::nothrow) NativeFace();
+    auto face = makeUniqueNoThrow<NativeFace>();
     if (face == nullptr) {
       LOG_ERR("PREF", "OOM: face for %s", fi.file);
       fontBytes_[i].reset();
@@ -61,17 +61,17 @@ bool FibpPrefetchWorker::buildFaces() {
     if (!face->init(bytes, fi.fileSize, BookFontLoader::kInitSizePx, (fi.styleFlags & StyleBold) ? 700 : 400,
                     (fi.styleFlags & StyleItalic) != 0)) {
       LOG_ERR("PREF", "Face init failed: %s", fi.file);
-      delete face;
+      face.reset();
       fontBytes_[i].reset();
       continue;
     }
-    if (!chain_.add(face, fi.styleFlags)) {
+    if (!chain_.add(face.get(), fi.styleFlags)) {
       LOG_ERR("PREF", "Chain add failed: %s", fi.file);
-      delete face;
+      face.reset();
       fontBytes_[i].reset();
       continue;
     }
-    faces_[i] = face;
+    faceOwners_[i] = std::move(face);
     h = BookFontLoader::fontBytesHash(bytes, fi.fileSize, h);
     anyLoaded = true;
   }
@@ -93,11 +93,8 @@ bool FibpPrefetchWorker::buildFaces() {
 }
 
 void FibpPrefetchWorker::teardownFaces() {
-  for (auto*& face : faces_) {
-    delete face;  // FT_Done_Face — main thread, after the join
-    face = nullptr;
-  }
-  chain_ = FontChain{};
+  chain_ = FontChain{};  // drops its non-owning face pointers first
+  for (auto& face : faceOwners_) face.reset();
   for (auto& bytes : fontBytes_) bytes.reset();
   fingerprint_ = 0;
 }
@@ -208,7 +205,7 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
   // re-index under the new generation.
-  if (!running_.load(std::memory_order_acquire)) {
+  if (!running_.load(std::memory_order_acquire) && !cancel_.load(std::memory_order_acquire)) {
     if (exitedSem_ != nullptr) {
       vSemaphoreDelete(exitedSem_);
       exitedSem_ = nullptr;
@@ -316,9 +313,16 @@ void FibpPrefetchWorker::run() {
     }
     if (spine == fibp::kNoChapter) {
       // Planned spines all exist or failed. A newer chapter entry reorders
-      // the plan (the tail spines may now be unwritten); otherwise done.
-      if (notifiedSpine_.load(std::memory_order_acquire) != lastNotifiedSeen) continue;
-      break;  // fully indexed (attempted) — release the 24KB stack (R1)
+      // the plan (the tail spines may now be unwritten) — re-plan NOW: the
+      // queue is exhausted, so the empty-check replan above never fires.
+      // Otherwise done: fully indexed (attempted) → release the stack (R1).
+      const uint16_t notified = notifiedSpine_.load(std::memory_order_acquire);
+      if (notified != lastNotifiedSeen) {
+        replan(gen);
+        lastNotifiedSeen = notified;
+        continue;
+      }
+      break;
     }
 
     // Heap floor (R1): wait instead of indexing into the reader's DRAM
@@ -377,8 +381,10 @@ ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t g
 
   if (r == ChapterRun::Completed) {
     // Telemetry (R5): one line per indexed spine + the R1 stack probe.
-    runtime_->openChapterCache(spine, generation);
-    const uint32_t pages = runtime_->availablePageCount(spine);
+    uint32_t pages = 0;
+    if (runtime_->openChapterCache(spine, generation) == BookStatus::Ok) {
+      pages = runtime_->availablePageCount(spine);
+    }
     runtime_->closeChapterCache();
     char href[64] = {};
     runtime_->catalog().spineHref(spine, href, sizeof(href));
