@@ -4252,6 +4252,14 @@ static constexpr uint32_t OVERLAY_REFRESH_SETTLE_TIMEOUT_MS = 3000;
 // after a blocking displayBuffer() returns. Caller must hold the RenderLock.
 void EpubReaderActivity::pushOverlayRefresh() {
   if (renderer.supportsAsyncRefresh()) {
+    if (renderer.refreshBusy()) {
+      // A previous deferred refresh is still running (its settle timed out on
+      // a wedged panel): firing another waveform into it would re-enter the
+      // driver's no-timeout busy wait. Skip; the pending flag stays set so a
+      // later settle/push repaints once the panel is idle.
+      LOG_ERR("ERS", "overlay refresh still busy, skipping push");
+      return;
+    }
     renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
     overlayRefreshPending.store(true, std::memory_order_release);
   } else {
@@ -4270,17 +4278,20 @@ void EpubReaderActivity::pushOverlayRefresh() {
 // under the RenderLock (issue #143 freeze). Caller must hold the RenderLock.
 void EpubReaderActivity::settleOverlayRefresh() {
   if (!overlayRefreshPending.load(std::memory_order_acquire)) return;
-  overlayRefreshPending.store(false, std::memory_order_relaxed);
   const uint32_t start = millis();
   while (renderer.refreshBusy()) {
     if (millis() - start > OVERLAY_REFRESH_SETTLE_TIMEOUT_MS) {
       LOG_ERR("ERS", "overlay refresh busy >%lu ms, arming panel resync",
               static_cast<unsigned long>(OVERLAY_REFRESH_SETTLE_TIMEOUT_MS));
       renderer.requestResync();
+      // Leave the flag set: the next settle re-attempts the bounded wait, and
+      // pushOverlayRefresh() refuses to fire a new waveform while this one is
+      // still running.
       return;
     }
     vTaskDelay(1);
   }
+  overlayRefreshPending.store(false, std::memory_order_relaxed);
   renderer.cleanupGrayscaleWithFrameBuffer();  // waits, then reseeds the baseline
 }
 
