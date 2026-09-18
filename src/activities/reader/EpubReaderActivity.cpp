@@ -2648,6 +2648,9 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 
 void EpubReaderActivity::renderBookTtf() {
   if (!epub || !ttf_) return;
+  // Runs under the render task's RenderLock; catches every requestUpdate()
+  // exit from the overlay while its deferred chrome refresh is still pending.
+  settleOverlayRefresh();
   // Any render attempt makes the previous framebuffer state provisional: only
   // a successful page+status render below may restore the fast-open flag.
   ttfFrameRenderComplete.store(false, std::memory_order_release);
