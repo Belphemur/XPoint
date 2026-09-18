@@ -116,6 +116,10 @@ class MappedInputManager {
   bool wasLightPanelGesture() const;
   bool wasAnyPressed() const;
   bool wasAnyReleased() const;
+  // Raw "user is interacting right now" signal for deferring loop-task
+  // background layout: a pending press/release edge, an open button contact,
+  // or an open touch contact. Non-const: rawInputActive() reads the ADC.
+  bool rawInputPriority();
   unsigned long getHeldTime() const;
   const GfxRenderer& getRenderer() const { return renderer; }
   Labels mapLabels(const char* back, const char* confirm, const char* previous, const char* next) const;

@@ -164,6 +164,11 @@ constexpr unsigned long TOUCH_HELD_OVERRIDE_WINDOW_MS = 250;
 
 bool MappedInputManager::hasTouch() const { return gpio.hasTouch(); }
 
+bool MappedInputManager::rawInputPriority() {
+  return gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || gpio.isTouchContactActive() ||
+         gpio.rawInputActive();
+}
+
 void MappedInputManager::rememberTouchHeldTime() const {
   touchHeldOverrideValid = true;
   touchHeldOverrideMs = gpio.lastTouchHeldMs();
