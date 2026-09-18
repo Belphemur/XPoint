@@ -12,7 +12,6 @@ env:
 
 jobs:
   build-release-candidate:
-    if: startsWith(github.ref_name, 'release/')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
