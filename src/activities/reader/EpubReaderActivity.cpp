@@ -211,10 +211,6 @@ EpubReaderActivity::~EpubReaderActivity() {
 #ifdef BOARD_HAS_PSRAM
   ImageBlock::setPsramExtractor(nullptr, nullptr);
 #endif
-  if (overlayRefreshPending) {
-    RenderLock lock;  // whatever screen follows paints the framebuffer
-    settleOverlayRefresh();
-  }
   discardOverlayPage();  // free the overlay's page snapshot if one is held
 
   // Design §4.4: exit flushing is the manager's job — closeBook() flushes
@@ -2022,9 +2018,6 @@ void EpubReaderActivity::renderBook() {
   uint32_t heap_free_before = ESP.getFreeHeap();
 #endif
   if (!epub) return;
-  // Runs under the render task's RenderLock; catches every requestUpdate()
-  // exit from the overlay while its deferred chrome refresh is still pending.
-  settleOverlayRefresh();
 
   const auto showPendingSyncSaveError = [this]() {
     if (!pendingSyncSaveError) return;
@@ -2384,7 +2377,7 @@ void EpubReaderActivity::renderBook() {
     // residue a FAST differential leaves under the chrome has not shown in
     // practice; restore a HALF cleanup here if text ever visibly ghosts
     // through the sheet (see #2190 for the mechanism).
-    pushOverlayRefresh();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
 }
 
@@ -3969,9 +3962,8 @@ void EpubReaderActivity::quickFontSelectRow(const int row, const bool refresh) {
   quickFontRow = std::clamp(row, 0, 1);
   if (!refresh || !toolbarUi) return;
   RenderLock lock;
-  settleOverlayRefresh();
   renderOverlay();
-  pushOverlayRefresh();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 void EpubReaderActivity::quickFontStep(const int direction) {
@@ -4069,7 +4061,6 @@ void EpubReaderActivity::renderQuickFontPage() {
 
   {
     RenderLock lock;
-    settleOverlayRefresh();  // a deferred chrome refresh may still be running
     const auto st =
         ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
     // A page past the anchor confirms the last captured page as the target;
@@ -4113,7 +4104,7 @@ void EpubReaderActivity::renderQuickFontPage() {
       overlayPageStored = renderer.storeBwBuffer();
     }
     renderOverlay();
-    pushOverlayRefresh();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
 }
 
@@ -4214,30 +4205,6 @@ void EpubReaderActivity::discardOverlayPage() {
   overlayPageStored = false;
 }
 
-// Push freshly painted overlay chrome. Where the panel supports it the refresh
-// is fired deferred: the loop keeps polling input while the waveform runs, so
-// the chrome answers taps and buttons the moment it is visible instead of only
-// after a blocking displayBuffer() returns. Caller must hold the RenderLock.
-void EpubReaderActivity::pushOverlayRefresh() {
-  if (renderer.supportsAsyncRefresh()) {
-    renderer.displayBufferAsync(HalDisplay::FAST_REFRESH);
-    overlayRefreshPending = true;
-  } else {
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-  }
-}
-
-// Wait out a pending deferred overlay refresh and reseed the panel's
-// differential baseline from the framebuffer: the shadow-free async path skips
-// the post-refresh resync, so without this the next FAST diff would run
-// against the frame from before the chrome and leave stale pixels on the
-// glass. Caller must hold the RenderLock.
-void EpubReaderActivity::settleOverlayRefresh() {
-  if (!overlayRefreshPending) return;
-  overlayRefreshPending = false;
-  renderer.cleanupGrayscaleWithFrameBuffer();  // waits, then reseeds the baseline
-}
-
 void EpubReaderActivity::openOverlay(Overlay target) {
   mappedInput.resetHomeButtonInput();
   const Overlay previous = overlay;
@@ -4303,7 +4270,6 @@ void EpubReaderActivity::openOverlay(Overlay target) {
     // bar included) in the shared framebuffer, and painting the chrome from
     // the loop task at the same time interleaves the two frames.
     RenderLock lock;
-    settleOverlayRefresh();
     if (previous == Overlay::None) {
       // Snapshot the clean page so stepping back from a panel to the toolbar
       // (and closing, where supported) can restore it without a re-render.
@@ -4321,7 +4287,7 @@ void EpubReaderActivity::openOverlay(Overlay target) {
 #if defined(CROSSPOINT_TTF_READER)
     LOG_DBG("ERS", "overlay rendered=%d uiReady=%d", static_cast<int>(overlay), toolbarUi->routingReady());
 #endif
-    pushOverlayRefresh();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {
     requestUpdate();  // no page yet: renderBook() draws the overlay once it is
   }
@@ -4345,7 +4311,6 @@ void EpubReaderActivity::closeOverlayToPage() {
   toolbarUi.reset();       // ~1 KB of interaction table + props, only needed while open
   if (!xteinkClassPanel() && overlayPageStored) {
     RenderLock lock;  // the render task shares the framebuffer
-    settleOverlayRefresh();
     // No baseline resync: the glass shows the chrome, and erasing it needs
     // the differential to keep diffing against the last pushed frame.
     renderer.restoreBwBuffer(/*resyncPanelBaseline=*/false);
@@ -4449,6 +4414,11 @@ void EpubReaderActivity::renderOverlay() {
   }
   toolbarUi->setModel(model);
   toolbarUi->render();
+
+  if (!mappedInput.hasTouch()) {
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  }
 }
 
 void EpubReaderActivity::handleOverlayInput() {
@@ -4476,12 +4446,11 @@ void EpubReaderActivity::handleOverlayInput() {
       // Dismissed or selected: erase the dialog -- clean page back, then the
       // panel over it (the dialog can overhang the sheet onto the page).
       RenderLock lock;
-      settleOverlayRefresh();
       if (overlayPageStored) {
         renderer.restoreBwBuffer(/*resyncPanelBaseline=*/false);
         overlayPageStored = renderer.storeBwBuffer();
         renderOverlay();
-        pushOverlayRefresh();
+        renderer.displayBuffer(HalDisplay::FAST_REFRESH);
       } else {
         requestUpdate();
       }
@@ -4490,9 +4459,8 @@ void EpubReaderActivity::handleOverlayInput() {
   }
   const auto fastRedraw = [this] {
     RenderLock lock;  // the render task shares the framebuffer
-    settleOverlayRefresh();
     renderOverlay();
-    pushOverlayRefresh();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   };
 
   // Jump to another spine item (chapter scrub). The overlay stays up and is
@@ -4735,7 +4703,6 @@ void EpubReaderActivity::handleOverlayInput() {
     if (overlayPageStored) {
       {
         RenderLock lock;  // the render task shares the framebuffer
-        settleOverlayRefresh();
         // No baseline resync: the glass shows the panel, and erasing it needs
         // the differential to keep diffing against the last pushed frame.
         renderer.restoreBwBuffer(/*resyncPanelBaseline=*/false);
@@ -4850,9 +4817,8 @@ void EpubReaderActivity::handleOverlayInput() {
 // on dismissal is the popup gate's restore in handleOverlayInput().
 void EpubReaderActivity::paintOverlayPopup() {
   RenderLock lock;
-  settleOverlayRefresh();
   overlayPopup.render(renderer);
-  pushOverlayRefresh();
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
 void EpubReaderActivity::applyReaderTextSettings() {
@@ -4928,10 +4894,6 @@ std::string EpubReaderActivity::moreRowValue(int row) const {
 void EpubReaderActivity::activateMoreRow(int row) {
   using MA = EpubReaderMenuActivity::MenuAction;
   if (row < 0 || row >= static_cast<int>(moreItems.size())) return;
-  {
-    RenderLock lock;  // several actions launch screens that paint the framebuffer
-    settleOverlayRefresh();
-  }
   const auto action = moreItems[row].action;
   // In-place toggles keep the panel open and re-render the page beneath it.
   switch (action) {
