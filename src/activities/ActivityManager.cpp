@@ -55,6 +55,15 @@ void ActivityManager::begin() {
 }
 
 void ActivityManager::performRender() {
+  // Claim the waiter BEFORE rendering: a worker that registers
+  // requestUpdateAndWait() mid-render must not be woken by this render's
+  // completion (its requestedUpdate flag will be drained by the next loop()
+  // iteration, which then renders and notifies it).
+  TaskHandle_t waiter = nullptr;
+  taskENTER_CRITICAL(&activityManagerSpinlock);
+  waiter = waitingTaskHandle;
+  waitingTaskHandle = nullptr;
+  taskEXIT_CRITICAL(&activityManagerSpinlock);
   // Acquire the lock before reading currentActivity so out-of-loop callers
   // (requestUpdate(true) from progress callbacks) stay serialized with any
   // RenderLock scope the activity itself holds.
@@ -78,12 +87,6 @@ void ActivityManager::performRender() {
     memSentinelCheck("main render");
 #endif
   }
-  // Notify any task blocked in requestUpdateAndWait() that the render is done.
-  TaskHandle_t waiter = nullptr;
-  taskENTER_CRITICAL(&activityManagerSpinlock);
-  waiter = waitingTaskHandle;
-  waitingTaskHandle = nullptr;
-  taskEXIT_CRITICAL(&activityManagerSpinlock);
   if (waiter) {
     xTaskNotify(waiter, 1, eIncrement);
   }
@@ -458,10 +461,14 @@ void ActivityManager::requestUpdate(bool immediate) {
   // From the main task: render synchronously. Progress callbacks inside
   // tight loops (OTA/SD flash) block the loop task, so a deferred flag would
   // never drain — the caller relies on the render happening right here.
+  // Consume any pending deferred request first: this render satisfies it,
+  // and leaving it set would render the same state again next loop(). A
+  // request created during the render stays pending for the next drain.
   // Re-entrant calls (already inside a render or a RenderLock scope) defer:
   // the mutex is not recursive, rendering inline would deadlock.
   if (xTaskGetCurrentTaskHandle() == mainTaskHandle &&
       xSemaphoreGetMutexHolder(renderingMutex) != xTaskGetCurrentTaskHandle()) {
+    requestedUpdate.exchange(false);
     performRender();
   } else {
     requestedUpdate = true;
@@ -473,6 +480,7 @@ void ActivityManager::requestUpdateAndWait() {
   if (xTaskGetCurrentTaskHandle() == mainTaskHandle) {
     assert(xSemaphoreGetMutexHolder(renderingMutex) != xTaskGetCurrentTaskHandle() &&
            "Cannot call requestUpdateAndWait() while holding RenderLock");
+    requestedUpdate.exchange(false);
     performRender();
     return;
   }

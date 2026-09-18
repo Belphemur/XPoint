@@ -41,7 +41,7 @@ The native-TTF reader path uses FreeType (`FtFont`) for outline faces behind `CR
 ### 2.4 Firmware surface (unchanged from the superseded doc, confirmed)
 
 - `BookFontLoader`: `NativeFace` = `FtFont` under the flag; no caller glyph arena (D6); `kInitSizePx = 14`; fingerprint XOR tag `0x46545531` (D4); faux bold/italic via transform + embolden.
-- Device-class split: FT path is x4pro/x4pro-profile-class only (S3, 8 MB PSRAM); C3 stb builds dead-strip the amalgam entirely (0 `FtFont` symbols verified in the `default` env).
+- Device-class split: the FT flag is enabled on every PSRAM-class device profile — `x4pro`, `x4pro_profile`, the four `x4c` variants, and the three `papermono` variants; C3-class builds (`default`, `sticky`) dead-strip the amalgam entirely (0 `FtFont` symbols verified in the `default` env).
 - Host test suites build in stb + `BackendFT` variants; `FontBackendInvariantsTest` covers positive advances, `glyphBounds ⊇ rasterize` containment, malformed rejection, and variable-font selection per backend.
 
 ## 3. Decision log — amendments to D1–D10
@@ -73,4 +73,4 @@ All other D1–D10 decisions stand as written in the superseded document.
 - Superseded design: [2026-09-17-freetype-font-backend.md](2026-09-17-freetype-font-backend.md) (D1–D10 decision rationale)
 - freeink-sdk PRs: [#26](https://github.com/Belphemur/freeink-sdk/pull/26) glyphBounds, [#27](https://github.com/Belphemur/freeink-sdk/pull/27) render pool 4 KB, [#28](https://github.com/Belphemur/freeink-sdk/pull/28) unhinted loads, [#29](https://github.com/Belphemur/freeink-sdk/pull/29) old CFF engine (reverted), [#30](https://github.com/Belphemur/freeink-sdk/pull/30) revert
 - XPoint PR #146 — firmware switch + main-thread renderer
-- External precedent: [EPub-InkPlate](https://github.com/turgu1/EPub-InkPlate) — Adobe engine + bytecode interpreter on a single 40 KB `mainTask` (ESP32, Xtensa). Note: task stacks **cannot** live in PSRAM on Xtensa (window-spill/exception path requires internal RAM; IDF supports external-RAM stacks on RISC-V only) — the stack budget must be paid in DRAM.
+- External precedent: [EPub-InkPlate](https://github.com/turgu1/EPub-InkPlate) — Adobe engine + bytecode interpreter on a single 40 KB `mainTask` (ESP32, Xtensa). Note on PSRAM stacks: IDF ≥5.x CAN place task stacks in external RAM on the S3 (`CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` / `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` + `xTaskCreateStatic()` with an externally allocated buffer), but Espressif advises against it and it is unsafe here: external RAM is inaccessible whenever the flash cache is disabled (every OTA/flash write), which this firmware performs with live rendering. CrossPoint therefore keeps all task stacks in internal DRAM — a deliberate choice, not a platform limitation.
