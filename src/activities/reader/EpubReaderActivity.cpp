@@ -353,7 +353,7 @@ void EpubReaderActivity::onExit() {
         const float bookProgress = bookProgressPercent / 100.0f;
         const uint32_t remainingPages =
             static_cast<uint32_t>((1.0f - bookProgress) * static_cast<float>(bookPagesEstimate));
-        auto timeLeft = estimateBookTimeLeftSeconds(stats, globalStats, remainingPages);
+        auto timeLeft = estimateBookTimeLeftSeconds(stats, globalStats, remainingPages, currentPageWordsOnPage);
         if (timeLeft) {
           stats.estimatedTimeLeftSeconds = *timeLeft;
         }
@@ -3805,7 +3805,8 @@ void EpubReaderActivity::renderStatusBar() const {
           section ? static_cast<int>(section->estimatedTotalPages()) : cachedChapterTotalPageCount;
       const int chapterCurrentPage = section ? section->currentPage : nextPageNumber;
       const int pagesRemaining = std::max(0, chapterTotalPages - chapterCurrentPage - 1);
-      auto timeLeft = estimateChapterTimeLeftSeconds(stats, globalStats, static_cast<uint16_t>(pagesRemaining));
+      auto timeLeft = estimateChapterTimeLeftSeconds(stats, globalStats, static_cast<uint16_t>(pagesRemaining),
+                                                     currentPageWordsOnPage);
       if (timeLeft) {
         formatChapterTimeLeft(*timeLeft, chapterTimeLeftBuf, sizeof(chapterTimeLeftBuf));
         chapterTimeLeft = chapterTimeLeftBuf;

@@ -487,18 +487,24 @@ std::optional<uint32_t> avgSessionSeconds(const uint16_t windowAvg, const uint8_
 }
 
 std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
-                                                         const GlobalReadingStats& globalStats) {
+                                                         const GlobalReadingStats& globalStats,
+                                                         const uint16_t wordsOnPage) {
+  // Words-per-page for the WPM→seconds conversion: the live page's engine
+  // word count when known (same chapter/font as the pages being estimated),
+  // else the calibrated average. The 220 constant ignores font size and page
+  // density — with engine wordCount the live value is per-book exact.
+  const uint32_t wordsPerPage = wordsOnPage > 0 ? wordsOnPage : CALIBRATED_WORDS_PER_PAGE;
   // Prefer the book's own WPM estimate once its window is full: 15 trimmed
-  // samples converted through a calibrated words-per-page figure. Until the
-  // window fills there is no book-level reading-speed estimate.
+  // samples converted through the words-per-page figure. Until the window
+  // fills there is no book-level reading-speed estimate.
   if (bookStats.wpm.count >= WPM_WINDOW_SIZE && bookStats.wpm.avg > 0) {
-    const uint32_t pace = (static_cast<uint32_t>(CALIBRATED_WORDS_PER_PAGE) * 60U) / bookStats.wpm.avg;
+    const uint32_t pace = (wordsPerPage * 60U) / bookStats.wpm.avg;
     if (pace > 0) {
       return pace;
     }
   }
   if (globalStats.wpm.count >= WPM_WINDOW_SIZE && globalStats.wpm.avg > 0) {
-    const uint32_t pace = (static_cast<uint32_t>(CALIBRATED_WORDS_PER_PAGE) * 60U) / globalStats.wpm.avg;
+    const uint32_t pace = (wordsPerPage * 60U) / globalStats.wpm.avg;
     if (pace > 0) {
       return pace;
     }
@@ -514,8 +520,8 @@ std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats&
 
 std::optional<uint32_t> estimateChapterTimeLeftSeconds(const BookReadingStats& bookStats,
                                                        const GlobalReadingStats& globalStats,
-                                                       const uint16_t pagesRemaining) {
-  const auto pace = resolveReadingPaceSecondsPerPage(bookStats, globalStats);
+                                                       const uint16_t pagesRemaining, const uint16_t wordsOnPage) {
+  const auto pace = resolveReadingPaceSecondsPerPage(bookStats, globalStats, wordsOnPage);
   if (!pace) {
     return std::nullopt;
   }
@@ -528,8 +534,9 @@ std::optional<uint32_t> estimateChapterTimeLeftSeconds(const BookReadingStats& b
 
 std::optional<uint32_t> estimateBookTimeLeftSeconds(const BookReadingStats& bookStats,
                                                     const GlobalReadingStats& globalStats,
-                                                    const uint32_t estimatedRemainingPages) {
-  const auto pace = resolveReadingPaceSecondsPerPage(bookStats, globalStats);
+                                                    const uint32_t estimatedRemainingPages,
+                                                    const uint16_t wordsOnPage) {
+  const auto pace = resolveReadingPaceSecondsPerPage(bookStats, globalStats, wordsOnPage);
   if (!pace) {
     return std::nullopt;
   }

@@ -60,6 +60,36 @@ TEST(ReadingStatsUtilsTest, ResolvePaceGuardsDivisionByZero) {
   EXPECT_FALSE(pace.has_value());
 }
 
+TEST(ReadingStatsUtilsTest, ResolvePaceUsesLiveWordsPerPage) {
+  // The engine wordCount of the current page is the per-book words-per-page:
+  // 110-word pages at 220 WPM read in 30 s, not the 60 s the 220-word
+  // calibrated constant would claim.
+  BookReadingStats book;
+  GlobalReadingStats global;
+  for (int i = 0; i < 15; ++i) {
+    book.recordForwardPageRead(60, 220);  // window full, avg 220 WPM
+  }
+  ASSERT_EQ(book.wpm.avg, 220u);
+
+  const auto pace = resolveReadingPaceSecondsPerPage(book, global, /*wordsOnPage=*/110);
+  ASSERT_TRUE(pace.has_value());
+  EXPECT_EQ(*pace, 30u);
+}
+
+TEST(ReadingStatsUtilsTest, ResolvePaceFallsBackToConstantWhenWordsUnknown) {
+  // wordsOnPage == 0 (e.g. image-only current page) restores the calibrated
+  // 220-word conversion.
+  BookReadingStats book;
+  GlobalReadingStats global;
+  for (int i = 0; i < 15; ++i) {
+    book.recordForwardPageRead(60, 220);
+  }
+
+  const auto pace = resolveReadingPaceSecondsPerPage(book, global, /*wordsOnPage=*/0);
+  ASSERT_TRUE(pace.has_value());
+  EXPECT_EQ(*pace, 60u);
+}
+
 TEST(ReadingStatsUtilsTest, EstimateChapterTimeLeftBasic) {
   BookReadingStats book;
   for (int i = 0; i < 15; ++i) {

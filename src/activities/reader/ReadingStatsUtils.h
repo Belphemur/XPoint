@@ -128,12 +128,14 @@ void formatReadingStatsMonthToken(const ReadingStatsDate& date, char* buf, size_
 void formatCompactReadingDuration(uint32_t seconds, char* buf, size_t len);
 
 std::optional<uint32_t> resolveReadingPaceSecondsPerPage(const BookReadingStats& bookStats,
-                                                         const GlobalReadingStats& globalStats);
+                                                         const GlobalReadingStats& globalStats,
+                                                         uint16_t wordsOnPage = 0);
 std::optional<uint32_t> estimateChapterTimeLeftSeconds(const BookReadingStats& bookStats,
-                                                       const GlobalReadingStats& globalStats, uint16_t pagesRemaining);
+                                                       const GlobalReadingStats& globalStats, uint16_t pagesRemaining,
+                                                       uint16_t wordsOnPage = 0);
 std::optional<uint32_t> estimateBookTimeLeftSeconds(const BookReadingStats& bookStats,
                                                     const GlobalReadingStats& globalStats,
-                                                    uint32_t estimatedRemainingPages);
+                                                    uint32_t estimatedRemainingPages, uint16_t wordsOnPage = 0);
 void formatChapterTimeLeft(uint32_t seconds, char* buf, size_t len);
 // Avg-session display value with the legacy arithmetic-mean fallback: a
 // non-empty session window wins (trimmed mean); otherwise the all-time
