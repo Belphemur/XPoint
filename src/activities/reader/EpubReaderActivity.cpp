@@ -2744,7 +2744,7 @@ void EpubReaderActivity::renderBookTtf() {
       ttfShowIndexingPopup();
     }
     const freeink::book::BookStatus st =
-        ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, generation);
+        freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, generation);
     if (st != freeink::book::BookStatus::Ok) {
       LOG_ERR("ERS", "TTF session begin failed: %s", bookStatusName(st));
       showBuildError();
@@ -2776,9 +2776,9 @@ void EpubReaderActivity::renderBookTtf() {
         }
         break;
       }
-      const freeink::book::BookStatus st = ttf_->stepBuild(BUILD_PAGES_PER_CHUNK);
-      if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone() &&
-          !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+      freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+      if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), BUILD_PAGES_PER_CHUNK,
+                                          &st) == freeink::book::ChapterPump::Failed) {
         LOG_ERR("ERS", "TTF build failed: %s", bookStatusName(st));
         showBuildError();
         return;
@@ -3179,8 +3179,9 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (!ttf_) return;
   if (ttf_->sessionActive()) {
     const uint16_t spine = ttf_->sessionSpine();
-    const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
-    if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone()) {
+    freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+    if (freeink::book::pumpChapterChunk(*ttf_, spine, BACKGROUND_BUILD_PAGES_PER_TICK, &st) ==
+        freeink::book::ChapterPump::Failed) {
       LOG_ERR("ERS", "Background TTF build failed: %s", bookStatusName(st));
       ttfPrefetchActive = false;
       return;
@@ -3207,10 +3208,12 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
-    if (ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
+    if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
-      const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
-      if (st == freeink::book::BookStatus::Ok && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+      freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+      const freeink::book::ChapterPump pump = freeink::book::pumpChapterChunk(
+          *ttf_, static_cast<uint16_t>(currentSpineIndex), BACKGROUND_BUILD_PAGES_PER_TICK, &st);
+      if (pump == freeink::book::ChapterPump::Complete) {
         ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration);
       }
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
@@ -3235,7 +3238,7 @@ void EpubReaderActivity::ttfPrefetchTick() {
 
   if (ttf_->sessionFor(static_cast<uint16_t>(nextSpine))) {
     if (ttf_->sessionActive()) {
-      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+      freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK);
     } else {
       ttfPrefetchActive = false;
       ttf_->dropPrefetch();
@@ -3253,9 +3256,9 @@ void EpubReaderActivity::ttfPrefetchTick() {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
-    if (ttf_->beginChapterSession(static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
+    if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
-      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+      freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK);
       ttfPrefetchActive = true;
     }
   }
