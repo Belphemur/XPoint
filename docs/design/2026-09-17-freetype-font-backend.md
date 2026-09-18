@@ -1,7 +1,7 @@
 # FreeType font backend for the native-TTF reader
 
 **Date:** 2026-09-17
-**Status:** Approved for implementation
+**Status:** SUPERSEDED — see [2026-09-18-freetype-backend-as-built.md](2026-09-18-freetype-backend-as-built.md). Decisions D1–D10 and §2 facts remain valid; the two-task render architecture in §7 and the task plan in §6 are superseded by the as-built document (single 48 KB main-thread renderer, Adobe CFF engine everywhere).
 **Branch:** `feat/freetype-font-backend` (firmware), SDK PR per §6 Task 1
 **Related:** `references/ttf-native-fonts-directives.md` (standing directives),
 `references/sdk-fork-pr-workflow.md`, SDK PR #25 (FreeInkFont split; its pin `660dc91` is the historical base this document was written against — the live gitlink is tracked in the submodule and has since advanced through SDK PR #26 (`6a8addc`, `FtFont::glyphBounds`) to PR #27 (`5b52bfc1`, 4KB render pool))
