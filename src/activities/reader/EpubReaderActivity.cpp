@@ -978,8 +978,15 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // A loop-task build tick can occupy the RenderLock for hundreds of ms. Input
+  // is only polled between loop passes, and the touch controller reports just
+  // the current frame, so a gesture completed inside a tick stall never
+  // reaches the reader. Defer background layout while input is active or an
+  // edge is still pending.
+  const bool inputPriority = mappedInput.rawInputPriority();
+
   constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
-  if (section && !section->isBuilding() && !RenderLock::peek() && renderer.hasFrameBuffer() &&
+  if (!inputPriority && section && !section->isBuilding() && !RenderLock::peek() && renderer.hasFrameBuffer() &&
       lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
       ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
       (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
@@ -1003,8 +1010,8 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() && buildViewportWidth > 0 &&
-      !partialRebuildStartFailed &&
+  if (!inputPriority && section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() &&
+      buildViewportWidth > 0 && !partialRebuildStartFailed &&
       section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
     RenderLock lock;
     const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
@@ -1017,7 +1024,7 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (section && section->isBuilding() && !RenderLock::peek() &&
+  if (!inputPriority && section && section->isBuilding() && !RenderLock::peek() &&
       (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
       buildTickHeapGate()) {
     RenderLock lock;
@@ -1033,7 +1040,7 @@ void EpubReaderActivity::loop() {
   }
 
 #if defined(CROSSPOINT_TTF_READER)
-  if (ttf_ && !RenderLock::peek() && buildTickHeapGate()) {
+  if (!inputPriority && ttf_ && !RenderLock::peek() && buildTickHeapGate()) {
     RenderLock lock;
     if (ttf_ && buildTickHeapGate()) {
       ttfBackgroundBuildTick();
