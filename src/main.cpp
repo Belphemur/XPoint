@@ -21,6 +21,8 @@
 #include <WiFi.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
+#include <esp_heap_caps.h>
+#include <freertos/task.h>
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
@@ -910,6 +912,33 @@ void loop() {
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+  // Memory sentinel (FT bring-up, PR #146): the on-device crash (IDLE0 stack
+  // canary + corrupted TWDT entry, LoadProhibited at 0x10c/0x1c9) is a silent
+  // DRAM corruption whose faulting frames point at IDLE0, not the culprit.
+  // Census task stacks (a near-overflow task names itself) and walk the heap
+  // block headers so the corrupting allocation is caught while still alive.
+  static uint32_t lastMemSentinel = 0;
+  if (millis() - lastMemSentinel >= 2000) {
+    lastMemSentinel = millis();
+    const UBaseType_t taskCount = uxTaskGetNumberOfTasks();
+    auto snapshot = makeUniqueNoThrow<TaskStatus_t[]>(taskCount);
+    if (snapshot) {
+      const UBaseType_t got = uxTaskGetSystemState(snapshot.get(), taskCount, nullptr);
+      for (UBaseType_t i = 0; i < got; ++i) {
+        const UBaseType_t hwm = snapshot[i].usStackHighWaterMark;
+        if (hwm < 256) {
+          LOG_ERR("SENT", "Task %s stack HWM=%u (overflow suspect)", snapshot[i].pcTaskName,
+                  static_cast<unsigned>(hwm));
+        }
+      }
+    }
+    if (!heap_caps_check_integrity_all(false)) {
+      LOG_ERR("SENT", "Heap integrity check FAILED (see dump above)");
+    }
+  }
+#endif
 
   if (Serial && millis() - lastMemPrint >= 10000) {
     const auto heap = HalMemory::getInternalHeap();
