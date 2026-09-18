@@ -2906,6 +2906,11 @@ void EpubReaderActivity::renderBookTtf() {
     // the last plane pass has walked it.
     ttf_->scratch().release(scratchMark);
     lastRenderCompleteMs = millis();
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+    LOG_DBG("REND", "reader gray render stack high-water=%u bytes",
+            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    memSentinelCheck("reader gray render");
+#endif
     // Cleanup has restored the framebuffer after the final gray-plane pass.
     ttfFrameRenderComplete.store(true, std::memory_order_release);
 #ifdef READING_STATS_ENABLED
@@ -2935,6 +2940,14 @@ void EpubReaderActivity::renderBookTtf() {
     renderer.waitRefreshComplete();
   }
   lastRenderCompleteMs = millis();
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+  // In-render stack probe: the post-render REND telemetry never ran for the
+  // crashing reader renders — measure the reader path's own high-water HERE,
+  // before render() returns (the deepest path: rebuild + FT paint + chrome).
+  LOG_DBG("REND", "reader render stack high-water=%u bytes",
+          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  memSentinelCheck("reader bw render");
+#endif
   // The B/W frame and status chrome are fully painted (and any async submit
   // has completed) before overlay opens may paint directly onto this frame.
   ttfFrameRenderComplete.store(true, std::memory_order_release);

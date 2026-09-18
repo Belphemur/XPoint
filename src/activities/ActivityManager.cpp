@@ -50,10 +50,12 @@ void ActivityManager::begin() {
   constexpr BaseType_t renderTaskCore = 0;
 #endif
   xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender",
-                          12288,  // Stack size: FreeType render path (esp. the
-                          // Adobe CFF engine used for .otf faces) needs several
-                          // KB more than stb did; 8KB overflowed and corrupted
-                          // neighboring DRAM (IDLE0 stack / TWDT entries).
+                          16384,  // Stack size: reader-page renders are the
+                          // deepest path (ChapterLayout rebuild + FreeType
+                          // paint + status chrome); measured via the
+                          // renderBookTtf high-water probe. stb fit in 8KB,
+                          // FT render depth (~5.7KB rasterize after SDK PR
+                          // #27's 4KB pool) overflowed 8KB AND 12KB.
                           this,               // Parameters
                           1,                  // Priority
                           &renderTaskHandle,  // Task handle
