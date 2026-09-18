@@ -37,7 +37,7 @@ one small SDK PR (`FtFont::glyphBounds`). Estimated firmware-side delta:
 | `fontFingerprint()` = FNV-1a over the loaded font bytes XOR styleCoverage; feeds `layoutGenerationHash()` → the section cache (`section.bin`) invalidates on change. Fallback chain → fingerprint 0 | `src/BookFontLoader.cpp:295`, `src/BookFontLoader.h:64` |
 | `PagePaint::walkText` culls per glyph via `RasterFont::glyphBounds` and immediately consumes `rasterize()` output (row-by-row draw inside the same iteration) — glyph-lifetime contract "valid until next rasterize on the same face" is already respected | `src/adapters/PagePaint.cpp:50–100` |
 | `FtFont` is **size-agnostic in practice**: `ensureSize()` re-runs `FT_Set_Pixel_Sizes` only when `sizePx` changes, so one instance serves body + ruby sizes. The header comment "one instance = one pixel size" is stale; the real binding is (weight, italic) applied via variable-font axes at init | `freeink-sdk/libs/font/FreeInkFont/src/FtFont.cpp:167–171` |
-| `FtFont` does **not** override `glyphBounds`; `Font.h`'s default returns `false` → `PagePaint`'s cull falls through to rasterize-then-filter (correct, slower on banded gray pages) | `freeink-sdk/libs/font/FreeInkFont/include/Font.h:100–109` |
+| ~~`FtFont` does **not** override `glyphBounds`~~ **Resolved by SDK PR #26** (merged `6a8addc`): `FtFont::glyphBounds` loads the outline (`FT_LOAD_DEFAULT`) and returns the `FT_Outline_Get_CBox` ink box, padded so the box stays ⊇ the rasterized bitmap; the curated FreeType module list gained the `cff` + `psaux` modules so CFF/OTTO `.otf` faces load like they do under stb | `freeink-sdk/libs/font/FreeInkFont/src/FtFont.cpp`, `freetype-config/include/freetype/config/ftmodule.h` |
 | `FtFont` needs **no caller glyph arena** — FreeType owns the glyph slot; all FT heap goes through `FontAlloc` (PSRAM when present) | `FtFont.h` header comment, `FontAlloc.h` |
 | The FreeType amalgam (11 modules) already compiles in every firmware build; it is dead-stripped at link because nothing references `FtFont` | `FreeInkFont/library.json` build flags; verified 2026-09-17: no `FtFont` symbols in the x4pro `.elf` |
 | Reader sources include the SDK only through FreeInkBook's re-export shim (`render/TtfFont.h` → `freeink::book::TtfFont`/`FontChain`) | `freeink-sdk/libs/book/FreeInkBook/include/render/TtfFont.h` |
@@ -64,12 +64,18 @@ one small SDK PR (`FtFont::glyphBounds`). Estimated firmware-side delta:
      `freeink::font::FtFont` directly — use the direct include
      `<FtFont.h>`; the shim re-exports only TtfFont/FontChain) and
      `init(data, len, kInitSizePx, weight = styleToWeight(styleFlags),
-     italic = styleFlags & StyleItalic)` where `kInitSizePx` is the existing
-     default body size constant the loader already uses; per-run sizes (ruby,
+     italic = styleFlags & StyleItalic)` where `kInitSizePx` mirrors
+     `CrossPointSettings::DEFAULT_TTF_FONT_POINT_SIZE` (14) as a loader-local
+     constexpr (the loader has no settings dependency); per-run sizes (ruby,
      preview) adapt at runtime through `FtFont::ensureSize`.
      Skip the `glyphBacking_`/`Arena` block (D6).
    - Style → axis mapping helper: `StyleBold → weight 700`, else 400;
      `StyleItalic → true`. Faux-oblique/embolden fallbacks are FT-side, free.
+   - `kInitSizePx` (added during implementation): the doc originally said to
+     reuse "the existing default body size constant the loader already uses",
+     but no such constant existed in the loader. The loader defines its own
+     `kInitSizePx = 14`, mirroring `CrossPointSettings::DEFAULT_TTF_FONT_POINT_SIZE`
+     without coupling the loader to the settings header.
    - `computeFingerprint()`: XOR the backend tag (D4).
    - Teardown/deinit paths: `FtFont`'s destructor releases the face; borrowed
      bytes lifetime rules unchanged (still borrowed, still outlive the face).

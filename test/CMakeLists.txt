@@ -46,6 +46,40 @@ target_compile_options(crosspoint_test_common INTERFACE
 enable_testing()
 include(GoogleTest)
 
+# ── Font backend test variants (design D2/D9) ─────────────────────────────
+# Native-TTF suites build as two variants: the stb default and a FreeType
+# variant compiled with CROSSPOINT_FONT_BACKEND_FT=1. Each backend is
+# asserted against its own invariants — no cross-backend metric equality.
+set(FREEINK_FT_ROOT "${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont")
+set(FONT_FT_TEST_SOURCES
+  "${FREEINK_FT_ROOT}/src/FtFont.cpp"
+  "${FREEINK_FT_ROOT}/src/FontAlloc.c"
+)
+file(GLOB FONT_FT_WRAPPER_SOURCES "${FREEINK_FT_ROOT}/src/freetype/*.c")
+list(APPEND FONT_FT_TEST_SOURCES ${FONT_FT_WRAPPER_SOURCES})
+set(FONT_FT_TEST_INCLUDES
+  "${FREEINK_FT_ROOT}/freetype-config/include"
+  "${FREEINK_FT_ROOT}/third_party/freetype/include"
+)
+
+# Adds TARGET (stb backend) and TARGET BackendFT (FreeType backend): same
+# sources/includes/definitions, the FT variant additionally compiling
+# FtFont.cpp + the vendored FreeType amalgam under the backend flag.
+function(add_font_backend_tests TARGET)
+  cmake_parse_arguments(ARG "" "" "SOURCES;INCLUDES;DEFINITIONS;LIBS" ${ARGN})
+  add_executable(${TARGET} ${ARG_SOURCES})
+  target_include_directories(${TARGET} PRIVATE ${ARG_INCLUDES})
+  target_compile_definitions(${TARGET} PRIVATE ${ARG_DEFINITIONS})
+  target_link_libraries(${TARGET} PRIVATE crosspoint_test_common GTest::gtest_main ${ARG_LIBS})
+  gtest_discover_tests(${TARGET})
+
+  add_executable(${TARGET}BackendFT ${ARG_SOURCES} ${FONT_FT_TEST_SOURCES})
+  target_compile_definitions(${TARGET}BackendFT PRIVATE ${ARG_DEFINITIONS} CROSSPOINT_FONT_BACKEND_FT=1)
+  target_include_directories(${TARGET}BackendFT PRIVATE ${ARG_INCLUDES} ${FONT_FT_TEST_INCLUDES})
+  target_link_libraries(${TARGET}BackendFT PRIVATE crosspoint_test_common GTest::gtest_main ${ARG_LIBS})
+  gtest_discover_tests(${TARGET}BackendFT)
+endfunction()
+
 add_subdirectory(ota_json_parser)
 add_subdirectory(differential_rounding)
 add_subdirectory(hyphenation_eval)
@@ -91,5 +125,6 @@ add_subdirectory(progress_manager)
 add_subdirectory(style_bits)
 add_subdirectory(page_paint)
 add_subdirectory(ttf_word_select)
+add_subdirectory(font_backend)
 add_subdirectory(ui_app_handlers)
 add_subdirectory(activity_result)
