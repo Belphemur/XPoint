@@ -971,6 +971,8 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  retryDeferredOverlayPush();
+
   // Someone else turned the screen while this reader was stacked (the control
   // center's orientation tile). Reflow before the next render, or the page
   // would be drawn with a layout built for the previous frame size.
@@ -4308,6 +4310,23 @@ void EpubReaderActivity::settleOverlayRefresh() {
   overlayRefreshPending.store(false, std::memory_order_relaxed);
 }
 
+// Recover a refresh that was skipped while the panel was wedged (timed-out
+// settle): without this, a deferred overlay close would leave the chrome on
+// the glass until the next page turn, because nothing else schedules a render
+// once the panel drains (#151 review). Throttled non-blocking re-checks; the
+// actual settle/push runs under the RenderLock like every other path.
+void EpubReaderActivity::retryDeferredOverlayPush() {
+  if (!overlayRefreshPending.load(std::memory_order_acquire) || !overlaySettleTimedOut) return;
+  constexpr uint32_t OVERLAY_PUSH_RETRY_MS = 500;
+  const uint32_t now = millis();
+  if (now - overlayPushRetryMs < OVERLAY_PUSH_RETRY_MS) return;
+  overlayPushRetryMs = now;
+  if (renderer.refreshBusy()) return;  // still wedged; retry on a later tick
+  RenderLock lock;
+  settleOverlayRefresh();  // drains the flag and reseeds the baseline
+  if (!renderer.refreshBusy()) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
 void EpubReaderActivity::openOverlay(Overlay target) {
   mappedInput.resetHomeButtonInput();
   const Overlay previous = overlay;
@@ -4430,9 +4449,9 @@ void EpubReaderActivity::closeOverlayToPage() {
     } else {
       // Timed-out settle on a wedged panel: entering the driver's no-timeout
       // display wait here would re-create the #143 freeze on a back gesture.
-      // Skip the push; the pending flag keeps this close deferred and the
-      // next settle (panel drained) reseeds the baseline from the framebuffer
-      // holding the clean page, so the following refresh heals the glass.
+      // Skip the push; the pending flag keeps this close deferred and
+      // retryDeferredOverlayPush() (activity loop) pushes the clean page once
+      // the panel drains and reseeds the baseline.
       LOG_ERR("ERS", "overlay close deferred, panel still busy");
     }
     return;

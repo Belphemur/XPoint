@@ -147,8 +147,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // of re-polling the full timeout, and blocking driver calls are skipped.
   // Only touched under the RenderLock, hence not atomic.
   bool overlaySettleTimedOut = false;
+  // Throttle for retryDeferredOverlayPush()'s non-blocking re-checks.
+  uint32_t overlayPushRetryMs = 0;
   void pushOverlayRefresh();
   void settleOverlayRefresh();
+  void retryDeferredOverlayPush();
   int autoTurnOption = 0;  // current auto page-turn rate index (More panel)
   std::vector<EpubReaderMenuActivity::MenuItem> moreItems;
 
