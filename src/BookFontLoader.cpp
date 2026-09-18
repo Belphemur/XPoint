@@ -364,6 +364,41 @@ void BookFontLoader::releaseResidentCaches() {
   loaded_ = false;  // next getReaderFont() must re-attempt the load
 }
 
+uint32_t BookFontLoader::fontBytesHash(const uint8_t* data, const size_t len, const uint32_t seed) {
+  return fontFNV1a(data, len, seed);
+}
+
+bool BookFontLoader::validateSfntBytes(const uint8_t* data, const uint32_t size) {
+  if (data == nullptr) return false;
+  if (size < 12) {
+    LOG_ERR("BFNT", "Font too small for sfnt header (%u bytes)", size);
+    return false;
+  }
+  const uint16_t numTables = static_cast<uint16_t>((data[4] << 8) | data[5]);
+  if (numTables == 0) {
+    LOG_ERR("BFNT", "Font invalid numTables 0");
+    return false;
+  }
+  const uint32_t minSz = kMinSfntLen(numTables);
+  if (size < minSz) {
+    LOG_ERR("BFNT", "Font too small for table directory (%u < %u)", size, minSz);
+    return false;
+  }
+  for (uint16_t i = 0; i < numTables; ++i) {
+    const uint8_t* entry = data + 12 + static_cast<size_t>(i) * 16;
+    // Guard against overflow in offset+length (uint32_t wraparound).
+    const uint32_t offset = static_cast<uint32_t>(entry[8]) << 24 | static_cast<uint32_t>(entry[9]) << 16 |
+                            static_cast<uint32_t>(entry[10]) << 8 | static_cast<uint32_t>(entry[11]);
+    const uint32_t length = static_cast<uint32_t>(entry[12]) << 24 | static_cast<uint32_t>(entry[13]) << 16 |
+                            static_cast<uint32_t>(entry[14]) << 8 | static_cast<uint32_t>(entry[15]);
+    if (length > size || offset > size || offset + length < offset || offset + length > size) {
+      LOG_ERR("BFNT", "Font table %u O/L %u/%u exceeds size %u", i, offset, length, size);
+      return false;
+    }
+  }
+  return true;
+}
+
 uint32_t BookFontLoader::computeFingerprint() const {
   // FNV-1a over loaded face bytes (only valid ones) xor styleCoverage.
   // Never uses path or mtime — content-based (design §3.4). Returns 0 when
@@ -810,53 +845,14 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
 
   // sfnt validation boundary: numTables sanity + table-directory O/L checks.
-  // TtfFont::init only checks len<12; we validate here.
-  if (fi.fileSize < 12) {
-    LOG_ERR("BFNT", "Font %s too small for sfnt header", fi.file);
+  // Shared with the prefetch worker's face builder (one gate, one behavior).
+  if (!validateSfntBytes(static_cast<const uint8_t*>(fontBytes), fi.fileSize)) {
     if (isPsram) {
       fontPsramBytes_[faceIdx].reset();
     } else {
       localDram.reset();
     }
     return false;
-  }
-  uint16_t numTables = static_cast<uint16_t>((static_cast<const uint8_t*>(fontBytes)[4] << 8) |
-                                             static_cast<const uint8_t*>(fontBytes)[5]);
-  if (numTables == 0) {
-    LOG_ERR("BFNT", "Font %s invalid numTables %u", fi.file, numTables);
-    if (isPsram) {
-      fontPsramBytes_[faceIdx].reset();
-    } else {
-      localDram.reset();
-    }
-    return false;
-  }
-  uint32_t minSz = kMinSfntLen(numTables);
-  if (fi.fileSize < minSz) {
-    LOG_ERR("BFNT", "Font %s too small for table directory (%u < %u)", fi.file, fi.fileSize, minSz);
-    if (isPsram) {
-      fontPsramBytes_[faceIdx].reset();
-    } else {
-      localDram.reset();
-    }
-    return false;
-  }
-  for (uint16_t i = 0; i < numTables; ++i) {
-    const uint8_t* entry = static_cast<const uint8_t*>(fontBytes) + 12 + static_cast<size_t>(i) * 16;
-    // Guard against overflow in offset+length (uint32_t wraparound).
-    uint32_t offset = static_cast<uint32_t>(entry[8]) << 24 | static_cast<uint32_t>(entry[9]) << 16 |
-                      static_cast<uint32_t>(entry[10]) << 8 | static_cast<uint32_t>(entry[11]);
-    uint32_t length = static_cast<uint32_t>(entry[12]) << 24 | static_cast<uint32_t>(entry[13]) << 16 |
-                      static_cast<uint32_t>(entry[14]) << 8 | static_cast<uint32_t>(entry[15]);
-    if (length > fi.fileSize || offset > fi.fileSize || offset + length < offset || offset + length > fi.fileSize) {
-      LOG_ERR("BFNT", "Font %s table %u O/L %u/%u exceeds size", fi.file, i, offset, length);
-      if (isPsram) {
-        fontPsramBytes_[faceIdx].reset();
-      } else {
-        localDram.reset();
-      }
-      return false;
-    }
   }
 
   // Per-face glyph arena — each face gets its OWN persistent backing buffer

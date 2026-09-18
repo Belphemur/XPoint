@@ -109,6 +109,22 @@ class BookFontLoader {
   // Public fingerprint helper — content-based, never path/mtime.
   uint32_t computeFingerprint() const;
 
+  // FNV-1a over font bytes with a chained seed. The prefetch worker hashes
+  // the same face bytes in the same slot order to derive an identical
+  // fingerprint (FibpPrefetchWorker).
+  static uint32_t fontBytesHash(const uint8_t* data, size_t len, uint32_t seed);
+  // sfnt table-directory sanity gate shared by tryLoadFace and the worker's
+  // face builder: numTables != 0 and every table's offset/length in-bounds.
+  static bool validateSfntBytes(const uint8_t* data, uint32_t size);
+
+  // Appends the four Atkinson faces to `chain` as its non-selectable tail:
+  // a selected TTF family that lacks a glyph or style degrades to the
+  // fallback face instead of a missing glyph (§14.5 chain-tail semantics).
+  // Public so the prefetch worker can build an identical tail — the chain's
+  // style coverage (and with it the fingerprint / FIBP generation) must
+  // match the reader's chain byte for byte.
+  static void appendFallbackTail(FontChain& chain);
+
 #if defined(HOST_TEST)
   // Host-test seams: seed the manifest deterministically and read the budget.
   // setFamilyCount drives ensureLoaded()'s familyCount_ > 0 gate so tests can
@@ -187,10 +203,6 @@ class BookFontLoader {
   // One of the four baked Atkinson fallback faces (§14.3), owned by the
   // builtin singleton; appended to the active chain as its tail.
   static RenderFont* builtinFace(uint8_t idx);
-  // Appends the four Atkinson faces to `chain` as its non-selectable tail:
-  // a selected TTF family that lacks a glyph or style degrades to the
-  // fallback face instead of a missing glyph (§14.5 chain-tail semantics).
-  static void appendFallbackTail(FontChain& chain);
 
   // Load a single face into the live chain (member so it can access private
   // state: faces_, arenas_, fontBytes_, fontPsramBytes_, fontDramBytes_).

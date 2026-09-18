@@ -1,0 +1,171 @@
+#pragma once
+
+// FibpPrefetchWorker — background chapter-index (FIBP) prefetch for the
+// native-TTF reader. On S3-class builds (PSRAM + FreeType backend) it runs a
+// low-priority worker task pinned to core 0 that lays out spine chapters
+// ahead of the reader and commits their FIBP files to SD, so chapter entry
+// hits the cache instead of the blocking "Indexing" popup. Everywhere else
+// (single-core, PSRAM-less, stb rollback) the class compiles to an inert
+// stub and the synchronous rebuild path is unchanged.
+//
+// Threading model (R2, FreeType's documented rules):
+//   - FtFont face CREATE/DESTROY happens on the MAIN thread only (begin /
+//     cancel), on the same thread as BookFontLoader's own face churn — the
+//     documented "face creation/destruction from one thread at a time" rule
+//     is satisfied without an extra lock.
+//   - The worker thread only calls per-face metrics/load APIs
+//     (FT_Load_Glyph and siblings), which FreeType documents as thread-safe
+//     as long as each FT_Face is used by one thread at a time.
+//   - All SD access goes through the runtime's adapters (HalFile /
+//     storageMutex); no mutex is held across a layout step.
+//   - ChapterLayout is instance-scoped (re-entrant), so the reader may keep
+//     building on core 1 while the worker lays out on core 0.
+
+#if defined(CROSSPOINT_TTF_READER)
+
+#include <layout/ChapterLayout.h>
+
+#include <atomic>
+#include <cstdint>
+#include <vector>
+
+#include "FibpPrefetchPolicy.h"
+
+#if defined(BOARD_HAS_PSRAM) && defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+#define FIBP_WORKER_ENABLED 1
+#else
+#define FIBP_WORKER_ENABLED 0
+#endif
+
+#if FIBP_WORKER_ENABLED
+#include <BookFontLoader.h>
+#include <FreeRTOS.h>
+#include <Memory.h>
+#include <semphr.h>
+#include <task.h>
+
+#include "TtfBookRuntime.h"
+#endif
+
+namespace freeink {
+namespace book {
+
+class FibpPrefetchWorker {
+ public:
+  // Main-thread snapshot handed to begin(). `layout`'s pointer fields
+  // (font/language/stylesheet/hyphenator) are IGNORED — the worker re-binds
+  // them to its own face chain and language buffer (R2: never the render
+  // path's faces).
+  struct BeginContext {
+    static constexpr size_t kEpubPathCap = 256;
+    static constexpr size_t kCacheDirCap = 192;
+    static constexpr size_t kFamilyCap = 48;
+    static constexpr size_t kLanguageCap = 16;
+    char epubPath[kEpubPathCap] = {};
+    char cacheDir[kCacheDirCap] = {};
+    char familyName[kFamilyCap] = {};
+    uint16_t spineCount = 0;
+    uint32_t generation = 0;
+    LayoutParams layout{};  // scalar fields only; pointers re-bound
+  };
+
+#if FIBP_WORKER_ENABLED
+  // Main thread. Builds the worker's own face chain from the selected
+  // family (reading the same font bytes) and spawns the worker task.
+  // Returns false (worker inert, sync path unchanged) when the family is
+  // unknown, a face fails, or the task cannot start.
+  bool begin(const BeginContext& ctx);
+  // Main thread. Reorders the queue so the chapter after `spine` is built
+  // next (applied lazily between spines).
+  void notifyChapterEntered(uint16_t spine);
+  // Main thread. Settings/geometry changed: the worker aborts any in-flight
+  // session at the next chunk boundary and re-seeds the queue under the new
+  // generation (scalar params are swapped under paramsMux_).
+  // Respawns the task when it had already finished ("fully indexed").
+  void notifyGeneration(uint32_t generation, const LayoutParams& pods);
+  // Main thread. Stops the task (bounded join) and frees the worker's
+  // faces, bytes, and runtime. Must be called before the owner dies.
+  void cancel();
+  // True while the worker task is alive (spawning → joined).
+  bool active() const { return running_.load(std::memory_order_acquire); }
+
+  // R1 stack budget: 24KB DRAM start (Adobe CFF frames are deep even for
+  // advance-only loads). Validated via the per-spine HWM telemetry.
+  static constexpr size_t kStackBytes = 24 * 1024;
+  // Heap floors mirrored from the reader's background build gate (R1 DRAM
+  // budget): the worker waits instead of indexing below these.
+  static constexpr size_t kMinFreeHeap = 32 * 1024;
+  static constexpr size_t kMinMaxAllocHeap = 16 * 1024;
+
+ private:
+  static void taskTrampoline(void* arg);
+  void run();  // worker task context (self-deletes when done)
+  bool buildFaces();
+  void teardownFaces();
+  void copyScalarParams(const LayoutParams& from);
+  // True when a complete or partial cache for spine+generation exists on
+  // SD (the reader serves those; a rename over an open reader cache is
+  // avoided by never rebuilding existing files).
+  bool spineHasCache(uint16_t spine, uint32_t generation);
+  // Runs one spine's build session to completion (or the next cancel /
+  // generation change). Returns the run outcome.
+  ChapterRun buildSpine(uint16_t spine, uint32_t generation);
+  void replan(uint32_t generation);
+  static bool yieldHook(void* ctx, uint16_t pagesBuilt);
+
+  static constexpr UBaseType_t kPriority = 1;
+  static constexpr BaseType_t kCore = 0;         // the loop task (all rendering) runs on core 1
+  static constexpr uint32_t kPageDelayMs = 1;    // R4: vTaskDelay(1+) between pages
+  static constexpr uint32_t kSpineDelayMs = 30;  // R4: 20-50ms between spines
+  static constexpr uint32_t kHeapWaitMs = 250;
+  static constexpr uint32_t kJoinTimeoutMs = 3000;
+
+  std::atomic<bool> cancel_{false};
+  std::atomic<bool> running_{false};
+  std::atomic<uint32_t> gen_{0};
+  std::atomic<uint16_t> notifiedSpine_{fibp::kNoChapter};
+  SemaphoreHandle_t exitedSem_ = nullptr;  // worker gives before self-delete
+  SemaphoreHandle_t paramsMux_ = nullptr;  // guards params_ scalar swaps
+  TaskHandle_t task_ = nullptr;
+
+  char epubPath_[BeginContext::kEpubPathCap] = {};
+  char cacheDir_[BeginContext::kCacheDirCap] = {};
+  char familyName_[BeginContext::kFamilyCap] = {};
+  char language_[BeginContext::kLanguageCap] = {};
+  uint16_t spineCount_ = 0;
+
+  // Own face set (R2): created on the main thread, used by the worker task,
+  // destroyed on the main thread after the join. Bytes are PSRAM-only
+  // (poolMakeBytes with the loader's per-face size guard) so the fingerprint
+  // the worker derives is content-identical to the loader's.
+  NativeFace* faces_[4] = {};
+  FontChain chain_;
+  PoolBytes fontBytes_[4];
+  uint32_t fingerprint_ = 0;  // content parity with BookFontLoader::computeFingerprint()
+
+  // Session params: pointer fields bound to worker-owned objects at begin;
+  // the scalar fields are swapped under paramsMux_ on notifyGeneration and
+  // copied out at each spine start.
+  LayoutParams params_{};
+
+  // Worker-thread build state.
+  std::unique_ptr<TtfBookRuntime> runtime_;
+  std::vector<uint8_t> failed_;  // 1 per spine that hard-failed this book
+  std::vector<uint16_t> queue_;  // pending spine indices (worker-local)
+  uint16_t queueCursor_ = 0;     // next index into queue_ to consider
+  uint32_t sessionGen_ = 0;      // generation the current pass builds under
+  uint16_t lastPages_ = 0;       // telemetry: pages of the last build
+#else
+  // Inert stub (single-core / PSRAM-less / stb-rollback builds).
+  bool begin(const BeginContext&) { return false; }
+  void notifyChapterEntered(uint16_t) {}
+  void notifyGeneration(uint32_t, const LayoutParams&) {}
+  void cancel() {}
+  bool active() const { return false; }
+#endif  // FIBP_WORKER_ENABLED
+};
+
+}  // namespace book
+}  // namespace freeink
+
+#endif  // CROSSPOINT_TTF_READER
