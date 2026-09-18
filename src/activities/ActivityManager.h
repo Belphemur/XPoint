@@ -60,13 +60,9 @@ class ActivityManager {
   // OTA/SD-flash loops that never return to loop()).
   TaskHandle_t mainTaskHandle = nullptr;
 
-  // Render the current activity now and wake any requestUpdateAndWait()
-  // waiter. Main-thread only; takes the RenderLock itself.
+  // Render the current activity now. Main-thread only; takes the
+  // RenderLock itself. Callers consume requestedUpdate before calling.
   void performRender();
-
-  // Set by requestUpdateAndWait(); read and cleared by performRender() after
-  // the render completes. Note: only one waiting task is supported at a time
-  TaskHandle_t waitingTaskHandle = nullptr;
 
   // Mutex to protect rendering operations from race conditions
   // Must only be used via RenderLock
@@ -141,7 +137,8 @@ class ActivityManager {
   // Otherwise, it will be deferred until the end of the current loop iteration.
   void requestUpdate(bool immediate = false);
 
-  // Trigger a render and block until it completes.
+  // Trigger a render and block until it completes (main task only — it is
+  // the renderer; other tasks get a logged error and a no-op).
   // Must NOT be called while holding a RenderLock.
   void requestUpdateAndWait();
 };

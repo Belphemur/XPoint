@@ -35,8 +35,6 @@
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
-static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
-
 bool ActivityManager::isOnHomeScreen() const { return currentActivity && currentActivity->isHomeActivity(); }
 
 bool ActivityManager::handleBackOnCurrent() {
@@ -55,15 +53,6 @@ void ActivityManager::begin() {
 }
 
 void ActivityManager::performRender() {
-  // Claim the waiter BEFORE rendering: a worker that registers
-  // requestUpdateAndWait() mid-render must not be woken by this render's
-  // completion (its requestedUpdate flag will be drained by the next loop()
-  // iteration, which then renders and notifies it).
-  TaskHandle_t waiter = nullptr;
-  taskENTER_CRITICAL(&activityManagerSpinlock);
-  waiter = waitingTaskHandle;
-  waitingTaskHandle = nullptr;
-  taskEXIT_CRITICAL(&activityManagerSpinlock);
   // Acquire the lock before reading currentActivity so out-of-loop callers
   // (requestUpdate(true) from progress callbacks) stay serialized with any
   // RenderLock scope the activity itself holds.
@@ -86,9 +75,6 @@ void ActivityManager::performRender() {
             static_cast<unsigned>(ESP.getMinFreePsram()));
     memSentinelCheck("main render");
 #endif
-  }
-  if (waiter) {
-    xTaskNotify(waiter, 1, eIncrement);
   }
 }
 
@@ -475,36 +461,18 @@ void ActivityManager::requestUpdate(bool immediate) {
   }
 }
 void ActivityManager::requestUpdateAndWait() {
-  // Main thread is the renderer: render synchronously unless already inside
-  // a RenderLock scope (the mutex is not recursive — that would deadlock).
-  if (xTaskGetCurrentTaskHandle() == mainTaskHandle) {
-    assert(xSemaphoreGetMutexHolder(renderingMutex) != xTaskGetCurrentTaskHandle() &&
-           "Cannot call requestUpdateAndWait() while holding RenderLock");
-    requestedUpdate.exchange(false);
-    performRender();
+  // Main thread is the only renderer and the only supported caller: render
+  // synchronously. The former cross-task waiter path had no callers (every
+  // call site is onEnter()/main-thread flow) and carried registration/drain
+  // races — removed instead of fixed. Misuse is loud, not fatal.
+  if (xTaskGetCurrentTaskHandle() != mainTaskHandle) {
+    LOG_ERR("ACT", "requestUpdateAndWait() called from a non-main task; ignoring");
     return;
   }
-
-  // Atomic section to perform checks
-  taskENTER_CRITICAL(&activityManagerSpinlock);
-  auto currTaskHandler = xTaskGetCurrentTaskHandle();
-  auto mutexHolder = xSemaphoreGetMutexHolder(renderingMutex);
-  bool alreadyWaiting = (waitingTaskHandle != nullptr);
-  bool holdingRenderLock = (mutexHolder == currTaskHandler);
-  if (!alreadyWaiting && !holdingRenderLock) {
-    waitingTaskHandle = currTaskHandler;
-  }
-  taskEXIT_CRITICAL(&activityManagerSpinlock);
-
-  // There should never be the case where 2 tasks are waiting for a render at the same time
-  assert(!alreadyWaiting && "Already waiting for a render to complete");
-
-  // Cannot call while holding RenderLock or it will cause a deadlock
-  assert(!holdingRenderLock && "Cannot call requestUpdateAndWait() while holding RenderLock");
-
-  // The next loop() iteration drains requestedUpdate, renders, and notifies us.
-  requestedUpdate = true;
-  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  assert(xSemaphoreGetMutexHolder(renderingMutex) != xTaskGetCurrentTaskHandle() &&
+         "Cannot call requestUpdateAndWait() while holding RenderLock");
+  requestedUpdate.exchange(false);
+  performRender();
 }
 
 // RenderLock
