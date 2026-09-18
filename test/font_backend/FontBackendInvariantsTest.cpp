@@ -45,8 +45,14 @@ bool loadFace(InvariantFace& face, const std::vector<uint8_t>& bytes) {
 #endif
 
 std::vector<uint8_t> readFile(const char* path) {
-  // RAII file handle: fclose runs at scope exit on every return path.
-  const std::unique_ptr<std::FILE, int (*)(std::FILE*)> f(std::fopen(path, "rb"), &std::fclose);
+  // RAII file handle: fclose runs at scope exit on every return path, with
+  // the error surfaced (std::perror) rather than silently discarded.
+  struct FileCloser {
+    void operator()(std::FILE* f) const {
+      if (std::fclose(f) != 0) std::perror("fclose");
+    }
+  };
+  const std::unique_ptr<std::FILE, FileCloser> f(std::fopen(path, "rb"));
   if (f == nullptr) return {};
   if (std::fseek(f.get(), 0, SEEK_END) != 0) return {};
   const long size = std::ftell(f.get());
