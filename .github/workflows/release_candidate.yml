@@ -57,10 +57,26 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini') }}
+          key: pio-v3-${{ runner.os }}-${{ matrix.pio_env }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio-${{ runner.os }}-${{ matrix.pio_env }}-
-            pio-${{ runner.os }}-
+            pio-v3-${{ runner.os }}-${{ matrix.pio_env }}-
+
+      - name: Pin pioarduino core inside the platform penv
+        run: |
+          set -euo pipefail
+          # Envs with custom_sdkconfig (gh_release_rc, sticky-gh_release_rc) run a nested
+          # `pio run` from ~/.platformio/penv. The platform bootstraps that penv with an
+          # open-ended "pioarduino>=6.1.19", which drifts upward independently of the
+          # outer core; a penv core whose tool-scons pin disagrees with the platform's
+          # makes them reinstall over each other until the running SCons loses its
+          # package mid-build ("No module named 'SCons.Tool.FortranCommon'"). The
+          # pio-constraints.txt floor does not cap upward drift, so pin explicitly.
+          # Keep the penv core on the same 6.2.0 version as the outer core
+          # installed above (the develop platform needs 6.2.0 / SCons 4.11.1).
+          # See https://github.com/pioarduino/platform-espressif32/issues/529
+          pio pkg install -e ${{ matrix.pio_env }}
+          uv pip install --python ~/.platformio/penv/bin/python "pioarduino==6.2.0"
+          ~/.platformio/penv/bin/pio --version
 
       - name: Extract env
         run: |
