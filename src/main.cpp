@@ -21,6 +21,8 @@
 #include <WiFi.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
+#include <esp_heap_caps.h>
+#include <freertos/task.h>
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
@@ -539,6 +541,16 @@ void setupDisplayAndFonts(bool seamless = false) {
   LOG_DBG("MAIN", "Fonts setup");
 }
 
+// loopTask override: ALL rendering runs on the loop task since the Adobe CFF
+// engine (faster; chosen over the old "freetype" CFF engine, SDK PR #29/#30)
+// interprets charstrings with an unbounded, multi-KB caller stack. 40KB is
+// the EPub-InkPlate-proven size for the Adobe engine on ESP32; 48KB adds
+// margin for the reader's ChapterLayout rebuild + paint on top of it.
+// Replaces the ActivityManagerRender task (16KB) — net task-stack budget
+// unchanged, one fewer task, no cross-task FreeType calls. Rebuilds are
+// UX-modal anyway ("Indexing" popup), so blocking the loop is accepted.
+SET_LOOP_TASK_STACK_SIZE(49152)
+
 void setup() {
   BoardConfig::holdPowerRails();
 
@@ -912,6 +924,50 @@ void loop() {
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   renderer.setFadingFix(SETTINGS.fadingFix);
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT && defined(CROSSPOINT_MEM_SENTINEL) && \
+    CROSSPOINT_MEM_SENTINEL
+  // Memory sentinel (FT bring-up, PR #146): the on-device crash (IDLE0 stack
+  // canary + corrupted TWDT entry, LoadProhibited at 0x10c/0x1c9) is a silent
+  // DRAM corruption whose faulting frames point at IDLE0, not the culprit.
+  // Census task stacks (a near-overflow task names itself) and walk the heap
+  // block headers so the corrupting allocation is caught while still alive.
+  static uint32_t lastMemSentinel = 0;
+  if (millis() - lastMemSentinel >= 2000) {
+    lastMemSentinel = millis();
+    const UBaseType_t taskCount = uxTaskGetNumberOfTasks();
+    auto snapshot = makeUniqueNoThrow<TaskStatus_t[]>(taskCount);
+    if (snapshot) {
+      const UBaseType_t got = uxTaskGetSystemState(snapshot.get(), taskCount, nullptr);
+      for (UBaseType_t i = 0; i < got; ++i) {
+        const UBaseType_t hwm = snapshot[i].usStackHighWaterMark;
+        const char* name = snapshot[i].pcTaskName;
+        if (hwm < 256) {
+          LOG_ERR("SENT", "Task %s stack HWM=%u (overflow suspect)", name, static_cast<unsigned>(hwm));
+        }
+        // Victim-stack time series: IDLE0 (core 0) and the render task have
+        // both carried wild-write scars during quick-font repros. Log their
+        // HWM every tick so the write can be dated against the log phases.
+        // FreeRTOS truncates names to configMAX_TASK_NAME_LEN (16), so match
+        // the shared prefix instead of the full "ActivityManagerRender".
+        if (name != nullptr && (strcmp(name, "IDLE0") == 0 || strncmp(name, "ActivityManager", 15) == 0)) {
+          LOG_DBG("SENT", "%s stack HWM=%u", name, static_cast<unsigned>(hwm));
+        }
+      }
+    }
+    // print_errors=true: the whole point is naming the smashed block. The
+    // full-heap walk is expensive — keep it on a slower cadence than the
+    // cheap per-task census so renders aren't starved.
+    static uint32_t lastHeapWalk = 0;
+    if (millis() - lastHeapWalk >= 10000) {
+      lastHeapWalk = millis();
+      // print_errors=true: the whole point is naming the smashed block.
+      if (!heap_caps_check_integrity_all(true)) {
+        LOG_ERR("SENT", "Heap integrity check FAILED (see dump above)");
+      }
+    }
+  }
+#endif
 
   if (Serial && millis() - lastMemPrint >= 10000) {
     const auto heap = HalMemory::getInternalHeap();

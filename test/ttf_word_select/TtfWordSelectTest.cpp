@@ -1,6 +1,7 @@
 // Host tests for TtfWordSelect::buildTtfWordSelectData — token extraction
 // from engine run geometry with a real TtfFont (Amazon Ember fixture), the
 // seam behind the restored TTF dictionary entry point (PR #113 §17).
+#include <FtFont.h>
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -40,17 +41,31 @@ freeink::book::Page makePage(const char* text, const uint16_t len) {
 
 }  // namespace
 
+// Backend-selective face (design D2/D9): the BackendFT target must exercise
+// FreeType word selection, not merely compile it in. stb keeps its arena
+// constructor; FtFont takes size/weight/italic and needs no arena.
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+using SelectFace = freeink::font::FtFont;
+bool loadSelectFace(SelectFace& face, const std::string& bytes) {
+  return face.init(reinterpret_cast<const uint8_t*>(bytes.data()), static_cast<uint32_t>(bytes.size()), 16, 400, false);
+}
+#else
+using SelectFace = freeink::book::TtfFont;
+bool loadSelectFace(SelectFace& face, const std::string& bytes) {
+  static uint8_t arena[64 * 1024];
+  freeink::book::Arena glyphArena(arena, sizeof(arena));
+  return face.init(reinterpret_cast<const uint8_t*>(bytes.data()), static_cast<uint32_t>(bytes.size()), glyphArena);
+}
+#endif
+
 TEST(TtfWordSelect, SplitsRunsIntoWhitespaceTokens) {
   static const char kText[] = "alpha beta";
   const auto page = makePage(kText, static_cast<uint16_t>(std::strlen(kText)));
-  static uint8_t arena[64 * 1024];
-  freeink::book::Arena glyphArena(arena, sizeof(arena));
-  freeink::book::TtfFont font;
+  SelectFace font;
   const std::string& bytes = emberBytes();
   if (bytes.empty()) GTEST_SKIP() << "Missing Amazon Ember fixture";
   ASSERT_GE(bytes.size(), 16u);
-  ASSERT_TRUE(
-      font.init(reinterpret_cast<const uint8_t*>(bytes.data()), static_cast<uint32_t>(bytes.size()), glyphArena));
+  ASSERT_TRUE(loadSelectFace(font, bytes));
   freeink::book::FontChain chain;
   chain.add(&font, freeink::book::StyleNone);
 

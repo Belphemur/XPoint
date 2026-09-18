@@ -15,6 +15,7 @@
 #include <Memory.h>
 #include <SdCardFont.h>
 #include <esp_system.h>
+#include <freertos/task.h>
 
 #include <algorithm>
 #include <functional>
@@ -28,6 +29,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#include "MemSentinel.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "TtfWordSelect.h"
 #endif
@@ -2904,6 +2906,11 @@ void EpubReaderActivity::renderBookTtf() {
     // the last plane pass has walked it.
     ttf_->scratch().release(scratchMark);
     lastRenderCompleteMs = millis();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    LOG_DBG("REND", "reader gray render stack high-water=%u bytes",
+            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    memSentinelCheck("reader gray render");
+#endif
     // Cleanup has restored the framebuffer after the final gray-plane pass.
     ttfFrameRenderComplete.store(true, std::memory_order_release);
 #ifdef READING_STATS_ENABLED
@@ -2933,6 +2940,14 @@ void EpubReaderActivity::renderBookTtf() {
     renderer.waitRefreshComplete();
   }
   lastRenderCompleteMs = millis();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // In-render stack probe: the post-render REND telemetry never ran for the
+  // crashing reader renders — measure the reader path's own high-water HERE,
+  // before render() returns (the deepest path: rebuild + FT paint + chrome).
+  LOG_DBG("REND", "reader render stack high-water=%u bytes",
+          static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  memSentinelCheck("reader bw render");
+#endif
   // The B/W frame and status chrome are fully painted (and any async submit
   // has completed) before overlay opens may paint directly onto this frame.
   ttfFrameRenderComplete.store(true, std::memory_order_release);
@@ -3710,6 +3725,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         const auto tGrayDisplay = millis();
         renderer.setRenderMode(GfxRenderer::BW);
         renderer.restoreBwBuffer();
+        memSentinelCheck("ttf gray nontiled-dual");
         const auto tBwRestore = millis();
 
         const auto tEnd = millis();
@@ -4106,6 +4122,10 @@ void EpubReaderActivity::renderQuickFontPage() {
     }
     renderOverlay();
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    LOG_DBG("ERS", "quickFont render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u loopStackHW=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+            static_cast<unsigned>(ESP.getMinFreePsram()), static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   }
 }
 
@@ -4287,6 +4307,11 @@ void EpubReaderActivity::openOverlay(Overlay target) {
     renderOverlay();
 #if defined(CROSSPOINT_TTF_READER)
     LOG_DBG("ERS", "overlay rendered=%d uiReady=%d", static_cast<int>(overlay), toolbarUi->routingReady());
+    memSentinelCheck("overlay render");
+    LOG_DBG("ERS", "overlay mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u loopStackHW=%u",
+            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+            static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
 #endif
     renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   } else {

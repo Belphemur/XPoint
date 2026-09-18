@@ -38,6 +38,8 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include "MemSentinel.h"
+
 #if defined(CROSSPOINT_TTF_READER)
 #include <builtinFonts/atkinson_hn_14_bold.h>
 #include <builtinFonts/atkinson_hn_14_bolditalic.h>
@@ -58,6 +60,13 @@
 
 namespace freeink {
 namespace book {
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+// Style → FreeType axis coordinate (design §4.1): bold = wght 700, else 400.
+// Italic is passed separately; FT synthesizes oblique/embolden when an axis
+// is absent.
+constexpr int styleToWeight(uint8_t styleFlags) { return (styleFlags & StyleBold) ? 700 : 400; }
+#endif
 
 // Hard bounds for the DRAM-tier font file size gate. Design §3.3: the value is
 // derived from ESP.getFreeHeap()/getMaxAllocHeap() after all arenas are
@@ -293,6 +302,7 @@ void BookFontLoader::ensureLoaded() {
     }
   }
   fingerprint_ = computeFingerprint();
+  memSentinelCheck("font ensureLoaded");
   appendFallbackTail(chain_);
   loaded_ = true;
   dirty_.store(false, std::memory_order_relaxed);
@@ -369,6 +379,13 @@ uint32_t BookFontLoader::computeFingerprint() const {
   }
   if (!anyLoaded) return 0;
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // D4: backend tag ("FTU1"). FreeType's advances/kerning differ from stb's
+  // (different hinting), so a stale stb-layout section cache must invalidate.
+  // Folding the tag into the byte-hash touches only TTF-family caches; the
+  // format is unchanged → no SECTION_FILE_VERSION bump.
+  h ^= 0x46545531u;
+#endif
   return h;
 }
 
@@ -852,6 +869,34 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // TtfFont allocates GlyphSlot (uint64_t key) through it. Pool blocks come
   // from heap_caps_malloc (≥4-byte aligned), which covers GlyphSlot's
   // uint64_t key on ESP32 (its natural alignment is 4 on this 32-bit ABI).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // D6: FreeType owns the glyph slot (FontAlloc routes all FT heap to PSRAM
+  // when present), so the caller-side glyph arena and its backing pool are
+  // skipped entirely on this backend.
+  NativeFace* face = new (std::nothrow) NativeFace();
+  if (!face) {
+    LOG_ERR("BFNT", "FtFont OOM for %s", fi.file);
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
+    return false;
+  }
+  // Borrowed bytes: the file bytes outlive the face (same lifetime rules as
+  // the stb path — released only in ensureLoaded()/releaseResidentCaches()).
+  if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, kInitSizePx, styleToWeight(fi.styleFlags),
+                  (fi.styleFlags & StyleItalic) != 0)) {
+    LOG_ERR("BFNT", "FtFont::init failed for %s", fi.file);
+    delete face;
+    if (isPsram) {
+      fontPsramBytes_[faceIdx].reset();
+    } else {
+      localDram.reset();
+    }
+    return false;
+  }
+#else
   if (!glyphBacking_[faceIdx]) {
     glyphBacking_[faceIdx] = poolMakeBytes(kGlyphArenaBytes);
     if (!glyphBacking_[faceIdx]) {
@@ -866,7 +911,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
   arenas_[faceIdx] = Arena(glyphBacking_[faceIdx].get(), kGlyphArenaBytes);
 
-  TtfFont* face = new (std::nothrow) TtfFont();
+  NativeFace* face = new (std::nothrow) NativeFace();
   if (!face) {
     LOG_ERR("BFNT", "TtfFont OOM for %s", fi.file);
     if (isPsram) {
@@ -890,6 +935,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     arenas_[faceIdx] = Arena{};
     return false;
   }
+#endif
 
   if (!chain.add(face, fi.styleFlags)) {
     LOG_ERR("BFNT", "FontChain::add failed to register %s (duplicate style?)", fi.file);
@@ -903,7 +949,6 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     arenas_[faceIdx] = Arena{};
     return false;
   }
-
   // Transfer ownership of the font bytes to the loader.
   // PSRAM: fontPsramBytes_ holds the RAII owner (heap_caps_free on reset).
   // DRAM:   fontDramBytes_ holds the unique_ptr<uint8_t[]> (delete[] on reset).
