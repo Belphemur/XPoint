@@ -223,6 +223,13 @@ class GfxRenderer {
   // support. See HalDisplay::displayBufferAsync for the baseline contract.
   void displayBufferAsync(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
   void waitRefreshComplete() const;
+  // Non-blocking poll: true while a deferred refresh is still running on the
+  // panel. Lets callers bound their wait instead of blocking forever.
+  bool refreshBusy() const;
+  // Arm a full-resync flag on the driver (no bus traffic): the next refresh
+  // runs a full clear instead of a differential. Safe to call while the panel
+  // is busy or wedged.
+  void requestResync() const;
   // True when displayBufferAsync() genuinely overlaps: panel defers and
   // fadingFix isn't forcing the blocking path. Callers can skip overlap
   // scaffolding (e.g. whole-plane grayscale buffers) when false.
