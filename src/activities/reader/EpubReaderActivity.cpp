@@ -4275,22 +4275,33 @@ void EpubReaderActivity::pushOverlayRefresh() {
 // deliberately no timeout, so poll refreshBusy() here under a hard deadline
 // instead: on timeout the controller is wedged, and we arm a driver resync
 // (flag only, no bus traffic) for the next refresh rather than spin forever
-// under the RenderLock (issue #143 freeze). Caller must hold the RenderLock.
+// under the RenderLock (issue #143 freeze). After a timeout, subsequent
+// settles only single-check refreshBusy() — polling another 3 s for every
+// overlay interaction would stall input while the wedge lasts (#151). Caller
+// must hold the RenderLock.
 void EpubReaderActivity::settleOverlayRefresh() {
   if (!overlayRefreshPending.load(std::memory_order_acquire)) return;
-  const uint32_t start = millis();
-  while (renderer.refreshBusy()) {
-    if (millis() - start > OVERLAY_REFRESH_SETTLE_TIMEOUT_MS) {
-      LOG_ERR("ERS", "overlay refresh busy >%lu ms, arming panel resync",
-              static_cast<unsigned long>(OVERLAY_REFRESH_SETTLE_TIMEOUT_MS));
-      renderer.requestResync();
-      // Leave the flag set: the next settle re-attempts the bounded wait, and
-      // pushOverlayRefresh() refuses to fire a new waveform while this one is
-      // still running.
-      return;
+  if (overlaySettleTimedOut) {
+    // A previous settle already burned the full deadline on this refresh: one
+    // non-blocking check only, never re-poll under the RenderLock.
+    if (renderer.refreshBusy()) return;
+  } else {
+    const uint32_t start = millis();
+    while (renderer.refreshBusy()) {
+      if (millis() - start > OVERLAY_REFRESH_SETTLE_TIMEOUT_MS) {
+        LOG_ERR("ERS", "overlay refresh busy >%lu ms, arming panel resync",
+                static_cast<unsigned long>(OVERLAY_REFRESH_SETTLE_TIMEOUT_MS));
+        renderer.requestResync();
+        overlaySettleTimedOut = true;
+        // Leave the flag set: the next settle re-attempts (single check), and
+        // pushOverlayRefresh() refuses to fire a new waveform while this one
+        // is still running.
+        return;
+      }
+      vTaskDelay(1);
     }
-    vTaskDelay(1);
   }
+  overlaySettleTimedOut = false;
   renderer.cleanupGrayscaleWithFrameBuffer();  // waits, then reseeds the baseline
   // Clear only after the baseline reseed: while it runs, the refresh is not
   // yet fully drained as far as the next settle/push is concerned.
@@ -4414,7 +4425,16 @@ void EpubReaderActivity::closeOverlayToPage() {
     // the differential to keep diffing against the last pushed frame.
     renderer.restoreBwBuffer(/*resyncPanelBaseline=*/false);
     overlayPageStored = false;
-    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    if (!renderer.refreshBusy()) {
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    } else {
+      // Timed-out settle on a wedged panel: entering the driver's no-timeout
+      // display wait here would re-create the #143 freeze on a back gesture.
+      // Skip the push; the pending flag keeps this close deferred and the
+      // next settle (panel drained) reseeds the baseline from the framebuffer
+      // holding the clean page, so the following refresh heals the glass.
+      LOG_ERR("ERS", "overlay close deferred, panel still busy");
+    }
     return;
   }
   discardOverlayPage();
