@@ -949,9 +949,16 @@ void loop() {
         }
       }
     }
-    // print_errors=true: the whole point is naming the smashed block.
-    if (!heap_caps_check_integrity_all(true)) {
-      LOG_ERR("SENT", "Heap integrity check FAILED (see dump above)");
+    // print_errors=true: the whole point is naming the smashed block. The
+    // full-heap walk is expensive — keep it on a slower cadence than the
+    // cheap per-task census so renders aren't starved.
+    static uint32_t lastHeapWalk = 0;
+    if (millis() - lastHeapWalk >= 10000) {
+      lastHeapWalk = millis();
+      // print_errors=true: the whole point is naming the smashed block.
+      if (!heap_caps_check_integrity_all(true)) {
+        LOG_ERR("SENT", "Heap integrity check FAILED (see dump above)");
+      }
     }
   }
 #endif
