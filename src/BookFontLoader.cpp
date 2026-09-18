@@ -38,6 +38,8 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include "MemSentinel.h"
+
 #if defined(CROSSPOINT_TTF_READER)
 #include <builtinFonts/atkinson_hn_14_bold.h>
 #include <builtinFonts/atkinson_hn_14_bolditalic.h>
@@ -300,6 +302,7 @@ void BookFontLoader::ensureLoaded() {
     }
   }
   fingerprint_ = computeFingerprint();
+  memSentinelCheck("font ensureLoaded");
   appendFallbackTail(chain_);
   loaded_ = true;
   dirty_.store(false, std::memory_order_relaxed);

@@ -134,6 +134,7 @@ single-variable-file families (D7), FT hinting-mode tuning beyond defaults.
 | Risk | Mitigation |
 |---|---|
 | FT adds DRAM statics once linked | D8 gate; `FontAlloc` PSRAM routing is already in the SDK; escalate if threshold exceeded |
+| FT stack depth overflows small MCU task stacks | The smooth rasterizer's worker — including the render pool — lives ON THE CALLER'S STACK (ftgrays.c); the 16 KB default pool made every load/rasterize burn ~16 KB. SDK PR #27 shrinks FT_RENDER_POOL_SIZE to 4096 (identical output, banded sweeps): host-measured rasterize stack 18 KB → 5.7 KB for TrueType/variable faces; CFF adds Adobe-engine depth on top. Firmware side: ActivityManagerRender stack 12288 (FreeRTOS words = 48 KB) with per-render stack high-water telemetry, and loopTask census + heap-integrity sentinel telemetry under the FT flag to catch any remaining offender by name |
 | Metrics differ stb→FT → all TTF caches invalidate once | Expected + intended (D4); bitmap-family caches untouched |
 | Build time grows (amalgam no longer dead-stripped on x4pro) | Accepted; C3 unaffected (dead-stripped) |
 | FT face init slower than stb per face (font-load path) | Bounded by 4 faces; measure font-load wall time in the device soak |

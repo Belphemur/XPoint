@@ -29,6 +29,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#include "MemSentinel.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "TtfWordSelect.h"
 #endif
@@ -3711,6 +3712,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
         const auto tGrayDisplay = millis();
         renderer.setRenderMode(GfxRenderer::BW);
         renderer.restoreBwBuffer();
+        memSentinelCheck("ttf gray nontiled-dual");
         const auto tBwRestore = millis();
 
         const auto tEnd = millis();
@@ -4292,6 +4294,7 @@ void EpubReaderActivity::openOverlay(Overlay target) {
     renderOverlay();
 #if defined(CROSSPOINT_TTF_READER)
     LOG_DBG("ERS", "overlay rendered=%d uiReady=%d", static_cast<int>(overlay), toolbarUi->routingReady());
+    memSentinelCheck("overlay render");
     LOG_DBG("ERS", "overlay mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u loopStackHW=%u",
             static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
             static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),

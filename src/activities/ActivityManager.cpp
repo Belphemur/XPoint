@@ -13,6 +13,7 @@
 #include <ctime>
 
 #include "CrossPointSettings.h"
+#include "MemSentinel.h"
 #include "OpdsServerStore.h"
 #ifdef READING_STATS_ENABLED
 #include "activities/reader/ReadingStatsMenuActivity.h"
@@ -88,6 +89,7 @@ void ActivityManager::renderTaskLoop() {
               static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
               static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
               static_cast<unsigned>(ESP.getMinFreePsram()));
+      memSentinelCheck("renderTask render");
 #endif
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.

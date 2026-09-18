@@ -5,6 +5,7 @@
 
 #include <cstring>
 
+#include "MemSentinel.h"
 #include "activities/reader/ProgressFile.h"
 #include "activities/reader/ProgressRecord.h"
 
@@ -100,6 +101,9 @@ void ProgressManager::begin() {
               if (self->workerStopping_) break;
               LOG_INF(MUTEX_TAG, "worker: wake (queued=%d)", owed ? 1 : 0);
               const bool ok = self->flushChanged();
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+              memSentinelCheck("progress flush");
+#endif
               LOG_DBG(MUTEX_TAG, "worker: stack high-water=%u bytes",
                       static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
               if (!ok) {
