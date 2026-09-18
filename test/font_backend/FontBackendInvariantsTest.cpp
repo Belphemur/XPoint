@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -44,15 +45,16 @@ bool loadFace(InvariantFace& face, const std::vector<uint8_t>& bytes) {
 #endif
 
 std::vector<uint8_t> readFile(const char* path) {
-  std::FILE* f = std::fopen(path, "rb");
+  // RAII file handle: fclose runs at scope exit on every return path.
+  const std::unique_ptr<std::FILE, int (*)(std::FILE*)> f(std::fopen(path, "rb"), &std::fclose);
   if (f == nullptr) return {};
-  std::fseek(f, 0, SEEK_END);
-  const long size = std::ftell(f);
-  std::fseek(f, 0, SEEK_SET);
+  if (std::fseek(f.get(), 0, SEEK_END) != 0) return {};
+  const long size = std::ftell(f.get());
+  if (size < 0) return {};
+  if (std::fseek(f.get(), 0, SEEK_SET) != 0) return {};
   std::vector<uint8_t> bytes;
   bytes.resize(static_cast<size_t>(size));
-  const size_t got = std::fread(bytes.data(), 1, bytes.size(), f);
-  std::fclose(f);
+  const size_t got = std::fread(bytes.data(), 1, bytes.size(), f.get());
   if (got != bytes.size()) bytes.clear();
   return bytes;
 }
