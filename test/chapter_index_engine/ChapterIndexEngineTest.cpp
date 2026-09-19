@@ -39,7 +39,9 @@ class FakeTarget final : public book::ChapterIndexTarget {
   bool sessionFor(uint16_t spineIndex) const override { return activeSpine_ == spineIndex; }
   bool sessionActive() const override { return activeSpine_ != kNone; }
   bool sessionDone() const override { return false; }
-  uint32_t availablePageCount(uint16_t) const override { return pages_; }
+  // Spine-scoped: a count belongs to the session's spine; other spines get 0
+  // so a caller pumping the wrong spine can never observe cross-chapter data.
+  uint32_t availablePageCount(uint16_t spineIndex) const override { return sessionFor(spineIndex) ? pages_ : 0; }
   void abortSession() override {
     ++abortCalls;
     activeSpine_ = kNone;
