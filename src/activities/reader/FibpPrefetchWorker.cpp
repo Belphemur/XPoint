@@ -65,6 +65,12 @@ bool FibpPrefetchWorker::buildFaces() {
       fontBytes_[i].reset();
       continue;
     }
+    // Parity with tryLoadFace: same reader-wide render options (hinting).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    if (!face->setRenderOptions(BookFontLoader::kRenderOptions)) {
+      LOG_ERR("PREF", "Render options unsupported for %s", fi.file);
+    }
+#endif
     if (!chain_.add(face.get(), fi.styleFlags)) {
       LOG_ERR("PREF", "Chain add failed: %s", fi.file);
       face.reset();
@@ -82,7 +88,8 @@ bool FibpPrefetchWorker::buildFaces() {
   // ensureLoaded()), so the worker folds coverage at the same point.
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-  h ^= 0x46545531u;  // backend tag, mirrors computeFingerprint()
+  h ^= 0x46545531u;                                    // backend tag, mirrors computeFingerprint()
+  h ^= BookFontLoader::renderOptionsFingerprintTag();  // render options, mirrors computeFingerprint()
 #endif
   fingerprint_ = h;
   // The tail registers the missing styles so coverage matches the reader's

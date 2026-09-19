@@ -420,6 +420,9 @@ uint32_t BookFontLoader::computeFingerprint() const {
   // Folding the tag into the byte-hash touches only TTF-family caches; the
   // format is unchanged → no SECTION_FILE_VERSION bump.
   h ^= 0x46545531u;
+  // Render-affecting options (hinting) participate in cache identity —
+  // see kRenderOptions / renderOptionsFingerprintTag().
+  h ^= renderOptionsFingerprintTag();
 #endif
   return h;
 }
@@ -891,6 +894,11 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
       localDram.reset();
     }
     return false;
+  }
+  // Reader-wide render options (hinting). None never reports unsupported (no
+  // optional module needed); a future mode change must keep this check.
+  if (!face->setRenderOptions(kRenderOptions)) {
+    LOG_ERR("BFNT", "Render options unsupported for %s", fi.file);
   }
 #else
   if (!glyphBacking_[faceIdx]) {

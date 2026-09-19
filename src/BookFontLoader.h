@@ -96,6 +96,25 @@ class BookFontLoader {
   // CrossPointSettings::DEFAULT_TTF_FONT_POINT_SIZE without coupling the
   // loader to the settings header.
   static constexpr uint16_t kInitSizePx = 14;
+
+  // Single source of truth for the reader's FT render options (SDK 43fed43
+  // setRenderOptions). HintingMode::None is the shipped behavior — fully
+  // unhinted loads, as decided in the FreeType backend campaign (hinted CFF
+  // enters the Adobe interpreter whose stack footprint overflows small task
+  // stacks; AA e-ink gains nothing from grid-fitting). Deliberately NOT a
+  // user setting: the mode is render-affecting and must stay in lockstep with
+  // the FIBP cache identity (renderOptionsFingerprintTag).
+  static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{};
+
+  // Fingerprint tag folding the active render options into the font
+  // fingerprint. Render-affecting options MUST invalidate FIBP cache
+  // identity (hinting changes advances → layout), so this tag is mixed into
+  // BOTH fingerprint sites — computeFingerprint() and the FibpPrefetchWorker
+  // parity hash — and must be extended whenever kRenderOptions gains a knob
+  // that alters glyph output.
+  static constexpr uint32_t renderOptionsFingerprintTag() {
+    return static_cast<uint32_t>(kRenderOptions.hinting) << 24;
+  }
 #endif
 
   const FamilyInfo* families() const { return families_.data(); }
