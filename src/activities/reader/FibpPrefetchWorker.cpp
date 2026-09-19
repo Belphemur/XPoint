@@ -144,6 +144,7 @@ bool FibpPrefetchWorker::begin(const BeginContext& ctx) {
   gen_.store(ctx.generation, std::memory_order_release);
   notifiedSpine_.store(fibp::kNoChapter, std::memory_order_release);
   copyScalarParams(ctx.layout);
+  paramGen_ = ctx.generation;  // lock-free: no worker task exists yet
   sessionGen_ = ctx.generation;
 
   if (!buildFaces()) {
@@ -206,9 +207,15 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
   // The generation lands first: the yield hook aborts the in-flight session
   // at the next chunk boundary, then the pass re-seeds under the new value.
   gen_.store(generation, std::memory_order_release);
+  // Params + paramGen_ are published atomically under the mutex. Until the
+  // swap lands, the worker's publish-wait holds it back (a stale snapshot
+  // built under the new generation would commit mismatched layout data).
   if (paramsMux_ != nullptr && xSemaphoreTake(paramsMux_, pdMS_TO_TICKS(kJoinTimeoutMs)) == pdTRUE) {
     copyScalarParams(pods);
+    paramGen_ = generation;
     xSemaphoreGive(paramsMux_);
+  } else {
+    LOG_ERR("PREF", "Params publish timed out — worker idles until republished");
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
   // re-index under the new generation. When a task could still exist, its
@@ -349,6 +356,21 @@ void FibpPrefetchWorker::run() {
     }
     if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) continue;
 
+    // Publish-wait: gen_ lands before the params swap in notifyGeneration,
+    // so hold here until paramGen_ (read under paramsMux_) reaches this
+    // pass's generation — building a stale snapshot under the new
+    // generation would commit mismatched layout data.
+    for (;;) {
+      bool published = false;
+      if (paramsMux_ != nullptr) xSemaphoreTake(paramsMux_, portMAX_DELAY);
+      published = (paramGen_ == gen);
+      if (paramsMux_ != nullptr) xSemaphoreGive(paramsMux_);
+      if (published) break;
+      if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) break;
+      vTaskDelay(pdMS_TO_TICKS(kPageDelayMs));
+    }
+    if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) continue;
+
     const ChapterRun r = buildSpine(spine, gen);
     if (r == ChapterRun::Failed) failed_[spine] = 1;
     // Cancelled just falls through: the loop head re-seeds or exits.
@@ -386,11 +408,17 @@ ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t g
   const TickType_t startTicks = xTaskGetTickCount();
   lastPages_ = 0;
   // Snapshot the params under the mutex: the engine copies them at begin,
-  // and a concurrent notifyGeneration must not tear the scalar set.
+  // and a concurrent notifyGeneration must not tear the scalar set. Reject
+  // a snapshot whose parameter-generation does not match the requested one
+  // (the publish-wait in run() normally closes this window; this is the
+  // last-line guard against committing stale layout under a valid gen).
   LayoutParams snapshot;
+  bool matches = false;
   if (paramsMux_ != nullptr) xSemaphoreTake(paramsMux_, portMAX_DELAY);
   snapshot = params_;
+  matches = (paramGen_ == generation);
   if (paramsMux_ != nullptr) xSemaphoreGive(paramsMux_);
+  if (!matches) return ChapterRun::Cancelled;
   const ChapterIndexYield yield{this, &FibpPrefetchWorker::yieldHook};
   const ChapterRun r = runChapterBuild(*runtime_, spine, snapshot, generation, yield, /*chunkPages=*/1);
   const uint32_t ms = (xTaskGetTickCount() - startTicks) * portTICK_PERIOD_MS;

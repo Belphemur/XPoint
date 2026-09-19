@@ -156,8 +156,12 @@ class FibpPrefetchWorker {
 
   // Session params: pointer fields bound to worker-owned objects at begin;
   // the scalar fields are swapped under paramsMux_ on notifyGeneration and
-  // copied out at each spine start.
+  // copied out at each spine start. paramGen_ is the generation the current
+  // scalar set belongs to; it is published under paramsMux_ together with
+  // the params (gen_ alone lands earlier, to abort the in-flight session),
+  // so the worker never pairs a new generation with stale parameters.
   LayoutParams params_{};
+  uint32_t paramGen_ = 0;  // guarded by paramsMux_ (set lock-free only in begin, pre-spawn)
 
   // Worker-thread build state.
   std::unique_ptr<TtfBookRuntime> runtime_;
