@@ -86,6 +86,9 @@ namespace {
 bool xteinkClassPanel() { return gpio.isXteinkDevice() || BoardConfig::isX4Pro() || BoardConfig::isX4Classic(); }
 
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+// Cadence for re-rendering while a chapter build is delegated to the FIBP
+// prefetch worker (worker owns the build; the reader just polls for commit).
+constexpr unsigned long fibpDeferPollMs = 250;
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
@@ -1588,11 +1591,26 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
       {
         RenderLock lock;
-        if (epub && section) {
+        if (epub) {
           uint16_t backupSpine = currentSpineIndex;
-          uint16_t backupPage = section->currentPage;
-          uint16_t backupPageCount = section->pageCount;
-          section.reset();
+          uint16_t backupPage = 0;
+          uint16_t backupPageCount = 0;
+          if (section) {
+            backupPage = section->currentPage;
+            backupPageCount = section->pageCount;
+            section.reset();
+          }
+          // Close every handle into the cache dir BEFORE removeDir: the
+          // prefetch worker's own FIBP writer/reader and the TTF runtime keep
+          // ficache files open, and a single open file fails the recursive
+          // removal — leaving the whole epub_<hash> folder (ficache included)
+          // behind on SD.
+#if defined(CROSSPOINT_TTF_READER)
+          stopFibpWorker();
+          if (ttf_) {
+            ttf_->close();
+          }
+#endif
           epub->clearCache();
           epub->setupCacheDir();
           // Single-writer rule (design §4.7): the cache-clear save also goes
@@ -2002,6 +2020,19 @@ void EpubReaderActivity::onReturnFromEndOfBook() {
     nextPageNumber = 0;
     pendingPageJump = std::numeric_limits<uint16_t>::max();
   }
+}
+
+bool EpubReaderActivity::preventAutoSleep() {
+#if defined(CROSSPOINT_TTF_READER)
+  // Live background builds are real work: the input-idle governor would
+  // otherwise drop to LOW_POWER_FREQ mid-index (measured: 2.6 s/page spine
+  // builds, and a task-WDT IDLE0 starvation reboot when one computation
+  // stretch at low frequency exceeded the watchdog window). The worker
+  // self-exits once every spine has been attempted, so this is bounded.
+  if (fibpWorker_ != nullptr && fibpBegun_ && fibpWorker_->active()) return true;
+  if (ttf_ != nullptr && ttf_->sessionActive()) return true;
+#endif
+  return section != nullptr && section->isBuilding();
 }
 
 bool EpubReaderActivity::skipLoopDelay() {
@@ -2743,7 +2774,13 @@ void EpubReaderActivity::renderBookTtf() {
       LOG_DBG("ERS", "Chapter %d build delegated to prefetch worker", currentSpineIndex);
       ttfShowIndexingPopup();
     }
-    requestUpdate();
+    // The worker owns this build; re-polling with full renders every loop
+    // tick flip-flops the power governor and burns the CPU. Re-check at a
+    // slow cadence — the commit pickup below runs on the next poll.
+    if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
+      fibpDeferPollMs_ = millis();
+      requestUpdate();
+    }
     return;
   }
   if (fibpDeferred_) {
@@ -2994,6 +3031,12 @@ void EpubReaderActivity::renderBookTtf() {
   // before render() returns (the deepest path: rebuild + FT paint + chrome).
   LOG_DBG("REND", "reader render stack high-water=%u bytes",
           static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  // Heap/PSRAM budget across book renders (moved here from the generic render
+  // wrapper): catches FT-side leaks (faces, glyph backing) and DRAM pressure.
+  LOG_DBG("REND", "render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u",
+          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+          static_cast<unsigned>(ESP.getMinFreePsram()));
   memSentinelCheck("reader bw render");
 #endif
   // The B/W frame and status chrome are fully painted (and any async submit

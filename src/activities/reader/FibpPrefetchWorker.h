@@ -98,9 +98,11 @@ class FibpPrefetchWorker {
   // the reader defers its own build of that chapter to the worker.
   uint16_t buildingSpine() const { return building_.load(std::memory_order_acquire); }
 
-  // R1 stack budget: 24KB DRAM start (Adobe CFF frames are deep even for
-  // advance-only loads). Validated via the per-spine HWM telemetry.
-  static constexpr size_t kStackBytes = 24 * 1024;
+  // R1 stack budget: 32KB DRAM start (Adobe CFF frames are deep even for
+  // advance-only loads). 24KB overflowed on device: a long 93-page spine
+  // measured HWM 1792B — below the 8KB floor this telemetry is gated on.
+  // Validated via the per-spine HWM telemetry.
+  static constexpr size_t kStackBytes = 32 * 1024;
   // Heap floors mirrored from the reader's background build gate (R1 DRAM
   // budget): the worker waits instead of indexing below these.
   static constexpr size_t kMinFreeHeap = 32 * 1024;
