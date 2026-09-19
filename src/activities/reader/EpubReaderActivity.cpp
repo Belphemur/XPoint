@@ -89,6 +89,11 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 // Cadence for re-rendering while a chapter build is delegated to the FIBP
 // prefetch worker (worker owns the build; the reader just polls for commit).
 constexpr unsigned long fibpDeferPollMs = 250;
+// Grace before the reader takes a delegated build over from the worker: two
+// page builds at full speed. Past it the user would otherwise sit on the
+// Indexing popup for the rest of the spine (a 93-page spine measured 243 s
+// at low power, tens of seconds even at full speed).
+constexpr unsigned long fibpDeferTakeoverMs = 1500;
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
@@ -2771,6 +2776,7 @@ void EpubReaderActivity::renderBookTtf() {
       fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
     if (!fibpDeferred_) {
       fibpDeferred_ = true;
+      fibpDeferStartMs_ = millis();
       LOG_DBG("ERS", "Chapter %d build delegated to prefetch worker", currentSpineIndex);
       ttfShowIndexingPopup();
     }
@@ -2779,6 +2785,20 @@ void EpubReaderActivity::renderBookTtf() {
     // slow cadence — the commit pickup below runs on the next poll.
     if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
       fibpDeferPollMs_ = millis();
+      requestUpdate();
+    }
+    // A long delegated build parks the user on the Indexing popup for the
+    // whole spine (the plan builds the entered chapter last, and a claim
+    // that landed right before the page turn makes the wait the full build).
+    // After a short grace period the reader takes the spine over: stop the
+    // worker (it aborts at the next page boundary), then the normal path
+    // below resumes the worker's partial and builds only up to the target
+    // page at full speed. updateFibpWorker() respawns the worker once the
+    // session drains; it skips this spine (partial/complete now exists).
+    if (millis() - fibpDeferStartMs_ >= fibpDeferTakeoverMs) {
+      LOG_DBG("ERS", "Delegated build too slow — taking over spine %d", currentSpineIndex);
+      stopFibpWorker();
+      fibpDeferred_ = false;
       requestUpdate();
     }
     return;

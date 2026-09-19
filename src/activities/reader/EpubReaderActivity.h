@@ -219,11 +219,12 @@ class EpubReaderActivity final : public ReaderActivity {
   bool fibpBegun_ = false;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
-  bool fibpDeferred_ = false;          // a build is delegated to the worker
-  unsigned long fibpDeferPollMs_ = 0;  // last deferred-build poll (throttle)
-  int ttfSpine = -1;                   // spine the runtime's reader/session belong to
-  int ttfPage = 0;                     // chapter-local page index
-  uint32_t ttfPageCount = 0;           // pages available for the current chapter
+  bool fibpDeferred_ = false;           // a build is delegated to the worker
+  unsigned long fibpDeferPollMs_ = 0;   // last deferred-build poll (throttle)
+  unsigned long fibpDeferStartMs_ = 0;  // when the current delegation began
+  int ttfSpine = -1;                    // spine the runtime's reader/session belong to
+  int ttfPage = 0;                      // chapter-local page index
+  uint32_t ttfPageCount = 0;            // pages available for the current chapter
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
