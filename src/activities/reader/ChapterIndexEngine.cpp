@@ -18,9 +18,13 @@ ChapterPump pumpChapterChunk(ChapterIndexTarget& target, const uint16_t spineInd
   const BookStatus st = target.stepBuild(minNewPages);
   if (stOut != nullptr) *stOut = st;
   if (st == BookStatus::Ok) return target.sessionActive() ? ChapterPump::Progress : ChapterPump::Complete;
-  // A soft failure keeps the session alive and remains pumpable; only a
-  // torn-down session (no session state left for any spine) is fatal.
-  if (target.sessionFor(spineIndex) || target.sessionActive() || target.sessionDone()) return ChapterPump::Progress;
+  // A soft failure keeps the session alive and remains pumpable. A session
+  // that belongs to ANOTHER spine (the caller's session was re-seeded under
+  // it) must NOT read as progress: the caller would keep pumping the wrong
+  // chapter and report completion for a spine it never built — re-seed
+  // instead. A done session still belongs to its spine (sessionFor only
+  // compares the session spine), so the completion handshake stays covered.
+  if (target.sessionFor(spineIndex)) return ChapterPump::Progress;
   return ChapterPump::Failed;
 }
 
