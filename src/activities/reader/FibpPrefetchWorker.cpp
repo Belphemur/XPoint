@@ -167,35 +167,20 @@ bool FibpPrefetchWorker::begin(const BeginContext& ctx) {
     return false;
   }
 
-  exitedSem_ = xSemaphoreCreateBinary();
-  if (exitedSem_ == nullptr) {
-    LOG_ERR("PREF", "OOM: exit semaphore");
-    runtime_.reset();
-    teardownFaces();
-    return false;
-  }
   paramsMux_ = xSemaphoreCreateMutex();
   if (paramsMux_ == nullptr) {
     LOG_ERR("PREF", "OOM: params mutex");
-    vSemaphoreDelete(exitedSem_);
-    exitedSem_ = nullptr;
     runtime_.reset();
     teardownFaces();
     return false;
   }
-
-  running_.store(true, std::memory_order_release);
-  if (xTaskCreatePinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority, &task_, kCore) != pdPASS) {
-    LOG_ERR("PREF", "Task spawn failed");
-    running_.store(false, std::memory_order_release);
-    vSemaphoreDelete(exitedSem_);
-    exitedSem_ = nullptr;
-    task_ = nullptr;
-    runtime_.reset();
-    teardownFaces();
-    return false;
-  }
-  LOG_INF("PREF", "Worker started: %u spines, gen=%08x", static_cast<unsigned>(spineCount_), ctx.generation);
+  // No task spawn here: the worker arms itself (state + runtime) but the
+  // task starts only on the first threshold-fired notifyChapterProgress —
+  // an unconditional start would index from spine 0 before the trigger and
+  // could claim the spine the reader just entered (CodeRabbit finding).
+  // exitedSem_ stays null ("no task ever existed") so ensureTask() spawns
+  // directly on the first trigger.
+  LOG_INF("PREF", "Worker armed: %u spines, gen=%08x", static_cast<unsigned>(spineCount_), ctx.generation);
   return true;
 }
 
@@ -270,10 +255,14 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
     LOG_ERR("PREF", "Params publish timed out — worker idles until republished");
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
-  // re-index under the new generation (see ensureTask()). Re-arm the spawn
-  // dedup so the same spine can fire again under the new generation.
+  // re-index under the new generation (see ensureTask()) — but only when a
+  // threshold event had actually fired: a generation change alone must not
+  // start indexing before the 10%-remaining trigger (CodeRabbit finding).
+  // Re-arm the spawn dedup so the same spine can fire again under the new
+  // generation.
+  const bool fired = lastPrefetchFiredSpine_.load(std::memory_order_acquire) != fibp::kNoChapter;
   lastPrefetchFiredSpine_.store(fibp::kNoChapter, std::memory_order_release);
-  ensureTask();
+  if (fired) ensureTask();
 }
 
 bool FibpPrefetchWorker::cancel() {

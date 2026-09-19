@@ -3405,9 +3405,11 @@ void EpubReaderActivity::stopFibpWorker() {
 
 void EpubReaderActivity::ttfPrefetchTick() {
   if (!ttf_ || !epub || buildHeapPaused) return;
-  // Single-writer: the index-ahead worker owns spine prefetching while it
-  // runs; the legacy in-activity next-chapter build stays for inert builds.
-  if (fibpWorker_ != nullptr && fibpWorker_->active()) return;
+  // Single-writer: while the FIBP worker feature is active (begun) the worker
+  // owns next-chapter prefetching — including its 10%-remaining trigger — so
+  // the legacy in-activity build must not index ahead of it; it stays for
+  // inert builds only (stub / begin failure).
+  if (fibpWorker_ != nullptr && fibpBegun_) return;
   if (ttf_->sessionActive()) return;  // the current chapter's build wins
 
   const int nextSpine = currentSpineIndex + 1;
