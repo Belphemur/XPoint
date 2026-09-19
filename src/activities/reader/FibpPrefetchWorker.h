@@ -92,8 +92,9 @@ class FibpPrefetchWorker {
   void notifyGeneration(uint32_t generation, const LayoutParams& pods);
   // Main thread. Spawns the worker task when it is not running (initial
   // spawn and self-exit respawns — the capped window makes the task exit
-  // after each window drains, so chapter entries must respawn it).
-  void ensureTask();
+  // after each window drains, so chapter entries must respawn it). Returns
+  // true when a task is (or already was) running.
+  bool ensureTask();
   // Main thread. Stops the task (bounded join) and frees the worker's
   // faces, bytes, and runtime. Returns false when the join times out: the
   // caller must then RELEASE ownership without destroying the object (its
@@ -146,9 +147,10 @@ class FibpPrefetchWorker {
   std::atomic<bool> running_{false};
   std::atomic<uint32_t> gen_{0};
   std::atomic<uint16_t> notifiedSpine_{fibp::kNoChapter};
-  std::atomic<uint16_t> building_{fibp::kNoChapter};  // spine the task is laying out
-  SemaphoreHandle_t exitedSem_ = nullptr;             // worker gives before self-delete
-  SemaphoreHandle_t paramsMux_ = nullptr;             // guards params_ scalar swaps
+  std::atomic<uint16_t> lastPrefetchFiredSpine_{fibp::kNoChapter};  // spawn dedup (notifyChapterProgress)
+  std::atomic<uint16_t> building_{fibp::kNoChapter};                // spine the task is laying out
+  SemaphoreHandle_t exitedSem_ = nullptr;                           // worker gives before self-delete
+  SemaphoreHandle_t paramsMux_ = nullptr;                           // guards params_ scalar swaps
   TaskHandle_t task_ = nullptr;
 
   char epubPath_[BeginContext::kEpubPathCap] = {};

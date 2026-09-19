@@ -3379,8 +3379,11 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     // threshold crossing fires on the turn that crosses it, and a chapter
     // entered already past the threshold triggers immediately. The legacy
     // Section path has no FIBP worker (ttf_ is null there → inert stub), so
-    // only the TTF mirrors apply here.
-    fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage),
+    // only the TTF mirrors apply here. ttfPage's -1 chapter-transition
+    // sentinel (page not yet laid out) clamps to 0 — casting it raw would
+    // read as 65535 and fire the trigger at ~0% progress.
+    const uint16_t page = ttfPage >= 0 ? static_cast<uint16_t>(ttfPage) : 0;
+    fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), page,
                                        static_cast<uint16_t>(ttfPageCount));
   }
 }

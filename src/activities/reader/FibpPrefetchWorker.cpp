@@ -206,33 +206,41 @@ void FibpPrefetchWorker::notifyChapterProgress(const uint16_t spine, const uint1
   notifiedSpine_.store(spine, std::memory_order_release);
   // The worker applies the policy — the reader passes raw progress only.
   if (!fibp::shouldPrefetchNext(page, pageCount)) return;
+  // Dedup the spawn: notifyChapterProgress fires on every reader render once
+  // the position is inside the window, and an already-exited worker would
+  // otherwise run a full task create/destroy cycle (32 KB stack + TCB churn)
+  // per page turn. One spawn per triggered spine window; notifyGeneration
+  // re-arms this after a settings change.
+  if (spine == lastPrefetchFiredSpine_.load(std::memory_order_acquire)) return;
   // Capped window: the worker self-exits once its one-spine plan is
   // exhausted, so a trigger must be able to respawn it to index the next
   // chapter. A live worker needs no respawn — its run loop re-checks
   // notifiedSpine_ and replans on the change (page turns within the same
   // spine do not change notifiedSpine_, so no queue rebuild per page turn).
-  ensureTask();
+  if (ensureTask()) lastPrefetchFiredSpine_.store(spine, std::memory_order_release);
 }
 
-void FibpPrefetchWorker::ensureTask() {
+bool FibpPrefetchWorker::ensureTask() {
   // Respawn the worker task after a self-exit ("fully indexed") so a later
   // chapter entry or settings change can index again. When a task could
   // still exist, its exit semaphore is consumed (not replaced) first, so
   // the previous task's final give cannot land on a fresh handle
   // (timing-dependent use-after-free). A null semaphore means no task ever
-  // existed: spawn directly.
+  // existed: spawn directly. Returns true when a task is (or already was)
+  // running so callers can dedup their respawn bookkeeping.
   if (running_.load(std::memory_order_acquire) || cancel_.load(std::memory_order_acquire)) {
-    return;  // a live task keeps running (and replans); a cancelling worker never respawns
+    return running_.load(
+        std::memory_order_acquire);  // a live task keeps running (and replans); a cancelling worker never respawns
   }
   if (exitedSem_ != nullptr && xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
     LOG_DBG("PREF", "Previous worker still exiting — respawn skipped");
-    return;
+    return false;
   }
   if (exitedSem_ == nullptr) {
     exitedSem_ = xSemaphoreCreateBinary();
     if (exitedSem_ == nullptr) {
       LOG_ERR("PREF", "OOM: respawn semaphore");
-      return;
+      return false;
     }
   }
   running_.store(true, std::memory_order_release);
@@ -242,7 +250,9 @@ void FibpPrefetchWorker::ensureTask() {
     vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
     exitedSem_ = nullptr;
     task_ = nullptr;
+    return false;
   }
+  return true;
 }
 
 void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const LayoutParams& pods) {
@@ -260,7 +270,9 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
     LOG_ERR("PREF", "Params publish timed out — worker idles until republished");
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
-  // re-index under the new generation (see ensureTask()).
+  // re-index under the new generation (see ensureTask()). Re-arm the spawn
+  // dedup so the same spine can fire again under the new generation.
+  lastPrefetchFiredSpine_.store(fibp::kNoChapter, std::memory_order_release);
   ensureTask();
 }
 
