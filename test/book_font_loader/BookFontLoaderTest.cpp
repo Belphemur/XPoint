@@ -869,16 +869,26 @@ TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
   EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
   EXPECT_EQ(loader.fontFingerprint(), fpFirst);
 
-  // Cache actually served: replace the CONTENT with different bytes of the
-  // SAME size + SAME mtime (header checksum byte — still a valid, loadable
-  // sfnt). A recompute would hash the new bytes and diverge; the cache must
-  // return the recorded hash.
-  std::string modified = dejavu;
-  modified[8] = static_cast<char>(modified[8] ^ 0xFF);
-  ASSERT_NE(modified, dejavu);
-  writeFaceFile(kFacePath, modified);
+  // Head rewrite (same size + mtime): the review-hardened hit check covers
+  // the first 4 KB, so a changed header byte — still a valid, loadable sfnt
+  // — must REHASH, never serve the stale record.
+  std::string headModified = dejavu;
+  headModified[8] = static_cast<char>(headModified[8] ^ 0xFF);
+  ASSERT_NE(headModified, dejavu);
+  writeFaceFile(kFacePath, headModified);
   loader.markDirty();
-  EXPECT_EQ(loader.fontFingerprint(), fpFirst);  // hit, not rehash
+  loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
+  EXPECT_NE(loader.fontFingerprint(), fpFirst);
+  const uint32_t fpHead = loader.fontFingerprint();
+
+  // Bounded window (documented): a rewrite beyond the 4 KB head with the
+  // same size + mtime keeps the head hash — the record is served (hit).
+  std::string tailModified = headModified;
+  tailModified[6000] = static_cast<char>(tailModified[6000] ^ 0xFF);
+  writeFaceFile(kFacePath, tailModified);
+  loader.markDirty();
+  loader.getReaderFont();
+  EXPECT_EQ(loader.fontFingerprint(), fpHead);
 }
 
 TEST(BookFontLoaderFingerprintCache, MtimeChangeRehashes) {
