@@ -142,8 +142,16 @@ class EpubReaderActivity final : public ReaderActivity {
   // framebuffer is touched or another differential refresh is pushed. Atomic:
   // written by the render/loop tasks and read in ~EpubReaderActivity().
   std::atomic<bool> overlayRefreshPending{false};
+  // Set when a settle gave up after OVERLAY_REFRESH_SETTLE_TIMEOUT_MS: the
+  // panel is wedged, so later settles only single-check refreshBusy() instead
+  // of re-polling the full timeout, and blocking driver calls are skipped.
+  // Only touched under the RenderLock, hence not atomic.
+  bool overlaySettleTimedOut = false;
+  // Throttle for retryDeferredOverlayPush()'s non-blocking re-checks.
+  uint32_t overlayPushRetryMs = 0;
   void pushOverlayRefresh();
   void settleOverlayRefresh();
+  void retryDeferredOverlayPush();
   int autoTurnOption = 0;  // current auto page-turn rate index (More panel)
   std::vector<EpubReaderMenuActivity::MenuItem> moreItems;
 
