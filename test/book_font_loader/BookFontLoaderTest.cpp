@@ -861,7 +861,7 @@ TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
   EXPECT_NE(fpFirst, 0u);
   const std::string cachePath = fpCachePathFor(kFacePath);
   ASSERT_EQ(Storage.files.count(cachePath), 1u);    // cache written
-  EXPECT_EQ(Storage.files[cachePath].size(), 24u);  // fixed record
+  EXPECT_EQ(Storage.files[cachePath].size(), 28u);  // fixed record
 
   // Second load: cache HIT must reproduce the exact fingerprint.
   loader.markDirty();
@@ -941,13 +941,13 @@ TEST(BookFontLoaderFingerprintCache, CorruptCacheFileRecomputesAndRewrites) {
 
   // Corrupt the cache record (wrong length, wrong magic) → the loader must
   // fall back to the pure byte-walk, get the SAME fingerprint, and rewrite a
-  // valid 24-byte record for the next open.
+  // valid 28-byte record for the next open.
   const std::string cachePath = fpCachePathFor(kFacePath);
   Storage.files[cachePath] = "garbage!";
   loader.markDirty();
   loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
   EXPECT_EQ(loader.fontFingerprint(), fpFirst);
-  EXPECT_EQ(Storage.files[cachePath].size(), 24u);
+  EXPECT_EQ(Storage.files[cachePath].size(), 28u);
 }
 
 TEST(BookFontLoaderFingerprintCache, MtimeZeroDisablesCache) {

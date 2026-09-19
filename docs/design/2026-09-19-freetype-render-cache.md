@@ -115,7 +115,11 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
   measure `uxTaskGetStackHighWaterMark` on the 48 KB render task and the
   32 KB worker task with hinted rendering of a CFF-heavy font. If HWM drops
   below a safe floor, auto-degrade THAT face to unhinted (per-face, logged
-  LOG_ERR) rather than risking overflow. Hinted TrueType (native TT
+  LOG_ERR) rather than risking overflow. Review contract (PR #155 round 1):
+  the degrade MUST go through `setRenderOptions()` — the P1 cache flush
+  point — so no stale hinted/cached bitmap survives the mode change, and the
+  effective (post-degrade) mode participates in the fingerprint identity so
+  FIBP caches regenerate. Hinted TrueType (native TT
   interpreter) has a much smaller footprint — Safe default: Light for TT
   faces, measure for CFF.
 
@@ -130,9 +134,18 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
    (post-#153 follow-up — this branch must NOT touch FibpPrefetchWorker,
    which belongs to the open PR #153).
 
-   **As shipped ([task3], amended per the as-built rule):** the record is
-   `{magic 'BFP1', version, inSeed, hash, fileSize, mtime}` — 24 bytes, one
-   file per face (`fp_<pathhash>.bin`). Because the fingerprint CHAINS
+   **As shipped ([task3] + review round 1, amended per the as-built rule):**
+   the record is
+   `{magic 'BFP2', version, inSeed, hash, headHash, fileSize, mtime}` —
+   28 bytes, one
+   file per face (`fp_<pathhash>.bin`). `headHash` is the FNV-1a over the
+   first 4 KB of the (resident) face bytes and is verified on every hit
+   (~2% of a full walk): a replaced font changes its header with
+   near-certainty, closing the same-size/same-mtime staleness hole from
+   review. Residual accepted window: a rewrite keeping size, mtime AND the
+   entire first 4 KB identical. Swapped-card exposure is bounded the same
+   way (a foreign card carries its own consistent records; a foreign font
+   matching size+mtime+4 KB head is effectively the same content). Because the fingerprint CHAINS
    FNV-1a per slot (the incoming seed of face i+1 depends on face i), each
    record also stores the `inSeed` it was computed under and is only served
    when {fileSize, mtime, inSeed} all match the current load — a slot can
@@ -153,7 +166,10 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
    on device measurement: if the fp-cache + telemetry show SD read dominates,
    load regular sync and bold/italic/bold-italic on the idle path within the
    first seconds. Fingerprint/styleCoverage must be computed from the
-   manifest UP FRONT so the FIBP generation never changes mid-book; renders
+   manifest UP FRONT so the FIBP generation never changes mid-book; if this
+   mode is ever enabled, installing a deferred face MUST recompute the
+   effective fingerprint/style coverage and invalidate affected FIBP/
+   prerender state (review contract, PR #155 round 1). Renders
    before a style lands use the existing synthetic-bold double-strike
    fallback.
 
@@ -166,6 +182,16 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
 - Validity struct: `{ready, spineIndex, pageIndex, layoutGeneration,
   orientation}`; invalidate on any non-forward navigation, settings change,
   layout generation change, font fingerprint change.
+- Review contract (PR #155 round 1): the prerender is ONE RenderLock-
+  protected transaction that STARTS only after `waitRefreshComplete()` (the
+  panel must have finished displaying page N; painting during an active
+  refresh would expose a partial frame), publishes `ready` only after the
+  paint completes, and is consumed under the same lock. The prerender is
+  ALSO invalidated (or the current page re-rendered) on ANY full-framebuffer
+  flush outside the forward turn's own commit: the HALF-refresh cadence
+  (`ReaderUtils`), `forcedRefreshPending`, in-book popups (indexing, font
+  sheet), and power-cycle/wake events — otherwise the panel shows page N+1
+  bare (no status bar) while the reading position is still page N.
 - Do NOT prerender across a chapter boundary whose FIBP cache does not exist
   (do not fight the 10%-remaining prefetch trigger from PR #153 for the same
   work).
