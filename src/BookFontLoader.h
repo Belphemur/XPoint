@@ -118,10 +118,11 @@ class BookFontLoader {
   // Fingerprint tag folding the ACTIVE render options into the font
   // fingerprint. Runtime (not constexpr) since the effective per-face mode
   // is a probe outcome: a degrade changes advances and layout, so the tag
-  // must change with it and FIBP caches regenerate. Mixed into BOTH
-  // fingerprint sites — computeFingerprint() and the FibpPrefetchWorker
-  // parity hash — and must be extended whenever kRenderOptions gains a knob
-  // that alters glyph output.
+  // must change with it and FIBP caches regenerate. Covers hinting AND the
+  // raster mode (monochrome) — every knob that alters glyph output. Mixed
+  // into BOTH fingerprint sites — computeFingerprint() and the
+  // FibpPrefetchWorker parity hash — and must be extended whenever
+  // kRenderOptions gains a knob that alters glyph output.
   static uint32_t renderOptionsFingerprintTag();
 #endif
 

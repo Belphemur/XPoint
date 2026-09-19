@@ -107,10 +107,13 @@ const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptio
 }
 
 uint32_t BookFontLoader::renderOptionsFingerprintTag() {
-  // 3 bits per slot: HintingMode values fit in 0..4.
+  // 3 bits per slot for HintingMode (values fit 0..4), then 1 bit per slot
+  // for the raster mode (monochrome = 1-bit glyphs vs AA planes). Every knob
+  // here alters glyph output, so all fold into the FIBP identity.
   uint32_t tag = 0;
   for (uint8_t i = 0; i < 4; ++i) {
     tag |= static_cast<uint32_t>(effectiveRenderOptions_[i].hinting) << (3 * i);
+    tag |= (effectiveRenderOptions_[i].monochrome ? 1u : 0u) << (12 + i);
   }
   return tag;
 }
