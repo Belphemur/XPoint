@@ -26,8 +26,18 @@ class HalStorage {
   // Host-only stub: never linked into firmware, so the default allocator is
   // intentional; PSRAMAllocator is not available/meaningful here.
   std::map<std::string, std::string> files;
+  // Test control: path -> mtime used by HalFile::modificationTime() (0 = none).
+  std::map<std::string, uint32_t> mtimes;
   // Registered directory paths (open() returns a directory handle for them).
   std::set<std::string> dirs;
+
+  bool openFileForWrite(const char* moduleName, const char* path, HalFile& file);
+  bool openFileForWrite(const char* moduleName, const String& path, HalFile& file) {
+    return openFileForWrite(moduleName, path.c_str(), file);
+  }
+  bool remove(const char* path);
+  bool exists(const char* path) { return files.count(path) != 0; }
+  bool ensureDirectoryExists(const char*) { return true; }
 
  private:
   HalStorage() = default;

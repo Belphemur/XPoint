@@ -128,6 +128,14 @@ class BookFontLoader {
   // Public fingerprint helper — content-based, never path/mtime.
   uint32_t computeFingerprint() const;
 
+  // Fingerprint with the SD-backed per-face hash cache (P3.1): chained
+  // per-slot hashes under /.crosspoint/fonts/ keyed by face path hash, valid
+  // only when {fileSize, mtime, incoming chain seed} all match. Pure-memory
+  // fallback (computeFingerprint()) runs on any mismatch or absent cache —
+  // content semantics are identical either way. Non-const: consults and
+  // refreshes the cache.
+  uint32_t computeFingerprintCached();
+
   // FNV-1a over font bytes with a chained seed. The prefetch worker hashes
   // the same face bytes in the same slot order to derive an identical
   // fingerprint (FibpPrefetchWorker).
@@ -181,6 +189,10 @@ class BookFontLoader {
   void* fontBytes_[4] = {};         // non-owning raw pointer for fingerprinting
   uint8_t faceBytesOwner_[4] = {};  // 0=none, 1=PSRAM, 2=DRAM
   uint32_t fontFileSizes_[4] = {};
+  // Fingerprint-cache identity per slot, captured in tryLoadFace(): the
+  // face's path hash (cache key) and mtime (rehash trigger beside size).
+  uint32_t facePathHash_[4] = {};
+  uint32_t faceMtime_[4] = {};
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
   // Size must fit TtfFont's profile-scaled slot tables before any glyph

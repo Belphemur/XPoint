@@ -241,6 +241,7 @@ constexpr uint8_t kStyleBI = freeink::book::StyleBold | freeink::book::StyleItal
 void resetStorage() {
   Storage.files.clear();
   Storage.dirs.clear();
+  Storage.mtimes.clear();
 }
 
 // Registers a file entry (and every ancestor directory) in the stub storage.
@@ -802,4 +803,175 @@ TEST(FontChainMixedUpem, CmapMissFallsThroughToCoveringFace) {
   ASSERT_NE(missing, 0u) << "fixture unexpectedly covers every candidate";
   uint8_t faceFlags = 0xFF;
   EXPECT_EQ(chain.fontFor(missing, book::StyleNone, &faceFlags), &fontTail);
+}
+
+// ── P3.1 SD fingerprint cache ────────────────────────────────────────
+// Note: fontFingerprint() is documented as the PRE-fallback-tail identity
+// (ensureLoaded computes it before appendFallbackTail; the prefetch worker
+// mirrors that), so these tests never compare it against a post-tail
+// computeFingerprint() call — cached-vs-pure parity is pinned by the
+// corrupt-record recompute case instead.────
+// The chained per-face FNV-1a walk (up to 4 × 2 MB per family load) is cached
+// under /.crosspoint/fonts/ keyed by the face's path hash, valid only when
+// {fileSize, mtime, incoming chain seed} all match. These tests pin:
+// cache-hit == pure fingerprint (byte parity), mtime/size change → rehash,
+// corrupt cache file → recompute-and-rewrite, and mtime 0 → cache disabled.
+
+namespace {
+
+std::string fpCachePathFor(const char* facePath) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "/.crosspoint/fonts/fp_%08x.bin",
+                freeink::book::BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(facePath),
+                                                             std::strlen(facePath), 0x811c9dc5u));
+  return buf;
+}
+
+// One loadable DejaVu face driven through editFamily (scanFonts not needed).
+void seedLoadableFace(const std::string& bytes, const char* path, uint32_t mtime) {
+  writeFaceFile(path, bytes);
+  if (mtime != 0) Storage.mtimes[path] = mtime;
+}
+
+}  // namespace
+
+TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  resetStorage();
+  constexpr uint32_t kMtime = 0x5F123456u;
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, kMtime);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = kMtime;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  // First load: cache MISS (no file yet) → byte-walk + cache WRITE.
+  loader.markDirty();
+  const uint32_t fpFirst = loader.getReaderFont()->styleCoverage() != 0 ? loader.fontFingerprint() : 0;
+  EXPECT_NE(fpFirst, 0u);
+  const std::string cachePath = fpCachePathFor(kFacePath);
+  ASSERT_EQ(Storage.files.count(cachePath), 1u);    // cache written
+  EXPECT_EQ(Storage.files[cachePath].size(), 24u);  // fixed record
+
+  // Second load: cache HIT must reproduce the exact fingerprint.
+  loader.markDirty();
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+  EXPECT_EQ(loader.fontFingerprint(), fpFirst);
+
+  // Cache actually served: replace the CONTENT with different bytes of the
+  // SAME size + SAME mtime (header checksum byte — still a valid, loadable
+  // sfnt). A recompute would hash the new bytes and diverge; the cache must
+  // return the recorded hash.
+  std::string modified = dejavu;
+  modified[8] = static_cast<char>(modified[8] ^ 0xFF);
+  ASSERT_NE(modified, dejavu);
+  writeFaceFile(kFacePath, modified);
+  loader.markDirty();
+  EXPECT_EQ(loader.fontFingerprint(), fpFirst);  // hit, not rehash
+}
+
+TEST(BookFontLoaderFingerprintCache, MtimeChangeRehashes) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  std::string modified = dejavu;
+  modified[8] = static_cast<char>(modified[8] ^ 0xFF);  // same size, different content
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+  fam.faces[0].mtime = 0x5F123456u;
+  loader.markDirty();
+  const uint32_t fpOriginal = loader.getReaderFont()->styleCoverage() != 0 ? loader.fontFingerprint() : 0;
+  EXPECT_NE(fpOriginal, 0u);
+
+  // mtime bump with swapped content: cache must miss and rehash the NEW
+  // bytes — fingerprint follows the content, never the stale record.
+  seedLoadableFace(modified, kFacePath, 0x5FFFFFFFu);
+  fam.faces[0].mtime = 0x5FFFFFFFu;
+  loader.markDirty();
+  loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
+  const uint32_t fpNew = loader.fontFingerprint();
+  EXPECT_NE(fpNew, fpOriginal);
+}
+
+TEST(BookFontLoaderFingerprintCache, CorruptCacheFileRecomputesAndRewrites) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  resetStorage();
+  constexpr uint32_t kMtime = 0x5F123456u;
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, kMtime);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = kMtime;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  const uint32_t fpFirst = loader.getReaderFont()->styleCoverage() != 0 ? loader.fontFingerprint() : 0;
+  EXPECT_NE(fpFirst, 0u);
+
+  // Corrupt the cache record (wrong length, wrong magic) → the loader must
+  // fall back to the pure byte-walk, get the SAME fingerprint, and rewrite a
+  // valid 24-byte record for the next open.
+  const std::string cachePath = fpCachePathFor(kFacePath);
+  Storage.files[cachePath] = "garbage!";
+  loader.markDirty();
+  loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
+  EXPECT_EQ(loader.fontFingerprint(), fpFirst);
+  EXPECT_EQ(Storage.files[cachePath].size(), 24u);
+}
+
+TEST(BookFontLoaderFingerprintCache, MtimeZeroDisablesCache) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0);  // no SD timestamp
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = 0;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+  // Fail closed: without a rehash trigger there is no safe cache identity —
+  // no record may be written (or served) for that face.
+  EXPECT_EQ(Storage.files.count(fpCachePathFor(kFacePath)), 0u);
 }

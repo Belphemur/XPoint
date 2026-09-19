@@ -71,6 +71,14 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
 - Eviction: simple LRU (or generation-flush) — glyph bitmaps are
   deterministic (same FT version + same face + same options ⇒ same bytes),
   so eviction only costs a re-render, never correctness.
+  **As shipped ([task2], SDK PR Belphemur/freeink-sdk#31):** LRU with the
+  size IN the key; one deliberate deviation: NO flush on size change in
+  `ensureSize26_6()` — the key already separates sizes, and the RasterFont
+  contract requires the last `rasterize()` bitmap to stay valid across a
+  size-changing `glyphBounds()`/`advance()` (the existing `test_ftfont`
+  case pins this; a flush would free live coverage). Flush points:
+  `setRenderOptions()`, `deinit()`/re-`init()` (glyph IDs are face-local),
+  budget shrink.
 - `rasterize()` contract change (documented, compatible): the returned
   bitmap stays valid until eviction or the next `rasterize()` on this face —
   strictly longer-lived than today's "until next rasterize()". All current
@@ -121,6 +129,24 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
    open. The FibpPrefetchWorker's parity hash can later reuse the same cache
    (post-#153 follow-up — this branch must NOT touch FibpPrefetchWorker,
    which belongs to the open PR #153).
+
+   **As shipped ([task3], amended per the as-built rule):** the record is
+   `{magic 'BFP1', version, inSeed, hash, fileSize, mtime}` — 24 bytes, one
+   file per face (`fp_<pathhash>.bin`). Because the fingerprint CHAINS
+   FNV-1a per slot (the incoming seed of face i+1 depends on face i), each
+   record also stores the `inSeed` it was computed under and is only served
+   when {fileSize, mtime, inSeed} all match the current load — a slot can
+   never poison the chain after a predecessor's file changed. `scanFonts`
+   now populates `FontFaceInfo::mtime` from `HalFile::modificationTime()`
+   (it was declared but never set); a face with no SD timestamp (mtime 0)
+   bypasses the cache entirely (fail closed: size alone cannot detect a
+   same-size rewrite). Corrupt records (wrong length/magic/version) are
+   recomputed and rewritten from a clean slate. Parity with the pure
+   in-memory walk is host-tested (`BookFontLoaderFingerprintCache.*`),
+   including the documented pre-fallback-tail contract of
+   `fontFingerprint()`. The post-#153 note above stands: PR #153 is now
+   MERGED to develop, the worker lives in `develop`, and it still belongs
+   to a FOLLOW-UP campaign — this branch does not touch it.
 2. **Keep the resident-bytes model on PSRAM boards** (8 MB pool affords it);
    do NOT switch to `initStream` in this campaign — measure first.
 3. **Deferred non-regular style loading** — optional, OFF by default, gated

@@ -91,6 +91,90 @@ static uint32_t fontFNV1a(const uint8_t* data, size_t len, uint32_t seed = 0x811
   return h;
 }
 
+// ── SD fingerprint cache (P3.1) ───────────────────────────────────────────
+// One 24-byte record per face under /.crosspoint/fonts/, keyed by the face's
+// path hash: {magic, version, inSeed, hash, fileSize, mtime}. `hash` is the
+// CHAINED FNV-1a over the face bytes with incoming seed `inSeed`, so it is
+// only served when the recorded seed matches the running chain — a face's
+// entry can never poison the fingerprint after a predecessor changed.
+// mtime is only a rehash trigger, never a hash input (design P3.1).
+struct FingerprintCacheRecord {
+  uint32_t magic;    // 'BFP1'
+  uint32_t version;  // 1
+  uint32_t inSeed;
+  uint32_t hash;
+  uint32_t fileSize;
+  uint32_t mtime;
+};
+static_assert(sizeof(FingerprintCacheRecord) == 24, "fixed-size SD record");
+static_assert(alignof(FingerprintCacheRecord) <= alignof(uint32_t), "no alignment surprises");
+constexpr uint32_t kFingerprintCacheMagic = 0x42465031u;  // 'BFP1'
+constexpr uint32_t kFingerprintCacheVersion = 1;
+constexpr size_t kFingerprintCacheBytes = sizeof(FingerprintCacheRecord);
+
+// Cache file path for a face's path hash. Fixed cap: 8 hex digits + dir.
+void fingerprintCachePath(uint32_t pathHash, char (&out)[64]) {
+  snprintf(out, sizeof(out), "/.crosspoint/fonts/fp_%08x.bin", static_cast<unsigned>(pathHash));
+}
+
+// Unaligned-buffer-safe record decode (RISC-V alignment rule): fields are
+// uint32 at 4-byte stride, so memcpy each instead of casting the buffer.
+bool decodeFingerprintRecord(const uint8_t* buf, size_t len, FingerprintCacheRecord& rec) {
+  if (len != kFingerprintCacheBytes) return false;
+  memcpy(&rec, buf, kFingerprintCacheBytes);  // 24-byte POD at a heap-aligned buffer start
+  return rec.magic == kFingerprintCacheMagic && rec.version == kFingerprintCacheVersion;
+}
+
+// Returns true + fills `hash` when a valid cache record matches the face's
+// current {fileSize, mtime} and the chain's incoming seed. mtime 0 (missing
+// SD timestamp) disables the cache for that face: size alone cannot tell a
+// rewritten file apart, so fail closed and recompute.
+bool BookFontLoader_readFingerprintCache(uint32_t pathHash, uint32_t fileSize, uint32_t mtime, uint32_t inSeed,
+                                         uint32_t& hash) {
+  if (mtime == 0) return false;
+  char path[64];
+  fingerprintCachePath(pathHash, path);
+  HalFile file;
+  if (!Storage.openFileForRead("BFNT", path, file)) return false;
+  if (file.fileSize() != kFingerprintCacheBytes) return false;  // corrupt/oversize → recompute
+  uint8_t buf[kFingerprintCacheBytes];
+  if (file.read(buf, kFingerprintCacheBytes) != static_cast<int>(kFingerprintCacheBytes)) return false;
+  FingerprintCacheRecord rec{};
+  if (!decodeFingerprintRecord(buf, kFingerprintCacheBytes, rec)) return false;
+  if (rec.fileSize != fileSize || rec.mtime != mtime || rec.inSeed != inSeed) return false;
+  hash = rec.hash;
+  return true;
+}
+
+// Writes the record. Fixed 24-byte content; a stale oversized file from a
+// corrupt previous write is removed first (close-before-remove per the
+// DESTRUCTOR_CLOSES_FILE rule). Best effort — a failed write only costs the
+// next open one byte-walk rehash.
+void BookFontLoader_writeFingerprintCache(uint32_t pathHash, uint32_t fileSize, uint32_t mtime, uint32_t inSeed,
+                                          uint32_t hash) {
+  if (mtime == 0) return;  // cache disabled without a usable rehash trigger
+  char path[64];
+  fingerprintCachePath(pathHash, path);
+  if (Storage.exists(path)) {
+    // Oversize leftovers would keep the read gate failing forever; rewrite
+    // from a clean slate instead.
+    HalFile check;
+    if (Storage.openFileForRead("BFNT", path, check) && check.fileSize() != kFingerprintCacheBytes) {
+      Storage.remove(path);
+    }
+  }
+  Storage.ensureDirectoryExists("/.crosspoint/fonts");
+  HalFile file;
+  if (!Storage.openFileForWrite("BFNT", path, file)) {
+    LOG_DBG("BFNT", "fp-cache write open failed for %s", path);
+    return;
+  }
+  const FingerprintCacheRecord rec{kFingerprintCacheMagic, kFingerprintCacheVersion, inSeed, hash, fileSize, mtime};
+  if (file.write(&rec, kFingerprintCacheBytes) != kFingerprintCacheBytes) {
+    LOG_DBG("BFNT", "fp-cache write short for %s", path);
+  }
+}
+
 // Read a font file's bytes via HalStorage into a caller-provided buffer.
 // Returns bytes read, or 0 on failure.
 static uint32_t readFontFile(const char* path, uint8_t* buf, uint32_t bufSz) {
@@ -255,6 +339,8 @@ void BookFontLoader::ensureLoaded() {
     fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
+    facePathHash_[i] = 0;
+    faceMtime_[i] = 0;
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
   }
@@ -301,7 +387,7 @@ void BookFontLoader::ensureLoaded() {
       // Face skipped (too large, invalid sfnt, OOM); continue with fewer faces.
     }
   }
-  fingerprint_ = computeFingerprint();
+  fingerprint_ = computeFingerprintCached();
   memSentinelCheck("font ensureLoaded");
   appendFallbackTail(chain_);
   loaded_ = true;
@@ -356,6 +442,8 @@ void BookFontLoader::releaseResidentCaches() {
     fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
+    facePathHash_[i] = 0;
+    faceMtime_[i] = 0;
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
   }
@@ -422,6 +510,36 @@ uint32_t BookFontLoader::computeFingerprint() const {
   h ^= 0x46545531u;
   // Render-affecting options (hinting) participate in cache identity —
   // see kRenderOptions / renderOptionsFingerprintTag().
+  h ^= renderOptionsFingerprintTag();
+#endif
+  return h;
+}
+
+uint32_t BookFontLoader::computeFingerprintCached() {
+  // Same content semantics as computeFingerprint(), but each slot's chained
+  // byte-walk is served from (and refreshed into) the SD cache keyed by the
+  // face's path hash. The incoming chain seed is part of every cache record,
+  // so a slot can never be served for a different predecessor chain (e.g.
+  // after slot 0's file was replaced). Faces without an SD mtime bypass the
+  // cache entirely — readFingerprintCache fails closed for them.
+  bool anyLoaded = false;
+  uint32_t h = 0x811c9dc5;
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
+      anyLoaded = true;
+      const uint32_t inSeed = h;
+      uint32_t slotHash = 0;
+      if (!BookFontLoader_readFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, slotHash)) {
+        slotHash = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]), fontFileSizes_[i], inSeed);
+        BookFontLoader_writeFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, slotHash);
+      }
+      h = slotHash;
+    }
+  }
+  if (!anyLoaded) return 0;
+  h ^= static_cast<uint32_t>(chain_.styleCoverage());
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  h ^= 0x46545531u;  // backend tag, mirrors computeFingerprint()
   h ^= renderOptionsFingerprintTag();
 #endif
   return h;
@@ -531,6 +649,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     FamilyInfo fam;                              // ~940B manifest row — heap, reset per family
     uint32_t soloSize = 0;
     uint32_t tokenlessSize = 0;
+    uint32_t soloMtime = 0;
+    uint32_t tokenlessMtime = 0;
   };
   // sizeof() on the decayed pointers would measure the pointer, not the
   // buffer — the walk uses the struct's member sizes everywhere.
@@ -601,15 +721,19 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     char* const tokenlessLower = scratch->tokenlessLower;
     uint32_t& soloSize = scratch->soloSize;
     uint32_t& tokenlessSize = scratch->tokenlessSize;
+    uint32_t& soloMtime = scratch->soloMtime;
+    uint32_t& tokenlessMtime = scratch->tokenlessMtime;
     // These candidates persist in the shared scratch across the outer family
     // loop; reset them so one family's Regular candidates cannot leak into
     // the next family's post-loop resolution.
     soloFile[0] = '\0';
     soloLower[0] = '\0';
     soloSize = 0;
+    soloMtime = 0;
     tokenlessFile[0] = '\0';
     tokenlessLower[0] = '\0';
     tokenlessSize = 0;
+    tokenlessMtime = 0;
     uint8_t candidateCount = 0;
 
     while (true) {
@@ -628,6 +752,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       if (candidateCount == 1) {
         snprintf(soloFile, kFileNameCap, "%s", fileName);
         soloSize = entry.fileSize();
+        soloMtime = entry.modificationTime();
         soloLower[0] = '\0';
       }
 
@@ -650,6 +775,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           snprintf(tokenlessFile, kFileNameCap, "%s", fileName);
           snprintf(tokenlessLower, kLowerCap, "%s", lower);
           tokenlessSize = entry.fileSize();
+          tokenlessMtime = entry.modificationTime();
         }
         continue;
       }
@@ -685,6 +811,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       snprintf(face.file, sizeof(face.file), "%s", newFile);
       face.styleFlags = style;
       face.fileSize = entry.fileSize();
+      face.mtime = entry.modificationTime();
     }
 
     if (fam.faceCount == 0) {
@@ -699,6 +826,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           continue;
         }
         face.fileSize = soloSize;
+        face.mtime = soloMtime;
         face.styleFlags = StyleNone;
       } else if (tokenlessLower[0] != '\0') {
         // Multiple no-token candidates: lexicographically-first becomes Regular.
@@ -712,6 +840,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           continue;
         }
         face.fileSize = tokenlessSize;
+        face.mtime = tokenlessMtime;
         face.styleFlags = StyleNone;
       } else {
         continue;  // empty / unparseable family
@@ -745,6 +874,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
             continue;
           }
           face.fileSize = tokenlessSize;
+          face.mtime = tokenlessMtime;
           face.styleFlags = StyleNone;
         }
       } else if (!hasRegular) {
@@ -776,6 +906,13 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
 // fontPsramBytes_, fontDramBytes_, fontBytes_, arenas_, remainingBudget_).
 
 bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain) {
+  // Fingerprint-cache identity (P3.1): path hash is the SD cache key, mtime
+  // the rehash trigger beside size. Captured up front; a later failure in
+  // this slot leaves the identity set but harmless (no fontBytes_ = the slot
+  // is skipped by the fingerprint walk).
+  facePathHash_[faceIdx] = fontFNV1a(reinterpret_cast<const uint8_t*>(fi.file), strlen(fi.file));
+  faceMtime_[faceIdx] = fi.mtime;
+
   // DRAM-tier size gate: skip oversized files (design §3.3). PSRAM-backed
   // boards bypass this DRAM budget; the PSRAM tier has its own guard below.
   if (HalMemory::getPsramHeap().totalBytes == 0) {

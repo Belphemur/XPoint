@@ -15,6 +15,8 @@ class HalFile {
   const std::string* path = nullptr;
   // Directory handle state (scanFonts two-level walk).
   bool dir = false;
+  // Set by openFileForWrite(): write() appends into the fake map entry.
+  bool writable = false;
   HalStorage* storage = nullptr;
 
   bool isOpen() const { return data != nullptr || dir; }
@@ -22,6 +24,8 @@ class HalFile {
   void close() {
     data = nullptr;
     dir = false;
+    writable = false;
+    path = nullptr;
   }
 
   size_t fileSize() { return data ? data->size() : 0; }
@@ -33,6 +37,8 @@ class HalFile {
     return static_cast<int>(n);
   }
   int read() { return -1; }
+  size_t write(const void* buf, size_t count);  // defined in Stubs.cpp
+  uint32_t modificationTime();                  // defined in Stubs.cpp
 
   bool isDirectory() const { return dir; }
   size_t getName(char* name, size_t len);
