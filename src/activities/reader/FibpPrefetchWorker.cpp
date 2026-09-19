@@ -322,8 +322,12 @@ void FibpPrefetchWorker::run() {
       queueCursor_ = 0;
     }
     if (queue_.empty()) {
-      replan(gen);
-      lastNotifiedSeen = notifiedSpine_.load(std::memory_order_acquire);
+      // The returned snapshot is the spine the plan was built from — using
+      // it for lastNotifiedSeen closes the race where a notify lands between
+      // the plan's internal read and a second read here: with the one-spine
+      // cap that mismatch made the worker exit on an obsolete plan and miss
+      // the new chapter's successor entirely.
+      lastNotifiedSeen = replan(gen);
     }
     uint16_t spine = fibp::kNoChapter;
     while (queueCursor_ < queue_.size()) {
@@ -353,8 +357,8 @@ void FibpPrefetchWorker::run() {
       // Otherwise done: fully indexed (attempted) → release the stack (R1).
       const uint16_t notified = notifiedSpine_.load(std::memory_order_acquire);
       if (notified != lastNotifiedSeen) {
-        replan(gen);
-        lastNotifiedSeen = notified;
+        // Same single-snapshot rule: plan from and record the same value.
+        lastNotifiedSeen = replan(gen);
         continue;
       }
       break;
@@ -395,17 +399,21 @@ void FibpPrefetchWorker::run() {
   vTaskDelete(nullptr);
 }
 
-void FibpPrefetchWorker::replan(const uint32_t generation) {
+uint16_t FibpPrefetchWorker::replan(const uint32_t generation) {
   // The generation argument documents the plan's context; the queue holds
-  // spine indices only (the per-spine work re-reads the atomic).
+  // spine indices only (the per-spine work re-reads the atomic). The
+  // notified spine is read ONCE here and returned: callers use the returned
+  // value for their change detection so plan and comparison share a
+  // snapshot.
   (void)generation;
   // Capped window: the next chapter only (kPrefetchLookaheadSpines ahead of
   // the entered one). buildQueue's cap parameter keeps the window testable.
+  const uint16_t notified = notifiedSpine_.load(std::memory_order_acquire);
   queue_.resize(fibp::kPrefetchLookaheadSpines);
-  const uint16_t n = fibp::buildQueue(spineCount_, notifiedSpine_.load(std::memory_order_acquire), queue_.data(),
-                                      fibp::kPrefetchLookaheadSpines);
+  const uint16_t n = fibp::buildQueue(spineCount_, notified, queue_.data(), fibp::kPrefetchLookaheadSpines);
   queue_.resize(n);
   queueCursor_ = 0;
+  return notified;
 }
 
 bool FibpPrefetchWorker::spineHasCache(const uint16_t spine, const uint32_t generation) {

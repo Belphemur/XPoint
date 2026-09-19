@@ -125,7 +125,11 @@ class FibpPrefetchWorker {
   // Runs one spine's build session to completion (or the next cancel /
   // generation change). Returns the run outcome.
   ChapterRun buildSpine(uint16_t spine, uint32_t generation);
-  void replan(uint32_t generation);
+  // Replans the queue from the current notified spine (capped window) and
+  // returns the spine snapshot the plan was built from — callers must use it
+  // for their notified-spine change detection so plan and comparison share
+  // one read.
+  uint16_t replan(uint32_t generation);
   static bool yieldHook(void* ctx, uint16_t pagesBuilt);
 
   static constexpr UBaseType_t kPriority = 1;
