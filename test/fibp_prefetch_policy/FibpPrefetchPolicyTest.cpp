@@ -95,3 +95,43 @@ TEST(ShouldStopChunkTest, StopOnCancelOrGenerationBump) {
   EXPECT_FALSE(fibp::shouldStopChunk(false, 0, 0));
   EXPECT_TRUE(fibp::shouldStopChunk(false, 0, 1));
 }
+
+// ── Progress trigger (owner directive, 2026-09-19) ──────────────────────────
+
+TEST(ShouldPrefetchNextTest, NeverTriggersWithUnknownPageCount) { EXPECT_FALSE(fibp::shouldPrefetchNext(0, 0)); }
+
+TEST(ShouldPrefetchNextTest, NotBeforeTheThreshold) {
+  // 200-page chapter: 10% = 20 pages. Early pages never trigger.
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 200));
+  EXPECT_FALSE(fibp::shouldPrefetchNext(90, 200));
+  EXPECT_FALSE(fibp::shouldPrefetchNext(170, 200));
+  // 179 remaining 21 > 20 → no; 180 remaining 20 == 20 → yes (≤ 10%).
+  EXPECT_FALSE(fibp::shouldPrefetchNext(179, 200));
+  EXPECT_TRUE(fibp::shouldPrefetchNext(180, 200));
+  EXPECT_TRUE(fibp::shouldPrefetchNext(199, 200));
+}
+
+TEST(ShouldPrefetchNextTest, TriggersExactlyAtTenPercent) {
+  // 100-page chapter: threshold 10. With 0-based pages, page 89 is the 90th
+  // page read → remaining 11 > 10 (no); page 90 → remaining 10 = the exact
+  // 10% boundary → fires.
+  EXPECT_FALSE(fibp::shouldPrefetchNext(88, 100));
+  EXPECT_FALSE(fibp::shouldPrefetchNext(89, 100));
+  EXPECT_TRUE(fibp::shouldPrefetchNext(90, 100));
+}
+
+TEST(ShouldPrefetchNextTest, CeilKeepsOnePageRemainingFiringOnTinyChapters) {
+  // ceil keeps small chapters usable: any pageCount with a single page left
+  // triggers, even where 10% < 1 page.
+  EXPECT_TRUE(fibp::shouldPrefetchNext(4, 5));   // remaining 1; ceil(0.5)=1
+  EXPECT_FALSE(fibp::shouldPrefetchNext(3, 5));  // remaining 2 > 1
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));   // single-page chapter: fires at entry
+  EXPECT_TRUE(fibp::shouldPrefetchNext(2, 3));   // remaining 1; ceil(0.3)=1
+}
+
+TEST(ShouldPrefetchNextTest, EnterPastThresholdFiresImmediately) {
+  // Entering a chapter already inside the last 10% (resume/short chapters)
+  // triggers at page 0 of the position report — page here is the entry page.
+  EXPECT_TRUE(fibp::shouldPrefetchNext(95, 100));
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));
+}

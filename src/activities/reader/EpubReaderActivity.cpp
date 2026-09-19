@@ -3373,7 +3373,16 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     fibpWorker_->notifyGeneration(generation, params);
     fibpNotifiedGen_ = generation;
   }
-  if (fibpBegun_) fibpWorker_->notifyChapterEntered(static_cast<uint16_t>(currentSpineIndex));
+  if (fibpBegun_) {
+    // Raw progress only — the worker applies the 10%-remaining policy. This
+    // runs on every reader render (page turns included), so a mid-chapter
+    // threshold crossing fires on the turn that crosses it, and a chapter
+    // entered already past the threshold triggers immediately. The legacy
+    // Section path has no FIBP worker (ttf_ is null there → inert stub), so
+    // only the TTF mirrors apply here.
+    fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage),
+                                       static_cast<uint16_t>(ttfPageCount));
+  }
 }
 
 void EpubReaderActivity::stopFibpWorker() {

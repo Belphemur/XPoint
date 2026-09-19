@@ -79,9 +79,12 @@ class FibpPrefetchWorker {
   // Returns false (worker inert, sync path unchanged) when the family is
   // unknown, a face fails, or the task cannot start.
   bool begin(const BeginContext& ctx);
-  // Main thread. Reorders the queue so the chapter after `spine` is built
-  // next (applied lazily between spines).
-  void notifyChapterEntered(uint16_t spine);
+  // Main thread. Reports the reader's current position (0-based page inside
+  // the spine, pageCount total pages of that chapter). The WORKER applies
+  // the 10%-remaining policy (fibp::shouldPrefetchNext): the next chapter is
+  // enqueued only when the position crosses the threshold — page turns
+  // inside the same spine store the position but never rebuild the queue.
+  void notifyChapterProgress(uint16_t spine, uint16_t page, uint16_t pageCount);
   // Main thread. Settings/geometry changed: the worker aborts any in-flight
   // session at the next chunk boundary and re-seeds the queue under the new
   // generation (scalar params are swapped under paramsMux_).
@@ -183,7 +186,7 @@ class FibpPrefetchWorker {
 #else
   // Inert stub (single-core / PSRAM-less / stb-rollback builds).
   bool begin(const BeginContext&) { return false; }
-  void notifyChapterEntered(uint16_t) {}
+  void notifyChapterProgress(uint16_t spine, uint16_t page, uint16_t pageCount) {}
   void notifyGeneration(uint32_t, const LayoutParams&) {}
   bool cancel() { return true; }
   bool active() const { return false; }

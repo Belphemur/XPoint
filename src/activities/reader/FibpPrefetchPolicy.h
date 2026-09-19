@@ -19,9 +19,24 @@ constexpr uint16_t kNoChapter = 0xFFFF;
 // indexes. 1 = next chapter only — whole-book prefetching measured as
 // device-soak pathology (SD-write pressure through long background runs, and
 // a task-watchdog abort on a 177-spine book) and burns battery/SD wear
-// indexing chapters the user may never open. The window slides on
-// notifyChapterEntered.
+// indexing chapters the user may never open. The window is (re)planned when
+// the position trigger below fires for a new spine.
 constexpr uint16_t kPrefetchLookaheadSpines = 1;
+
+// Position trigger (owner directive, 2026-09-19): the next chapter is
+// enqueued only once the reader has consumed all but the last
+// ceil(pageCount * kPrefetchRemainingPercent / 100) pages of the CURRENT
+// chapter — building chapters that may never be read wastes SD writes and
+// battery. page is the 0-based current page inside the chapter; the ceil
+// keeps the 1-page-remaining edge firing even for tiny page counts.
+// pageCount == 0 (unknown) never triggers.
+constexpr uint8_t kPrefetchRemainingPercent = 10;
+inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount) {
+  if (pageCount == 0) return false;
+  const uint32_t thresholdPages = (static_cast<uint32_t>(pageCount) * kPrefetchRemainingPercent + 99) / 100;
+  const uint32_t remaining = pageCount > page ? static_cast<uint32_t>(pageCount - page) : 0;
+  return remaining <= thresholdPages;
+}
 
 // R4 queue order: the chapter AFTER the entered one first, then onward
 // (wrapping to the book start, ending at the entered chapter). With no
