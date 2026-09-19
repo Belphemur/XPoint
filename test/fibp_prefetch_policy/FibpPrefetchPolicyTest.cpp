@@ -56,6 +56,29 @@ TEST(BuildQueueTest, CapLimitsOutput) {
   EXPECT_EQ(buf, (std::array<uint16_t, 3>{3, 4, 5}));
 }
 
+TEST(BuildQueueTest, CappedWindowIsOnlyTheNextSpine) {
+  // The prefetch window is capped at kPrefetchLookaheadSpines: the plan
+  // never contains a spine more than that far ahead of the entered one
+  // (ring distance), and the queue holds exactly one entry for a non-empty
+  // book.
+  const auto q = plan(10, 3, fibp::kPrefetchLookaheadSpines);
+  EXPECT_EQ(q, (std::vector<uint16_t>{4}));
+  ASSERT_EQ(q.size(), fibp::kPrefetchLookaheadSpines);
+  for (const uint16_t spine : q) {
+    const uint16_t ahead = static_cast<uint16_t>((spine + 10 - 3) % 10);
+    EXPECT_LE(ahead, fibp::kPrefetchLookaheadSpines);
+  }
+}
+
+TEST(BuildQueueTest, WindowSlidesOnNotify) {
+  // Sliding the window = re-planning with the new notified spine; the plan
+  // always names exactly the next chapter.
+  EXPECT_EQ(plan(5, 0, fibp::kPrefetchLookaheadSpines), (std::vector<uint16_t>{1}));
+  EXPECT_EQ(plan(5, 1, fibp::kPrefetchLookaheadSpines), (std::vector<uint16_t>{2}));
+  EXPECT_EQ(plan(5, 3, fibp::kPrefetchLookaheadSpines), (std::vector<uint16_t>{4}));
+  EXPECT_EQ(plan(5, 4, fibp::kPrefetchLookaheadSpines), (std::vector<uint16_t>{0}));  // tail wraps to head
+}
+
 TEST(BuildQueueTest, DegenerateInputs) {
   std::array<uint16_t, 4> buf{};
   EXPECT_EQ(fibp::buildQueue(0, 0, buf.data(), 4), 0u);  // no spines

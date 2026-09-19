@@ -15,6 +15,14 @@ namespace fibp {
 // "No chapter entered yet" sentinel for the queue planner.
 constexpr uint16_t kNoChapter = 0xFFFF;
 
+// Prefetch window: how many spines AHEAD of the entered chapter the worker
+// indexes. 1 = next chapter only — whole-book prefetching measured as
+// device-soak pathology (SD-write pressure through long background runs, and
+// a task-watchdog abort on a 177-spine book) and burns battery/SD wear
+// indexing chapters the user may never open. The window slides on
+// notifyChapterEntered.
+constexpr uint16_t kPrefetchLookaheadSpines = 1;
+
 // R4 queue order: the chapter AFTER the entered one first, then onward
 // (wrapping to the book start, ending at the entered chapter). With no
 // chapter entered yet, the spine order is 0..spineCount-1. Writes at most

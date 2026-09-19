@@ -87,6 +87,10 @@ class FibpPrefetchWorker {
   // generation (scalar params are swapped under paramsMux_).
   // Respawns the task when it had already finished ("fully indexed").
   void notifyGeneration(uint32_t generation, const LayoutParams& pods);
+  // Main thread. Spawns the worker task when it is not running (initial
+  // spawn and self-exit respawns — the capped window makes the task exit
+  // after each window drains, so chapter entries must respawn it).
+  void ensureTask();
   // Main thread. Stops the task (bounded join) and frees the worker's
   // faces, bytes, and runtime. Returns false when the join times out: the
   // caller must then RELEASE ownership without destroying the object (its

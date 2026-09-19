@@ -155,7 +155,7 @@ bool FibpPrefetchWorker::begin(const BeginContext& ctx) {
   params_.font = &chain_;
 
   queue_.clear();
-  queue_.reserve(spineCount_);
+  queue_.reserve(fibp::kPrefetchLookaheadSpines);
   failed_.assign(spineCount_, 0);
   queueCursor_ = 0;
 
@@ -201,6 +201,42 @@ bool FibpPrefetchWorker::begin(const BeginContext& ctx) {
 
 void FibpPrefetchWorker::notifyChapterEntered(const uint16_t spine) {
   notifiedSpine_.store(spine, std::memory_order_release);
+  // Capped window: the worker self-exits once its one-spine plan is
+  // exhausted, so a chapter entry must be able to respawn it to index the
+  // new next chapter. A live worker needs no respawn — its run loop
+  // re-checks notifiedSpine_ and replans on the change.
+  ensureTask();
+}
+
+void FibpPrefetchWorker::ensureTask() {
+  // Respawn the worker task after a self-exit ("fully indexed") so a later
+  // chapter entry or settings change can index again. When a task could
+  // still exist, its exit semaphore is consumed (not replaced) first, so
+  // the previous task's final give cannot land on a fresh handle
+  // (timing-dependent use-after-free). A null semaphore means no task ever
+  // existed: spawn directly.
+  if (running_.load(std::memory_order_acquire) || cancel_.load(std::memory_order_acquire)) {
+    return;  // a live task keeps running (and replans); a cancelling worker never respawns
+  }
+  if (exitedSem_ != nullptr && xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
+    LOG_DBG("PREF", "Previous worker still exiting — respawn skipped");
+    return;
+  }
+  if (exitedSem_ == nullptr) {
+    exitedSem_ = xSemaphoreCreateBinary();
+    if (exitedSem_ == nullptr) {
+      LOG_ERR("PREF", "OOM: respawn semaphore");
+      return;
+    }
+  }
+  running_.store(true, std::memory_order_release);
+  if (xTaskCreatePinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority, &task_, kCore) != pdPASS) {
+    LOG_ERR("PREF", "Task respawn failed");
+    running_.store(false, std::memory_order_release);
+    vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
+    exitedSem_ = nullptr;
+    task_ = nullptr;
+  }
 }
 
 void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const LayoutParams& pods) {
@@ -218,32 +254,8 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
     LOG_ERR("PREF", "Params publish timed out — worker idles until republished");
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
-  // re-index under the new generation. When a task could still exist, its
-  // exit semaphore is consumed (not replaced) first, so the previous task's
-  // final give cannot land on a fresh handle (timing-dependent use-after-
-  // free). A null semaphore means no task ever existed: spawn directly.
-  if (!running_.load(std::memory_order_acquire) && !cancel_.load(std::memory_order_acquire)) {
-    if (exitedSem_ != nullptr && xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
-      LOG_DBG("PREF", "Previous worker still exiting — respawn skipped");
-      return;
-    }
-    if (exitedSem_ == nullptr) {
-      exitedSem_ = xSemaphoreCreateBinary();
-      if (exitedSem_ == nullptr) {
-        LOG_ERR("PREF", "OOM: respawn semaphore");
-        return;
-      }
-    }
-    running_.store(true, std::memory_order_release);
-    if (xTaskCreatePinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority, &task_, kCore) !=
-        pdPASS) {
-      LOG_ERR("PREF", "Task respawn failed");
-      running_.store(false, std::memory_order_release);
-      vSemaphoreDelete(exitedSem_);  // restore the invariant: no sem ⇒ no task
-      exitedSem_ = nullptr;
-      task_ = nullptr;
-    }
-  }
+  // re-index under the new generation (see ensureTask()).
+  ensureTask();
 }
 
 bool FibpPrefetchWorker::cancel() {
@@ -387,9 +399,12 @@ void FibpPrefetchWorker::replan(const uint32_t generation) {
   // The generation argument documents the plan's context; the queue holds
   // spine indices only (the per-spine work re-reads the atomic).
   (void)generation;
-  queue_.resize(spineCount_);
-  fibp::buildQueue(spineCount_, notifiedSpine_.load(std::memory_order_acquire), queue_.data(),
-                   static_cast<uint16_t>(spineCount_));
+  // Capped window: the next chapter only (kPrefetchLookaheadSpines ahead of
+  // the entered one). buildQueue's cap parameter keeps the window testable.
+  queue_.resize(fibp::kPrefetchLookaheadSpines);
+  const uint16_t n = fibp::buildQueue(spineCount_, notifiedSpine_.load(std::memory_order_acquire), queue_.data(),
+                                      fibp::kPrefetchLookaheadSpines);
+  queue_.resize(n);
   queueCursor_ = 0;
 }
 
