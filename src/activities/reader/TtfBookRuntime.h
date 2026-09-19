@@ -28,6 +28,7 @@
 #include <cache/PageCache.h>
 #include <layout/ChapterLayout.h>
 
+#include "ChapterIndexEngine.h"
 #include "adapters/SdCardBookSource.h"
 #include "adapters/SdCardCacheStorage.h"
 
@@ -36,7 +37,7 @@ class GfxRenderer;
 namespace freeink {
 namespace book {
 
-class TtfBookRuntime {
+class TtfBookRuntime : public ChapterIndexTarget {
  public:
   // Arena sizing (PSRAM-only, design §3.3). Scratch covers the STANDARD
   // profile ChapterLayout peak (~152KB measured) plus writer index chunks
@@ -79,13 +80,13 @@ class TtfBookRuntime {
   // Chapter build session for one spine. Begins the writer + layout session;
   // the first step() emits the first page. Suspends (partial commit) on
   // abort; finish() (full commit) when the session completes.
-  BookStatus beginChapterSession(uint16_t spineIndex, const LayoutParams& params, uint32_t generation);
-  BookStatus stepBuild(uint16_t minNewPages);
-  bool finishSession();  // session done: commit final cache file (false = SD failure)
-  void abortSession();   // suspend partial + tear down (arena reset included)
-  bool sessionFor(uint16_t spineIndex) const { return sessionSpine_ == spineIndex; }
-  bool sessionActive() const { return sessionSpine_ != kNoSpine && session_.active(); }
-  bool sessionDone() const { return sessionSpine_ != kNoSpine && session_.done(); }
+  BookStatus beginChapterSession(uint16_t spineIndex, const LayoutParams& params, uint32_t generation) override;
+  BookStatus stepBuild(uint16_t minNewPages) override;
+  bool finishSession();          // session done: commit final cache file (false = SD failure)
+  void abortSession() override;  // suspend partial + tear down (arena reset included)
+  bool sessionFor(uint16_t spineIndex) const override { return sessionSpine_ == spineIndex; }
+  bool sessionActive() const override { return sessionSpine_ != kNoSpine && session_.active(); }
+  bool sessionDone() const override { return sessionSpine_ != kNoSpine && session_.done(); }
   bool sessionMatchesGeneration(uint32_t generation) const {
     return sessionSpine_ != kNoSpine && sessionGen_ == generation;
   }
@@ -104,7 +105,7 @@ class TtfBookRuntime {
   // accessors are scoped to `spineIndex`: a session building a DIFFERENT
   // spine (the next-chapter prefetch) never serves its writer data here —
   // the spine's own cache reader (or nothing) answers instead.
-  uint32_t availablePageCount(uint16_t spineIndex) const;
+  uint32_t availablePageCount(uint16_t spineIndex) const override;
   uint32_t pageCharStart(uint16_t spineIndex, uint16_t pageIndex) const;
   bool readPage(uint16_t spineIndex, uint16_t pageIndex, Page* out);  // scratch mark held by caller
   bool pageForChar(uint16_t spineIndex, uint32_t charOffset, uint32_t* pageOut) const;

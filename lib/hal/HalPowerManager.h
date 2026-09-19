@@ -24,6 +24,13 @@ class HalPowerManager {
   LockMode currentLockMode = None;
   SemaphoreHandle_t modeMutex = nullptr;  // Protect access to currentLockMode
 
+  // Hysteresis for the low-power entry: millis() of the last request for
+  // normal speed (render lock, user input). Low power re-engages only after
+  // this dwell expires, so a burst of renders or a background build polling
+  // with renders cannot flip-flop the CPU frequency between loop ticks
+  // (measured: enter/restore pairs several times per second).
+  unsigned long lastNormalMs = 0;
+
  public:
 #if BOARD_HAS_PSRAM
   static constexpr int LOW_POWER_FREQ = 80;  // MHz
@@ -31,7 +38,10 @@ class HalPowerManager {
   static constexpr int LOW_POWER_FREQ = 10;  // MHz
 #endif
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 3000;  // ms
-  static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
+  // Minimum dwell at full speed after the last normal-speed request before
+  // low power may re-engage (see lastNormalMs).
+  static constexpr unsigned long NORMAL_POWER_DWELL_MS = 2000;  // ms
+  static constexpr unsigned long BATTERY_POLL_MS = 1500;        // ms
 
   void begin();
 

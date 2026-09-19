@@ -91,7 +91,19 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // it's not very important if we read a slightly stale value for currentLockMode
   const LockMode mode = currentLockMode;
 
+  // Any request for normal speed (render lock, user input, active build)
+  // refreshes the dwell window. Without this, the input-idle low-power entry
+  // fights every render: each render's Lock restores full speed and the next
+  // idle tick drops back down — measured several enter/restore pairs per
+  // second while a background build polled with renders.
+  if (!enabled || mode != None) {
+    lastNormalMs = millis();
+  }
+
   if (mode == None && enabled && !isLowPower) {
+    if (millis() - lastNormalMs < NORMAL_POWER_DWELL_MS) {
+      return;  // recent full-speed work: stay at normal frequency
+    }
     LOG_DBG("PWR", "Going to low-power mode");
     if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);

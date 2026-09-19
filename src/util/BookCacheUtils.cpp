@@ -2,6 +2,7 @@
 
 #include <Epub.h>
 #include <FsHelpers.h>
+#include <HalStorage.h>
 #include <Logging.h>
 #include <Txt.h>
 #include <Xtc.h>
@@ -22,7 +23,18 @@ bool isBookCacheDirectoryName(const char* name) {
 
 void clearBookCache(const std::string& path) {
   if (FsHelpers::hasEpubExtension(path)) {
-    Epub(path, "/.crosspoint").clearCache();
+    Epub book(path, "/.crosspoint");
+    book.clearCache();
+    // FIBP page caches (TTF reader) live in <book cache>/ficache. The
+    // recursive removeDir above takes the whole book dir, but a leftover
+    // ficache tree (e.g. a file still held open by a late-cancelled worker)
+    // would silently survive — remove it explicitly and log the outcome.
+    const std::string fibpDir = book.getCachePath() + "/ficache";
+    if (Storage.exists(fibpDir.c_str())) {
+      if (!Storage.removeDir(fibpDir.c_str())) {
+        LOG_ERR("BookCache", "Failed to remove FIBP cache dir: %s", fibpDir.c_str());
+      }
+    }
   } else if (FsHelpers::hasXtcExtension(path)) {
     Xtc(path, "/.crosspoint").clearCache();
   } else if (FsHelpers::hasTxtExtension(path)) {
