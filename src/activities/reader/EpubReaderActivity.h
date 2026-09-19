@@ -219,10 +219,11 @@ class EpubReaderActivity final : public ReaderActivity {
   bool fibpBegun_ = false;
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
-  bool fibpDeferred_ = false;  // a build is delegated to the worker
-  int ttfSpine = -1;           // spine the runtime's reader/session belong to
-  int ttfPage = 0;             // chapter-local page index
-  uint32_t ttfPageCount = 0;   // pages available for the current chapter
+  bool fibpDeferred_ = false;          // a build is delegated to the worker
+  unsigned long fibpDeferPollMs_ = 0;  // last deferred-build poll (throttle)
+  int ttfSpine = -1;                   // spine the runtime's reader/session belong to
+  int ttfPage = 0;                     // chapter-local page index
+  uint32_t ttfPageCount = 0;           // pages available for the current chapter
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
@@ -396,6 +397,14 @@ class EpubReaderActivity final : public ReaderActivity {
   void onReturnFromEndOfBook() override;
 
   bool skipLoopDelay() override;
+
+  // True while a background build is live (FIBP worker indexing, TTF session,
+  // or a section build): keeps the CPU out of low-power — the input-idle
+  // governor would otherwise drop to LOW_POWER_FREQ mid-index (measured:
+  // 2.6 s/page spine builds and a task-WDT IDLE0 starvation reboot) — and
+  // holds the auto-sleep timer until the work drains. The worker self-exits
+  // once every spine has been attempted, so this is bounded.
+  bool preventAutoSleep() override;
 
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;
