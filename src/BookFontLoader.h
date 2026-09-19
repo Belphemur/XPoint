@@ -97,24 +97,32 @@ class BookFontLoader {
   // loader to the settings header.
   static constexpr uint16_t kInitSizePx = 14;
 
-  // Single source of truth for the reader's FT render options (SDK 43fed43
-  // setRenderOptions). HintingMode::None is the shipped behavior — fully
-  // unhinted loads, as decided in the FreeType backend campaign (hinted CFF
-  // enters the Adobe interpreter whose stack footprint overflows small task
-  // stacks; AA e-ink gains nothing from grid-fitting). Deliberately NOT a
-  // user setting: the mode is render-affecting and must stay in lockstep with
-  // the FIBP cache identity (renderOptionsFingerprintTag).
-  static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{};
+  // Requested reader render options: Light hinting (P2 re-enable). Light
+  // grid-fits via the auto-hinter (compiled in per-platform with
+  // FREEINK_FONT_ENABLE_AUTOHINT) instead of the TT bytecode interpreter.
+  // For CFF outlines Light still routes through the Adobe interpreter, whose
+  // stack-resident footprint is the one real risk — gated at runtime by
+  // probeHintStackSafety(), which degrades an individual face to unhinted
+  // when its measured render depth would not fit the smallest consumer
+  // stack (the 24KB FibpPrefetchWorker). Deliberately NOT a user setting:
+  // the mode is render-affecting and must stay in lockstep with the FIBP
+  // cache identity (renderOptionsFingerprintTag).
+  static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{freeink::font::FtFont::HintingMode::Light};
 
-  // Fingerprint tag folding the active render options into the font
-  // fingerprint. Render-affecting options MUST invalidate FIBP cache
-  // identity (hinting changes advances → layout), so this tag is mixed into
-  // BOTH fingerprint sites — computeFingerprint() and the FibpPrefetchWorker
+  // Per-slot effective options: kRenderOptions unless the P2 stack probe
+  // degraded that face to unhinted. Shared with the FIBP prefetch worker so
+  // both fingerprint sites fold the SAME effective modes into the identity.
+  // Only meaningful for the FT backend; the stb backend has no options.
+  static const freeink::font::FtFont::RenderOptions& effectiveRenderOptions(uint8_t faceSlot);
+
+  // Fingerprint tag folding the ACTIVE render options into the font
+  // fingerprint. Runtime (not constexpr) since the effective per-face mode
+  // is a probe outcome: a degrade changes advances and layout, so the tag
+  // must change with it and FIBP caches regenerate. Mixed into BOTH
+  // fingerprint sites — computeFingerprint() and the FibpPrefetchWorker
   // parity hash — and must be extended whenever kRenderOptions gains a knob
   // that alters glyph output.
-  static constexpr uint32_t renderOptionsFingerprintTag() {
-    return static_cast<uint32_t>(kRenderOptions.hinting) << 24;
-  }
+  static uint32_t renderOptionsFingerprintTag();
 #endif
 
   const FamilyInfo* families() const { return families_.data(); }
@@ -167,9 +175,27 @@ class BookFontLoader {
   static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
     scanFonts(rootPath, families, familyCount);
   }
+  // Force the P2 stack-probe outcome for a slot as if the probe had
+  // degraded it: flips the effective options to unhinted (the device probe
+  // itself is FreeRTOS-only and absent on host). Non-const on purpose.
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  void degradeHintForTest(uint8_t faceSlot) { degradeHint(faceSlot); }
+  // Restore every slot to the requested mode — degradeHintForTest is sticky
+  // (file-scope static state outlives the test) and the tag participates in
+  // other tests' fingerprints.
+  static void resetHintStateForTest();
+#endif
 #endif
 
  private:
+  // P2 stack gate: probe each loaded face's hinted render depth on the
+  // calling task (loopTask) and degradeHint() the faces that exceed
+  // kHintProbeStackBudgetBytes. No-op on host.
+  void probeHintStackSafety();
+  // Flip a slot's effective options to unhinted through setRenderOptions()
+  // (the P1 glyph-cache flush point) and log it.
+  void degradeHint(uint8_t faceSlot);
+
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
   // Selection state (see selectFamily()).

@@ -989,3 +989,53 @@ TEST(BookFontLoaderFingerprintCache, MtimeZeroDisablesCache) {
   // no record may be written (or served) for that face.
   EXPECT_EQ(Storage.files.count(fpCachePathFor(kFacePath)), 0u);
 }
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+// ── P2 hinting (Light) + stack-probe degrade identity ────────────────
+// kRenderOptions requests Light; the runtime stack probe may degrade a slot
+// to unhinted. The effective per-slot modes fold into the fingerprint tag
+// (renderOptionsFingerprintTag), which both the loader and the FIBP prefetch
+// worker mix into their parity hash — a degrade MUST change the tag.
+
+namespace {
+
+using RO = freeink::font::FtFont::RenderOptions;
+using HM = freeink::font::FtFont::HintingMode;
+
+uint32_t tagFor(std::initializer_list<HM> modes) {
+  uint32_t tag = 0;
+  uint8_t slot = 0;
+  for (HM mode : modes) tag |= static_cast<uint32_t>(mode) << (3 * slot++);
+  return tag;
+}
+
+}  // namespace
+
+TEST(BookFontLoaderHinting, RequestedModeIsLightAndTagFoldsPerSlot) {
+  BookFontLoader::resetHintStateForTest();
+  EXPECT_EQ(BookFontLoader::kRenderOptions.hinting, HM::Light);
+  for (uint8_t slot = 0; slot < 4; ++slot) {
+    EXPECT_EQ(BookFontLoader::effectiveRenderOptions(slot).hinting, HM::Light) << "slot " << slot;
+  }
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+}
+
+TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
+  // A throwaway instance: the seam flips the file-scope effective-options
+  // state; this instance's own faces stay null so setRenderOptions is
+  // skipped (state-only degrade, exactly what the tag tests need).
+  BookFontLoader loader;
+  loader.degradeHintForTest(1);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(0).hinting, HM::Light);
+  const uint32_t degraded = BookFontLoader::renderOptionsFingerprintTag();
+  EXPECT_NE(degraded, tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(degraded, tagFor({HM::Light, HM::None, HM::Light, HM::Light}));
+  // Mutate-check the tag really folds the degraded slot: a second slot's
+  // degrade must move the tag again (no aliasing between slot fields).
+  loader.degradeHintForTest(2);
+  EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(), degraded);
+  BookFontLoader::resetHintStateForTest();
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+}
+#endif

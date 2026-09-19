@@ -65,9 +65,11 @@ bool FibpPrefetchWorker::buildFaces() {
       fontBytes_[i].reset();
       continue;
     }
-    // Parity with tryLoadFace: same reader-wide render options (hinting).
+    // Parity with tryLoadFace: the loader's EFFECTIVE render options (the
+    // P2 stack probe may have degraded a slot) — same source of truth, so
+    // both fingerprint sites fold identical modes.
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-    if (!face->setRenderOptions(BookFontLoader::kRenderOptions)) {
+    if (!face->setRenderOptions(BookFontLoader::effectiveRenderOptions(i))) {
       LOG_ERR("PREF", "Render options unsupported for %s", fi.file);
     }
 #endif

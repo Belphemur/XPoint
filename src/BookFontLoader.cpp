@@ -51,6 +51,9 @@
 
 #ifdef HOST_TEST
 #include "Arduino.h"  // host-test stub for ESP.getFreeHeap
+#if defined(ARDUINO) && defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+#include <freertos/task.h>  // P2 hint stack probe: uxTaskGetStackHighWaterMark
+#endif
 #endif
 
 #include <algorithm>
@@ -66,7 +69,79 @@ namespace book {
 // Italic is passed separately; FT synthesizes oblique/embolden when an axis
 // is absent.
 constexpr int styleToWeight(uint8_t styleFlags) { return (styleFlags & StyleBold) ? 700 : 400; }
-#endif
+
+// P2 effective render options, one slot per family face (REGULAR, BOLD,
+// ITALIC, BOLD_ITALIC). Starts at the requested mode; probeHintStackSafety()
+// may degrade a slot to unhinted. File-scope so renderOptionsFingerprintTag()
+// stays a cheap register-fold, and so the prefetch worker (via the static
+// accessor) folds the identical state into its parity hash. Written only on
+// the loopTask inside ensureLoaded(); the worker reads it between loader
+// generations, so the sequencing keeps the accesses non-overlapping.
+freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
+    BookFontLoader::kRenderOptions, BookFontLoader::kRenderOptions, BookFontLoader::kRenderOptions,
+    BookFontLoader::kRenderOptions};
+
+// Additional stack depth a face's hinted render may consume before the probe
+// degrades it. The bound protects the smallest consumer stack: the 24KB
+// FibpPrefetchWorker task, whose own render pipeline peaks around 13KB, must
+// still fit the Adobe interpreter's peak when it re-renders the same hinted
+// glyphs. 8KB leaves ≥3KB of that task's headroom even in the worst case.
+constexpr uint32_t kHintProbeStackBudgetBytes = 8 * 1024;
+
+// Stress set for the probe: hinted outlines with distinctive contours plus a
+// doubled size, so the Adobe interpreter's deepest paths are exercised.
+constexpr uint32_t kHintProbeCodepoints[] = {'A', 'g', 'M', '@', 0x00C6u, 0x2019u};
+
+void BookFontLoader::degradeHint(uint8_t faceSlot) {
+  effectiveRenderOptions_[faceSlot].hinting = freeink::font::FtFont::HintingMode::None;
+  // Route through setRenderOptions(): the P1 glyph-cache flush point, so no
+  // stale hinted bitmap survives the mode change (review contract).
+  if (faces_[faceSlot] != nullptr) {
+    faces_[faceSlot]->setRenderOptions(effectiveRenderOptions_[faceSlot]);
+  }
+  LOG_ERR("BFNT", "Hinting degraded to None for face slot %u (stack probe)", faceSlot);
+}
+
+const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptions(uint8_t faceSlot) {
+  return effectiveRenderOptions_[faceSlot];
+}
+
+uint32_t BookFontLoader::renderOptionsFingerprintTag() {
+  // 3 bits per slot: HintingMode values fit in 0..4.
+  uint32_t tag = 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    tag |= static_cast<uint32_t>(effectiveRenderOptions_[i].hinting) << (3 * i);
+  }
+  return tag;
+}
+
+#if defined(ARDUINO)
+void BookFontLoader::probeHintStackSafety() {
+  if (kRenderOptions.hinting == freeink::font::FtFont::HintingMode::None) return;
+  for (uint8_t i = 0; i < 4; ++i) {
+    NativeFace* face = faces_[i];
+    if (face == nullptr) continue;
+    const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);
+    for (const uint32_t cp : kHintProbeCodepoints) {
+      face->rasterize(cp, kInitSizePx);
+      face->rasterize(cp, static_cast<uint16_t>(kInitSizePx * 2));
+    }
+    const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
+    const uint32_t consumed = before > after ? before - after : 0;
+    LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", i, static_cast<unsigned>(consumed));
+    if (consumed > kHintProbeStackBudgetBytes) degradeHint(i);
+  }
+}
+#else
+void BookFontLoader::probeHintStackSafety() {}
+#endif  // ARDUINO
+
+#if defined(HOST_TEST)
+void BookFontLoader::resetHintStateForTest() {
+  for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = kRenderOptions;
+}
+#endif  // HOST_TEST
+#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 // Hard bounds for the DRAM-tier font file size gate. Design §3.3: the value is
 // derived from ESP.getFreeHeap()/getMaxAllocHeap() after all arenas are
@@ -362,6 +437,10 @@ void BookFontLoader::ensureLoaded() {
     fontFileSizes_[i] = 0;
     facePathHash_[i] = 0;
     faceMtime_[i] = 0;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    // Fresh load: re-probe hinting from the requested mode.
+    effectiveRenderOptions_[i] = kRenderOptions;
+#endif
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
   }
@@ -408,6 +487,12 @@ void BookFontLoader::ensureLoaded() {
       // Face skipped (too large, invalid sfnt, OOM); continue with fewer faces.
     }
   }
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // P2 stack gate: probe the requested (Light) hinting BEFORE the fingerprint
+  // is computed, so a probe-driven degrade participates in the FIBP identity
+  // from the first cache write onward.
+  probeHintStackSafety();
+#endif
   fingerprint_ = computeFingerprintCached();
   memSentinelCheck("font ensureLoaded");
   appendFallbackTail(chain_);
