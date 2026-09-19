@@ -1600,6 +1600,22 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           uint16_t backupSpine = currentSpineIndex;
           uint16_t backupPage = 0;
           uint16_t backupPageCount = 0;
+#if defined(CROSSPOINT_TTF_READER)
+          // TTF books hold no Section mirror: capture the generation-tagged
+          // position BEFORE the runtime closes, so the clear saves a TTF
+          // record instead of a legacy page=0 one (which would drop the
+          // reader back to chapter start on reopen).
+          bool ttfPosition = false;
+          uint32_t ttfCharOffset = 0;
+          uint32_t ttfGen = 0;
+          if (ttf_ && ttfGenerationValid) {
+            ttfPosition = true;
+            backupPage = static_cast<uint16_t>(ttfPage);
+            backupPageCount = static_cast<uint16_t>(ttfPageCount);
+            ttfCharOffset = ttfCurrentCharStart;
+            ttfGen = ttfGeneration;
+          }
+#endif
           if (section) {
             backupPage = section->currentPage;
             backupPageCount = section->pageCount;
@@ -1620,8 +1636,15 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           epub->setupCacheDir();
           // Single-writer rule (design §4.7): the cache-clear save also goes
           // through the saver so its state matches what is on disk.
-          if (!progressManager.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount, false,
-                                       0)) {
+          bool saved = false;
+#if defined(CROSSPOINT_TTF_READER)
+          if (ttfPosition) {
+            saved = progressManager.saveNowTtf(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount,
+                                               ttfCharOffset, ttfGen);
+          }
+#endif
+          if (!saved && !progressManager.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount,
+                                                 false, 0)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
           }
         }
@@ -2035,7 +2058,10 @@ bool EpubReaderActivity::preventAutoSleep() {
   // stretch at low frequency exceeded the watchdog window). The worker
   // self-exits once every spine has been attempted, so this is bounded.
   if (fibpWorker_ != nullptr && fibpBegun_ && fibpWorker_->active()) return true;
-  if (ttf_ != nullptr && ttf_->sessionActive()) return true;
+  // A heap-paused session is stalled, not working: no pump runs below the
+  // free-heap floors, so it must not hold low-power/auto-sleep hostage
+  // (mirrors skipLoopDelay()).
+  if (ttf_ != nullptr && ttf_->sessionActive() && !buildHeapPaused) return true;
 #endif
   return section != nullptr && section->isBuilding();
 }
