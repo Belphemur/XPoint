@@ -20,13 +20,13 @@ reader path:
    with ~1500 glyph instances re-rasterizes and re-quantizes all of them on
    every paint, including on FIBP cache hits (FIBP caches layout, not pixels).
 2. **Family loading is slow for multi-face families.**
-   `BookFontLoader::ensureLoaded` (`src/BookFontLoader.cpp:239`) does, per
+   `BookFontLoader::ensureLoaded` (`src/BookFontLoader.cpp`) does, per
    face (up to 4: regular/bold/italic/bold-italic): pool alloc + FULL SD read
    (up to 2 MB per face) + sfnt validation + `FtFont::init`, and then
    `computeFingerprint()` FNV-1a hashes EVERY byte of EVERY face. Multi-face
    families multiply all of this ×4.
 3. **Hinting is shipped off** (`kRenderOptions.hinting = HintingMode::None`,
-   `src/BookFontLoader.h:107`) because hinted CFF enters the Adobe
+   `kRenderOptions.hinting = HintingMode::None` in `src/BookFontLoader.h`) because hinted CFF enters the Adobe
    interpreter whose stack footprint overflowed small task stacks. The render
    task now runs with a 48 KB stack (e49d21bd) and the worker with 32 KB —
    the blocker needs re-measuring, not assuming.
@@ -109,7 +109,7 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
      pass. Shipped as a user setting (Smooth = AA planes, default;
      Crisp = hinted mono, fastest and hardest-edged). Both paths are render
      options and MUST fold into the FIBP cache identity — extend
-     `renderOptionsFingerprintTag()` (BookFontLoader.h:115) to cover hinting
+     `renderOptionsFingerprintTag()` (BookFontLoader.h) to cover hinting
      mode AND raster mode, per its own documented rule.
 - Stack-safety gate (the original blocker): before shipping hinted CFF,
   measure `uxTaskGetStackHighWaterMark` on the 48 KB render task and the

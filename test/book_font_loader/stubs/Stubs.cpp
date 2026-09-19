@@ -22,7 +22,8 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
 bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
   (void)moduleName;
   file = HalFile{};
-  auto& bytes = files[path];  // create-or-truncate (overwrite semantics)
+  auto& bytes = files[path];  // create-or-truncate (production O_TRUNC semantics)
+  bytes.clear();              // existing content must not leak into the new write
   file.data = &bytes;
   file.path = &files.find(path)->first;
   file.writable = true;
@@ -33,6 +34,13 @@ bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalF
 bool HalStorage::remove(const char* path) {
   files.erase(path);
   mtimes.erase(path);
+  return true;
+}
+
+bool HalStorage::rename(const char* oldPath, const char* newPath) {
+  if (files.count(oldPath) == 0 || files.count(newPath) != 0) return false;  // SdFat refuses existing dest
+  files[newPath] = files[oldPath];
+  files.erase(oldPath);
   return true;
 }
 

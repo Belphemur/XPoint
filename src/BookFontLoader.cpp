@@ -156,33 +156,43 @@ bool BookFontLoader_readFingerprintCache(uint32_t pathHash, uint32_t fileSize, u
   return true;
 }
 
-// Writes the record. Fixed 24-byte content; a stale oversized file from a
-// corrupt previous write is removed first (close-before-remove per the
-// DESTRUCTOR_CLOSES_FILE rule). Best effort — a failed write only costs the
-// next open one byte-walk rehash.
+// Writes the record atomically: stage to <path>.tmp, close, then rename over
+// the final path. A partial write can never leave a torn final record (the
+// rename publishes only complete 28-byte stages), and every failure path
+// removes the temp file. Best effort — a failed write only costs the next
+// open one byte-walk rehash.
 void BookFontLoader_writeFingerprintCache(uint32_t pathHash, uint32_t fileSize, uint32_t mtime, uint32_t inSeed,
                                           uint32_t headHash, uint32_t hash) {
   if (mtime == 0) return;  // cache disabled without a usable rehash trigger
   char path[64];
+  char tmpPath[70];
   fingerprintCachePath(pathHash, path);
-  if (Storage.exists(path)) {
-    // Oversize leftovers would keep the read gate failing forever; rewrite
-    // from a clean slate instead.
-    HalFile check;
-    if (Storage.openFileForRead("BFNT", path, check) && check.fileSize() != kFingerprintCacheBytes) {
-      Storage.remove(path);
-    }
-  }
+  snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
   Storage.ensureDirectoryExists("/.crosspoint/fonts");
-  HalFile file;
-  if (!Storage.openFileForWrite("BFNT", path, file)) {
-    LOG_DBG("BFNT", "fp-cache write open failed for %s", path);
+  bool staged = false;
+  {
+    // Scope: the handle must be closed before the rename/remove below
+    // (DESTRUCTOR_CLOSES_FILE=1 — close happens at the block exit).
+    HalFile file;
+    const FingerprintCacheRecord rec{
+        kFingerprintCacheMagic, kFingerprintCacheVersion, inSeed, hash, headHash, fileSize, mtime};
+    staged = Storage.openFileForWrite("BFNT", tmpPath, file) &&
+             file.write(&rec, kFingerprintCacheBytes) == kFingerprintCacheBytes;
+  }
+  if (!staged) {
+    LOG_DBG("BFNT", "fp-cache stage failed for %s", tmpPath);
+    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
     return;
   }
-  const FingerprintCacheRecord rec{
-      kFingerprintCacheMagic, kFingerprintCacheVersion, inSeed, hash, headHash, fileSize, mtime};
-  if (file.write(&rec, kFingerprintCacheBytes) != kFingerprintCacheBytes) {
-    LOG_DBG("BFNT", "fp-cache write short for %s", path);
+  // SdFat rename refuses an existing destination: publish by replace.
+  if (Storage.exists(path) && !Storage.remove(path)) {
+    LOG_ERR("BFNT", "fp-cache: cannot replace %s", path);
+    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
+    return;
+  }
+  if (!Storage.rename(tmpPath, path)) {
+    LOG_DBG("BFNT", "fp-cache publish failed for %s", path);
+    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
   }
 }
 

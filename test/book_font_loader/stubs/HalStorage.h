@@ -36,6 +36,7 @@ class HalStorage {
     return openFileForWrite(moduleName, path.c_str(), file);
   }
   bool remove(const char* path);
+  bool rename(const char* oldPath, const char* newPath);
   bool exists(const char* path) { return files.count(path) != 0; }
   bool ensureDirectoryExists(const char*) { return true; }
 

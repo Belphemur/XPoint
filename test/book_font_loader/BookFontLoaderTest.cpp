@@ -838,6 +838,7 @@ void seedLoadableFace(const std::string& bytes, const char* path, uint32_t mtime
 TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
   if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
   resetStorage();
   constexpr uint32_t kMtime = 0x5F123456u;
   constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
@@ -883,6 +884,7 @@ TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
 TEST(BookFontLoaderFingerprintCache, MtimeChangeRehashes) {
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
   if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
   resetStorage();
   constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
   std::string modified = dejavu;
@@ -918,6 +920,7 @@ TEST(BookFontLoaderFingerprintCache, MtimeChangeRehashes) {
 TEST(BookFontLoaderFingerprintCache, CorruptCacheFileRecomputesAndRewrites) {
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
   if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
   resetStorage();
   constexpr uint32_t kMtime = 0x5F123456u;
   constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
@@ -953,6 +956,7 @@ TEST(BookFontLoaderFingerprintCache, CorruptCacheFileRecomputesAndRewrites) {
 TEST(BookFontLoaderFingerprintCache, MtimeZeroDisablesCache) {
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
   if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
   resetStorage();
   constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
   seedLoadableFace(dejavu, kFacePath, 0);  // no SD timestamp
