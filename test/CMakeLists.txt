@@ -53,6 +53,7 @@ include(GoogleTest)
 set(FREEINK_FT_ROOT "${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont")
 set(FONT_FT_TEST_SOURCES
   "${FREEINK_FT_ROOT}/src/FtFont.cpp"
+  "${FREEINK_FT_ROOT}/src/Gsub.cpp"
   "${FREEINK_FT_ROOT}/src/FontAlloc.c"
 )
 file(GLOB FONT_FT_WRAPPER_SOURCES "${FREEINK_FT_ROOT}/src/freetype/*.c")
