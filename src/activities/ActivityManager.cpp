@@ -64,15 +64,9 @@ void ActivityManager::performRender() {
     display.setInverted(SETTINGS.screenInverted != 0);
     currentActivity->render(std::move(lock));
 #if defined(CROSSPOINT_TTF_READER)
-    // FreeType render depth varies by face type (Adobe CFF engine vs TT);
-    // watch the high-water so the stack sizing stays evidence-based.
-    LOG_DBG("REND", "render stack high-water=%u bytes", static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
-    // Heap/PSRAM budget across renders: catches FT-side leaks (faces,
-    // glyph backing) and DRAM pressure from the larger task stack.
-    LOG_DBG("REND", "render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u",
-            static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
-            static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
-            static_cast<unsigned>(ESP.getMinFreePsram()));
+    // Render-stack and heap telemetry live in the book-render path
+    // (EpubReaderActivity's TTF finish, where the deep frames actually run);
+    // this generic wrapper only runs the sentinel.
     memSentinelCheck("main render");
 #endif
   }

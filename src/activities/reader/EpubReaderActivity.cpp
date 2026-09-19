@@ -86,6 +86,14 @@ namespace {
 bool xteinkClassPanel() { return gpio.isXteinkDevice() || BoardConfig::isX4Pro() || BoardConfig::isX4Classic(); }
 
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+// Cadence for re-rendering while a chapter build is delegated to the FIBP
+// prefetch worker (worker owns the build; the reader just polls for commit).
+constexpr unsigned long fibpDeferPollMs = 250;
+// Grace before the reader takes a delegated build over from the worker: two
+// page builds at full speed. Past it the user would otherwise sit on the
+// Indexing popup for the rest of the spine (a 93-page spine measured 243 s
+// at low power, tens of seconds even at full speed).
+constexpr unsigned long fibpDeferTakeoverMs = 1500;
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
@@ -298,6 +306,10 @@ void EpubReaderActivity::onEnter() {
 }
 
 void EpubReaderActivity::onExit() {
+#if defined(CROSSPOINT_TTF_READER)
+  // R1: transient worker lifetime — cancel + join + free before teardown.
+  stopFibpWorker();
+#endif
 #ifdef READING_STATS_ENABLED
   if (epub && SETTINGS.shouldTrackReadingStats()) {
     recordCurrentPageReadingTime();
@@ -1584,17 +1596,55 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
       {
         RenderLock lock;
-        if (epub && section) {
+        if (epub) {
           uint16_t backupSpine = currentSpineIndex;
-          uint16_t backupPage = section->currentPage;
-          uint16_t backupPageCount = section->pageCount;
-          section.reset();
+          uint16_t backupPage = 0;
+          uint16_t backupPageCount = 0;
+#if defined(CROSSPOINT_TTF_READER)
+          // TTF books hold no Section mirror: capture the generation-tagged
+          // position BEFORE the runtime closes, so the clear saves a TTF
+          // record instead of a legacy page=0 one (which would drop the
+          // reader back to chapter start on reopen).
+          bool ttfPosition = false;
+          uint32_t ttfCharOffset = 0;
+          uint32_t ttfGen = 0;
+          if (ttf_ && ttfGenerationValid) {
+            ttfPosition = true;
+            backupPage = static_cast<uint16_t>(ttfPage);
+            backupPageCount = static_cast<uint16_t>(ttfPageCount);
+            ttfCharOffset = ttfCurrentCharStart;
+            ttfGen = ttfGeneration;
+          }
+#endif
+          if (section) {
+            backupPage = section->currentPage;
+            backupPageCount = section->pageCount;
+            section.reset();
+          }
+          // Close every handle into the cache dir BEFORE removeDir: the
+          // prefetch worker's own FIBP writer/reader and the TTF runtime keep
+          // ficache files open, and a single open file fails the recursive
+          // removal — leaving the whole epub_<hash> folder (ficache included)
+          // behind on SD.
+#if defined(CROSSPOINT_TTF_READER)
+          stopFibpWorker();
+          if (ttf_) {
+            ttf_->close();
+          }
+#endif
           epub->clearCache();
           epub->setupCacheDir();
           // Single-writer rule (design §4.7): the cache-clear save also goes
           // through the saver so its state matches what is on disk.
-          if (!progressManager.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount, false,
-                                       0)) {
+          bool saved = false;
+#if defined(CROSSPOINT_TTF_READER)
+          if (ttfPosition) {
+            saved = progressManager.saveNowTtf(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount,
+                                               ttfCharOffset, ttfGen);
+          }
+#endif
+          if (!saved && !progressManager.saveNow(epub->getCachePath().c_str(), backupSpine, backupPage, backupPageCount,
+                                                 false, 0)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
           }
         }
@@ -1998,6 +2048,22 @@ void EpubReaderActivity::onReturnFromEndOfBook() {
     nextPageNumber = 0;
     pendingPageJump = std::numeric_limits<uint16_t>::max();
   }
+}
+
+bool EpubReaderActivity::preventAutoSleep() {
+#if defined(CROSSPOINT_TTF_READER)
+  // Live background builds are real work: the input-idle governor would
+  // otherwise drop to LOW_POWER_FREQ mid-index (measured: 2.6 s/page spine
+  // builds, and a task-WDT IDLE0 starvation reboot when one computation
+  // stretch at low frequency exceeded the watchdog window). The worker
+  // self-exits once every spine has been attempted, so this is bounded.
+  if (fibpWorker_ != nullptr && fibpBegun_ && fibpWorker_->active()) return true;
+  // A heap-paused session is stalled, not working: no pump runs below the
+  // free-heap floors, so it must not hold low-power/auto-sleep hostage
+  // (mirrors skipLoopDelay()).
+  if (ttf_ != nullptr && ttf_->sessionActive() && !buildHeapPaused) return true;
+#endif
+  return section != nullptr && section->isBuilding();
 }
 
 bool EpubReaderActivity::skipLoopDelay() {
@@ -2691,11 +2757,14 @@ void EpubReaderActivity::renderBookTtf() {
   const uint32_t generation = freeink::book::layoutGenerationHash(params, freeink::book::fontLoader.fontFingerprint());
   ttfGeneration = generation;
   ttfGenerationValid = true;
+  // Index-ahead worker: spawn/notify under the current generation + chapter.
+  updateFibpWorker(generation, params);
 
   // 2) Chapter transition. A running session for the chapter we enter (a
   // prefetch build) keeps laying out; anything else aborts (partial commit).
   if (ttfSpine != currentSpineIndex) {
     ttfPrefetchActive = false;
+    fibpDeferred_ = false;
     ttf_->dropPrefetch();
     ttfFrameRenderComplete.store(false, std::memory_order_release);
     if (ttfHasSavedPosition && currentSpineIndex != ttfSavedSpine) {
@@ -2724,7 +2793,50 @@ void EpubReaderActivity::renderBookTtf() {
 
   ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
 
-  // 3) Resolve the target page (jump states may need more build first).
+  // 3) Single-writer handoff (R4 optional polish): while the worker builds
+  // the chapter we are on, wait for its commit instead of racing a second
+  // writer onto the same FIBP file; once it lands, reopen the cache so the
+  // resolve/build decisions below see the worker's page count — no sync
+  // rebuild, no popup stall beyond the wait.
+  if (fibpWorker_ != nullptr && fibpWorker_->active() &&
+      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
+    if (!fibpDeferred_) {
+      fibpDeferred_ = true;
+      fibpDeferStartMs_ = millis();
+      LOG_DBG("ERS", "Chapter %d build delegated to prefetch worker", currentSpineIndex);
+      ttfShowIndexingPopup();
+    }
+    // The worker owns this build; re-polling with full renders every loop
+    // tick flip-flops the power governor and burns the CPU. Re-check at a
+    // slow cadence — the commit pickup below runs on the next poll.
+    if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
+      fibpDeferPollMs_ = millis();
+      requestUpdate();
+    }
+    // A long delegated build parks the user on the Indexing popup for the
+    // whole spine (the plan builds the entered chapter last, and a claim
+    // that landed right before the page turn makes the wait the full build).
+    // After a short grace period the reader takes the spine over: stop the
+    // worker (it aborts at the next page boundary), then the normal path
+    // below resumes the worker's partial and builds only up to the target
+    // page at full speed. updateFibpWorker() respawns the worker once the
+    // session drains; it skips this spine (partial/complete now exists).
+    if (millis() - fibpDeferStartMs_ >= fibpDeferTakeoverMs) {
+      LOG_DBG("ERS", "Delegated build too slow — taking over spine %d", currentSpineIndex);
+      stopFibpWorker();
+      fibpDeferred_ = false;
+      requestUpdate();
+    }
+    return;
+  }
+  if (fibpDeferred_) {
+    // The delegated build finished (or failed): pick up the committed cache.
+    fibpDeferred_ = false;
+    ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+  }
+
+  // 4) Resolve the target page (jump states may need more build first).
   bool needFullBuild = false;
   int target = -1;
   const bool resolved = ttfResolveTargetPage(target, params, needFullBuild);
@@ -2744,7 +2856,7 @@ void EpubReaderActivity::renderBookTtf() {
       ttfShowIndexingPopup();
     }
     const freeink::book::BookStatus st =
-        ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, generation);
+        freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, generation);
     if (st != freeink::book::BookStatus::Ok) {
       LOG_ERR("ERS", "TTF session begin failed: %s", bookStatusName(st));
       showBuildError();
@@ -2776,9 +2888,9 @@ void EpubReaderActivity::renderBookTtf() {
         }
         break;
       }
-      const freeink::book::BookStatus st = ttf_->stepBuild(BUILD_PAGES_PER_CHUNK);
-      if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone() &&
-          !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+      freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+      if (freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), BUILD_PAGES_PER_CHUNK,
+                                          &st) == freeink::book::ChapterPump::Failed) {
         LOG_ERR("ERS", "TTF build failed: %s", bookStatusName(st));
         showBuildError();
         return;
@@ -2965,6 +3077,12 @@ void EpubReaderActivity::renderBookTtf() {
   // before render() returns (the deepest path: rebuild + FT paint + chrome).
   LOG_DBG("REND", "reader render stack high-water=%u bytes",
           static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+  // Heap/PSRAM budget across book renders (moved here from the generic render
+  // wrapper): catches FT-side leaks (faces, glyph backing) and DRAM pressure.
+  LOG_DBG("REND", "render mem: HeapFree=%u HeapMin=%u MaxAlloc=%u PSRAMFree=%u PSRAMMin=%u",
+          static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMinFreeHeap()),
+          static_cast<unsigned>(ESP.getMaxAllocHeap()), static_cast<unsigned>(ESP.getFreePsram()),
+          static_cast<unsigned>(ESP.getMinFreePsram()));
   memSentinelCheck("reader bw render");
 #endif
   // The B/W frame and status chrome are fully painted (and any async submit
@@ -3179,8 +3297,9 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (!ttf_) return;
   if (ttf_->sessionActive()) {
     const uint16_t spine = ttf_->sessionSpine();
-    const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
-    if (st != freeink::book::BookStatus::Ok && !ttf_->sessionActive() && !ttf_->sessionDone()) {
+    freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+    if (freeink::book::pumpChapterChunk(*ttf_, spine, BACKGROUND_BUILD_PAGES_PER_TICK, &st) ==
+        freeink::book::ChapterPump::Failed) {
       LOG_ERR("ERS", "Background TTF build failed: %s", bookStatusName(st));
       ttfPrefetchActive = false;
       return;
@@ -3207,10 +3326,12 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
-    if (ttf_->beginChapterSession(static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
+    if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
-      const freeink::book::BookStatus st = ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
-      if (st == freeink::book::BookStatus::Ok && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
+      freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
+      const freeink::book::ChapterPump pump = freeink::book::pumpChapterChunk(
+          *ttf_, static_cast<uint16_t>(currentSpineIndex), BACKGROUND_BUILD_PAGES_PER_TICK, &st);
+      if (pump == freeink::book::ChapterPump::Complete) {
         ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration);
       }
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
@@ -3221,8 +3342,69 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   }
 }
 
+void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freeink::book::LayoutParams& params) {
+  if (!ttf_ || !epub) return;
+  const char* family = SETTINGS.ttfFontFamilyName;
+  if (fibpWorker_ != nullptr && fibpBegun_ && strncmp(fibpFamily_, family, sizeof(fibpFamily_)) != 0) {
+    // Family swap: the worker's face set must be rebuilt for the new bytes.
+    stopFibpWorker();
+  }
+  if (fibpWorker_ == nullptr) {
+    fibpWorker_ = makeUniqueNoThrow<freeink::book::FibpPrefetchWorker>();
+    if (fibpWorker_ == nullptr) return;
+  }
+  if (!fibpBegun_) {
+    // Single-writer: a legacy prefetch/sync session in flight owns its spine
+    // — wait for it to drain before spawning the worker.
+    if (ttf_->sessionActive()) return;
+    freeink::book::FibpPrefetchWorker::BeginContext ctx;
+    snprintf(ctx.epubPath, sizeof(ctx.epubPath), "%s", bookPath.c_str());
+    snprintf(ctx.cacheDir, sizeof(ctx.cacheDir), "%s/ficache", epub->getCachePath().c_str());
+    snprintf(ctx.familyName, sizeof(ctx.familyName), "%s", family);
+    ctx.spineCount = static_cast<uint16_t>(epub->getSpineItemsCount());
+    ctx.generation = generation;
+    ctx.layout = params;  // scalar fields used; the worker re-binds pointers
+    fibpBegun_ = fibpWorker_->begin(ctx);
+    if (fibpBegun_) {
+      snprintf(fibpFamily_, sizeof(fibpFamily_), "%s", family);
+      fibpNotifiedGen_ = generation;
+    }
+  } else if (generation != fibpNotifiedGen_) {
+    fibpWorker_->notifyGeneration(generation, params);
+    fibpNotifiedGen_ = generation;
+  }
+  if (fibpBegun_) {
+    // Raw progress only — the worker applies the 10%-remaining policy. This
+    // runs on every reader render (page turns included), so a mid-chapter
+    // threshold crossing fires on the turn that crosses it, and a chapter
+    // entered already past the threshold triggers immediately. The legacy
+    // Section path has no FIBP worker (ttf_ is null there → inert stub), so
+    // only the TTF mirrors apply here.
+    fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage),
+                                       static_cast<uint16_t>(ttfPageCount));
+  }
+}
+
+void EpubReaderActivity::stopFibpWorker() {
+  if (fibpWorker_ == nullptr) return;
+  if (fibpWorker_->cancel()) {
+    fibpWorker_.reset();
+  } else {
+    // Wedged join: the worker object owns state a live task still touches —
+    // release ownership WITHOUT destroying (logged leak beats use-after-free).
+    LOG_ERR("ERS", "FIBP worker did not stop — releasing without destroy");
+    (void)fibpWorker_.release();
+  }
+  fibpBegun_ = false;
+  fibpFamily_[0] = '\0';
+  fibpDeferred_ = false;
+}
+
 void EpubReaderActivity::ttfPrefetchTick() {
   if (!ttf_ || !epub || buildHeapPaused) return;
+  // Single-writer: the index-ahead worker owns spine prefetching while it
+  // runs; the legacy in-activity next-chapter build stays for inert builds.
+  if (fibpWorker_ != nullptr && fibpWorker_->active()) return;
   if (ttf_->sessionActive()) return;  // the current chapter's build wins
 
   const int nextSpine = currentSpineIndex + 1;
@@ -3235,7 +3417,7 @@ void EpubReaderActivity::ttfPrefetchTick() {
 
   if (ttf_->sessionFor(static_cast<uint16_t>(nextSpine))) {
     if (ttf_->sessionActive()) {
-      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+      freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK);
     } else {
       ttfPrefetchActive = false;
       ttf_->dropPrefetch();
@@ -3253,9 +3435,9 @@ void EpubReaderActivity::ttfPrefetchTick() {
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
-    if (ttf_->beginChapterSession(static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
+    if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(nextSpine), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
-      ttf_->stepBuild(BACKGROUND_BUILD_PAGES_PER_TICK);
+      freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(nextSpine), BACKGROUND_BUILD_PAGES_PER_TICK);
       ttfPrefetchActive = true;
     }
   }

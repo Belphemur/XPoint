@@ -30,9 +30,10 @@ constexpr UBaseType_t WORKER_PRIORITY = 1;
 // The flush path reaches deep into SdFat (write + flush + remove + rename
 // through HalStorage), which needs well over 2 KB — 2048 B overflowed the
 // stack canary on the first real flush (Guru Meditation on progress_mgr).
-// 4096 keeps a comfortable margin; track it with the high-water-mark log in
-// the worker loop.
-constexpr size_t WORKER_STACK_BYTES = 4096;
+// Device soak measured HWM 1400B free at 4096 — too thin for SD-retry
+// nesting; 6144 restores a comfortable margin. Track it with the
+// high-water-mark log in the worker loop.
+constexpr size_t WORKER_STACK_BYTES = 6144;
 constexpr char WORKER_TASK_NAME[] = "progress_mgr";
 constexpr char MUTEX_TAG[] = "PRG";
 }  // namespace
