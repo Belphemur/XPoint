@@ -321,7 +321,11 @@ void FibpPrefetchWorker::run() {
       queue_.clear();
       queueCursor_ = 0;
     }
-    if (queue_.empty()) {
+    if (queue_.empty() || queueCursor_ >= queue_.size()) {
+      // A fully-drained queue counts as empty: a respawned worker (shared
+      // ensureTask) inherits the previous window's exhausted queue, and with
+      // the one-spine cap treating it as fresh would leave the new window
+      // unplanned — the task would self-exit without indexing anything.
       // The returned snapshot is the spine the plan was built from — using
       // it for lastNotifiedSeen closes the race where a notify lands between
       // the plan's internal read and a second read here: with the one-spine
