@@ -70,7 +70,9 @@ class FibpPrefetchWorker {
   };
 
 #if FIBP_WORKER_ENABLED
-  ~FibpPrefetchWorker() { cancel(); }  // safety net; the owner must cancel() first
+  // NO destructor: the owner must call cancel() first. When cancel() returns
+  // false (wedged join) the owner releases ownership without destroying —
+  // member destruction cannot honor that conditional-leak contract.
 
   // Main thread. Builds the worker's own face chain from the selected
   // family (reading the same font bytes) and spawns the worker task.

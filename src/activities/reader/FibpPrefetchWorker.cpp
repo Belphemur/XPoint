@@ -204,19 +204,21 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
     xSemaphoreGive(paramsMux_);
   }
   // Respawn after a "fully indexed" self-exit so later settings changes can
-  // re-index under the new generation. The existing semaphore is consumed
-  // (not replaced) first: the previous task's final give must land before a
-  // replacement task can start, or the old task could signal the fresh
-  // handle (timing-dependent use-after-free).
+  // re-index under the new generation. When a task could still exist, its
+  // exit semaphore is consumed (not replaced) first, so the previous task's
+  // final give cannot land on a fresh handle (timing-dependent use-after-
+  // free). A null semaphore means no task ever existed: spawn directly.
   if (!running_.load(std::memory_order_acquire) && !cancel_.load(std::memory_order_acquire)) {
-    if (exitedSem_ == nullptr) exitedSem_ = xSemaphoreCreateBinary();
-    if (exitedSem_ == nullptr) {
-      LOG_ERR("PREF", "OOM: respawn semaphore");
-      return;
-    }
-    if (xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
+    if (exitedSem_ != nullptr && xSemaphoreTake(exitedSem_, pdMS_TO_TICKS(kJoinTimeoutMs)) != pdTRUE) {
       LOG_DBG("PREF", "Previous worker still exiting — respawn skipped");
       return;
+    }
+    if (exitedSem_ == nullptr) {
+      exitedSem_ = xSemaphoreCreateBinary();
+      if (exitedSem_ == nullptr) {
+        LOG_ERR("PREF", "OOM: respawn semaphore");
+        return;
+      }
     }
     running_.store(true, std::memory_order_release);
     if (xTaskCreatePinnedToCore(taskTrampoline, "fibpprefetch", kStackBytes, this, kPriority, &task_, kCore) !=
