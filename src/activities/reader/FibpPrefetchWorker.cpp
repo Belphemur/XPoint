@@ -67,10 +67,16 @@ bool FibpPrefetchWorker::buildFaces() {
     }
     // Parity with tryLoadFace: the loader's EFFECTIVE render options (the
     // P2 stack probe may have degraded a slot) — same source of truth, so
-    // both fingerprint sites fold identical modes.
+    // both fingerprint sites fold identical modes. The loader's degrade
+    // funnel guarantees this set is supported by this build; if it ever
+    // is not, skip the face rather than rasterize nullptrs into FIBP
+    // caches (blank-page regression class).
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     if (!face->setRenderOptions(BookFontLoader::effectiveRenderOptions(i))) {
-      LOG_ERR("PREF", "Render options unsupported for %s", fi.file);
+      LOG_ERR("PREF", "Render options unsupported for %s — face skipped", fi.file);
+      face.reset();
+      fontBytes_[i].reset();
+      continue;
     }
 #endif
     if (!chain_.add(face.get(), fi.styleFlags)) {

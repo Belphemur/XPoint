@@ -3037,8 +3037,14 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   // 4-level gray mode at all.
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
   const auto grayCaps = renderer.grayscaleCapabilities();
-  const bool grayParity =
-      SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH && !pageHasImages && grayCaps.supported();
+  // Degrade-aware: a build without the mono module paints Smooth planes even
+  // when the setting asks for Crisp (the loader degraded the faces).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  const bool grayParity = smoothText && !pageHasImages && grayCaps.supported();
   LOG_DBG("GRS", "ttfGrayPath: aa=%d images=%d strip=%d cadence=%d/%d", grayParity, pageHasImages,
           grayCaps.stripUploads, pagesUntilFullRefresh, SETTINGS.getRefreshFrequency());
   if (grayParity) {
@@ -3178,10 +3184,11 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
   renderer.clearScreen(0xFF);
   paintTtfPage(page, params.font);
   ttf_->scratch().release(scratchMark);
-  // Publish only after the paint: consumers validate against this state.
-  ttfPreRendered.ready = true;
+  // Publish only after the paint, metadata first so a reader of ready==true
+  // never sees stale indices.
   ttfPreRendered.spineIndex = static_cast<int16_t>(currentSpineIndex);
   ttfPreRendered.pageIndex = static_cast<int16_t>(nextPage);
+  ttfPreRendered.ready = true;
   // The framebuffer no longer holds a clean displayed page: overlay opens
   // must not snapshot it (their hasRenderedPage gate reads this flag).
   ttfFrameRenderComplete.store(false, std::memory_order_release);
@@ -3232,8 +3239,11 @@ void EpubReaderActivity::ttfExtractFootnotes(const freeink::book::Page& page) {
   currentPageFootnotes.reserve(page.linkCount);
   for (uint16_t l = 0; l < page.linkCount; ++l) {
     const auto& link = page.links[l];
+    // SDK contract fills both strings (dropped on alloc failure upstream);
+    // guard anyway so future SDK drift cannot null-deref here.
+    if (link.target == nullptr) continue;
     std::string href = link.target;
-    if (link.fragment[0] != '\0') href += std::string("#") + link.fragment;
+    if (link.fragment != nullptr && link.fragment[0] != '\0') href += std::string("#") + link.fragment;
     if (href.empty() || href.rfind("http", 0) == 0) continue;
     if (!epub || (link.target[0] != '\0' && epub->resolveHrefToSpineIndex(href) < 0)) continue;
 
@@ -3409,8 +3419,12 @@ void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* fon
   // waveform — the same 4-level pipeline the bitmap reader uses. Images
   // keep the 1bpp engine path (no plane bits for image pixels).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool grayParity = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH && !pageHasImages &&
-                          renderer.grayscaleCapabilities().supported();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
   if (grayParity) {
     freeink::book::PagePaint::paintText(page, *chain, renderer);
@@ -3784,7 +3798,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool needsTextGrayscale = !freeink::book::fontLoader.effectiveMonochrome();
+#else
   const bool needsTextGrayscale = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
                                       display.getController() == HalDisplay::Controller::UC8279 &&

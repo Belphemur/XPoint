@@ -124,6 +124,23 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
   FIBP caches regenerate. Hinted TrueType (native TT
   interpreter) has a much smaller footprint — Safe default: Light for TT
   faces, measure for CFF.
+- **Supported/degrade funnel (soak regression 2026-09-19, Crisp = blank
+  page)**: a build whose FreeType lacks the mono renderer module
+  (`FREEINK_FONT_ENABLE_MONOCHROME` off → `ftmodule.h` does not register
+  `ft_raster1`) accepts the Crisp request but rasterizes EVERY glyph to
+  `nullptr` — the page paints with no text, and the settings preview
+  garbage-plots `Outside range (x,y)` lines. All render-option application
+  now flows through one funnel (`BookFontLoader::applySlotRenderOptions`):
+  on refusal it drops monochrome first (AA Smooth), then hinting, logs
+  `LOG_ERR` with the face path, and records the effective set, which drives
+  BOTH `renderOptionsFingerprintTag()` and the paint-path mode decision
+  (`BookFontLoader::effectiveMonochrome()` — gray planes / `Mono1Dithered`
+  vs `Mono1Sharp` follow the ACTIVE face mode, never the raw setting).
+  Firmware defines both module flags (`FREEINK_FONT_ENABLE_MONOCHROME=1`,
+  `FREEINK_FONT_ENABLE_AUTOHINT=1`) in all FT envs; the host FT test
+  variant defines neither, so the funnel is exercised on every host run
+  (UnsupportedMonoDegradesToAaAndStillRenders). The prefetch worker skips a
+  face outright rather than rasterize nullptrs into FIBP caches.
 
 ### P3 — Faster face loading (app-side)
 

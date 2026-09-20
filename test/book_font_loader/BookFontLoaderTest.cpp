@@ -1059,4 +1059,51 @@ TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
             tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
 }
+
+// Device regression 2026-09-19: a mono request against a build whose
+// FreeType lacks the mono renderer module rasterized EVERY glyph to nullptr
+// (blank page). The load funnel must degrade to the nearest supported set
+// (AA first) and the face must still paint.
+TEST(BookFontLoaderHinting, UnsupportedMonoDegradesToAaAndStillRenders) {
+  // The host FT variant compiles neither the mono renderer nor the
+  // auto-hinter, so Crisp is refused here exactly like on a firmware env
+  // missing FREEINK_FONT_ENABLE_MONOCHROME.
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = 0x5F123456u;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+
+  // (C2) The degrade is visible in the FIBP identity: effective mode is AA
+  // and the tag differs from the undegraded Crisp tag.
+  EXPECT_FALSE(BookFontLoader::effectiveMonochrome());
+  EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(),
+            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+
+  // (C1) The degraded face still rasterizes: non-null pixels, non-empty
+  // bitmap (the regression produced nullptr for every glyph).
+  freeink::font::FontChain* chain = loader.getReaderFont();
+  freeink::font::RasterFont* face = chain->fontFor('A');
+  ASSERT_NE(face, nullptr);
+  const freeink::font::GlyphBitmap* bmp = face->rasterize('A', 14);
+  ASSERT_NE(bmp, nullptr);
+  ASSERT_NE(bmp->pixels, nullptr);
+  EXPECT_GT(size_t(bmp->width) * bmp->height, 0u);
+}
 #endif

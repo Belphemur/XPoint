@@ -104,18 +104,42 @@ constexpr uint32_t kHintProbeCodepoints[] = {'A', 'g', 'M', '@', 0x00C6u, 0x2019
 constexpr uint16_t kHintProbeSizeMultipliers[] = {1, 2, 4};
 
 void BookFontLoader::degradeHint(uint8_t faceSlot) {
-  effectiveRenderOptions_[faceSlot].hinting = freeink::font::FtFont::HintingMode::None;
+  freeink::font::FtFont::RenderOptions degraded = effectiveRenderOptions_[faceSlot];
+  degraded.hinting = freeink::font::FtFont::HintingMode::None;
   // Route through setRenderOptions(): the P1 glyph-cache flush point, so no
   // stale hinted bitmap survives the mode change (review contract).
-  if (faces_[faceSlot] != nullptr) {
-    faces_[faceSlot]->setRenderOptions(effectiveRenderOptions_[faceSlot]);
-  }
+  applySlotRenderOptions(faces_[faceSlot], faceSlot, degraded, "stack probe");
   LOG_ERR("BFNT", "Hinting degraded to None for face slot %u (stack probe)", faceSlot);
+}
+
+void BookFontLoader::applySlotRenderOptions(NativeFace* face, uint8_t faceSlot,
+                                            const freeink::font::FtFont::RenderOptions& requested, const char* label) {
+  freeink::font::FtFont::RenderOptions opts = requested;
+  if (face != nullptr && !face->setRenderOptions(opts)) {
+    // Degrade to the nearest SUPPORTED set — never keep unsupported options:
+    // a mono request without the compiled-in mono module rasterizes EVERY
+    // glyph to nullptr (blank page, the device regression this guards).
+    opts.monochrome = false;  // drop mono first: AA Smooth is the nearest render
+    if (!face->setRenderOptions(opts)) {
+      opts.hinting = freeink::font::FtFont::HintingMode::None;
+      if (!face->setRenderOptions(opts)) {
+        LOG_ERR("BFNT", "Render options unusable (slot %u, %s)", faceSlot, label);
+      }
+    } else {
+      LOG_ERR("BFNT", "Render options degraded to AA (slot %u, %s)", faceSlot, label);
+    }
+  }
+  // The effective set drives the fingerprint tag and every paint-path mode
+  // decision (effectiveMonochrome), so FIBP identity always matches what
+  // actually renders.
+  effectiveRenderOptions_[faceSlot] = opts;
 }
 
 const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptions(uint8_t faceSlot) {
   return effectiveRenderOptions_[faceSlot];
 }
+
+bool BookFontLoader::effectiveMonochrome() { return effectiveRenderOptions_[0].monochrome; }
 
 void BookFontLoader::applyRenderMode(bool crispMode) {
   // Crisp/Smooth switch without a face reload: the mode changes glyph
@@ -128,8 +152,7 @@ void BookFontLoader::applyRenderMode(bool crispMode) {
   // stays valid.
   requestedMonochrome_ = crispMode;
   for (uint8_t i = 0; i < 4; ++i) {
-    effectiveRenderOptions_[i] = currentRenderOptions();
-    if (faces_[i] != nullptr) faces_[i]->setRenderOptions(effectiveRenderOptions_[i]);
+    applySlotRenderOptions(faces_[i], i, currentRenderOptions(), "applyRenderMode");
   }
   // Re-derive the cached fingerprint so the next generation hash sees the
   // new tag (cheap post-P3.1; 0-consistent for unloaded/fallback states).
@@ -1174,8 +1197,9 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
   // Borrowed bytes: the file bytes outlive the face (same lifetime rules as
   // the stb path — released only in ensureLoaded()/releaseResidentCaches()).
-  if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, kInitSizePx, styleToWeight(fi.styleFlags),
-                  (fi.styleFlags & StyleItalic) != 0)) {
+  const bool initOk = face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, kInitSizePx,
+                                 styleToWeight(fi.styleFlags), (fi.styleFlags & StyleItalic) != 0);
+  if (!initOk) {
     LOG_ERR("BFNT", "FtFont::init failed for %s", fi.file);
     delete face;
     if (isPsram) {
@@ -1185,11 +1209,10 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     }
     return false;
   }
-  // Reader-wide render options (hinting + text render mode). None-hinting
-  // never reports unsupported; a future mode change must keep this check.
-  if (!face->setRenderOptions(effectiveRenderOptions(faceIdx))) {
-    LOG_ERR("BFNT", "Render options unsupported for %s", fi.file);
-  }
+  // Reader-wide render options (hinting + text render mode) through the
+  // single supported/degrade funnel; the effective set lands in
+  // effectiveRenderOptions_ either way.
+  applySlotRenderOptions(face, faceIdx, effectiveRenderOptions(faceIdx), fi.file);
 #else
   if (!glyphBacking_[faceIdx]) {
     glyphBacking_[faceIdx] = poolMakeBytes(kGlyphArenaBytes);

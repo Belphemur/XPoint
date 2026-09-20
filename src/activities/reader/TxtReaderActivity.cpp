@@ -10,6 +10,9 @@
 #include <Utf8.h>
 
 #include "CrossPointSettings.h"
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+#include "BookFontLoader.h"
+#endif
 #include "ProgressFile.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
@@ -322,7 +325,14 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
   renderLines();
   renderStatusBar();
 
-  if (SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH) {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Degrade-aware: without the mono module the loader degraded Crisp faces
+  // to AA, so the anti-aliased display path is the correct one.
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  if (smoothText) {
     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh);
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   } else {

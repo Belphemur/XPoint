@@ -144,6 +144,13 @@ class BookFontLoader {
   // Only meaningful for the FT backend; the stb backend has no options.
   static const freeink::font::FtFont::RenderOptions& effectiveRenderOptions(uint8_t faceSlot);
 
+  // The ACTIVE text raster mode after any degrade (slot 0's effective set;
+  // support is build-wide so slots never diverge). Paint-path decisions
+  // (gray planes vs 1bpp) must follow this, NOT the raw setting — a build
+  // without the mono module degrades Crisp to Smooth, and painting Crisp
+  // frame formats against AA faces blanks the page.
+  static bool effectiveMonochrome();
+
   // Fingerprint tag folding the ACTIVE render options into the font
   // fingerprint. Runtime (not constexpr) since the effective per-face mode
   // is a probe outcome: a degrade changes advances and layout, so the tag
@@ -230,6 +237,15 @@ class BookFontLoader {
   // live-face propagation here by construction — ensureLoaded deletes the
   // faces before resetting, and the test instance has none.
   void resetHintState();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // THE degrade funnel: apply `requested` to the slot's face, falling back
+  // to the nearest supported set (drop monochrome → drop hinting) when
+  // refused, and record the effective set. Called by tryLoadFace,
+  // applyRenderMode, and degradeHint — no call site may setRenderOptions
+  // directly and continue on false.
+  void applySlotRenderOptions(NativeFace* face, uint8_t faceSlot, const freeink::font::FtFont::RenderOptions& requested,
+                              const char* label);
+#endif
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
