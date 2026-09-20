@@ -3319,9 +3319,10 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
 
   const bool resuming = ttfPreRendered.pumping;
   if (resuming && (ttfPreRendered.pageIndex != nextPage || ttfPreRendered.generation != ttfGeneration ||
-                   ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation()))) {
-    // Reading position or layout changed mid-pump: the partial paint is
-    // garbage — abort (the invalidate also clears the cursor).
+                   ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation()) ||
+                   ttfPreRendered.monochrome != ttfEffectiveMonochromeSnapshot())) {
+    // Reading position, layout, or raster mode changed mid-pump: the partial
+    // paint is garbage — abort (the invalidate also clears the cursor).
     ttfInvalidatePreRender("stale mid-pump");
     return;
   }
@@ -3430,6 +3431,10 @@ bool EpubReaderActivity::ttfFastDisplayPass(const freeink::book::LayoutParams& p
     ttf_->scratch().release(scratchMark);
     return false;
   }
+  // Consume the snapshot: every validity gate passed, this pass owns the
+  // framebuffer. Clearing ready here (not in ttfPageTurn) keeps the display
+  // pass reachable and lets ttfSchedulePreRender re-arm for the next page.
+  ttfInvalidatePreRender("consumed");
   ttfExtractFootnotes(page);
 
   // Content is already in the framebuffer — chrome only, then commit.
@@ -3914,7 +3919,11 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       ttfLogPrerenderMiss("raster mode changed");
     } else {
       ttfPage = ttfPreRendered.pageIndex;
-      ttfInvalidatePreRender("consumed");
+      // ready stays set: the display pass revalidates it (spine/page/gen/
+      // orientation/raster) and consumes the snapshot after the checks —
+      // invalidating here would kill the fast pass's first gate (kody:
+      // P4 never paid off) and block ttfSchedulePreRender from re-arming
+      // the next page's prerender.
       ttfUsePreRenderedBuffer = true;
       lastPageTurnTime = millis();
 #ifdef READING_STATS_ENABLED
