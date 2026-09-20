@@ -258,7 +258,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t clockHasBeenSynced = 0;
   // Text rendering settings
   uint8_t extraParagraphSpacing = 1;
-  uint8_t textAntiAliasing = 1;
+  // Text render mode (same settings row as the former textAntiAliasing bool,
+  // fully replaced per owner directive — no compat key, no JSON migration):
+  // Smooth = 8-bit AA coverage + dual-plane gray paint (hinted, Light);
+  // Crisp = hinted 1-bit mono glyphs straight from FT — no coverage, no
+  // tone quantization, no plane walk. DEFAULT CRISP (mono hinted glyphs is
+  // the fast, hard-edged baseline; Smooth is the opt-in AA mode).
+  enum TEXT_RENDER_MODE { TEXT_RENDER_SMOOTH = 0, TEXT_RENDER_CRISP = 1 };
+  uint8_t textRenderMode = TEXT_RENDER_CRISP;
   // Short power button click behaviour. The default Sleep binding makes the
   // short click sleep; a long press (see POWER_BUTTON_HOLD_MS) always powers
   // the device off, regardless of this setting.

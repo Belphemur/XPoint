@@ -106,8 +106,10 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
   1. P1 alone removes the repeated FT render (the dominant cost).
   2. Optional **Crisp mode**: `HintingMode::Light` + MONO rasterization →
      1-bit glyphs straight from FT, no coverage, no `grayTone`, no dual-plane
-     pass. Shipped as a user setting (Smooth = AA planes, default;
-     Crisp = hinted mono, fastest and hardest-edged). Both paths are render
+     pass. Shipped as a user setting (Smooth = AA planes, opt-in;
+     Crisp = hinted mono, fastest and hardest-edged — DEFAULT per owner
+     directive, replacing the old `textAntiAliasing` bool in the SAME row
+     with no JSON migration). Both paths are render
      options and MUST fold into the FIBP cache identity — extend
      `renderOptionsFingerprintTag()` (BookFontLoader.h) to cover hinting
      mode AND raster mode, per its own documented rule.

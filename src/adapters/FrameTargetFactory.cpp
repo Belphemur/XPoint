@@ -19,7 +19,8 @@ book::FrameTarget makeFrameTarget(const GfxRenderer& renderer) {
   target.width = static_cast<int16_t>(renderer.getDisplayWidth());  // panel-native
   target.height = static_cast<int16_t>(renderer.getDisplayHeight());
   target.widthBytes = static_cast<int16_t>(renderer.getDisplayWidthBytes());
-  target.format = SETTINGS.textAntiAliasing ? book::FrameFormat::Mono1Dithered : book::FrameFormat::Mono1Sharp;
+  target.format = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH ? book::FrameFormat::Mono1Dithered
+                                                                                    : book::FrameFormat::Mono1Sharp;
 
   switch (renderer.getOrientation()) {
     case GfxRenderer::Portrait:

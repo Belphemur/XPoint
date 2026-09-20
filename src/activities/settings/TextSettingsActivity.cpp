@@ -34,7 +34,7 @@ constexpr StrId TAB_NAME_IDS[] = {StrId::STR_FONT, StrId::STR_SIZE, StrId::STR_L
 constexpr StrId LAYOUT_ROW_NAME_IDS[] = {StrId::STR_LINE_SPACING, StrId::STR_EXTRA_SPACING, StrId::STR_ALIGNMENT,
                                          StrId::STR_SCREEN_MARGIN};
 constexpr StrId STYLE_ROW_NAME_IDS[] = {StrId::STR_FOCUS_READING, StrId::STR_HYPHENATION, StrId::STR_EMBEDDED_STYLE,
-                                        StrId::STR_TEXT_AA};
+                                        StrId::STR_TEXT_RENDERING};
 
 #if !defined(CROSSPOINT_TTF_READER)
 int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontFamilyName, uint8_t fontFamily) {
@@ -129,6 +129,9 @@ void TextSettingsActivity::onEnter() {
   // §14.1/§14.2: TTF builds show the native family picker (built-in + §14.4
   // families); the legacy bitmap rows and the SD .cpfont list belong to the
   // legacy class's tab (the #else branch below).
+  // Sync the loader's render mode with the persisted setting first: a Crisp
+  // mode saved in a previous session must apply before any render.
+  freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
   freeink::book::fontLoader.begin();  // rescan: pick up fonts added since boot
   fonts_.reserve(1 + static_cast<size_t>(freeink::book::fontLoader.familyCount()));
   fonts_.push_back({I18N.get(StrId::STR_BUILTIN_FONT), true, 0, true});
@@ -598,8 +601,20 @@ void TextSettingsActivity::confirmStyleRow(int row) {
     case StyleRow::EmbeddedStyle:
       SETTINGS.embeddedStyle = !SETTINGS.embeddedStyle;
       break;
-    case StyleRow::AntiAliasing:
-      SETTINGS.textAntiAliasing = !SETTINGS.textAntiAliasing;
+    case StyleRow::TextRendering:
+      // Smooth -> Crisp -> Smooth. The mode change re-derives the FT faces'
+      // render options through setRenderOptions() (the P1 glyph-cache flush
+      // point) and the fingerprint tag folds the mode, so FIBP identity
+      // invalidates without a face reload.
+      SETTINGS.textRenderMode = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH
+                                    ? CrossPointSettings::TEXT_RENDER_CRISP
+                                    : CrossPointSettings::TEXT_RENDER_SMOOTH;
+#if defined(CROSSPOINT_TTF_READER)
+      // Flush the FT faces' render options (P1 glyph-cache flush point) and
+      // refresh the fingerprint tag so FIBP identity invalidates — no face
+      // reload. The legacy bitmap path reads the mode per render directly.
+      freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
+#endif
       break;
 
     default:
@@ -617,8 +632,8 @@ std::string TextSettingsActivity::styleValueText(int row) const {
       return SETTINGS.hyphenationEnabled ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
     case StyleRow::EmbeddedStyle:
       return SETTINGS.embeddedStyle ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
-    case StyleRow::AntiAliasing:
-      return SETTINGS.textAntiAliasing ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
+    case StyleRow::TextRendering:
+      return SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH ? tr(STR_SMOOTH) : tr(STR_CRISP);
 
     default:
       return "";
@@ -630,7 +645,7 @@ std::string TextSettingsActivity::styleValueText(int row) const {
 bool TextSettingsActivity::focusedRowHasNoPreview() const {
   if (ringPos() == 0 || tab_ != Tab::Style) return false;
   const StyleRow row = static_cast<StyleRow>(ringPos() - 1);
-  return row == StyleRow::Hyphenation || row == StyleRow::EmbeddedStyle || row == StyleRow::AntiAliasing;
+  return row == StyleRow::Hyphenation || row == StyleRow::EmbeddedStyle || row == StyleRow::TextRendering;
 }
 
 void TextSettingsActivity::switchTab(const int direction) {

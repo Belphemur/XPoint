@@ -108,6 +108,35 @@ class BookFontLoader {
   // the mode is render-affecting and must stay in lockstep with the FIBP
   // cache identity (renderOptionsFingerprintTag).
   static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{freeink::font::FtFont::HintingMode::Light};
+  // Crisp base for the file-scope effective-options init (C++20 designated
+  // init on the aggregate): matches the TEXT_RENDER_CRISP settings default
+  // so pre-sync readers agree with the persisted state.
+  static constexpr freeink::font::FtFont::RenderOptions kCrispRenderOptions{
+      .hinting = freeink::font::FtFont::HintingMode::Light,
+      .interpreterVersion = 40,
+      .monochrome = true,
+  };
+
+  // Render options for the active CrossPointSettings::textRenderMode:
+  // Smooth keeps the dual-plane AA coverage; Crisp sets the FT monochrome
+  // target (hinted 1-bit glyphs — no coverage, no tone quantization, no
+  // plane walk). The mode is applied to live faces via applyRenderMode()
+  // (same flush point as the stack-probe degrade) and folded into the
+  // fingerprint tag, so a switch invalidates FIBP identity without a reload.
+  // Synced from the persisted setting by the reader and the text settings
+  // activity (applyRenderMode takes no SETTINGS dependency — host-testable).
+  [[nodiscard]] freeink::font::FtFont::RenderOptions currentRenderOptions() const {
+    auto options = kRenderOptions;
+    options.monochrome = requestedMonochrome_;
+    return options;
+  }
+
+  // Re-derive every slot's effective options from the requested mode and
+  // push them through setRenderOptions() — the P1 glyph-cache flush point —
+  // so no stale-quantized bitmap survives the change. No-op on the stb
+  // backend. Call with the new mode after SETTINGS.textRenderMode changes;
+  // also syncs the fingerprint so the next layoutGenerationHash sees the tag.
+  void applyRenderMode(bool crispMode);
 
   // Per-slot effective options: kRenderOptions unless the P2 stack probe
   // degraded that face to unhinted. Shared with the FIBP prefetch worker so
@@ -207,6 +236,10 @@ class BookFontLoader {
   FontChain chain_;
   uint32_t fingerprint_ = 0;
   bool loaded_ = false;  // a load attempt completed (fingerprint 0 is valid)
+  // Requested render mode (task6): Crisp ⇒ FT monochrome target. Synced from
+  // the persisted setting by the reader/settings via applyRenderMode(); the
+  // default (Crisp) matches the TEXT_RENDER_CRISP settings default.
+  bool requestedMonochrome_ = true;
   std::atomic<bool> dirty_{false};
 
   // Two-tier font-byte storage: each face has its own RAII owner.

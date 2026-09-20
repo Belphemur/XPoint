@@ -78,8 +78,8 @@ constexpr int styleToWeight(uint8_t styleFlags) { return (styleFlags & StyleBold
 // the loopTask inside ensureLoaded(); the worker reads it between loader
 // generations, so the sequencing keeps the accesses non-overlapping.
 freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
-    BookFontLoader::kRenderOptions, BookFontLoader::kRenderOptions, BookFontLoader::kRenderOptions,
-    BookFontLoader::kRenderOptions};
+    BookFontLoader::kCrispRenderOptions, BookFontLoader::kCrispRenderOptions, BookFontLoader::kCrispRenderOptions,
+    BookFontLoader::kCrispRenderOptions};
 
 // Additional stack depth a face's hinted render may consume before the probe
 // degrades it. The bound protects the smallest consumer stack: the 24KB
@@ -104,6 +104,25 @@ void BookFontLoader::degradeHint(uint8_t faceSlot) {
 
 const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptions(uint8_t faceSlot) {
   return effectiveRenderOptions_[faceSlot];
+}
+
+void BookFontLoader::applyRenderMode(bool crispMode) {
+  // Crisp/Smooth switch without a face reload: the mode changes glyph
+  // RASTERIZATION only (advances are unchanged — Light hinting is on in
+  // both modes), so the faces stay resident. setRenderOptions() is the P1
+  // glyph-cache flush point; the fingerprint tag folds the new mode, so
+  // FIBP cache identity regenerates on the next layoutGenerationHash. No
+  // stack re-probe: the Adobe interpreter footprint is the same in both
+  // modes (only the rasterizer differs), so the load-time probe verdict
+  // stays valid.
+  requestedMonochrome_ = crispMode;
+  for (uint8_t i = 0; i < 4; ++i) {
+    effectiveRenderOptions_[i] = currentRenderOptions();
+    if (faces_[i] != nullptr) faces_[i]->setRenderOptions(effectiveRenderOptions_[i]);
+  }
+  // Re-derive the cached fingerprint so the next generation hash sees the
+  // new tag (cheap post-P3.1; 0-consistent for unloaded/fallback states).
+  if (loaded_) fingerprint_ = computeFingerprintCached();
 }
 
 uint32_t BookFontLoader::renderOptionsFingerprintTag() {
@@ -141,7 +160,7 @@ void BookFontLoader::probeHintStackSafety() {}
 
 #if defined(HOST_TEST)
 void BookFontLoader::resetHintStateForTest() {
-  for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = kRenderOptions;
+  for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = kCrispRenderOptions;
 }
 #endif  // HOST_TEST
 #endif  // CROSSPOINT_FONT_BACKEND_FT
@@ -442,7 +461,7 @@ void BookFontLoader::ensureLoaded() {
     faceMtime_[i] = 0;
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     // Fresh load: re-probe hinting from the requested mode.
-    effectiveRenderOptions_[i] = kRenderOptions;
+    effectiveRenderOptions_[i] = currentRenderOptions();
 #endif
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
@@ -1149,9 +1168,9 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     }
     return false;
   }
-  // Reader-wide render options (hinting). None never reports unsupported (no
-  // optional module needed); a future mode change must keep this check.
-  if (!face->setRenderOptions(kRenderOptions)) {
+  // Reader-wide render options (hinting + text render mode). None-hinting
+  // never reports unsupported; a future mode change must keep this check.
+  if (!face->setRenderOptions(effectiveRenderOptions(faceIdx))) {
     LOG_ERR("BFNT", "Render options unsupported for %s", fi.file);
   }
 #else

@@ -294,6 +294,14 @@ EpubReaderActivity::~EpubReaderActivity() {
 
 void EpubReaderActivity::onEnter() {
   ReaderActivity::onEnter();
+#if defined(CROSSPOINT_TTF_READER)
+  // Sync the FT faces' render mode with the persisted setting before any
+  // render/worker session can use them (a Crisp mode saved in a previous
+  // session must apply at boot, not only after a settings visit).
+  if (ttf_) {
+    freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
+  }
+#endif
 #ifdef READING_STATS_ENABLED
   if (epub && SETTINGS.shouldTrackReadingStats()) {
     stats = BookReadingStats::load(epub->getCachePath());
@@ -664,6 +672,10 @@ bool EpubReaderActivity::loadBook() {
     if (!ttf_->open(bookPath.c_str(), ttfCacheDir.c_str())) {
       LOG_ERR("ERS", "TTF runtime open failed — using legacy reader path");
       ttf_.reset();
+    } else {
+      // Sync the FT faces' render mode before the first render/worker session
+      // (onEnter ran before ttf_ existed on a fresh open).
+      freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
     }
   }
 #endif
@@ -3025,7 +3037,8 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   // 4-level gray mode at all.
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
   const auto grayCaps = renderer.grayscaleCapabilities();
-  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && grayCaps.supported();
+  const bool grayParity =
+      SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH && !pageHasImages && grayCaps.supported();
   LOG_DBG("GRS", "ttfGrayPath: aa=%d images=%d strip=%d cadence=%d/%d", grayParity, pageHasImages,
           grayCaps.stripUploads, pagesUntilFullRefresh, SETTINGS.getRefreshFrequency());
   if (grayParity) {
@@ -3396,8 +3409,8 @@ void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* fon
   // waveform — the same 4-level pipeline the bitmap reader uses. Images
   // keep the 1bpp engine path (no plane bits for image pixels).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool grayParity =
-      SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.grayscaleCapabilities().supported();
+  const bool grayParity = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH && !pageHasImages &&
+                          renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
   if (grayParity) {
     freeink::book::PagePaint::paintText(page, *chain, renderer);
@@ -3771,7 +3784,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
+  const bool needsTextGrayscale = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
                                       display.getController() == HalDisplay::Controller::UC8279 &&

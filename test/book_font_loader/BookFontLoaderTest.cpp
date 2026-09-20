@@ -1002,10 +1002,11 @@ namespace {
 using RO = freeink::font::FtFont::RenderOptions;
 using HM = freeink::font::FtFont::HintingMode;
 
-uint32_t tagFor(std::initializer_list<HM> modes) {
+uint32_t tagFor(std::initializer_list<HM> modes, bool mono) {
   uint32_t tag = 0;
   uint8_t slot = 0;
   for (HM mode : modes) tag |= static_cast<uint32_t>(mode) << (3 * slot++);
+  if (mono) tag |= 0xFu << 12;  // one monochrome bit per slot (bits 12-15)
   return tag;
 }
 
@@ -1016,8 +1017,25 @@ TEST(BookFontLoaderHinting, RequestedModeIsLightAndTagFoldsPerSlot) {
   EXPECT_EQ(BookFontLoader::kRenderOptions.hinting, HM::Light);
   for (uint8_t slot = 0; slot < 4; ++slot) {
     EXPECT_EQ(BookFontLoader::effectiveRenderOptions(slot).hinting, HM::Light) << "slot " << slot;
+    // Crisp is the default render mode (task6 directive).
+    EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(slot).monochrome) << "slot " << slot;
   }
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
+            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+}
+
+TEST(BookFontLoaderHinting, ApplyRenderModeFlipsMonochromeAndTag) {
+  BookFontLoader loader;
+  BookFontLoader::resetHintStateForTest();
+  loader.applyRenderMode(false);  // Smooth
+  EXPECT_FALSE(BookFontLoader::effectiveRenderOptions(0).monochrome);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
+            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/false));
+  loader.applyRenderMode(true);  // Crisp
+  EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(3).monochrome);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
+            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+  BookFontLoader::resetHintStateForTest();
 }
 
 TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
@@ -1029,13 +1047,14 @@ TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(0).hinting, HM::Light);
   const uint32_t degraded = BookFontLoader::renderOptionsFingerprintTag();
-  EXPECT_NE(degraded, tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
-  EXPECT_EQ(degraded, tagFor({HM::Light, HM::None, HM::Light, HM::Light}));
+  EXPECT_NE(degraded, tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+  EXPECT_EQ(degraded, tagFor({HM::Light, HM::None, HM::Light, HM::Light}, /*mono=*/true));
   // Mutate-check the tag really folds the degraded slot: a second slot's
   // degrade must move the tag again (no aliasing between slot fields).
   loader.degradeHintForTest(2);
   EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(), degraded);
   BookFontLoader::resetHintStateForTest();
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
+            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
 }
 #endif

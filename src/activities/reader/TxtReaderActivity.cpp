@@ -322,7 +322,7 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
   renderLines();
   renderStatusBar();
 
-  if (SETTINGS.textAntiAliasing) {
+  if (SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH) {
     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh);
     ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
   } else {
