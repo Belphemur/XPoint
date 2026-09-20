@@ -268,6 +268,48 @@ class EpubReaderActivity final : public ReaderActivity {
   void ttfSaveProgress();
   void finishTtfPageRender();
   bool ttfPageTurn(bool isForwardTurn);
+  // P4 one-page-ahead prerender (port of upstream 60079923, adapted to the
+  // TTF engine): after a fully committed page-N frame, paint page N+1's
+  // content-only (no status bar, no flush) into the framebuffer so the next
+  // FORWARD turn skips layout+build+base-paint entirely. The prerender is
+  // one RenderLock-protected transaction (renderBookTtf's prerender pass)
+  // that starts only after the previous pass's waitRefreshComplete(); ready
+  // is published only after the paint. Any other render pass invalidates it.
+  // See the review contract in docs/design/2026-09-19-freetype-render-cache.md:
+  // it is also invalidated (or the current page re-rendered) on any full-FB
+  // flush outside the forward turn's own commit (deferred overlay pushes,
+  // popup chrome opens).
+  struct TtfPreRenderedPage {
+    bool ready = false;
+    int16_t spineIndex = -1;
+    int16_t pageIndex = -1;
+  };
+  TtfPreRenderedPage ttfPreRendered;
+  // Set by finishTtfPageRender() after a normal page render to request the
+  // prerender pass; consumed and cleared by renderBookTtf() before any state
+  // checks. Never set while an overlay/deferred overlay refresh is live.
+  bool ttfPendingPreRender = false;
+  // Set by the ttfPageTurn() fast path to tell renderBookTtf() the frame
+  // buffer already holds the next page's content: only the status bar and
+  // the display commit are needed.
+  bool ttfUsePreRenderedBuffer = false;
+  // True when finishTtfPageRender() painted a chrome popup this pass — such
+  // a frame must stay page N's context, so the prerender stays unscheduled.
+  bool ttfChromePopupShown = false;
+  void ttfInvalidatePreRender();
+  void ttfSchedulePreRender();
+  // Both passes re-derive their target from live state (the flags only say a
+  // pass was requested) and need the layout params for the paint font.
+  void ttfRunPreRenderPass(const freeink::book::LayoutParams& params);
+  bool ttfFastDisplayPass(const freeink::book::LayoutParams& params);
+  // Extracts the engine page's internal (resolvable) footnote links into
+  // currentPageFootnotes; shared by the normal and fast-display passes.
+  void ttfExtractFootnotes(const freeink::book::Page& page);
+  // Display commit + finalize tail shared by the normal and fast-display
+  // passes: gray-route dispatch (strips/full-frame), 1bpp fallback with the
+  // async-overlap window, telemetry, frame-complete publication, progress
+  // save, chrome popups, and the prerender scheduling hook.
+  void ttfCommitFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params, size_t scratchMark);
 #endif
 
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
