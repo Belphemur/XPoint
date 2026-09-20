@@ -283,8 +283,18 @@ class EpubReaderActivity final : public ReaderActivity {
     bool ready = false;
     int16_t spineIndex = -1;
     int16_t pageIndex = -1;
+    // Validity axes the consume guard must match (soak finding #3: the
+    // framebuffer content is only the target page when ALL of these are
+    // unchanged since the prerender painted it).
+    uint32_t generation = 0;     // layoutGenerationHash at prerender time
+    uint8_t orientation = 0xFF;  // GfxRenderer::Orientation snapshot
+    bool monochrome = false;     // effective text raster mode snapshot
   };
   TtfPreRenderedPage ttfPreRendered;
+  // millis() at renderBookTtf entry — busy-window telemetry (soak finding
+  // #3 P2): input is polled, so presses fully inside a long render window
+  // are dropped; the window length must be visible in the soak log.
+  uint32_t ttfRenderBusyStartMs = 0;
   // Set by finishTtfPageRender() after a normal page render to request the
   // prerender pass; consumed and cleared by renderBookTtf() before any state
   // checks. Never set while an overlay/deferred overlay refresh is live.
@@ -296,7 +306,11 @@ class EpubReaderActivity final : public ReaderActivity {
   // True when finishTtfPageRender() painted a chrome popup this pass — such
   // a frame must stay page N's context, so the prerender stays unscheduled.
   bool ttfChromePopupShown = false;
-  void ttfInvalidatePreRender();
+  void ttfInvalidatePreRender(const char* reason);
+  // Soak triage: log a fast-path miss reason once per distinct reason.
+  void ttfLogPrerenderMiss(const char* reason);
+  // The ACTIVE text raster mode (degrade-aware snapshot axis).
+  bool ttfEffectiveMonochromeSnapshot() const;
   void ttfSchedulePreRender();
   // Both passes re-derive their target from live state (the flags only say a
   // pass was requested) and need the layout params for the paint font.

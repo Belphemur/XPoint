@@ -1178,6 +1178,7 @@ void EpubReaderActivity::loop() {
 
     if (RenderLock::peek()) {
       lastPageTurnTime = millis();
+      LOG_DBG("ERS", "auto-turn deferred: render busy");
       return;
     }
 
@@ -2748,7 +2749,8 @@ void EpubReaderActivity::renderBookTtf() {
   const bool isBufferDisplayPass = ttfUsePreRenderedBuffer;
   ttfPendingPreRender = false;
   ttfUsePreRenderedBuffer = false;
-  if (!isPreRenderPass && !isBufferDisplayPass) ttfInvalidatePreRender();
+  ttfRenderBusyStartMs = millis();
+  if (!isPreRenderPass && !isBufferDisplayPass) ttfInvalidatePreRender("unflagged render pass");
   ttfChromePopupShown = false;
   // Any render attempt makes the previous framebuffer state provisional: only
   // a successful page+status render below may restore the fast-open flag.
@@ -2804,7 +2806,7 @@ void EpubReaderActivity::renderBookTtf() {
     if (ttfFastDisplayPass(params)) return;
     // Page read failed or an image page slipped through: the framebuffer no
     // longer matches the reading position — full render below.
-    ttfInvalidatePreRender();
+    ttfInvalidatePreRender("fast pass precondition");
   }
 
   // 2) Chapter transition. A running session for the chapter we enter (a
@@ -3026,6 +3028,13 @@ void EpubReaderActivity::renderBookTtf() {
 // the fast pass skips only the base paint, not the commit).
 void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
                                         size_t scratchMark) {
+  {
+    const uint32_t busyMs = millis() - ttfRenderBusyStartMs;
+    if (busyMs > 500) {
+      LOG_DBG("ERS", "render busy window %lu ms — button edges inside it are unsampleable (polled input)",
+              static_cast<unsigned long>(busyMs));
+    }
+  }
   const auto showPendingSyncSaveError = [this]() {
     if (!pendingSyncSaveError) return;
     pendingSyncSaveError = false;
@@ -3126,7 +3135,16 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   finishTtfPageRender();
 }
 
-void EpubReaderActivity::ttfInvalidatePreRender() {
+void EpubReaderActivity::ttfInvalidatePreRender(const char* reason) {
+  if (ttfPreRendered.ready) {
+    // Rate-limit to once per distinct reason: the soak needs to know WHICH
+    // guard kills a prerender, not a per-event log flood.
+    static const char* lastReason = nullptr;
+    if (reason != lastReason) {
+      lastReason = reason;
+      LOG_DBG("ERS", "TTF prerender invalidated: %s", reason);
+    }
+  }
   ttfPreRendered.ready = false;
   ttfPreRendered.spineIndex = -1;
   ttfPreRendered.pageIndex = -1;
@@ -3150,6 +3168,25 @@ void EpubReaderActivity::ttfSchedulePreRender() {
   if (ESP.getFreeHeap() < RENDER_MIN_FREE_HEAP) return;
   ttfPendingPreRender = true;
   requestUpdate();
+}
+
+void EpubReaderActivity::ttfLogPrerenderMiss(const char* reason) {
+  // Once per distinct reason (soak finding #3): enough to identify the
+  // failing guard, no per-event flood.
+  static const char* lastReason = nullptr;
+  if (reason != lastReason) {
+    lastReason = reason;
+    LOG_DBG("ERS", "TTF prerender miss: %s (ready=%d spine=%d page=%d gen=%08x)", reason, ttfPreRendered.ready,
+            ttfPreRendered.spineIndex, ttfPreRendered.pageIndex, ttfPreRendered.generation);
+  }
+}
+
+bool EpubReaderActivity::ttfEffectiveMonochromeSnapshot() const {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  return freeink::book::fontLoader.effectiveMonochrome();
+#else
+  return false;
+#endif
 }
 
 // P4 prerender pass: paint the NEXT page's content-only into the framebuffer
@@ -3185,9 +3222,13 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
   paintTtfPage(page, params.font);
   ttf_->scratch().release(scratchMark);
   // Publish only after the paint, metadata first so a reader of ready==true
-  // never sees stale indices.
+  // never sees stale indices. The validity snapshot pins every axis the
+  // consume guard checks (soak finding #3).
   ttfPreRendered.spineIndex = static_cast<int16_t>(currentSpineIndex);
   ttfPreRendered.pageIndex = static_cast<int16_t>(nextPage);
+  ttfPreRendered.generation = ttfGeneration;
+  ttfPreRendered.orientation = static_cast<uint8_t>(renderer.getOrientation());
+  ttfPreRendered.monochrome = ttfEffectiveMonochromeSnapshot();
   ttfPreRendered.ready = true;
   // The framebuffer no longer holds a clean displayed page: overlay opens
   // must not snapshot it (their hasRenderedPage gate reads this flag).
@@ -3203,6 +3244,15 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
 bool EpubReaderActivity::ttfFastDisplayPass(const freeink::book::LayoutParams& params) {
   if (!ttf_ || !ttfPreRendered.ready) return false;
   if (ttfPreRendered.spineIndex != currentSpineIndex || ttfPreRendered.pageIndex != ttfPage) return false;
+  if (ttfPreRendered.generation != ttfGeneration) {
+    ttfLogPrerenderMiss("stale generation (display pass)");
+    return false;
+  }
+  if (ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation()) ||
+      ttfPreRendered.monochrome != ttfEffectiveMonochromeSnapshot()) {
+    ttfLogPrerenderMiss("mode/orientation changed (display pass)");
+    return false;
+  }
   if (ttfSpine != currentSpineIndex || ttfPage < 0 || ttfPage >= static_cast<int>(ttfPageCount)) return false;
 
   const size_t scratchMark = ttf_->scratch().mark();
@@ -3652,18 +3702,31 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // Advance state here on the loop task, then hand the display commit to
   // renderBookTtf via ttfUsePreRenderedBuffer — all display work (status
   // bar, gray planes, flush) stays on the render task under its RenderLock.
-  // Validation is spine+page exact; anything else falls to the slow path.
-  if (isForwardTurn && ttfPreRendered.ready && ttfPreRendered.spineIndex == currentSpineIndex &&
-      ttfPreRendered.pageIndex == ttfPage + 1 && ttfPage + 1 < static_cast<int>(ttfPageCount)) {
-    ttfPage = ttfPreRendered.pageIndex;
-    ttfInvalidatePreRender();
-    ttfUsePreRenderedBuffer = true;
-    lastPageTurnTime = millis();
+  // Validation is spine+page exact PLUS the full validity axes (generation,
+  // orientation, raster mode); anything else falls to the slow path, with
+  // the miss reason logged once per distinct reason for soak triage.
+  if (isForwardTurn && ttfPreRendered.ready && ttfPage + 1 < static_cast<int>(ttfPageCount)) {
+    if (ttfPreRendered.spineIndex != currentSpineIndex) {
+      ttfLogPrerenderMiss("spine changed");
+    } else if (ttfPreRendered.pageIndex != ttfPage + 1) {
+      ttfLogPrerenderMiss("target page mismatch");
+    } else if (ttfPreRendered.generation != ttfGeneration) {
+      ttfLogPrerenderMiss("stale generation");
+    } else if (ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation())) {
+      ttfLogPrerenderMiss("orientation changed");
+    } else if (ttfPreRendered.monochrome != ttfEffectiveMonochromeSnapshot()) {
+      ttfLogPrerenderMiss("raster mode changed");
+    } else {
+      ttfPage = ttfPreRendered.pageIndex;
+      ttfInvalidatePreRender("consumed");
+      ttfUsePreRenderedBuffer = true;
+      lastPageTurnTime = millis();
 #ifdef READING_STATS_ENABLED
-    pageShownAtMs = millis();
+      pageShownAtMs = millis();
 #endif
-    logMemAt("page_turn");
-    return true;
+      logMemAt("page_turn");
+      return true;
+    }
   }
 
   if (isForwardTurn) {
