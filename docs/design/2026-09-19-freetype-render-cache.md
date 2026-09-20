@@ -235,6 +235,32 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
   until P1 telemetry proves it necessary (that is a measured Phase-3
   candidate, not shipped speculation).
 
+## FIBP generation identity contract (soak finding #6 correction)
+
+`layoutGenerationHash(params, fontFingerprint)` hashes field-by-field (no
+struct padding) and is the identity of every `s<spine>-<gen>.fibp` cache.
+The font fingerprint mixes the font bytes hash, style coverage, and the
+render-options tag. The contract after the 2026-09-19 soak:
+
+- **Legitimately invalidates**: font bytes (content), hinting mode
+  (Light/None changes ADVANCES → pagination), layout geometry and
+  text settings (page size, margins, sizes, spacing, language,
+  hyphenation, stylesheet).
+- **Must stay stable across firmware builds**: book content, font bytes,
+  and the raster mode. The raster mode (Smooth/Crisp) changes glyph
+  BITMAPS only — advances are byte-identical — so
+  `renderOptionsFingerprintTag()` folds HINTING ONLY. The soak observed
+  the monochrome fold forcing a full re-index of every book across two
+  firmware builds (gen 1029201805 → 3637587853); folding raster mode into
+  a layout identity is never correct. Bitmap identity is governed by the
+  P1 glyph cache's `setRenderOptions()` flush.
+- The reader's progress-record generation and the worker's FIBP
+  generation derive from the SAME `ttfGeneration` (one
+  `layoutGenerationHash` call per render pass) — the two values in the
+  soak logs were the same number in hex vs decimal notation.
+- Host pin: `FingerprintStableAcrossLoaderInstances` asserts two loader
+  instances over unchanged files produce an identical fingerprint.
+
 ## Measurement plan (device soak, owner)
 
 Debug-build telemetry (REND-style) for: page paint ms (cache miss vs hit),

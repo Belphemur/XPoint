@@ -519,7 +519,6 @@ bool FibpPrefetchWorker::yieldHook(void* ctx, const uint16_t pagesBuilt) {
   const uint32_t now = millis();
   const uint32_t pageMs = now - self->lastHookMs_;
   self->lastHookMs_ = now;
-  (void)pageMs;
   // Soak addendum: per-page PROF sample (≤ every 10 pages) quantifies the
   // hinting vs layout cost split on device — layout semantics unchanged.
   if (pagesBuilt == 1 || pagesBuilt % kIndexingProgressLogEveryPages == 0) {

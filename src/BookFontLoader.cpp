@@ -160,13 +160,16 @@ void BookFontLoader::applyRenderMode(bool crispMode) {
 }
 
 uint32_t BookFontLoader::renderOptionsFingerprintTag() {
-  // 3 bits per slot for HintingMode (values fit 0..4), then 1 bit per slot
-  // for the raster mode (monochrome = 1-bit glyphs vs AA planes). Every knob
-  // here alters glyph output, so all fold into the FIBP identity.
+  // 3 bits per slot for HintingMode (values fit 0..4). ONLY hinting folds
+  // here: hinting changes ADVANCES, so it is part of layout identity (FIBP
+  // gen). The raster mode (monochrome vs AA) alters glyph BITMAPS only —
+  // advances are byte-identical across modes — so folding it would
+  // re-index every book on a firmware update that merely flips the Crisp
+  // default (the soak observed exactly that); bitmap identity is governed
+  // by the P1 glyph cache's setRenderOptions() flush instead.
   uint32_t tag = 0;
   for (uint8_t i = 0; i < 4; ++i) {
     tag |= static_cast<uint32_t>(effectiveRenderOptions_[i].hinting) << (3 * i);
-    tag |= (effectiveRenderOptions_[i].monochrome ? 1u : 0u) << (12 + i);
   }
   return tag;
 }

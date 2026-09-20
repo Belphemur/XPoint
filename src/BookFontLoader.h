@@ -151,14 +151,16 @@ class BookFontLoader {
   // frame formats against AA faces blanks the page.
   static bool effectiveMonochrome();
 
-  // Fingerprint tag folding the ACTIVE render options into the font
+  // Fingerprint tag folding the ACTIVE hinting mode into the font
   // fingerprint. Runtime (not constexpr) since the effective per-face mode
   // is a probe outcome: a degrade changes advances and layout, so the tag
-  // must change with it and FIBP caches regenerate. Covers hinting AND the
-  // raster mode (monochrome) — every knob that alters glyph output. Mixed
-  // into BOTH fingerprint sites — computeFingerprint() and the
-  // FibpPrefetchWorker parity hash — and must be extended whenever
-  // kRenderOptions gains a knob that alters glyph output.
+  // must change with it and FIBP caches regenerate. RASTER MODE is
+  // deliberately EXCLUDED: advances are identical across Smooth/Crisp, so
+  // the tag must stay stable across a mode flip (or a firmware update
+  // flipping the default) — bitmap identity is governed by the P1 glyph
+  // cache's setRenderOptions() flush. Mixed into BOTH fingerprint sites —
+  // computeFingerprint() and the FibpPrefetchWorker parity hash — and must
+  // be extended whenever kRenderOptions gains a knob that alters ADVANCES.
   static uint32_t renderOptionsFingerprintTag();
 #endif
 

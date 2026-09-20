@@ -1003,11 +1003,10 @@ namespace {
 using RO = freeink::font::FtFont::RenderOptions;
 using HM = freeink::font::FtFont::HintingMode;
 
-uint32_t tagFor(std::initializer_list<HM> modes, bool mono) {
+uint32_t tagFor(std::initializer_list<HM> modes) {
   uint32_t tag = 0;
   uint8_t slot = 0;
   for (HM mode : modes) tag |= static_cast<uint32_t>(mode) << (3 * slot++);
-  if (mono) tag |= 0xFu << 12;  // one monochrome bit per slot (bits 12-15)
   return tag;
 }
 
@@ -1022,8 +1021,7 @@ TEST(BookFontLoaderHinting, RequestedModeIsLightAndTagFoldsPerSlot) {
     // Crisp is the default render mode (task6 directive).
     EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(slot).monochrome) << "slot " << slot;
   }
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
-            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
 }
 
 TEST(BookFontLoaderHinting, ApplyRenderModeFlipsMonochromeAndTag) {
@@ -1031,12 +1029,13 @@ TEST(BookFontLoaderHinting, ApplyRenderModeFlipsMonochromeAndTag) {
   loader.resetHintStateForTest();
   loader.applyRenderMode(false);  // Smooth
   EXPECT_FALSE(BookFontLoader::effectiveRenderOptions(0).monochrome);
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
-            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/false));
   loader.applyRenderMode(true);  // Crisp
   EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(3).monochrome);
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
-            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+  // Raster mode is NOT layout identity: advances are identical across
+  // modes, so the tag (and with it every FIBP gen) must stay stable or a
+  // firmware update flipping the default re-indexes every book (soak
+  // finding #6 correction: gen 1029201805 -> 3637587853 across builds).
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
   loader.resetHintStateForTest();
 }
 
@@ -1049,15 +1048,14 @@ TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(0).hinting, HM::Light);
   const uint32_t degraded = BookFontLoader::renderOptionsFingerprintTag();
-  EXPECT_NE(degraded, tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
-  EXPECT_EQ(degraded, tagFor({HM::Light, HM::None, HM::Light, HM::Light}, /*mono=*/true));
+  EXPECT_NE(degraded, tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(degraded, tagFor({HM::Light, HM::None, HM::Light, HM::Light}));
   // Mutate-check the tag really folds the degraded slot: a second slot's
   // degrade must move the tag again (no aliasing between slot fields).
   loader.degradeHintForTest(2);
   EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(), degraded);
   loader.resetHintStateForTest();
-  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
-            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
 }
 
 // Device regression 2026-09-19: a mono request against a build whose
@@ -1090,11 +1088,13 @@ TEST(BookFontLoaderHinting, UnsupportedMonoDegradesToAaAndStillRenders) {
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
 
-  // (C2) The degrade is visible in the FIBP identity: effective mode is AA
-  // and the tag differs from the undegraded Crisp tag.
+  // (C2) The degrade is visible in the effective mode: mono is dropped.
+  // The TAG reflects the degrade: the host FT variant compiles neither the
+  // mono renderer nor the auto-hinter, so the funnel drops BOTH on the
+  // seeded slot (device builds compile both — there the tag stays Light).
+  // Raster mode alone never moves the tag.
   EXPECT_FALSE(BookFontLoader::effectiveMonochrome());
-  EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(),
-            tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
 
   // (C1) The degraded face still rasterizes: non-null pixels, non-empty
   // bitmap (the regression produced nullptr for every glyph).
@@ -1105,5 +1105,41 @@ TEST(BookFontLoaderHinting, UnsupportedMonoDegradesToAaAndStillRenders) {
   ASSERT_NE(bmp, nullptr);
   ASSERT_NE(bmp->pixels, nullptr);
   EXPECT_GT(size_t(bmp->width) * bmp->height, 0u);
+}
+
+// Gen-stability contract (soak finding #6 correction): the font
+// fingerprint — the input every FIBP generation derives from — must be a
+// pure function of the font bytes + style coverage + hinting tag. Two
+// loader instances over unchanged files must agree exactly, or a firmware
+// update (or a second loader in the same boot) silently re-indexes every
+// book. layoutGenerationHash() hashes field-by-field (no struct padding),
+// so fingerprint determinism pins the whole chain.
+TEST(BookFontLoaderHinting, FingerprintStableAcrossLoaderInstances) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u);
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  uint32_t fingerprints[2] = {};
+  for (auto& fp : fingerprints) {
+    freeink::book::BookFontLoader loader;
+    loader.begin();
+    auto& fam = loader.editFamily(0);
+    std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+    fam.faceCount = 1;
+    fam.faces[0].styleFlags = freeink::book::StyleNone;
+    fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+    fam.faces[0].mtime = 0x5F123456u;
+    std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+    loader.setFamilyCountForTest(1);
+    loader.markDirty();
+    ASSERT_NE(loader.getReaderFont(), nullptr);
+    fp = loader.fontFingerprint();
+    EXPECT_NE(fp, 0u);
+  }
+  EXPECT_EQ(fingerprints[0], fingerprints[1]);
 }
 #endif
