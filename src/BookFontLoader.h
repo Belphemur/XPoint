@@ -213,7 +213,7 @@ class BookFontLoader {
   // Restore every slot to the requested mode — degradeHintForTest is sticky
   // (file-scope static state outlives the test) and the tag participates in
   // other tests' fingerprints.
-  static void resetHintStateForTest();
+  void resetHintStateForTest() { resetHintState(); }
 #endif
 #endif
 
@@ -225,6 +225,11 @@ class BookFontLoader {
   // Flip a slot's effective options to unhinted through setRenderOptions()
   // (the P1 glyph-cache flush point) and log it.
   void degradeHint(uint8_t faceSlot);
+  // Production reset shared by ensureLoaded's clear loop and the host test
+  // seam: every slot back to the requested mode (fresh load re-probes). No
+  // live-face propagation here by construction — ensureLoaded deletes the
+  // faces before resetting, and the test instance has none.
+  void resetHintState();
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;

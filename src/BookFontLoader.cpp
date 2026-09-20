@@ -82,15 +82,26 @@ freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
     BookFontLoader::kCrispRenderOptions};
 
 // Additional stack depth a face's hinted render may consume before the probe
-// degrades it. The bound protects the smallest consumer stack: the 24KB
-// FibpPrefetchWorker task, whose own render pipeline peaks around 13KB, must
-// still fit the Adobe interpreter's peak when it re-renders the same hinted
-// glyphs. 8KB leaves ≥3KB of that task's headroom even in the worst case.
+// degrades it. The bound protects the smallest consumer stack: the 32KB
+// FibpPrefetchWorker task (R1: 24KB overflowed on device, its pipeline
+// measured HWM 1792B — a ~22.2KB peak), so at most ~9.8KB remain for the
+// Adobe interpreter's frames when it re-renders the same hinted glyphs;
+// 8KB keeps ≥1.8KB of that task's headroom at the absolute peak.
 constexpr uint32_t kHintProbeStackBudgetBytes = 8 * 1024;
 
-// Stress set for the probe: hinted outlines with distinctive contours plus a
-// doubled size, so the Adobe interpreter's deepest paths are exercised.
+// Fail-closed floor for the probe's lifetime-HWM hole: uxTaskGetStackHigh-
+// WaterMark is a lifetime minimum, so the before/after delta UNDER-reports
+// whenever the calling task had already gone deeper than the probe reaches.
+// If the loopTask's lifetime free stack is below budget + reader-pipeline
+// peak (~13KB) + margin by the time the probe samples, the measurement can
+// no longer be attributed to the probe — degrade instead of trusting it.
+constexpr uint32_t kHintProbeFloorBytes = kHintProbeStackBudgetBytes + 13 * 1024 + 2 * 1024;
+
+// Stress set for the probe: hinted outlines with distinctive contours, at
+// sizes spanning the reader's runtime range (body, ruby, large) so the
+// deepest autohint/Adobe paths are exercised.
 constexpr uint32_t kHintProbeCodepoints[] = {'A', 'g', 'M', '@', 0x00C6u, 0x2019u};
+constexpr uint16_t kHintProbeSizeMultipliers[] = {1, 2, 4};
 
 void BookFontLoader::degradeHint(uint8_t faceSlot) {
   effectiveRenderOptions_[faceSlot].hinting = freeink::font::FtFont::HintingMode::None;
@@ -143,26 +154,32 @@ void BookFontLoader::probeHintStackSafety() {
   for (uint8_t i = 0; i < 4; ++i) {
     NativeFace* face = faces_[i];
     if (face == nullptr) continue;
-    const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);
+    const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);  // bytes on ESP-IDF
     for (const uint32_t cp : kHintProbeCodepoints) {
-      face->rasterize(cp, kInitSizePx);
-      face->rasterize(cp, static_cast<uint16_t>(kInitSizePx * 2));
+      for (const uint16_t mult : kHintProbeSizeMultipliers) {
+        face->rasterize(cp, static_cast<uint16_t>(kInitSizePx * mult));
+      }
     }
     const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
     const uint32_t consumed = before > after ? before - after : 0;
     LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", i, static_cast<unsigned>(consumed));
-    if (consumed > kHintProbeStackBudgetBytes) degradeHint(i);
+    if (after < kHintProbeFloorBytes) {
+      // The task's lifetime high-water already ran deeper than the probe can
+      // attribute (before/after delta under-reports by construction then).
+      LOG_ERR("BFNT", "Hint probe slot %u unmeasurable (HWM %u B < floor)", i, static_cast<unsigned>(after));
+      degradeHint(i);
+    } else if (consumed > kHintProbeStackBudgetBytes) {
+      degradeHint(i);
+    }
   }
 }
 #else
 void BookFontLoader::probeHintStackSafety() {}
 #endif  // ARDUINO
 
-#if defined(HOST_TEST)
-void BookFontLoader::resetHintStateForTest() {
-  for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = kCrispRenderOptions;
+void BookFontLoader::resetHintState() {
+  for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = currentRenderOptions();
 }
-#endif  // HOST_TEST
 #endif  // CROSSPOINT_FONT_BACKEND_FT
 
 // Hard bounds for the DRAM-tier font file size gate. Design §3.3: the value is
@@ -461,7 +478,7 @@ void BookFontLoader::ensureLoaded() {
     faceMtime_[i] = 0;
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     // Fresh load: re-probe hinting from the requested mode.
-    effectiveRenderOptions_[i] = currentRenderOptions();
+    resetHintState();
 #endif
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();

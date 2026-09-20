@@ -884,6 +884,7 @@ TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
   // Bounded window (documented): a rewrite beyond the 4 KB head with the
   // same size + mtime keeps the head hash — the record is served (hit).
   std::string tailModified = headModified;
+  ASSERT_GT(tailModified.size(), 6000u) << "fixture too small for the tail-modify step";
   tailModified[6000] = static_cast<char>(tailModified[6000] ^ 0xFF);
   writeFaceFile(kFacePath, tailModified);
   loader.markDirty();
@@ -1013,7 +1014,8 @@ uint32_t tagFor(std::initializer_list<HM> modes, bool mono) {
 }  // namespace
 
 TEST(BookFontLoaderHinting, RequestedModeIsLightAndTagFoldsPerSlot) {
-  BookFontLoader::resetHintStateForTest();
+  BookFontLoader loader;
+  loader.resetHintStateForTest();
   EXPECT_EQ(BookFontLoader::kRenderOptions.hinting, HM::Light);
   for (uint8_t slot = 0; slot < 4; ++slot) {
     EXPECT_EQ(BookFontLoader::effectiveRenderOptions(slot).hinting, HM::Light) << "slot " << slot;
@@ -1026,7 +1028,7 @@ TEST(BookFontLoaderHinting, RequestedModeIsLightAndTagFoldsPerSlot) {
 
 TEST(BookFontLoaderHinting, ApplyRenderModeFlipsMonochromeAndTag) {
   BookFontLoader loader;
-  BookFontLoader::resetHintStateForTest();
+  loader.resetHintStateForTest();
   loader.applyRenderMode(false);  // Smooth
   EXPECT_FALSE(BookFontLoader::effectiveRenderOptions(0).monochrome);
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
@@ -1035,7 +1037,7 @@ TEST(BookFontLoaderHinting, ApplyRenderModeFlipsMonochromeAndTag) {
   EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(3).monochrome);
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
             tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
-  BookFontLoader::resetHintStateForTest();
+  loader.resetHintStateForTest();
 }
 
 TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
@@ -1053,7 +1055,7 @@ TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
   // degrade must move the tag again (no aliasing between slot fields).
   loader.degradeHintForTest(2);
   EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(), degraded);
-  BookFontLoader::resetHintStateForTest();
+  loader.resetHintStateForTest();
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(),
             tagFor({HM::Light, HM::Light, HM::Light, HM::Light}, /*mono=*/true));
 }
