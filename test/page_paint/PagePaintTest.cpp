@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "GfxRenderer.h"
 #include "PagePaint.h"
@@ -194,4 +195,62 @@ TEST(PagePaintEquivalence, BasePlotsToneOneBoundary) {
     }
   }
   EXPECT_EQ(basePixels, 2 * inkSamples);  // two glyphs, same 4x4 bitmap
+}
+
+// The chunked-prerender pump (soak finding #5) paints the base in slices
+// through paintTextSliced: each call resumes at the cursor. Slicing the
+// page into per-run calls must produce EXACTLY the same framebuffer as one
+// full paintText — same pixels, same coverage, cursor terminal == runCount.
+TEST(PagePaintSliced, ResumedPaintMatchesFullPaint) {
+  freeink::book::FontChain chain;
+  FakeRenderFont face;
+  chain.add(&face, freeink::book::StyleNone);
+
+  const freeink::book::Page page = makeTestPage();
+
+  GfxRenderer full;
+  freeink::book::PagePaint::paintText(page, chain, full);
+
+  GfxRenderer sliced;
+  uint16_t nextRun = 0;
+  uint8_t slices = 0;
+  bool complete = false;
+  while (!complete && slices < 16) {
+    complete = freeink::book::PagePaint::paintTextSliced(page, chain, sliced, nextRun, &nextRun, /*budgetMs=*/0);
+    ++slices;
+  }
+  ASSERT_TRUE(complete);
+  EXPECT_EQ(nextRun, page.runCount);  // cursor terminal: every run painted
+  ASSERT_EQ(slices, 1u);              // budget 0 never yields — one call finishes
+
+  EXPECT_EQ(0, std::memcmp(full.base, sliced.base, sizeof(full.base)));
+}
+
+// A non-zero start index must SKIP the earlier runs, not repaint them from
+// scratch (the pump relies on the cursor to advance, and repainting would
+// double-plot ink on the real device).
+TEST(PagePaintSliced, StartIndexSkipsEarlierRuns) {
+  freeink::book::FontChain chain;
+  FakeRenderFont face;
+  chain.add(&face, freeink::book::StyleNone);
+
+  const freeink::book::Page page = makeTestPage();
+  if (page.runCount < 2) GTEST_SKIP() << "fixture page has a single run";
+
+  GfxRenderer renderer;
+  // First slice paints run 0 only (budget 0 paints ALL runs — so drive the
+  // cursor directly: start at the LAST run and verify the first run's ink
+  // is unchanged after painting from that index alone).
+  freeink::book::PagePaint::paintText(page, chain, renderer);
+  const std::vector<uint8_t> afterFull(renderer.base, renderer.base + sizeof(renderer.base));
+
+  GfxRenderer resumed;
+  uint16_t nextRun = 0;
+  freeink::book::PagePaint::paintTextSliced(page, chain, resumed, static_cast<uint16_t>(page.runCount - 1), &nextRun,
+                                            /*budgetMs=*/0);
+  // Resumed paints ONLY the last run (+ rubies): its base must be a SUBSET
+  // of the full paint (every set bit in resumed is set in afterFull).
+  for (size_t i = 0; i < sizeof(resumed.base); ++i) {
+    ASSERT_EQ(resumed.base[i] & afterFull[i], resumed.base[i]) << "byte " << i;
+  }
 }

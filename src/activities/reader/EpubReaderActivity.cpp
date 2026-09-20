@@ -3241,7 +3241,7 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
 }
 
 void EpubReaderActivity::ttfInvalidatePreRender(const char* reason) {
-  if (ttfPreRendered.ready) {
+  if (ttfPreRendered.ready || ttfPreRendered.pumping) {
     // Rate-limit to once per distinct reason: the soak needs to know WHICH
     // guard kills a prerender, not a per-event log flood.
     static const char* lastReason = nullptr;
@@ -3249,10 +3249,16 @@ void EpubReaderActivity::ttfInvalidatePreRender(const char* reason) {
       lastReason = reason;
       LOG_DBG("ERS", "TTF prerender invalidated: %s", reason);
     }
+    if (ttfPreRendered.pumping) {
+      LOG_DBG("ERS", "TTF prerender aborted after %u slice(s): %s", ttfPreRendered.slicesUsed, reason);
+    }
   }
   ttfPreRendered.ready = false;
+  ttfPreRendered.pumping = false;
   ttfPreRendered.spineIndex = -1;
   ttfPreRendered.pageIndex = -1;
+  ttfPreRendered.nextRun = 0;
+  ttfPreRendered.slicesUsed = 0;
 }
 
 // Schedule the one-page-ahead prerender after a fully committed frame (see
@@ -3301,7 +3307,8 @@ bool EpubReaderActivity::ttfEffectiveMonochromeSnapshot() const {
 // paint cannot expose a partial frame.
 void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& params) {
   // Re-derive the target from live state — the schedule flag alone must
-  // never paint a page the reading position has left.
+  // never paint a page the reading position has left. A mid-pump slice
+  // (pumping) revalidates the SAME axes before continuing.
   if (!ttf_ || ttfSpine != currentSpineIndex || !ttf_->cacheReady()) return;
   if (ttfPreRendered.ready) return;
   const int nextPage = ttfPage + 1;
@@ -3309,6 +3316,15 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
   if (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) return;
   if (overlay != Overlay::None || overlayRefreshPending.load(std::memory_order_acquire)) return;
   if (ESP.getFreeHeap() < RENDER_MIN_FREE_HEAP) return;
+
+  const bool resuming = ttfPreRendered.pumping;
+  if (resuming && (ttfPreRendered.pageIndex != nextPage || ttfPreRendered.generation != ttfGeneration ||
+                   ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation()))) {
+    // Reading position or layout changed mid-pump: the partial paint is
+    // garbage — abort (the invalidate also clears the cursor).
+    ttfInvalidatePreRender("stale mid-pump");
+    return;
+  }
 
   const size_t scratchMark = ttf_->scratch().mark();
   freeink::book::Page page{};
@@ -3323,22 +3339,63 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
     ttf_->scratch().release(scratchMark);
     return;
   }
-  renderer.clearScreen(0xFF);
-  paintTtfPage(page, params.font);
+
+  auto* chain = static_cast<freeink::book::FontChain*>(params.font);
+  if (chain == nullptr) {
+    ttf_->scratch().release(scratchMark);
+    return;
+  }
+  // Chunked paint (soak finding #5): one ≤kPreRenderSliceBudgetMs slice per
+  // loop tick. The gray-parity base pass supports a run cursor; the 1bpp
+  // engine path paints in one slice (it is far cheaper — no plane math).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  const bool pageHasImages = false;  // image pages already excluded above
+  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
+  if (!resuming) {
+    renderer.clearScreen(0xFF);
+    ttfPreRendered.spineIndex = static_cast<int16_t>(currentSpineIndex);
+    ttfPreRendered.pageIndex = static_cast<int16_t>(nextPage);
+    ttfPreRendered.generation = ttfGeneration;
+    ttfPreRendered.orientation = static_cast<uint8_t>(renderer.getOrientation());
+    ttfPreRendered.monochrome = ttfEffectiveMonochromeSnapshot();
+    ttfPreRendered.nextRun = 0;
+    ttfPreRendered.slicesUsed = 0;
+    ttfPreRendered.pumping = true;
+    // The framebuffer no longer holds a clean displayed page: overlay opens
+    // must not snapshot it (their hasRenderedPage gate reads this flag).
+    ttfFrameRenderComplete.store(false, std::memory_order_release);
+  }
+  ttfPreRendered.slicesUsed++;
+  bool complete = true;
+  if (grayParity) {
+    complete = freeink::book::PagePaint::paintTextSliced(page, *chain, renderer, ttfPreRendered.nextRun,
+                                                         &ttfPreRendered.nextRun, kPreRenderSliceBudgetMs);
+  } else {
+    paintTtfPage(page, params.font);
+  }
   ttf_->scratch().release(scratchMark);
-  // Publish only after the paint, metadata first so a reader of ready==true
-  // never sees stale indices. The validity snapshot pins every axis the
-  // consume guard checks (soak finding #3).
-  ttfPreRendered.spineIndex = static_cast<int16_t>(currentSpineIndex);
-  ttfPreRendered.pageIndex = static_cast<int16_t>(nextPage);
-  ttfPreRendered.generation = ttfGeneration;
-  ttfPreRendered.orientation = static_cast<uint8_t>(renderer.getOrientation());
-  ttfPreRendered.monochrome = ttfEffectiveMonochromeSnapshot();
-  ttfPreRendered.ready = true;
-  // The framebuffer no longer holds a clean displayed page: overlay opens
-  // must not snapshot it (their hasRenderedPage gate reads this flag).
-  ttfFrameRenderComplete.store(false, std::memory_order_release);
-  LOG_DBG("ERS", "TTF prerendered page %d/%d", nextPage, ttfPageCount - 1);
+
+  if (complete) {
+    if (grayParity) {
+      // paintTextSliced covers runs + rubies only — rules are the base pass's
+      // last step (same ordering paintTtfPage uses).
+      freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
+    }
+    ttfPreRendered.pumping = false;
+    ttfPreRendered.ready = true;
+    LOG_DBG("ERS", "TTF prerendered page %d/%d (%u slice%s, %u runs)", nextPage, ttfPageCount - 1,
+            ttfPreRendered.slicesUsed, ttfPreRendered.slicesUsed == 1 ? "" : "s", page.runCount);
+  } else {
+    // Resume next tick: the pass flag re-arms and requestUpdate schedules the
+    // next slice. Input processed in between (the loop handles it before the
+    // render) aborts the pump in ttfPageTurn — a press waits ≤ one slice.
+    ttfPendingPreRender = true;
+    requestUpdate();
+  }
 }
 
 // P4 fast turn: the framebuffer holds the prerendered content of the page
@@ -3813,6 +3870,13 @@ void EpubReaderActivity::ttfPrefetchTick() {
 
 bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   if (!ttf_ || !epub) return false;
+  // Input-first rule (soak finding #5): a turn aborts any mid-pump prerender
+  // immediately — the framebuffer holds a PARTIAL page that must neither be
+  // consumed nor snapshot. The press is served within one slice of landing.
+  if (ttfPreRendered.pumping) {
+    ttfPendingPreRender = false;
+    ttfInvalidatePreRender("input pending");
+  }
   // Navigation invalidates the displayed frame until the next successful render.
   ttfFrameRenderComplete.store(false, std::memory_order_release);
 
@@ -4838,6 +4902,10 @@ static constexpr uint32_t OVERLAY_REFRESH_SETTLE_TIMEOUT_MS = 3000;
 // the chrome answers taps and buttons the moment it is visible instead of only
 // after a blocking displayBuffer() returns. Caller must hold the RenderLock.
 void EpubReaderActivity::pushOverlayRefresh() {
+  // A full-FB flush outside the forward turn's own commit (review contract):
+  // any mid-pump prerender's partial framebuffer must die here — the glass
+  // is about to show this framebuffer's content.
+  ttfInvalidatePreRender("overlay push");
   if (renderer.supportsAsyncRefresh()) {
     if (renderer.refreshBusy()) {
       // A previous deferred refresh is still running (its settle timed out on
@@ -4868,6 +4936,10 @@ void EpubReaderActivity::pushOverlayRefresh() {
 // must hold the RenderLock.
 void EpubReaderActivity::settleOverlayRefresh() {
   if (!overlayRefreshPending.load(std::memory_order_acquire)) return;
+  // The settle's baseline reseed re-flashes the framebuffer to the glass —
+  // same full-FB-flush contract as pushOverlayRefresh: no partial prerender
+  // may be on it.
+  ttfInvalidatePreRender("overlay settle");
   if (overlaySettleTimedOut) {
     // A previous settle already burned the full deadline on this refresh: one
     // non-blocking check only, never re-poll under the RenderLock.

@@ -299,6 +299,14 @@ class EpubReaderActivity final : public ReaderActivity {
     uint32_t generation = 0;     // layoutGenerationHash at prerender time
     uint8_t orientation = 0xFF;  // GfxRenderer::Orientation snapshot
     bool monochrome = false;     // effective text raster mode snapshot
+    // Chunked-pump state (soak finding #5): the prerender paints in ≤
+    // kPreRenderSliceBudgetMs slices, one per loop tick, so a button press
+    // is never more than one slice away from being served. pumping marks an
+    // unfinished paint (the framebuffer holds a PARTIAL page — never
+    // consumable); nextRun is the paint cursor across slices.
+    bool pumping = false;
+    uint16_t nextRun = 0;
+    uint8_t slicesUsed = 0;
   };
   TtfPreRenderedPage ttfPreRendered;
   // millis() at renderBookTtf entry — busy-window telemetry (soak finding
@@ -344,6 +352,10 @@ class EpubReaderActivity final : public ReaderActivity {
   bool buildHeapPaused = false;
   void prefetchNextChapterDuringDisplay();
   static constexpr size_t RENDER_MIN_FREE_HEAP = 24 * 1024;
+  // Chunked prerender slice budget (soak finding #5): one prerender slice per
+  // loop tick, so a button press is served at most one slice after it lands
+  // (the loop processes input before the render pass runs).
+  static constexpr uint32_t kPreRenderSliceBudgetMs = 120;
   static constexpr int BUILD_WINDOW_AHEAD = 5;
   static constexpr int PARTIAL_REBUILD_START_MARGIN = 15;
   static constexpr int BUILD_POPUP_PAGE_THRESHOLD = 20;

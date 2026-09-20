@@ -5,6 +5,8 @@
 
 #include "PagePaint.h"
 
+#include <Arduino.h>  // millis() for the slice budget; host targets provide a stub
+
 #include <GfxRenderer.h>
 
 #include "GrayPlanes.h"
@@ -47,8 +49,10 @@ using GlyphFilter = bool (*)(void* ctx, int32_t x0, int32_t y0, int32_t x1, int3
 // PageRenderer::renderText exactly (kerning, fontFor fallback, synthetic-bold
 // double strike, underline/strikethrough arms) but hands every sample to the
 // caller's tone sink instead of writing into a FrameTarget.
-void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter) {
-  for (uint16_t r = 0; r < page.runCount; ++r) {
+void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter,
+              const uint16_t startRun = 0, uint16_t* nextRunOut = nullptr, const uint32_t budgetMs = 0) {
+  const uint32_t start = budgetMs ? millis() : 0;
+  for (uint16_t r = startRun; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
     int32_t penX = run.x;
     uint32_t i = 0;
@@ -114,6 +118,10 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
         for (int32_t x = run.x; x < penX; ++x) sink(ctx, x, y + t, 255);
       }
     }
+    // Slice cursor: record progress after every completed run and yield when
+    // the slice budget is spent (millis() granularity ~1ms).
+    if (nextRunOut != nullptr) *nextRunOut = r + 1;
+    if (budgetMs && millis() - start >= budgetMs && r + 1 < page.runCount) return;
   }
 }
 
@@ -202,6 +210,16 @@ void PagePaint::paintText(const Page& page, FontChain& fonts, const GfxRenderer&
   BaseCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight()};
   walkText(page, fonts, &ctx, plotBase, nullptr);
   walkRubies(page, fonts, &ctx, plotBase, nullptr);
+}
+
+bool PagePaint::paintTextSliced(const Page& page, FontChain& fonts, const GfxRenderer& renderer, const uint16_t firstRun,
+                                uint16_t* nextRunOut, const uint32_t budgetMs) {
+  BaseCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight()};
+  walkText(page, fonts, &ctx, plotBase, nullptr, firstRun, nextRunOut, budgetMs);
+  if (*nextRunOut < page.runCount) return false;  // budget spent mid-page: resume later
+  // Runs complete — rubies are few; the finishing slice covers them.
+  walkRubies(page, fonts, &ctx, plotBase, nullptr);
+  return true;
 }
 
 void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer) {
