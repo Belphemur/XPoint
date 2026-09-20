@@ -2485,7 +2485,7 @@ void EpubReaderActivity::renderBook() {
 uint32_t EpubReaderActivity::ttfEstimatedPageCount() const {
   if (!ttf_ || ttfSpine != currentSpineIndex) return ttfPageCount;
   uint64_t est = ttfPageCount;
-  const bool building = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) != nullptr;
+  const bool building = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
   const bool workerBuilding = fibpWorker_ != nullptr && fibpWorker_->buildingSpine() == currentSpineIndex;
   if (building) {
     // Live session: scale built pages by the layout session's input progress.

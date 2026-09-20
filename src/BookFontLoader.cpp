@@ -33,6 +33,9 @@
 
 #include "BookFontLoader.h"
 
+#if defined(ARDUINO)
+#include <CrossPointSettings.h>  // probe: configured body size (SETTINGS)
+#endif
 #include <FreeInkUIBookFont.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
@@ -95,13 +98,13 @@ constexpr uint32_t kHintProbeStackBudgetBytes = 8 * 1024;
 // If the loopTask's lifetime free stack is below budget + reader-pipeline
 // peak (~13KB) + margin by the time the probe samples, the measurement can
 // no longer be attributed to the probe — degrade instead of trusting it.
-constexpr uint32_t kHintProbeFloorBytes = kHintProbeStackBudgetBytes + 13 * 1024 + 2 * 1024;
+constexpr uint32_t kHintProbeFloorBytes =
+    kHintProbeStackBudgetBytes + 17 * 1024 + 2 * 1024;  // pipeline peak = measured 16.5KB paint depth
 
 // Stress set for the probe: hinted outlines with distinctive contours, at
 // sizes spanning the reader's runtime range (body, ruby, large) so the
 // deepest autohint/Adobe paths are exercised.
 constexpr uint32_t kHintProbeCodepoints[] = {'A', 'g', 'M', '@', 0x00C6u, 0x2019u};
-constexpr uint16_t kHintProbeSizeMultipliers[] = {1, 2, 4};
 
 void BookFontLoader::degradeHint(uint8_t faceSlot) {
   freeink::font::FtFont::RenderOptions degraded = effectiveRenderOptions_[faceSlot];
@@ -177,24 +180,33 @@ uint32_t BookFontLoader::renderOptionsFingerprintTag() {
 #if defined(ARDUINO)
 void BookFontLoader::probeHintStackSafety() {
   if (kRenderOptions.hinting == freeink::font::FtFont::HintingMode::None) return;
+  // Sizes span the reader's REAL runtime range: the configured body size
+  // (same pt→px conversion TtfBookRuntime::makeLayoutParams uses — 150 dpi
+  // panel) plus a 2× headroom multiple, not just kInitSizePx multiples.
+  const uint16_t bodyPx = static_cast<uint16_t>(lroundf(SETTINGS.ttfFontPointSize * 150.0f / 72.0f));
+  const uint16_t probeSizes[3] = {kInitSizePx, bodyPx, static_cast<uint16_t>(bodyPx * 2 > 240 ? 240 : bodyPx * 2)};
   for (uint8_t i = 0; i < 4; ++i) {
     NativeFace* face = faces_[i];
     if (face == nullptr) continue;
     const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);  // bytes on ESP-IDF
     for (const uint32_t cp : kHintProbeCodepoints) {
-      for (const uint16_t mult : kHintProbeSizeMultipliers) {
-        face->rasterize(cp, static_cast<uint16_t>(kInitSizePx * mult));
+      for (const uint16_t size : probeSizes) {
+        face->rasterize(cp, size);
       }
     }
     const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
     const uint32_t consumed = before > after ? before - after : 0;
     LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", i, static_cast<unsigned>(consumed));
-    if (after < kHintProbeFloorBytes) {
-      // The task's lifetime high-water already ran deeper than the probe can
-      // attribute (before/after delta under-reports by construction then).
-      LOG_ERR("BFNT", "Hint probe slot %u unmeasurable (HWM %u B < floor)", i, static_cast<unsigned>(after));
+    if (consumed > kHintProbeStackBudgetBytes) {
       degradeHint(i);
-    } else if (consumed > kHintProbeStackBudgetBytes) {
+    } else if (consumed == 0 && after < kHintProbeFloorBytes) {
+      // The lifetime high-water never moved during the probe, so the probe
+      // contributed nothing NEW — and the task's history already ran deeper
+      // than the floor: the before/after delta cannot attribute the Adobe
+      // depth to this face. Fail closed (kody FX1u: a merely-deep history
+      // with a measurable delta must NOT kill hinting; only an unmeasurable
+      // probe may).
+      LOG_ERR("BFNT", "Hint probe slot %u unmeasurable (HWM %u B < floor, no delta)", i, static_cast<unsigned>(after));
       degradeHint(i);
     }
   }
