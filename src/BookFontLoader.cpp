@@ -84,6 +84,12 @@ freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
     BookFontLoader::kCrispRenderOptions, BookFontLoader::kCrispRenderOptions, BookFontLoader::kCrispRenderOptions,
     BookFontLoader::kCrispRenderOptions};
 
+// Build-wide mono support as OBSERVED through the degrade funnel: false once
+// any loaded face's mono request was refused. effectiveMonochrome() consults
+// it so paint-path decisions never select Crisp/1bpp against AA rasters when
+// slot 0's own face never got to observe the refusal (load failure).
+bool monoAcceptable_ = true;
+
 // Additional stack depth a face's hinted render may consume before the probe
 // degrades it. The bound protects the smallest consumer stack: the 32KB
 // FibpPrefetchWorker task (R1: 24KB overflowed on device, its pipeline
@@ -131,6 +137,12 @@ void BookFontLoader::applySlotRenderOptions(NativeFace* face, uint8_t faceSlot,
     } else {
       LOG_ERR("BFNT", "Render options degraded to AA (slot %u, %s)", faceSlot, label);
     }
+    // Mono support is a build-wide constant, so one refusal settles it for
+    // every slot — including slots whose face never loaded (and thus never
+    // observed a refusal themselves).
+    monoAcceptable_ = false;
+  } else if (face != nullptr && opts.monochrome) {
+    monoAcceptable_ = true;
   }
   // The effective set drives the fingerprint tag and every paint-path mode
   // decision (effectiveMonochrome), so FIBP identity always matches what
@@ -142,7 +154,7 @@ const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptio
   return effectiveRenderOptions_[faceSlot];
 }
 
-bool BookFontLoader::effectiveMonochrome() { return effectiveRenderOptions_[0].monochrome; }
+bool BookFontLoader::effectiveMonochrome() { return monoAcceptable_ && effectiveRenderOptions_[0].monochrome; }
 
 void BookFontLoader::applyRenderMode(bool crispMode) {
   // Crisp/Smooth switch without a face reload: the mode changes glyph
@@ -217,6 +229,7 @@ void BookFontLoader::probeHintStackSafety() {}
 
 void BookFontLoader::resetHintState() {
   for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = currentRenderOptions();
+  monoAcceptable_ = true;  // fresh load: support is re-observed by the funnel
 }
 #endif  // CROSSPOINT_FONT_BACKEND_FT
 
