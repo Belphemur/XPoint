@@ -48,6 +48,13 @@ class HalPowerManager {
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
 
+  // Refresh the full-speed dwell without holding the (single) NormalSpeed
+  // lock: background build ticks call this per page so the governor cannot
+  // throttle an active build, and re-engage low power the moment the ticks
+  // stop. Any-task safe — one 32-bit store, same raciness as the rest of
+  // the dwell bookkeeping.
+  void pokeNormalSpeed() { lastNormalMs = millis(); }
+
   // Setup wake up GPIO and enter deep sleep. When autoPowerOffTimerUs is
   // non-zero an RTC timer is armed so the device wakes after that many
   // microseconds of dwell (auto power off).

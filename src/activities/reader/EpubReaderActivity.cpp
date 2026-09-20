@@ -94,6 +94,9 @@ constexpr unsigned long fibpDeferPollMs = 250;
 // Indexing popup for the rest of the spine (a 93-page spine measured 243 s
 // at low power, tens of seconds even at full speed).
 constexpr unsigned long fibpDeferTakeoverMs = 1500;
+// How long the reader waits for the worker to pick up a resume claim
+// before the margin fallback owns the extension (soak addendum).
+constexpr unsigned long kFibpResumeClaimGraceMs = 2000;
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
@@ -2842,13 +2845,37 @@ void EpubReaderActivity::renderBookTtf() {
 
   ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
 
+  // 2b) Soak addendum: a PARTIAL current chapter whose target page is already
+  // servable is handed to the worker — the reader paints immediately from
+  // the partial and the rest of the chapter finishes off-task. Idempotent
+  // request; the commit pickup below reopens the complete cache when the
+  // worker releases the claim. The reader never inline-builds while it
+  // holds this claim (takeover guards below return the spine to the reader
+  // when it actually needs pages the partial lacks).
+  if (ttfSpine == currentSpineIndex && ttf_->cacheReady() && ttf_->cachePartial() && fibpWorker_ != nullptr) {
+    if (fibpResumeClaimedSpine_ != currentSpineIndex) {
+      fibpResumeClaimedSpine_ = static_cast<int16_t>(currentSpineIndex);
+      fibpResumeSeenBuilding_ = false;
+      fibpResumeRequestMs_ = millis();
+      fibpWorker_->requestResumeClaim(static_cast<uint16_t>(currentSpineIndex));
+      LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
+              static_cast<unsigned>(ttfPageCount));
+    }
+  } else if (fibpResumeClaimedSpine_ != -1 && fibpResumeClaimedSpine_ != currentSpineIndex) {
+    fibpResumeClaimedSpine_ = -1;  // left the chapter
+  }
+
   // 3) Single-writer handoff (R4 optional polish): while the worker builds
   // the chapter we are on, wait for its commit instead of racing a second
   // writer onto the same FIBP file; once it lands, reopen the cache so the
   // resolve/build decisions below see the worker's page count — no sync
   // rebuild, no popup stall beyond the wait.
+  // A RESUME claim (2b) is exempt from the parking wait: the reader can
+  // already serve its target page from the partial, so it renders normally
+  // while the worker finishes in the background.
   if (fibpWorker_ != nullptr && fibpWorker_->active() &&
-      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
+      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex) &&
+      fibpResumeClaimedSpine_ != currentSpineIndex) {
     if (!fibpDeferred_) {
       fibpDeferred_ = true;
       fibpDeferStartMs_ = millis();
@@ -2884,11 +2911,44 @@ void EpubReaderActivity::renderBookTtf() {
     ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
+  if (fibpResumeClaimedSpine_ == currentSpineIndex) {
+    // Resume-claim lifecycle: once the worker has been seen holding it, its
+    // release means the chapter committed — reopen so the page count and
+    // jump resolution see the complete cache.
+    const bool workerHolds = fibpWorker_ != nullptr && fibpWorker_->active() &&
+                             fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
+    if (workerHolds) {
+      fibpResumeSeenBuilding_ = true;
+    } else if (fibpResumeSeenBuilding_) {
+      fibpResumeClaimedSpine_ = -1;
+      fibpResumeSeenBuilding_ = false;
+      ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+      ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
+    } else if (millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs) {
+      // The worker never claimed (disabled, failed spawn, queue busy for the
+      // whole grace): stop waiting — the margin fallback owns the extension.
+      fibpResumeClaimedSpine_ = -1;
+    }
+  }
 
   // 4) Resolve the target page (jump states may need more build first).
   bool needFullBuild = false;
   int target = -1;
   const bool resolved = ttfResolveTargetPage(target, params, needFullBuild);
+
+  // Reader needs pages the partial lacks while the worker holds the resume
+  // claim: take the spine back (worker aborts at the next page boundary and
+  // commits its partial), then build inline to the target.
+  if (fibpResumeClaimedSpine_ == currentSpineIndex &&
+      (needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount)))) {
+    LOG_INF("ERS", "Reader takes resume claim over: spine %d", currentSpineIndex);
+    stopFibpWorker();
+    fibpResumeClaimedSpine_ = -1;
+    fibpResumeSeenBuilding_ = false;
+    ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+  }
 
   // 4) Build toward the target, synchronously like the legacy path. The heap
   // gate can defer the remainder to the background ticks.
@@ -3528,6 +3588,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (!ttf_) return;
   if (ttf_->sessionActive()) {
     const uint16_t spine = ttf_->sessionSpine();
+    const uint16_t before = ttf_->availablePageCount(spine);
+    const uint32_t tickStart = millis();
     freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
     if (freeink::book::pumpChapterChunk(*ttf_, spine, BACKGROUND_BUILD_PAGES_PER_TICK, &st) ==
         freeink::book::ChapterPump::Failed) {
@@ -3535,6 +3597,12 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       ttfPrefetchActive = false;
       return;
     }
+    // Per-tick progress (soak finding #6): the 2-minute silent resume was
+    // undiagnosable — every pump tick now names the spine, pages done, and
+    // the tick cost so a soak log separates progress from a hang.
+    const uint16_t after = ttf_->availablePageCount(spine);
+    LOG_INF("ERS", "bg build spine %u: %u pages (+%u, %lu ms)", spine, after, after - before,
+            static_cast<unsigned long>(millis() - tickStart));
     if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
       if (spine == static_cast<uint16_t>(currentSpineIndex)) {
         ttf_->openChapterCache(spine, ttfGeneration);
@@ -3554,14 +3622,29 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
+    // Single-writer: if the worker holds the resume claim for this spine,
+    // take it back — the reader needs pages NOW.
+    if (fibpResumeClaimedSpine_ == currentSpineIndex) {
+      LOG_INF("ERS", "Margin takeover: spine %d", currentSpineIndex);
+      stopFibpWorker();
+      fibpResumeClaimedSpine_ = -1;
+      fibpResumeSeenBuilding_ = false;
+    }
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
       freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
-      const freeink::book::ChapterPump pump = freeink::book::pumpChapterChunk(
-          *ttf_, static_cast<uint16_t>(currentSpineIndex), BACKGROUND_BUILD_PAGES_PER_TICK, &st);
+      const uint16_t before = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      const uint32_t tickStart = millis();
+      // One page per tick while extending a partial: a press waits at most
+      // one page build between input polls (soak finding #6).
+      const freeink::book::ChapterPump pump =
+          freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), 1, &st);
+      const uint16_t after = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      LOG_INF("ERS", "resume build spine %d: %u pages (+%u, %lu ms)", currentSpineIndex, after, after - before,
+              static_cast<unsigned long>(millis() - tickStart));
       if (pump == freeink::book::ChapterPump::Complete) {
         ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration);
       }

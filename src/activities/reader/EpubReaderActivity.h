@@ -222,9 +222,14 @@ class EpubReaderActivity final : public ReaderActivity {
   bool fibpDeferred_ = false;           // a build is delegated to the worker
   unsigned long fibpDeferPollMs_ = 0;   // last deferred-build poll (throttle)
   unsigned long fibpDeferStartMs_ = 0;  // when the current delegation began
-  int ttfSpine = -1;                    // spine the runtime's reader/session belong to
-  int ttfPage = 0;                      // chapter-local page index
-  uint32_t ttfPageCount = 0;            // pages available for the current chapter
+  // Soak addendum: the opened chapter's partial completion handed to the
+  // worker (requestResumeClaim) while the reader paints from the partial.
+  int16_t fibpResumeClaimedSpine_ = -1;
+  bool fibpResumeSeenBuilding_ = false;  // worker observed holding the claim
+  unsigned long fibpResumeRequestMs_ = 0;
+  int ttfSpine = -1;          // spine the runtime's reader/session belong to
+  int ttfPage = 0;            // chapter-local page index
+  uint32_t ttfPageCount = 0;  // pages available for the current chapter
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
