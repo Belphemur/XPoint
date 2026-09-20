@@ -137,6 +137,14 @@ void HalGPIO::begin() {
   _deviceType = DeviceType::X4;
 #endif
   inputMgr.begin();
+#if defined(BOARD_HAS_PSRAM)
+  // Async input sampling (docs/design/2026-09-20-async-input.md): a 10 ms
+  // poll task keeps sampling buttons during e-ink waits and multi-second
+  // build/render windows, so presses are never dropped. PSRAM-gated: the
+  // queues + 4 KB task cost ~6.5 KB DRAM, which the C3/Classic should not
+  // spend — those boards keep the historical polled behavior.
+  inputMgr.beginAsync(/*taskPriority=*/2, /*pollMs=*/10, /*queueLen=*/16);
+#endif
 }
 
 void HalGPIO::update() {
@@ -144,6 +152,17 @@ void HalGPIO::update() {
   const bool connected = isUsbConnected();
   usbStateChanged = (connected != lastUsbConnected);
   lastUsbConnected = connected;
+}
+
+// Frame boundary for the async input drain: clears the latched edges so the
+// calling tick's readers see every edge queued since the previous tick
+// exactly once. No-op on sync builds.
+void HalGPIO::beginInputFrame() {
+#if CROSSPOINT_EMULATED == 0
+  inputMgr.beginInputFrame();
+#else
+  (void)0;
+#endif
 }
 
 bool HalGPIO::wasUsbStateChanged() const { return usbStateChanged; }

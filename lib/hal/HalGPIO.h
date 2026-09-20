@@ -71,6 +71,9 @@ class HalGPIO {
 
   // Button input methods
   void update();
+  // Frame boundary for async input: clears the latched drained edges so this
+  // tick's readers see each edge exactly once (no-op on sync builds).
+  void beginInputFrame();
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;

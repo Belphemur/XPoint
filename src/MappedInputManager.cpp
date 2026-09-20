@@ -14,6 +14,11 @@
 namespace fui = freeink::ui;
 
 void MappedInputManager::update(const bool deferHomeButtonAction) const {
+  // Frame boundary for async input sampling (docs/design/2026-09-20-async-
+  // input.md §2.2): edges latched by drain-path update() calls since the
+  // previous tick (including HalGPIO's wait-loop calls inside e-ink waits)
+  // are delivered to THIS frame exactly once. No-op on sync builds.
+  gpio.beginInputFrame();
   gpio.update();
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
