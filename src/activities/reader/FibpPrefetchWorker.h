@@ -138,6 +138,12 @@ class FibpPrefetchWorker {
   // Runs one spine's build session to completion (or the next cancel /
   // generation change). Returns the run outcome.
   ChapterRun buildSpine(uint16_t spine, uint32_t generation);
+  // Blocks until paramGen_ (read under paramsMux_) reaches `gen` — notifyGeneration
+  // stores gen_ before the params swap, so a build without this wait snapshots
+  // stale scalars and buildSpine's last-line guard rejects them as Cancelled.
+  // Returns false when the session is over (cancel or generation bump): the
+  // caller must not build and should release its claim/claim-adjacent state.
+  bool waitForParamsPublished(uint32_t gen);
   // Replans the queue from the current notified spine (capped window) and
   // returns the spine snapshot the plan was built from — callers must use it
   // for their notified-spine change detection so plan and comparison share

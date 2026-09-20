@@ -346,6 +346,15 @@ void FibpPrefetchWorker::run() {
     const uint16_t resume = resumeSpine_.load(std::memory_order_acquire);
     if (resume != fibp::kNoChapter && resume < spineCount_ && failed_[resume] == 0) {
       resumeSpine_.store(fibp::kNoChapter, std::memory_order_release);
+      // Publish-wait BEFORE the cache check (same window as the plan path):
+      // a notifyGeneration landing between gen_ read and the params swap must
+      // not burn the claim on a Cancelled build — bailing here re-arms the
+      // loop under the new generation and the reader's idempotent re-arm
+      // request re-lands the claim.
+      if (!waitForParamsPublished(gen)) {
+        building_.store(fibp::kNoChapter, std::memory_order_release);
+        continue;
+      }
       building_.store(resume, std::memory_order_release);
       bool complete = false;
       if (runtime_->openChapterCache(resume, gen) == BookStatus::Ok) {
@@ -418,20 +427,7 @@ void FibpPrefetchWorker::run() {
     }
     if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) continue;
 
-    // Publish-wait: gen_ lands before the params swap in notifyGeneration,
-    // so hold here until paramGen_ (read under paramsMux_) reaches this
-    // pass's generation — building a stale snapshot under the new
-    // generation would commit mismatched layout data.
-    for (;;) {
-      bool published = false;
-      if (paramsMux_ != nullptr) xSemaphoreTake(paramsMux_, portMAX_DELAY);
-      published = (paramGen_ == gen);
-      if (paramsMux_ != nullptr) xSemaphoreGive(paramsMux_);
-      if (published) break;
-      if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) break;
-      vTaskDelay(pdMS_TO_TICKS(kPageDelayMs));
-    }
-    if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) continue;
+    if (!waitForParamsPublished(gen)) continue;
 
     const ChapterRun r = buildSpine(spine, gen);
     if (r == ChapterRun::Failed) failed_[spine] = 1;
@@ -471,6 +467,22 @@ bool FibpPrefetchWorker::spineHasCache(const uint16_t spine, const uint32_t gene
     return true;
   }
   return false;
+}
+
+bool FibpPrefetchWorker::waitForParamsPublished(const uint32_t gen) {
+  // gen_ lands before the params swap in notifyGeneration, so hold here until
+  // paramGen_ (read under paramsMux_) reaches this pass's generation — a
+  // stale snapshot built under the new generation would commit mismatched
+  // layout data.
+  for (;;) {
+    bool published = false;
+    if (paramsMux_ != nullptr) xSemaphoreTake(paramsMux_, portMAX_DELAY);
+    published = (paramGen_ == gen);
+    if (paramsMux_ != nullptr) xSemaphoreGive(paramsMux_);
+    if (published) return true;
+    if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) return false;
+    vTaskDelay(pdMS_TO_TICKS(kPageDelayMs));
+  }
 }
 
 ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t generation) {
