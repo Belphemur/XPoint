@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 
+#include "Arduino.h"  // host stub: g_fakeMillis clock control
 #include "GfxRenderer.h"
 #include "PagePaint.h"
 
@@ -26,7 +27,13 @@ const uint8_t kCoverage[kW * kH] = {
 
 class FakeRenderFont final : public freeink::book::RenderFont {
  public:
-  int16_t advance(uint32_t, uint16_t, uint8_t) override { return static_cast<int16_t>(kW); }
+  // Each metric step advances the fake clock (see the Arduino.h stub) so the
+  // sliced-paint tests can force deterministic yields — 130 ms per glyph vs
+  // a 120 ms budget yields after every painted glyph.
+  int16_t advance(uint32_t, uint16_t, uint8_t) override {
+    g_fakeMillis += 130;
+    return static_cast<int16_t>(kW);
+  }
   int16_t lineHeight(uint16_t) override { return 16; }
   int16_t ascent(uint16_t) override { return 12; }
   bool hasGlyph(uint32_t) const override { return true; }
@@ -63,6 +70,28 @@ freeink::book::Page makeTestPage() {
   page.runs = &run;
   page.runCount = 1;
   return page;  // POD struct; run/text outlive the test scope
+}
+
+// Three runs at distinct x — enough runs for the sliced-paint pump to yield
+// BETWEEN runs and to exercise the intra-run cursor on a multi-run page.
+freeink::book::Page makeMultiRunPage() {
+  static const char kTexts[3][3] = {"AA", "BB", "CC"};
+  static freeink::book::PageTextRun runs[3] = {};
+  for (int r = 0; r < 3; ++r) {
+    runs[r].text = kTexts[r];
+    runs[r].charStart = 0;
+    runs[r].len = 2;
+    runs[r].x = static_cast<int16_t>(8 + r * 40);
+    runs[r].baselineY = 24;
+    runs[r].sizePx = 16;
+    runs[r].charLen = 2;
+    runs[r].styleFlags = freeink::book::StyleNone;
+    runs[r].layoutFlags = 0;
+  }
+  static freeink::book::Page page{};
+  page.runs = runs;
+  page.runCount = 3;
+  return page;
 }
 
 bool bitAt(const uint8_t* plane, const int x, const int y) {
@@ -206,17 +235,19 @@ TEST(PagePaintSliced, ResumedPaintMatchesFullPaint) {
   FakeRenderFont face;
   chain.add(&face, freeink::book::StyleNone);
 
-  const freeink::book::Page page = makeTestPage();
+  const freeink::book::Page page = makeMultiRunPage();
 
   GfxRenderer full;
   freeink::book::PagePaint::paintText(page, chain, full);
 
   GfxRenderer sliced;
   uint16_t nextRun = 0;
+  uint32_t nextChar = 0;
   uint8_t slices = 0;
   bool complete = false;
   while (!complete && slices < 16) {
-    complete = freeink::book::PagePaint::paintTextSliced(page, chain, sliced, nextRun, &nextRun, /*budgetMs=*/0);
+    complete = freeink::book::PagePaint::paintTextSliced(page, chain, sliced, nextRun, nextChar, &nextRun, &nextChar,
+                                                         /*budgetMs=*/0);
     ++slices;
   }
   ASSERT_TRUE(complete);
@@ -234,23 +265,58 @@ TEST(PagePaintSliced, StartIndexSkipsEarlierRuns) {
   FakeRenderFont face;
   chain.add(&face, freeink::book::StyleNone);
 
-  const freeink::book::Page page = makeTestPage();
-  if (page.runCount < 2) GTEST_SKIP() << "fixture page has a single run";
+  const freeink::book::Page page = makeMultiRunPage();
 
   GfxRenderer renderer;
-  // First slice paints run 0 only (budget 0 paints ALL runs — so drive the
-  // cursor directly: start at the LAST run and verify the first run's ink
-  // is unchanged after painting from that index alone).
+  // Drive the cursor directly: start at the LAST run and verify the
+  // earlier runs' ink is unchanged after painting from that index alone.
   freeink::book::PagePaint::paintText(page, chain, renderer);
   const std::vector<uint8_t> afterFull(renderer.base, renderer.base + sizeof(renderer.base));
 
   GfxRenderer resumed;
   uint16_t nextRun = 0;
-  freeink::book::PagePaint::paintTextSliced(page, chain, resumed, static_cast<uint16_t>(page.runCount - 1), &nextRun,
-                                            /*budgetMs=*/0);
+  uint32_t nextChar = 0;
+  freeink::book::PagePaint::paintTextSliced(page, chain, resumed, static_cast<uint16_t>(page.runCount - 1), 0, &nextRun,
+                                            &nextChar, /*budgetMs=*/0);
   // Resumed paints ONLY the last run (+ rubies): its base must be a SUBSET
   // of the full paint (every set bit in resumed is set in afterFull).
   for (size_t i = 0; i < sizeof(resumed.base); ++i) {
     ASSERT_EQ(resumed.base[i] & afterFull[i], resumed.base[i]) << "byte " << i;
   }
+}
+
+// The real yield path: a nonzero budget with a clock that advances per glyph
+// must yield MID-RUN (intra-run cursor, review r5), resume without
+// double-plotting, and converge to the same framebuffer as a full paint.
+TEST(PagePaintSliced, BudgetYieldsMidRunAndResumes) {
+  freeink::book::FontChain chain;
+  FakeRenderFont face;
+  chain.add(&face, freeink::book::StyleNone);
+
+  const freeink::book::Page page = makeMultiRunPage();
+
+  GfxRenderer full;
+  g_fakeMillis = 0;
+  freeink::book::PagePaint::paintText(page, chain, full);
+
+  GfxRenderer sliced;
+  g_fakeMillis = 0;
+  uint16_t nextRun = 0;
+  uint32_t nextChar = 0;
+  bool complete = false;
+  int slices = 0;
+  int intraRunResumes = 0;
+  while (!complete && slices < 128) {
+    complete = freeink::book::PagePaint::paintTextSliced(page, chain, sliced, nextRun, nextChar, &nextRun, &nextChar,
+                                                         /*budgetMs=*/120);
+    ++slices;
+    if (!complete && nextChar > 0) ++intraRunResumes;  // yielded INSIDE a run
+  }
+  ASSERT_TRUE(complete) << "pump did not converge (cursor run=" << nextRun << " char=" << nextChar << ")";
+  EXPECT_GT(slices, 3);           // the budget really yielded, repeatedly
+  EXPECT_GT(intraRunResumes, 0);  // at least one yield landed MID-RUN
+  EXPECT_EQ(nextRun, page.runCount);
+  EXPECT_EQ(nextChar, 0u);
+  EXPECT_EQ(0, std::memcmp(full.base, sliced.base, sizeof(full.base)));
+  g_fakeMillis = 0;
 }

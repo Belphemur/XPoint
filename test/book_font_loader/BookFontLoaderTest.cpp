@@ -1058,6 +1058,24 @@ TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
 }
 
+// A stack-probe degrade must survive Crisp/Smooth switches: applyRenderMode
+// changes ONLY the raster axis — re-enabling Light on a probed-off slot
+// would put the Adobe interpreter back onto the 32KB worker stack (r5).
+TEST(BookFontLoaderHinting, DegradeSurvivesApplyRenderMode) {
+  BookFontLoader loader;
+  loader.resetHintStateForTest();
+  loader.degradeHintForTest(1);
+  loader.applyRenderMode(false);  // Smooth
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).monochrome, false);
+  loader.applyRenderMode(true);  // Crisp
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).monochrome, true);
+  // Un-degraded slots keep the requested mode through the switches.
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(0).hinting, HM::Light);
+  loader.resetHintStateForTest();
+}
+
 // Device regression 2026-09-19: a mono request against a build whose
 // FreeType lacks the mono renderer module rasterized EVERY glyph to nullptr
 // (blank page). The load funnel must degrade to the nearest supported set

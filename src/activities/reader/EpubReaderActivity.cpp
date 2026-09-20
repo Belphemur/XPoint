@@ -3258,6 +3258,7 @@ void EpubReaderActivity::ttfInvalidatePreRender(const char* reason) {
   ttfPreRendered.spineIndex = -1;
   ttfPreRendered.pageIndex = -1;
   ttfPreRendered.nextRun = 0;
+  ttfPreRendered.nextChar = 0;
   ttfPreRendered.slicesUsed = 0;
 }
 
@@ -3364,6 +3365,7 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
     ttfPreRendered.orientation = static_cast<uint8_t>(renderer.getOrientation());
     ttfPreRendered.monochrome = ttfEffectiveMonochromeSnapshot();
     ttfPreRendered.nextRun = 0;
+    ttfPreRendered.nextChar = 0;
     ttfPreRendered.slicesUsed = 0;
     ttfPreRendered.pumping = true;
     // The framebuffer no longer holds a clean displayed page: overlay opens
@@ -3374,7 +3376,8 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
   bool complete = true;
   if (grayParity) {
     complete = freeink::book::PagePaint::paintTextSliced(page, *chain, renderer, ttfPreRendered.nextRun,
-                                                         &ttfPreRendered.nextRun, kPreRenderSliceBudgetMs);
+                                                         ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
+                                                         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs);
   } else {
     paintTtfPage(page, params.font);
   }

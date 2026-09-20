@@ -72,6 +72,7 @@ void ProgressManager::begin() {
   lastFlushed_ = reinterpret_cast<ProgressManager::Record*>(last.get());
   *current_ = ProgressManager::Record{};
   *lastFlushed_ = ProgressManager::Record{};
+  ttfHasFlushed_ = false;
   // Ownership released to the raw members; the destructor poolFree()s them.
   (void)cur.release();
   (void)last.release();
@@ -172,6 +173,7 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
   xSemaphoreTake(stateMutex_, portMAX_DELAY);
   *current_ = ProgressManager::Record{};
   *lastFlushed_ = ProgressManager::Record{};
+  ttfHasFlushed_ = false;
   closing_ = false;
   writeQueued_ = false;
   lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
@@ -224,6 +226,7 @@ bool ProgressManager::openBook(const char* cachePath, uint16_t& spineIndex, uint
     current_->hasOffset = hasOffset;
     current_->visibleTextOffset = visibleTextOffset;
     *lastFlushed_ = *current_;  // disk state IS the baseline
+    ttfHasFlushed_ = true;
     xSemaphoreGive(stateMutex_);
     LOG_INF(MUTEX_TAG, "Progress loaded: spine=%u page=%u/%u", spineIndex, pageNumber, pageCount);
   } else {
@@ -280,6 +283,7 @@ bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, u
     current_->generation = generation;
     current_->visibleTextOffset = charOffset;  // char-offset carrier
     *lastFlushed_ = *current_;
+    ttfHasFlushed_ = true;
     xSemaphoreGive(stateMutex_);
     LOG_INF(MUTEX_TAG, "TTF progress loaded: spine=%u page=%u charOffset=%u gen=%u", spineIndex, pageNumber, charOffset,
             generation);
@@ -318,7 +322,7 @@ void ProgressManager::saveTtf(const uint16_t spineIndex, const uint16_t pageNumb
       const bool intervalElapsed = sinceFlushSec >= (FLUSH_INTERVAL_MS / 1000);
       // A chapter start always flushes: a crash mid-chapter must resume at
       // the chapter boundary, not the last throttled checkpoint.
-      const bool chapterStart = current_->spineIndex != lastFlushed_->spineIndex;
+      const bool chapterStart = !ttfHasFlushed_ || current_->spineIndex != lastFlushed_->spineIndex;
       due = changed && (intervalElapsed || lowBat || writeQueued_ || chapterStart);
       if (due) writeQueued_ = true;
       queued = writeQueued_;
@@ -467,6 +471,7 @@ void ProgressManager::closeBook() {
   if (flushed) {
     *current_ = ProgressManager::Record{};
     *lastFlushed_ = ProgressManager::Record{};
+    ttfHasFlushed_ = false;
     cachePath_[0] = '\0';
     bookOpen_ = false;
     writeQueued_ = false;
@@ -599,6 +604,7 @@ bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, con
     if (sameBook) {
       if (*current_ == rec) {
         *lastFlushed_ = rec;
+        ttfHasFlushed_ = true;
         lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
         writeQueued_ = false;
       } else if (adopt) {
@@ -607,6 +613,7 @@ bool ProgressManager::commitRecord(const char* cachePath, const Record& rec, con
         // position (KOReader sync / cache-clear guarantee).
         *current_ = rec;
         *lastFlushed_ = rec;
+        ttfHasFlushed_ = true;
         lastFlushSec_ = static_cast<uint32_t>(millis() / 1000);
         writeQueued_ = false;
       } else {

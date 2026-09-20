@@ -27,6 +27,14 @@ constexpr uint8_t CACHE_VERSION = 3;          // Increment when cache format cha
 }  // namespace
 
 bool TxtReaderActivity::loadBook() {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Sync the FT faces' render mode with the persisted setting before the
+  // first paint (review r5): the TXT reader path never visits the text
+  // settings activity, so the loader could otherwise keep its Crisp default
+  // while the setting says Smooth. Once per open — applyRenderMode flushes
+  // glyph caches, so it must never run per renderPage().
+  freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
+#endif
   txt = makeUniqueNoThrow<Txt>(bookPath, "/.crosspoint");
   if (!txt) {
     LOG_ERR("TRS", "Failed to allocate TXT object");

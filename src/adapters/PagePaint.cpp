@@ -6,7 +6,6 @@
 #include "PagePaint.h"
 
 #include <Arduino.h>  // millis() for the slice budget; host targets provide a stub
-
 #include <GfxRenderer.h>
 
 #include "GrayPlanes.h"
@@ -50,16 +49,29 @@ using GlyphFilter = bool (*)(void* ctx, int32_t x0, int32_t y0, int32_t x1, int3
 // double strike, underline/strikethrough arms) but hands every sample to the
 // caller's tone sink instead of writing into a FrameTarget.
 void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter,
-              const uint16_t startRun = 0, uint16_t* nextRunOut = nullptr, const uint32_t budgetMs = 0) {
+              const uint16_t startRun = 0, const uint32_t startChar = 0, uint16_t* nextRunOut = nullptr,
+              uint32_t* nextCharOut = nullptr, const uint32_t budgetMs = 0) {
   const uint32_t start = budgetMs ? millis() : 0;
   for (uint16_t r = startRun; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
     int32_t penX = run.x;
     uint32_t i = 0;
     uint32_t prev = 0;
+    // Intra-run cursor: glyphs already painted in THIS pass when resuming
+    // the run the previous slice yielded in (metrics-only replay — no
+    // rasterize, no pixels — so the resume cannot double-plot ink).
+    uint32_t painted = 0;
+    const bool isCursorRun = (r == startRun && startChar > 0);
     while (i < run.len) {
       const uint32_t cp = decodeUtf8(run.text, run.len, i);
       if (prev != 0) penX += fonts.kerning(prev, cp, run.sizePx, run.styleFlags);
+      if (isCursorRun && painted < startChar) {
+        // Resume replay: advance-only, no rasterize, no pixel writes.
+        penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+        prev = cp;
+        ++painted;
+        continue;
+      }
       uint8_t faceFlags = 0;
       RenderFont* font = fonts.fontFor(cp, run.styleFlags, &faceFlags);
       // Cull from cheap metrics before rasterizing: paintPlanes() walks the
@@ -103,6 +115,14 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
       }
       penX += fonts.advance(cp, run.sizePx, run.styleFlags);
       prev = cp;
+      ++painted;
+      // Intra-run yield (review r5): a long line must not blow the slice
+      // budget — check after every glyph, cursor on the current run.
+      if (budgetMs) {
+        if (nextRunOut != nullptr) *nextRunOut = r;
+        if (nextCharOut != nullptr) *nextCharOut = painted;
+        if (millis() - start >= budgetMs) return;
+      }
     }
     if (run.styleFlags & StyleUnderline) {
       const int32_t y = run.baselineY + (run.sizePx >= 24 ? 3 : 2);
@@ -121,6 +141,7 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
     // Slice cursor: record progress after every completed run and yield when
     // the slice budget is spent (millis() granularity ~1ms).
     if (nextRunOut != nullptr) *nextRunOut = r + 1;
+    if (nextCharOut != nullptr) *nextCharOut = 0;
     if (budgetMs && millis() - start >= budgetMs && r + 1 < page.runCount) return;
   }
 }
@@ -128,8 +149,10 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
 // Ruby annotations: same glyph walk the engine's PageRenderer::renderRubies
 // does (StyleNone, kerning, no underline/strike arms) but routed through the
 // caller's tone sink so the gray-parity pipeline covers annotations too.
-void walkRubies(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter) {
-  for (uint16_t r = 0; r < page.rubyCount; ++r) {
+void walkRubies(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter,
+                const uint16_t startRuby = 0, uint16_t* nextRubyOut = nullptr, const uint32_t budgetMs = 0) {
+  const uint32_t start = budgetMs ? millis() : 0;
+  for (uint16_t r = startRuby; r < page.rubyCount; ++r) {
     const PageRuby& ruby = page.rubies[r];
     const uint32_t tLen = static_cast<uint32_t>(strlen(ruby.text));
     int32_t penX = ruby.x;
@@ -172,6 +195,10 @@ void walkRubies(const Page& page, FontChain& fonts, void* ctx, const ToneSink si
       penX += fonts.advance(cp, ruby.sizePx, StyleNone);
       prev = cp;
     }
+    // Slice cursor: rubies yield with the same budget as text runs (review
+    // r5); the ruby index encodes as cursor run ≥ runCount.
+    if (nextRubyOut != nullptr) *nextRubyOut = r + 1;
+    if (budgetMs && millis() - start >= budgetMs && r + 1 < page.rubyCount) return;
   }
 }
 
@@ -212,13 +239,24 @@ void PagePaint::paintText(const Page& page, FontChain& fonts, const GfxRenderer&
   walkRubies(page, fonts, &ctx, plotBase, nullptr);
 }
 
-bool PagePaint::paintTextSliced(const Page& page, FontChain& fonts, const GfxRenderer& renderer, const uint16_t firstRun,
-                                uint16_t* nextRunOut, const uint32_t budgetMs) {
+bool PagePaint::paintTextSliced(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
+                                const uint16_t firstRun, const uint32_t firstChar, uint16_t* nextRunOut,
+                                uint32_t* nextCharOut, const uint32_t budgetMs) {
   BaseCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight()};
-  walkText(page, fonts, &ctx, plotBase, nullptr, firstRun, nextRunOut, budgetMs);
-  if (*nextRunOut < page.runCount) return false;  // budget spent mid-page: resume later
-  // Runs complete — rubies are few; the finishing slice covers them.
-  walkRubies(page, fonts, &ctx, plotBase, nullptr);
+  if (firstRun < page.runCount) {
+    walkText(page, fonts, &ctx, plotBase, nullptr, firstRun, firstChar, nextRunOut, nextCharOut, budgetMs);
+    if (*nextRunOut < page.runCount) return false;  // budget spent mid-page: resume later
+  }
+  // Runs complete — rubies phase: the ruby index encodes as cursor run ≥
+  // runCount (walkRubies yields on the same budget, review r5).
+  const uint16_t firstRuby = firstRun >= page.runCount ? static_cast<uint16_t>(firstRun - page.runCount) : 0;
+  walkRubies(page, fonts, &ctx, plotBase, nullptr, firstRuby, nextRunOut, budgetMs);
+  if (*nextRunOut < page.rubyCount) {
+    // walkRubies yielded (nextRubyOut = the pending ruby index) — encode as
+    // cursor run ≥ runCount.
+    *nextRunOut = static_cast<uint16_t>(page.runCount + *nextRunOut);
+    return false;
+  }
   return true;
 }
 

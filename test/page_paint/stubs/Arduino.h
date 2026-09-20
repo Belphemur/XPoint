@@ -1,8 +1,9 @@
 // Host stub for the Arduino core surface PagePaint.cpp uses (slice-budget
-// timing). Constant 0 keeps the budget check inert: paintTextSliced then
-// completes in one call, which is exactly what cursor tests want.
+// timing). g_fakeMillis is test-controllable so the sliced-paint tests can
+// drive the budget checks deterministically.
 #pragma once
 
 #include <cstdint>
 
-inline uint32_t millis() { return 0; }
+inline uint32_t g_fakeMillis = 0;
+inline uint32_t millis() { return g_fakeMillis; }

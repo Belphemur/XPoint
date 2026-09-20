@@ -112,7 +112,11 @@ Add a bounded glyph cache to `freeink::font::FtFont`:
      with no JSON migration). Both paths are render
      options and MUST fold into the FIBP cache identity — extend
      `renderOptionsFingerprintTag()` (BookFontLoader.h) to cover hinting
-     mode AND raster mode, per its own documented rule.
+     mode per its own documented rule. (As-built amendment, soak-fix4: the
+     RASTER mode deliberately does NOT fold — advances are identical
+     across Smooth/Crisp, so folding it would re-index every book on a
+     firmware flip of the Crisp default; bitmap identity is governed by
+     the P1 glyph cache's setRenderOptions() flush instead.)
 - Stack-safety gate (the original blocker): before shipping hinted CFF,
   measure `uxTaskGetStackHighWaterMark` on the 48 KB render task and the
   32 KB worker task with hinted rendering of a CFF-heavy font. If HWM drops

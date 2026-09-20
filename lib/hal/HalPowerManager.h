@@ -6,6 +6,7 @@
 #include <Logging.h>
 #include <freertos/semphr.h>
 
+#include <atomic>
 #include <cassert>
 
 #include "HalGPIO.h"
@@ -28,8 +29,12 @@ class HalPowerManager {
   // normal speed (render lock, user input). Low power re-engages only after
   // this dwell expires, so a burst of renders or a background build polling
   // with renders cannot flip-flop the CPU frequency between loop ticks
-  // (measured: enter/restore pairs several times per second).
-  unsigned long lastNormalMs = 0;
+  // (measured: enter/restore pairs several times per second). Atomic:
+  // pokeNormalSpeed() runs on the worker task, the governor loop reads/writes
+  // it on the main task (review r5) — a torn 32-bit read is not possible on
+  // this ABI, but atomicity also gives the load/store the right memory
+  // ordering against the dwell decision.
+  std::atomic<unsigned long> lastNormalMs{0};
 
  public:
 #if BOARD_HAS_PSRAM
@@ -53,7 +58,7 @@ class HalPowerManager {
   // throttle an active build, and re-engage low power the moment the ticks
   // stop. Any-task safe — one 32-bit store, same raciness as the rest of
   // the dwell bookkeeping.
-  void pokeNormalSpeed() { lastNormalMs = millis(); }
+  void pokeNormalSpeed() { lastNormalMs.store(millis(), std::memory_order_relaxed); }
 
   // Setup wake up GPIO and enter deep sleep. When autoPowerOffTimerUs is
   // non-zero an RTC timer is armed so the device wakes after that many

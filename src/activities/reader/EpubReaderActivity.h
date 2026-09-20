@@ -303,9 +303,11 @@ class EpubReaderActivity final : public ReaderActivity {
     // kPreRenderSliceBudgetMs slices, one per loop tick, so a button press
     // is never more than one slice away from being served. pumping marks an
     // unfinished paint (the framebuffer holds a PARTIAL page — never
-    // consumable); nextRun is the paint cursor across slices.
+    // consumable); nextRun/nextChar is the paint cursor across slices
+    // (run index; nextChar = intra-run glyph offset — review r5).
     bool pumping = false;
     uint16_t nextRun = 0;
+    uint32_t nextChar = 0;
     uint8_t slicesUsed = 0;
   };
   TtfPreRenderedPage ttfPreRendered;

@@ -154,8 +154,8 @@ class ProgressManager {
   // handling — quiesce first). Destructor teardown and begin() failure paths.
   void releaseState();
 
-  // Protects current_, lastFlushed_, cachePath_, bookOpen_, writeQueued_,
-  // and lastFlushSec_. This mutex is never held across disk I/O.
+  // Protects current_, lastFlushed_, ttfHasFlushed_, cachePath_, bookOpen_,
+  // writeQueued_, and lastFlushSec_. This mutex is never held across disk I/O.
   SemaphoreHandle_t stateMutex_ = nullptr;
   // Serializes every progress.bin disk access (load and saveRecord): an
   // openBook() read must never interleave with a flush's writeAtomic().
@@ -166,6 +166,11 @@ class ProgressManager {
   // ops no-op.
   Record* current_ = nullptr;
   Record* lastFlushed_ = nullptr;
+  // False until a baseline exists that chapterStart can be measured against:
+  // lastFlushed_ is zero-initialized with spineIndex 0, so the FIRST
+  // saveTtf() at spine 0 would otherwise never see a chapter start and skip
+  // the protective flush (review r5).
+  bool ttfHasFlushed_ = false;
   uint32_t lastFlushSec_ = 0;  // last successful disk flush (seconds since boot)
   // Bumped on every successful openBook(): lets a writer holding diskMutex_
   // detect that its snapshot belongs to a session that already ended.

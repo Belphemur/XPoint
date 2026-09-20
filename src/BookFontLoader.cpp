@@ -167,7 +167,13 @@ void BookFontLoader::applyRenderMode(bool crispMode) {
   // stays valid.
   requestedMonochrome_ = crispMode;
   for (uint8_t i = 0; i < 4; ++i) {
-    applySlotRenderOptions(faces_[i], i, currentRenderOptions(), "applyRenderMode");
+    freeink::font::FtFont::RenderOptions requested = currentRenderOptions();
+    // A stack-probe degrade must survive the mode switch: the requested set
+    // carries Light, but the slot's PROBE VERDICT is None — re-enabling
+    // hinted CFF here would put the Adobe interpreter back onto the 32KB
+    // worker stack it was probed off of (review r5).
+    requested.hinting = effectiveRenderOptions_[i].hinting;
+    applySlotRenderOptions(faces_[i], i, requested, "applyRenderMode");
   }
   // Re-derive the cached fingerprint so the next generation hash sees the
   // new tag (cheap post-P3.1; 0-consistent for unloaded/fallback states).

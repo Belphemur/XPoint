@@ -536,9 +536,11 @@ bool FibpPrefetchWorker::yieldHook(void* ctx, const uint16_t pagesBuilt) {
   // Soak addendum: per-page PROF sample (≤ every 10 pages) quantifies the
   // hinting vs layout cost split on device — layout semantics unchanged.
   // advance/kerning time = the font-backend metric path (hinting cost
-  // shows up here); the remainder of the page time is engine work.
+  // shows up here); the remainder of the page time is engine work. The
+  // accumulator is DRAINED on every page (take semantics) so the sampled
+  // value is the page this PROF line reports, not a 10-page accumulation.
+  const uint64_t advUs = self->chain_.takeMeasureAccumUs();
   if (pagesBuilt == 1 || pagesBuilt % kIndexingProgressLogEveryPages == 0) {
-    const uint64_t advUs = self->chain_.takeMeasureAccumUs();
     LOG_DBG("PROF", "phase=ttf_build_page spine=%u page=%u page_ms=%lu adv_us=%llu",
             static_cast<unsigned>(self->logSpine_), static_cast<unsigned>(pagesBuilt),
             static_cast<unsigned long>(pageMs), static_cast<unsigned long long>(advUs));
