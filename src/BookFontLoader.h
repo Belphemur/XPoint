@@ -97,24 +97,71 @@ class BookFontLoader {
   // loader to the settings header.
   static constexpr uint16_t kInitSizePx = 14;
 
-  // Single source of truth for the reader's FT render options (SDK 43fed43
-  // setRenderOptions). HintingMode::None is the shipped behavior — fully
-  // unhinted loads, as decided in the FreeType backend campaign (hinted CFF
-  // enters the Adobe interpreter whose stack footprint overflows small task
-  // stacks; AA e-ink gains nothing from grid-fitting). Deliberately NOT a
-  // user setting: the mode is render-affecting and must stay in lockstep with
-  // the FIBP cache identity (renderOptionsFingerprintTag).
-  static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{};
+  // Requested reader render options: Light hinting (P2 re-enable). Light
+  // grid-fits via the auto-hinter (compiled in per-platform with
+  // FREEINK_FONT_ENABLE_AUTOHINT) instead of the TT bytecode interpreter.
+  // For CFF outlines Light still routes through the Adobe interpreter, whose
+  // stack-resident footprint is the one real risk — gated at runtime by
+  // probeHintStackSafety(), which degrades an individual face to unhinted
+  // when its measured render depth would not fit the smallest consumer
+  // stack (the 24KB FibpPrefetchWorker). Deliberately NOT a user setting:
+  // the mode is render-affecting and must stay in lockstep with the FIBP
+  // cache identity (renderOptionsFingerprintTag).
+  static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{freeink::font::FtFont::HintingMode::Light};
+  // Crisp base for the file-scope effective-options init (C++20 designated
+  // init on the aggregate): matches the TEXT_RENDER_CRISP settings default
+  // so pre-sync readers agree with the persisted state.
+  static constexpr freeink::font::FtFont::RenderOptions kCrispRenderOptions{
+      .hinting = freeink::font::FtFont::HintingMode::Light,
+      .interpreterVersion = 40,
+      .monochrome = true,
+  };
 
-  // Fingerprint tag folding the active render options into the font
-  // fingerprint. Render-affecting options MUST invalidate FIBP cache
-  // identity (hinting changes advances → layout), so this tag is mixed into
-  // BOTH fingerprint sites — computeFingerprint() and the FibpPrefetchWorker
-  // parity hash — and must be extended whenever kRenderOptions gains a knob
-  // that alters glyph output.
-  static constexpr uint32_t renderOptionsFingerprintTag() {
-    return static_cast<uint32_t>(kRenderOptions.hinting) << 24;
+  // Render options for the active CrossPointSettings::textRenderMode:
+  // Smooth keeps the dual-plane AA coverage; Crisp sets the FT monochrome
+  // target (hinted 1-bit glyphs — no coverage, no tone quantization, no
+  // plane walk). The mode is applied to live faces via applyRenderMode()
+  // (same flush point as the stack-probe degrade) and folded into the
+  // fingerprint tag, so a switch invalidates FIBP identity without a reload.
+  // Synced from the persisted setting by the reader and the text settings
+  // activity (applyRenderMode takes no SETTINGS dependency — host-testable).
+  [[nodiscard]] freeink::font::FtFont::RenderOptions currentRenderOptions() const {
+    auto options = kRenderOptions;
+    options.monochrome = requestedMonochrome_;
+    return options;
   }
+
+  // Re-derive every slot's effective options from the requested mode and
+  // push them through setRenderOptions() — the P1 glyph-cache flush point —
+  // so no stale-quantized bitmap survives the change. No-op on the stb
+  // backend. Call with the new mode after SETTINGS.textRenderMode changes;
+  // also syncs the fingerprint so the next layoutGenerationHash sees the tag.
+  void applyRenderMode(bool crispMode);
+
+  // Per-slot effective options: kRenderOptions unless the P2 stack probe
+  // degraded that face to unhinted. Shared with the FIBP prefetch worker so
+  // both fingerprint sites fold the SAME effective modes into the identity.
+  // Only meaningful for the FT backend; the stb backend has no options.
+  static const freeink::font::FtFont::RenderOptions& effectiveRenderOptions(uint8_t faceSlot);
+
+  // The ACTIVE text raster mode after any degrade (slot 0's effective set;
+  // support is build-wide so slots never diverge). Paint-path decisions
+  // (gray planes vs 1bpp) must follow this, NOT the raw setting — a build
+  // without the mono module degrades Crisp to Smooth, and painting Crisp
+  // frame formats against AA faces blanks the page.
+  static bool effectiveMonochrome();
+
+  // Fingerprint tag folding the ACTIVE hinting mode into the font
+  // fingerprint. Runtime (not constexpr) since the effective per-face mode
+  // is a probe outcome: a degrade changes advances and layout, so the tag
+  // must change with it and FIBP caches regenerate. RASTER MODE is
+  // deliberately EXCLUDED: advances are identical across Smooth/Crisp, so
+  // the tag must stay stable across a mode flip (or a firmware update
+  // flipping the default) — bitmap identity is governed by the P1 glyph
+  // cache's setRenderOptions() flush. Mixed into BOTH fingerprint sites —
+  // computeFingerprint() and the FibpPrefetchWorker parity hash — and must
+  // be extended whenever kRenderOptions gains a knob that alters ADVANCES.
+  static uint32_t renderOptionsFingerprintTag();
 #endif
 
   const FamilyInfo* families() const { return families_.data(); }
@@ -127,6 +174,14 @@ class BookFontLoader {
 
   // Public fingerprint helper — content-based, never path/mtime.
   uint32_t computeFingerprint() const;
+
+  // Fingerprint with the SD-backed per-face hash cache (P3.1): chained
+  // per-slot hashes under /.crosspoint/fonts/ keyed by face path hash, valid
+  // only when {fileSize, mtime, incoming chain seed} all match. Pure-memory
+  // fallback (computeFingerprint()) runs on any mismatch or absent cache —
+  // content semantics are identical either way. Non-const: consults and
+  // refreshes the cache.
+  uint32_t computeFingerprintCached();
 
   // FNV-1a over font bytes with a chained seed. The prefetch worker hashes
   // the same face bytes in the same slot order to derive an identical
@@ -159,9 +214,41 @@ class BookFontLoader {
   static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
     scanFonts(rootPath, families, familyCount);
   }
+  // Force the P2 stack-probe outcome for a slot as if the probe had
+  // degraded it: flips the effective options to unhinted (the device probe
+  // itself is FreeRTOS-only and absent on host). Non-const on purpose.
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  void degradeHintForTest(uint8_t faceSlot) { degradeHint(faceSlot); }
+  // Restore every slot to the requested mode — degradeHintForTest is sticky
+  // (file-scope static state outlives the test) and the tag participates in
+  // other tests' fingerprints.
+  void resetHintStateForTest() { resetHintState(); }
+#endif
 #endif
 
  private:
+  // P2 stack gate: probe each loaded face's hinted render depth on the
+  // calling task (loopTask) and degradeHint() the faces that exceed
+  // kHintProbeStackBudgetBytes. No-op on host.
+  void probeHintStackSafety();
+  // Flip a slot's effective options to unhinted through setRenderOptions()
+  // (the P1 glyph-cache flush point) and log it.
+  void degradeHint(uint8_t faceSlot);
+  // Production reset shared by ensureLoaded's clear loop and the host test
+  // seam: every slot back to the requested mode (fresh load re-probes). No
+  // live-face propagation here by construction — ensureLoaded deletes the
+  // faces before resetting, and the test instance has none.
+  void resetHintState();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // THE degrade funnel: apply `requested` to the slot's face, falling back
+  // to the nearest supported set (drop monochrome → drop hinting) when
+  // refused, and record the effective set. Called by tryLoadFace,
+  // applyRenderMode, and degradeHint — no call site may setRenderOptions
+  // directly and continue on false.
+  void applySlotRenderOptions(NativeFace* face, uint8_t faceSlot, const freeink::font::FtFont::RenderOptions& requested,
+                              const char* label);
+#endif
+
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
   uint8_t familyCount_ = 0;
   // Selection state (see selectFamily()).
@@ -172,6 +259,10 @@ class BookFontLoader {
   FontChain chain_;
   uint32_t fingerprint_ = 0;
   bool loaded_ = false;  // a load attempt completed (fingerprint 0 is valid)
+  // Requested render mode (task6): Crisp ⇒ FT monochrome target. Synced from
+  // the persisted setting by the reader/settings via applyRenderMode(); the
+  // default (Crisp) matches the TEXT_RENDER_CRISP settings default.
+  bool requestedMonochrome_ = true;
   std::atomic<bool> dirty_{false};
 
   // Two-tier font-byte storage: each face has its own RAII owner.
@@ -181,6 +272,10 @@ class BookFontLoader {
   void* fontBytes_[4] = {};         // non-owning raw pointer for fingerprinting
   uint8_t faceBytesOwner_[4] = {};  // 0=none, 1=PSRAM, 2=DRAM
   uint32_t fontFileSizes_[4] = {};
+  // Fingerprint-cache identity per slot, captured in tryLoadFace(): the
+  // face's path hash (cache key) and mtime (rehash trigger beside size).
+  uint32_t facePathHash_[4] = {};
+  uint32_t faceMtime_[4] = {};
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
   // Size must fit TtfFont's profile-scaled slot tables before any glyph

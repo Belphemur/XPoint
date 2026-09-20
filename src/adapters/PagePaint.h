@@ -47,6 +47,19 @@ class PagePaint {
   // PageRenderer::renderText when the dual-plane parity pass follows.
   static void paintText(const Page& page, FontChain& fonts, const GfxRenderer& renderer);
 
+  // Sliced variant of paintText for the cooperative prerender pump: paints
+  // from (firstRun, firstChar) and yields once `budgetMs` elapsed — the
+  // cursor advances per RUN and, inside the run the budget hits, per GLYPH
+  // (a single long line must not blow the 120 ms input-latency bound;
+  // review r5). *nextRunOut/*nextCharOut receive the resume position: run
+  // < runCount → text runs pending (nextChar = glyphs already painted in
+  // that run); run >= runCount → rubies pending (index = run - runCount).
+  // Returns true when everything is painted (runs, rubies AND rules are
+  // the caller's job); the caller then owns a complete base pass. NOT for
+  // the plane pass — the prerender paints the base only.
+  static bool paintTextSliced(const Page& page, FontChain& fonts, const GfxRenderer& renderer, uint16_t firstRun,
+                              uint32_t firstChar, uint16_t* nextRunOut, uint32_t* nextCharOut, uint32_t budgetMs);
+
   // Dual-plane pass: call INSIDE a GRAYSCALE_DUAL beginStripTarget band.
   // Flags MSB/LSB plane bits per pixel; solid ink (tone 3) is skipped —
   // the base carries it, and plotting in the shared strip would corrupt it.

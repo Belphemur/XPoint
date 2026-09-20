@@ -94,6 +94,9 @@ constexpr unsigned long fibpDeferPollMs = 250;
 // Indexing popup for the rest of the spine (a 93-page spine measured 243 s
 // at low power, tens of seconds even at full speed).
 constexpr unsigned long fibpDeferTakeoverMs = 1500;
+// How long the reader waits for the worker to pick up a resume claim
+// before the margin fallback owns the extension (soak addendum).
+constexpr unsigned long kFibpResumeClaimGraceMs = 2000;
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
@@ -294,6 +297,14 @@ EpubReaderActivity::~EpubReaderActivity() {
 
 void EpubReaderActivity::onEnter() {
   ReaderActivity::onEnter();
+#if defined(CROSSPOINT_TTF_READER)
+  // Sync the FT faces' render mode with the persisted setting before any
+  // render/worker session can use them (a Crisp mode saved in a previous
+  // session must apply at boot, not only after a settings visit).
+  if (ttf_) {
+    freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
+  }
+#endif
 #ifdef READING_STATS_ENABLED
   if (epub && SETTINGS.shouldTrackReadingStats()) {
     stats = BookReadingStats::load(epub->getCachePath());
@@ -664,6 +675,10 @@ bool EpubReaderActivity::loadBook() {
     if (!ttf_->open(bookPath.c_str(), ttfCacheDir.c_str())) {
       LOG_ERR("ERS", "TTF runtime open failed — using legacy reader path");
       ttf_.reset();
+    } else {
+      // Sync the FT faces' render mode before the first render/worker session
+      // (onEnter ran before ttf_ existed on a fresh open).
+      freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
     }
   }
 #endif
@@ -1166,6 +1181,7 @@ void EpubReaderActivity::loop() {
 
     if (RenderLock::peek()) {
       lastPageTurnTime = millis();
+      LOG_DBG("ERS", "auto-turn deferred: render busy");
       return;
     }
 
@@ -2463,6 +2479,38 @@ void EpubReaderActivity::renderBook() {
 
 #if defined(CROSSPOINT_TTF_READER)
 
+// Estimated chapter total while a build is in flight (owner steer: the old
+// engine's behavior — return after a few pages, let the user read, refine
+// the count as indexing progresses). Exact once the chapter is complete.
+uint32_t EpubReaderActivity::ttfEstimatedPageCount() const {
+  if (!ttf_ || ttfSpine != currentSpineIndex) return ttfPageCount;
+  uint64_t est = ttfPageCount;
+  const bool building = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
+  const bool workerBuilding = fibpWorker_ != nullptr && fibpWorker_->buildingSpine() == currentSpineIndex;
+  if (building) {
+    // Live session: scale built pages by the layout session's input progress.
+    const uint64_t consumed = ttf_->sessionBytesConsumed();
+    const uint64_t total = ttf_->sessionBytesTotal();
+    if (ttfPageCount > 0 && consumed > 0 && total > consumed) {
+      est = static_cast<uint64_t>(ttfPageCount) * total / consumed;
+    }
+  } else if (ttf_->cacheReady() && ttf_->cachePartial()) {
+    // Partial cache (worker may be extending it off-task): the cache
+    // records its own input progress; while the worker holds the claim,
+    // its live page count refines the extrapolation.
+    const uint64_t consumed = ttf_->cacheBuildBytesConsumed();
+    const uint64_t total = ttf_->cacheBuildBytesTotal();
+    if (consumed > 0 && total > consumed) {
+      uint64_t pages = ttfPageCount;
+      if (workerBuilding) pages += fibpWorker_->buildingProgressPages();
+      est = pages * total / consumed;
+    }
+  }
+  if (est < ttfPageCount) est = ttfPageCount;     // never below what is servable
+  constexpr uint64_t kMaxEstimatedPages = 60000;  // same clamp the old engine used
+  return est > kMaxEstimatedPages ? static_cast<uint32_t>(kMaxEstimatedPages) : static_cast<uint32_t>(est);
+}
+
 void EpubReaderActivity::ttfSaveProgress() {
   // progressManager stays the single writer; this reports the
   // generation-tagged record shape (charOffset + generation) instead of a
@@ -2476,6 +2524,10 @@ void EpubReaderActivity::finishTtfPageRender() {
   // application-level refresh after cleanup (the SDK's cleanup is RAM-only).
   const bool grayExtraDisplay = overlay != Overlay::None && usesToolbarMenu();
   LOG_DBG("GRS", "finishTtfPageRender: extraDisplay=%d", grayExtraDisplay);
+  // P4: a chrome popup painted this frame must keep page N's context, so the
+  // prerender stays unscheduled for this pass (the popup repaints every
+  // render until its duration elapses, then the prerender resumes).
+  ttfChromePopupShown = showBookmarkMessage || showDictionaryMessage;
   if (pendingScreenshot) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
@@ -2486,6 +2538,8 @@ void EpubReaderActivity::finishTtfPageRender() {
   if (showDictionaryMessage) {
     GUI.drawPopup(renderer, dictionaryMessageTtf ? tr(STR_DICT_TTF_UNSUPPORTED) : tr(STR_DICT_NO_DICT_SET));
   }
+  // P4 one-page-ahead prerender: schedule only for fully clean frames.
+  if (!ttfChromePopupShown) ttfSchedulePreRender();
   if (overlay != Overlay::None && usesToolbarMenu()) {
     // The page just re-rendered under the overlay: refresh the snapshot that
     // backs panel->toolbar restores (any previous copy is stale).
@@ -2719,6 +2773,20 @@ void EpubReaderActivity::renderBookTtf() {
   // Runs under the render task's RenderLock; catches every requestUpdate()
   // exit from the overlay while its deferred chrome refresh is still pending.
   settleOverlayRefresh();
+  // P4 prerender: capture and clear the pass flags before any state checks.
+  // - prerender pass:      paint the NEXT page's content only (no status bar,
+  //                        no flush) into the framebuffer.
+  // - fast-display pass:   the framebuffer already holds the next page's
+  //                        content; skip the base paint, chrome + commit only.
+  // - anything else:       a normal render — navigation, settings, popups,
+  //                        rebuilds — and any stale prerender dies here.
+  const bool isPreRenderPass = ttfPendingPreRender;
+  const bool isBufferDisplayPass = ttfUsePreRenderedBuffer;
+  ttfPendingPreRender = false;
+  ttfUsePreRenderedBuffer = false;
+  ttfRenderBusyStartMs = millis();
+  if (!isPreRenderPass && !isBufferDisplayPass) ttfInvalidatePreRender("unflagged render pass");
+  ttfChromePopupShown = false;
   // Any render attempt makes the previous framebuffer state provisional: only
   // a successful page+status render below may restore the fast-open flag.
   ttfFrameRenderComplete.store(false, std::memory_order_release);
@@ -2760,6 +2828,22 @@ void EpubReaderActivity::renderBookTtf() {
   // Index-ahead worker: spawn/notify under the current generation + chapter.
   updateFibpWorker(generation, params);
 
+  // 1b) P4 prerender passes. Both re-derive their target from live state (the
+  // flags only say a pass was requested — navigation since the schedule shows
+  // up here as a different spine/page) and both run with the panel quiet:
+  // settleOverlayRefresh() above drained any deferred overlay waveform, and
+  // the previous page's commit waited for its own refresh.
+  if (isPreRenderPass) {
+    ttfRunPreRenderPass(params);
+    return;
+  }
+  if (isBufferDisplayPass) {
+    if (ttfFastDisplayPass(params)) return;
+    // Page read failed or an image page slipped through: the framebuffer no
+    // longer matches the reading position — full render below.
+    ttfInvalidatePreRender("fast pass precondition");
+  }
+
   // 2) Chapter transition. A running session for the chapter we enter (a
   // prefetch build) keeps laying out; anything else aborts (partial commit).
   if (ttfSpine != currentSpineIndex) {
@@ -2793,13 +2877,37 @@ void EpubReaderActivity::renderBookTtf() {
 
   ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
 
+  // 2b) Soak addendum: a PARTIAL current chapter whose target page is already
+  // servable is handed to the worker — the reader paints immediately from
+  // the partial and the rest of the chapter finishes off-task. Idempotent
+  // request; the commit pickup below reopens the complete cache when the
+  // worker releases the claim. The reader never inline-builds while it
+  // holds this claim (takeover guards below return the spine to the reader
+  // when it actually needs pages the partial lacks).
+  if (ttfSpine == currentSpineIndex && ttf_->cacheReady() && ttf_->cachePartial() && fibpWorker_ != nullptr) {
+    if (fibpResumeClaimedSpine_ != currentSpineIndex) {
+      fibpResumeClaimedSpine_ = static_cast<int16_t>(currentSpineIndex);
+      fibpResumeSeenBuilding_ = false;
+      fibpResumeRequestMs_ = millis();
+      fibpWorker_->requestResumeClaim(static_cast<uint16_t>(currentSpineIndex));
+      LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
+              static_cast<unsigned>(ttfPageCount));
+    }
+  } else if (fibpResumeClaimedSpine_ != -1 && fibpResumeClaimedSpine_ != currentSpineIndex) {
+    fibpResumeClaimedSpine_ = -1;  // left the chapter
+  }
+
   // 3) Single-writer handoff (R4 optional polish): while the worker builds
   // the chapter we are on, wait for its commit instead of racing a second
   // writer onto the same FIBP file; once it lands, reopen the cache so the
   // resolve/build decisions below see the worker's page count — no sync
   // rebuild, no popup stall beyond the wait.
+  // A RESUME claim (2b) is exempt from the parking wait: the reader can
+  // already serve its target page from the partial, so it renders normally
+  // while the worker finishes in the background.
   if (fibpWorker_ != nullptr && fibpWorker_->active() &&
-      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
+      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex) &&
+      fibpResumeClaimedSpine_ != currentSpineIndex) {
     if (!fibpDeferred_) {
       fibpDeferred_ = true;
       fibpDeferStartMs_ = millis();
@@ -2835,11 +2943,44 @@ void EpubReaderActivity::renderBookTtf() {
     ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
+  if (fibpResumeClaimedSpine_ == currentSpineIndex) {
+    // Resume-claim lifecycle: once the worker has been seen holding it, its
+    // release means the chapter committed — reopen so the page count and
+    // jump resolution see the complete cache.
+    const bool workerHolds = fibpWorker_ != nullptr && fibpWorker_->active() &&
+                             fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
+    if (workerHolds) {
+      fibpResumeSeenBuilding_ = true;
+    } else if (fibpResumeSeenBuilding_) {
+      fibpResumeClaimedSpine_ = -1;
+      fibpResumeSeenBuilding_ = false;
+      ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+      ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
+    } else if (millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs) {
+      // The worker never claimed (disabled, failed spawn, queue busy for the
+      // whole grace): stop waiting — the margin fallback owns the extension.
+      fibpResumeClaimedSpine_ = -1;
+    }
+  }
 
   // 4) Resolve the target page (jump states may need more build first).
   bool needFullBuild = false;
   int target = -1;
   const bool resolved = ttfResolveTargetPage(target, params, needFullBuild);
+
+  // Reader needs pages the partial lacks while the worker holds the resume
+  // claim: take the spine back (worker aborts at the next page boundary and
+  // commits its partial), then build inline to the target.
+  if (fibpResumeClaimedSpine_ == currentSpineIndex &&
+      (needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount)))) {
+    LOG_INF("ERS", "Reader takes resume claim over: spine %d", currentSpineIndex);
+    stopFibpWorker();
+    fibpResumeClaimedSpine_ = -1;
+    fibpResumeSeenBuilding_ = false;
+    ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+  }
 
   // 4) Build toward the target, synchronously like the legacy path. The heap
   // gate can defer the remainder to the background ticks.
@@ -2872,7 +3013,8 @@ void EpubReaderActivity::renderBookTtf() {
     // Further chunks are driven by the next render/background tick so long
     // jumps still cannot freeze input.
     constexpr uint8_t kWarmSyncBuildChunks = 1;
-    constexpr uint8_t kColdStartSyncBuildChunks = 2;
+    // Owner steer: return to the reader after ~one chunk (5-10 pages).
+    constexpr uint8_t kColdStartSyncBuildChunks = 1;
     const uint8_t chunksPerPass = ttfPageCount == 0 ? kColdStartSyncBuildChunks : kWarmSyncBuildChunks;
     uint8_t chunksThisPass = 0;
     while (ttf_->sessionActive() &&
@@ -2897,6 +3039,14 @@ void EpubReaderActivity::renderBookTtf() {
       }
     }
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+    // Owner steer: after the first few pages, hand the rest to the worker —
+    // suspend the inline session to a partial commit; the resume-claim
+    // handoff (2b) picks it up next pass and the reader reads while the
+    // chapter finishes off-task. Non-worker builds keep the session (the
+    // background tick pump drives it with per-page progress logs).
+    if (ttf_->sessionActive() && fibpWorker_ != nullptr) {
+      ttf_->abortSession();
+    }
   }
   if (wasBuilding && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     // The build finished (or aborted) during this pass — reopen the cache so
@@ -2906,9 +3056,13 @@ void EpubReaderActivity::renderBookTtf() {
   }
 
   if (!resolved) {
-    // Target not derivable yet (full build in flight). Background ticks keep
-    // going; jump states stay pending for the next pass.
-    requestUpdate();
+    // Target not derivable yet — the worker owns the build now (or the
+    // background tick pump on non-worker builds). Re-check at a slow
+    // cadence instead of spinning full render passes.
+    if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
+      fibpDeferPollMs_ = millis();
+      requestUpdate();
+    }
     return;
   }
 
@@ -2953,42 +3107,7 @@ void EpubReaderActivity::renderBookTtf() {
 
   // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
   // (resolvable) targets only — external URLs never enter the reader flow.
-  // The number label is the superscript run overlapping the link rect,
-  // falling back to the link's ordinal position.
-  currentPageFootnotes.clear();
-  currentPageFootnotes.reserve(page.linkCount);
-  for (uint16_t l = 0; l < page.linkCount; ++l) {
-    const auto& link = page.links[l];
-    std::string href = link.target;
-    if (link.fragment[0] != '\0') href += std::string("#") + link.fragment;
-    if (href.empty() || href.rfind("http", 0) == 0) continue;
-    if (link.target[0] != '\0' && epub->resolveHrefToSpineIndex(href) < 0) continue;
-
-    FootnoteEntry entry;
-    std::string number;
-    for (uint16_t r = 0; r < page.runCount; ++r) {
-      const auto& run = page.runs[r];
-      // Superscript marker runs are short; the label must sit inside the
-      // link's rect to be the marker for THIS link.
-      if (run.len == 0 || run.len > 4 || (run.styleFlags & freeink::book::StyleSuperscript) == 0) continue;
-      const bool withinY = run.baselineY >= link.y && run.baselineY <= link.y + static_cast<int32_t>(link.height);
-      const bool withinX = run.x >= link.x && run.x < link.x + static_cast<int32_t>(link.width);
-      if (withinY && withinX) {
-        number.assign(run.text, run.len);
-        break;
-      }
-    }
-    if (number.empty()) {
-      char ordinal[8];
-      snprintf(ordinal, sizeof(ordinal), "%u", static_cast<unsigned>(l + 1));
-      number = ordinal;
-    }
-    strncpy(entry.number, number.c_str(), FOOTNOTE_NUMBER_LEN - 1);
-    entry.number[FOOTNOTE_NUMBER_LEN - 1] = '\0';
-    strncpy(entry.href, href.c_str(), FOOTNOTE_HREF_LEN - 1);
-    entry.href[FOOTNOTE_HREF_LEN - 1] = '\0';
-    currentPageFootnotes.push_back(entry);
-  }
+  ttfExtractFootnotes(page);
 
   renderer.clearScreen(0xFF);
   paintTtfPage(page, params.font);
@@ -3000,21 +3119,46 @@ void EpubReaderActivity::renderBookTtf() {
 #endif
 
   // 6) Chrome after the page: keep the legacy position mirrors in sync so
-  // renderStatusBar/KOReader/bookmark code reads the same values.
+  // renderStatusBar/KOreader/bookmark code reads the same values.
   nextPageNumber = ttfPage;
-  cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
+  cachedChapterTotalPageCount = static_cast<int>(ttfEstimatedPageCount());
   renderStatusBar();
   // Do not mark the frame complete yet: the TTF gray/image-specific passes
   // below may still be modifying the display planes.
+  ttfCommitFrame(page, params, scratchMark);
+}
 
-#if defined(CROSSPOINT_TTF_READER)
+// Display commit + finalize tail shared by the normal render and the P4 fast
+// turn (the framebuffer already holds the painted content in both cases —
+// the fast pass skips only the base paint, not the commit).
+void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params,
+                                        size_t scratchMark) {
+  {
+    const uint32_t busyMs = millis() - ttfRenderBusyStartMs;
+    if (busyMs > 500) {
+      LOG_DBG("ERS", "render busy window %lu ms — button edges inside it are unsampleable (polled input)",
+              static_cast<unsigned long>(busyMs));
+    }
+  }
+  const auto showPendingSyncSaveError = [this]() {
+    if (!pendingSyncSaveError) return;
+    pendingSyncSaveError = false;
+    GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
+  };
   // Same §11 Q7 predicate paintTtfPage used for the base pass above: images
   // keep the 1bpp engine path (no plane bits), so the dual-plane block runs
   // only for text-only AA pages on a panel whose controller supports the
   // 4-level gray mode at all.
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
   const auto grayCaps = renderer.grayscaleCapabilities();
-  const bool grayParity = SETTINGS.textAntiAliasing != 0 && !pageHasImages && grayCaps.supported();
+  // Degrade-aware: a build without the mono module paints Smooth planes even
+  // when the setting asks for Crisp (the loader degraded the faces).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  const bool grayParity = smoothText && !pageHasImages && grayCaps.supported();
   LOG_DBG("GRS", "ttfGrayPath: aa=%d images=%d strip=%d cadence=%d/%d", grayParity, pageHasImages,
           grayCaps.stripUploads, pagesUntilFullRefresh, SETTINGS.getRefreshFrequency());
   if (grayParity) {
@@ -3052,7 +3196,6 @@ void EpubReaderActivity::renderBookTtf() {
     finishTtfPageRender();
     return;
   }
-#endif
 
   // 1bpp path: the page's run text was last touched by paintTtfPage above.
   ttf_->scratch().release(scratchMark);
@@ -3095,6 +3238,260 @@ void EpubReaderActivity::renderBookTtf() {
   ttfSaveProgress();
   showPendingSyncSaveError();
   finishTtfPageRender();
+}
+
+void EpubReaderActivity::ttfInvalidatePreRender(const char* reason) {
+  if (ttfPreRendered.ready || ttfPreRendered.pumping) {
+    // Rate-limit to once per distinct reason: the soak needs to know WHICH
+    // guard kills a prerender, not a per-event log flood.
+    static const char* lastReason = nullptr;
+    if (reason != lastReason) {
+      lastReason = reason;
+      LOG_DBG("ERS", "TTF prerender invalidated: %s", reason);
+    }
+    if (ttfPreRendered.pumping) {
+      LOG_DBG("ERS", "TTF prerender aborted after %u slice(s): %s", ttfPreRendered.slicesUsed, reason);
+    }
+  }
+  ttfPreRendered.ready = false;
+  ttfPreRendered.pumping = false;
+  ttfPreRendered.spineIndex = -1;
+  ttfPreRendered.pageIndex = -1;
+  ttfPreRendered.nextRun = 0;
+  ttfPreRendered.nextChar = 0;
+  ttfPreRendered.slicesUsed = 0;
+}
+
+// Schedule the one-page-ahead prerender after a fully committed frame (see
+// the header contract). Refuses to schedule while the panel could expose the
+// prerendered content to the glass before the reading position moves there:
+// an open overlay (chrome over the page), a pending deferred overlay push,
+// or a chrome popup painted this pass (its context is page N).
+void EpubReaderActivity::ttfSchedulePreRender() {
+  if (ttfPendingPreRender || ttfPreRendered.ready) return;
+  if (ttfChromePopupShown || overlay != Overlay::None) return;
+  if (overlayRefreshPending.load(std::memory_order_acquire)) return;
+  if (!ttf_ || ttfSpine != currentSpineIndex || !ttf_->cacheReady()) return;
+  // A build in flight owns the FIBP writer state and re-renders anyway —
+  // prerendering into that churn is wasted work (and it must not fight the
+  // chapter prefetch for the same pages).
+  if (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) return;
+  if (ttfPage < 0 || ttfPage + 1 >= static_cast<int>(ttfPageCount)) return;  // chapter end: prefetch owns it
+  if (ESP.getFreeHeap() < RENDER_MIN_FREE_HEAP) return;
+  ttfPendingPreRender = true;
+  requestUpdate();
+}
+
+void EpubReaderActivity::ttfLogPrerenderMiss(const char* reason) {
+  // Once per distinct reason (soak finding #3): enough to identify the
+  // failing guard, no per-event flood.
+  static const char* lastReason = nullptr;
+  if (reason != lastReason) {
+    lastReason = reason;
+    LOG_DBG("ERS", "TTF prerender miss: %s (ready=%d spine=%d page=%d gen=%08x)", reason, ttfPreRendered.ready,
+            ttfPreRendered.spineIndex, ttfPreRendered.pageIndex, ttfPreRendered.generation);
+  }
+}
+
+bool EpubReaderActivity::ttfEffectiveMonochromeSnapshot() const {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  return freeink::book::fontLoader.effectiveMonochrome();
+#else
+  return false;
+#endif
+}
+
+// P4 prerender pass: paint the NEXT page's content-only into the framebuffer
+// (no status bar, no flush) while the glass still shows page N. One
+// RenderLock-protected transaction; the previous pass's commit already
+// waited for the refresh (waitRefreshComplete in ttfCommitFrame), so the
+// paint cannot expose a partial frame.
+void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& params) {
+  // Re-derive the target from live state — the schedule flag alone must
+  // never paint a page the reading position has left. A mid-pump slice
+  // (pumping) revalidates the SAME axes before continuing.
+  if (!ttf_ || ttfSpine != currentSpineIndex || !ttf_->cacheReady()) return;
+  if (ttfPreRendered.ready) return;
+  const int nextPage = ttfPage + 1;
+  if (ttfPage < 0 || nextPage >= static_cast<int>(ttfPageCount)) return;
+  if (ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) return;
+  if (overlay != Overlay::None || overlayRefreshPending.load(std::memory_order_acquire)) return;
+  if (ESP.getFreeHeap() < RENDER_MIN_FREE_HEAP) return;
+
+  const bool resuming = ttfPreRendered.pumping;
+  if (resuming && (ttfPreRendered.pageIndex != nextPage || ttfPreRendered.generation != ttfGeneration ||
+                   ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation()) ||
+                   ttfPreRendered.monochrome != ttfEffectiveMonochromeSnapshot())) {
+    // Reading position, layout, or raster mode changed mid-pump: the partial
+    // paint is garbage — abort (the invalidate also clears the cursor).
+    ttfInvalidatePreRender("stale mid-pump");
+    return;
+  }
+
+  const size_t scratchMark = ttf_->scratch().mark();
+  freeink::book::Page page{};
+  if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(nextPage), &page)) {
+    ttf_->scratch().release(scratchMark);
+    LOG_DBG("ERS", "TTF prerender: page %d read failed", nextPage);
+    return;
+  }
+  if (page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY) {
+    // Image pages keep the 1bpp engine path with image decode — excluded
+    // from prerendering (the same exclusion upstream made).
+    ttf_->scratch().release(scratchMark);
+    return;
+  }
+
+  auto* chain = static_cast<freeink::book::FontChain*>(params.font);
+  if (chain == nullptr) {
+    ttf_->scratch().release(scratchMark);
+    return;
+  }
+  // Chunked paint (soak finding #5): one ≤kPreRenderSliceBudgetMs slice per
+  // loop tick. The gray-parity base pass supports a run cursor; the 1bpp
+  // engine path paints in one slice (it is far cheaper — no plane math).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  const bool pageHasImages = false;  // image pages already excluded above
+  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
+  if (!resuming) {
+    renderer.clearScreen(0xFF);
+    ttfPreRendered.spineIndex = static_cast<int16_t>(currentSpineIndex);
+    ttfPreRendered.pageIndex = static_cast<int16_t>(nextPage);
+    ttfPreRendered.generation = ttfGeneration;
+    ttfPreRendered.orientation = static_cast<uint8_t>(renderer.getOrientation());
+    ttfPreRendered.monochrome = ttfEffectiveMonochromeSnapshot();
+    ttfPreRendered.nextRun = 0;
+    ttfPreRendered.nextChar = 0;
+    ttfPreRendered.slicesUsed = 0;
+    ttfPreRendered.pumping = true;
+    // The framebuffer no longer holds a clean displayed page: overlay opens
+    // must not snapshot it (their hasRenderedPage gate reads this flag).
+    ttfFrameRenderComplete.store(false, std::memory_order_release);
+  }
+  ttfPreRendered.slicesUsed++;
+  bool complete = true;
+  if (grayParity) {
+    complete = freeink::book::PagePaint::paintTextSliced(page, *chain, renderer, ttfPreRendered.nextRun,
+                                                         ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
+                                                         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs);
+  } else {
+    paintTtfPage(page, params.font);
+  }
+  ttf_->scratch().release(scratchMark);
+
+  if (complete) {
+    if (grayParity) {
+      // paintTextSliced covers runs + rubies only — rules are the base pass's
+      // last step (same ordering paintTtfPage uses).
+      freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
+    }
+    ttfPreRendered.pumping = false;
+    ttfPreRendered.ready = true;
+    LOG_DBG("ERS", "TTF prerendered page %d/%d (%u slice%s, %u runs)", nextPage, ttfPageCount - 1,
+            ttfPreRendered.slicesUsed, ttfPreRendered.slicesUsed == 1 ? "" : "s", page.runCount);
+  } else {
+    // Resume next tick: the pass flag re-arms and requestUpdate schedules the
+    // next slice. Input processed in between (the loop handles it before the
+    // render) aborts the pump in ttfPageTurn — a press waits ≤ one slice.
+    ttfPendingPreRender = true;
+    requestUpdate();
+  }
+}
+
+// P4 fast turn: the framebuffer holds the prerendered content of the page
+// the reading position just moved to. Skip the base paint (layout/build/
+// readPage-clearScreen/paintTtfPage), load the page for the mirrors and the
+// gray plane walks, draw the status bar, and commit. Returns false when any
+// precondition fails — the caller falls through to a full render.
+bool EpubReaderActivity::ttfFastDisplayPass(const freeink::book::LayoutParams& params) {
+  if (!ttf_ || !ttfPreRendered.ready) return false;
+  if (ttfPreRendered.spineIndex != currentSpineIndex || ttfPreRendered.pageIndex != ttfPage) return false;
+  if (ttfPreRendered.generation != ttfGeneration) {
+    ttfLogPrerenderMiss("stale generation (display pass)");
+    return false;
+  }
+  if (ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation()) ||
+      ttfPreRendered.monochrome != ttfEffectiveMonochromeSnapshot()) {
+    ttfLogPrerenderMiss("mode/orientation changed (display pass)");
+    return false;
+  }
+  if (ttfSpine != currentSpineIndex || ttfPage < 0 || ttfPage >= static_cast<int>(ttfPageCount)) return false;
+
+  const size_t scratchMark = ttf_->scratch().mark();
+  freeink::book::Page page{};
+  if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
+    ttf_->scratch().release(scratchMark);
+    LOG_ERR("ERS", "TTF fast turn: page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
+    return false;
+  }
+  ttfCurrentCharStart = page.charStart;
+  if (page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY) {
+    // Image pages are never prerendered; a stale flag must not fast-path them.
+    ttf_->scratch().release(scratchMark);
+    return false;
+  }
+  // Consume the snapshot: every validity gate passed, this pass owns the
+  // framebuffer. Clearing ready here (not in ttfPageTurn) keeps the display
+  // pass reachable and lets ttfSchedulePreRender re-arm for the next page.
+  ttfInvalidatePreRender("consumed");
+  ttfExtractFootnotes(page);
+
+  // Content is already in the framebuffer — chrome only, then commit.
+  nextPageNumber = ttfPage;
+  cachedChapterTotalPageCount = static_cast<int>(ttfEstimatedPageCount());
+  renderStatusBar();
+#ifdef READING_STATS_ENABLED
+  currentPageWordsOnPage = page.wordCount;
+#endif
+  LOG_DBG("GRS", "ttf fast turn: page %d/%d displayed from prerender", ttfPage, ttfPageCount - 1);
+  ttfCommitFrame(page, params, scratchMark);
+  return true;
+}
+
+void EpubReaderActivity::ttfExtractFootnotes(const freeink::book::Page& page) {
+  // The number label is the superscript run overlapping the link rect,
+  // falling back to the link's ordinal position.
+  currentPageFootnotes.clear();
+  currentPageFootnotes.reserve(page.linkCount);
+  for (uint16_t l = 0; l < page.linkCount; ++l) {
+    const auto& link = page.links[l];
+    // SDK contract fills both strings (dropped on alloc failure upstream);
+    // guard anyway so future SDK drift cannot null-deref here.
+    if (link.target == nullptr) continue;
+    std::string href = link.target;
+    if (link.fragment != nullptr && link.fragment[0] != '\0') href += std::string("#") + link.fragment;
+    if (href.empty() || href.rfind("http", 0) == 0) continue;
+    if (!epub || (link.target[0] != '\0' && epub->resolveHrefToSpineIndex(href) < 0)) continue;
+
+    FootnoteEntry entry;
+    std::string number;
+    for (uint16_t r = 0; r < page.runCount; ++r) {
+      const auto& run = page.runs[r];
+      // Superscript marker runs are short; the label must sit inside the
+      // link's rect to be the marker for THIS link.
+      if (run.len == 0 || run.len > 4 || (run.styleFlags & freeink::book::StyleSuperscript) == 0) continue;
+      const bool withinY = run.baselineY >= link.y && run.baselineY <= link.y + static_cast<int32_t>(link.height);
+      const bool withinX = run.x >= link.x && run.x < link.x + static_cast<int32_t>(link.width);
+      if (withinY && withinX) {
+        number.assign(run.text, run.len);
+        break;
+      }
+    }
+    if (number.empty()) {
+      char ordinal[8];
+      snprintf(ordinal, sizeof(ordinal), "%u", static_cast<unsigned>(l + 1));
+      number = ordinal;
+    }
+    strncpy(entry.number, number.c_str(), FOOTNOTE_NUMBER_LEN - 1);
+    entry.number[FOOTNOTE_NUMBER_LEN - 1] = '\0';
+    strncpy(entry.href, href.c_str(), FOOTNOTE_HREF_LEN - 1);
+    entry.href[FOOTNOTE_HREF_LEN - 1] = '\0';
+    currentPageFootnotes.push_back(entry);
+  }
 }
 
 void EpubReaderActivity::ttfDisplayGrayBase() {
@@ -3242,8 +3639,12 @@ void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* fon
   // waveform — the same 4-level pipeline the bitmap reader uses. Images
   // keep the 1bpp engine path (no plane bits for image pixels).
   const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-  const bool grayParity =
-      SETTINGS.textAntiAliasing != 0 && !pageHasImages && renderer.grayscaleCapabilities().supported();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
+  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
   if (grayParity) {
     freeink::book::PagePaint::paintText(page, *chain, renderer);
@@ -3297,6 +3698,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (!ttf_) return;
   if (ttf_->sessionActive()) {
     const uint16_t spine = ttf_->sessionSpine();
+    const uint16_t before = ttf_->availablePageCount(spine);
+    const uint32_t tickStart = millis();
     freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
     if (freeink::book::pumpChapterChunk(*ttf_, spine, BACKGROUND_BUILD_PAGES_PER_TICK, &st) ==
         freeink::book::ChapterPump::Failed) {
@@ -3304,6 +3707,13 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       ttfPrefetchActive = false;
       return;
     }
+    // Per-tick progress (soak finding #6): the 2-minute silent resume was
+    // undiagnosable — every pump tick now names the spine, pages done, and
+    // the tick cost so a soak log separates progress from a hang.
+    const uint16_t after = ttf_->availablePageCount(spine);
+    LOG_INF("ERS", "bg build spine %u: %u pages (+%u, %lu ms)", spine, after, after - before,
+            static_cast<unsigned long>(millis() - tickStart));
+    powerManager.pokeNormalSpeed();
     if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
       if (spine == static_cast<uint16_t>(currentSpineIndex)) {
         ttf_->openChapterCache(spine, ttfGeneration);
@@ -3323,14 +3733,30 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
+    // Single-writer: if the worker holds the resume claim for this spine,
+    // take it back — the reader needs pages NOW.
+    if (fibpResumeClaimedSpine_ == currentSpineIndex) {
+      LOG_INF("ERS", "Margin takeover: spine %d", currentSpineIndex);
+      stopFibpWorker();
+      fibpResumeClaimedSpine_ = -1;
+      fibpResumeSeenBuilding_ = false;
+    }
     freeink::book::LayoutParams params;
     ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
     if (params.font == nullptr) return;  // no reader font chain: cannot lay out
     if (freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, ttfGeneration) ==
         freeink::book::BookStatus::Ok) {
       freeink::book::BookStatus st = freeink::book::BookStatus::Ok;
-      const freeink::book::ChapterPump pump = freeink::book::pumpChapterChunk(
-          *ttf_, static_cast<uint16_t>(currentSpineIndex), BACKGROUND_BUILD_PAGES_PER_TICK, &st);
+      const uint16_t before = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      const uint32_t tickStart = millis();
+      // One page per tick while extending a partial: a press waits at most
+      // one page build between input polls (soak finding #6).
+      const freeink::book::ChapterPump pump =
+          freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), 1, &st);
+      const uint16_t after = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      LOG_INF("ERS", "resume build spine %d: %u pages (+%u, %lu ms)", currentSpineIndex, after, after - before,
+              static_cast<unsigned long>(millis() - tickStart));
+      powerManager.pokeNormalSpeed();
       if (pump == freeink::book::ChapterPump::Complete) {
         ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration);
       }
@@ -3401,6 +3827,8 @@ void EpubReaderActivity::stopFibpWorker() {
   fibpBegun_ = false;
   fibpFamily_[0] = '\0';
   fibpDeferred_ = false;
+  fibpResumeClaimedSpine_ = -1;
+  fibpResumeSeenBuilding_ = false;
 }
 
 void EpubReaderActivity::ttfPrefetchTick() {
@@ -3450,6 +3878,13 @@ void EpubReaderActivity::ttfPrefetchTick() {
 
 bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   if (!ttf_ || !epub) return false;
+  // Input-first rule (soak finding #5): a turn aborts any mid-pump prerender
+  // immediately — the framebuffer holds a PARTIAL page that must neither be
+  // consumed nor snapshot. The press is served within one slice of landing.
+  if (ttfPreRendered.pumping) {
+    ttfPendingPreRender = false;
+    ttfInvalidatePreRender("input pending");
+  }
   // Navigation invalidates the displayed frame until the next successful render.
   ttfFrameRenderComplete.store(false, std::memory_order_release);
 
@@ -3466,6 +3901,41 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
     }
   }
 #endif
+
+  // P4 fast path: the framebuffer already holds this next page's content.
+  // Advance state here on the loop task, then hand the display commit to
+  // renderBookTtf via ttfUsePreRenderedBuffer — all display work (status
+  // bar, gray planes, flush) stays on the render task under its RenderLock.
+  // Validation is spine+page exact PLUS the full validity axes (generation,
+  // orientation, raster mode); anything else falls to the slow path, with
+  // the miss reason logged once per distinct reason for soak triage.
+  if (isForwardTurn && ttfPreRendered.ready && ttfPage + 1 < static_cast<int>(ttfPageCount)) {
+    if (ttfPreRendered.spineIndex != currentSpineIndex) {
+      ttfLogPrerenderMiss("spine changed");
+    } else if (ttfPreRendered.pageIndex != ttfPage + 1) {
+      ttfLogPrerenderMiss("target page mismatch");
+    } else if (ttfPreRendered.generation != ttfGeneration) {
+      ttfLogPrerenderMiss("stale generation");
+    } else if (ttfPreRendered.orientation != static_cast<uint8_t>(renderer.getOrientation())) {
+      ttfLogPrerenderMiss("orientation changed");
+    } else if (ttfPreRendered.monochrome != ttfEffectiveMonochromeSnapshot()) {
+      ttfLogPrerenderMiss("raster mode changed");
+    } else {
+      ttfPage = ttfPreRendered.pageIndex;
+      // ready stays set: the display pass revalidates it (spine/page/gen/
+      // orientation/raster) and consumes the snapshot after the checks —
+      // invalidating here would kill the fast pass's first gate (kody:
+      // P4 never paid off) and block ttfSchedulePreRender from re-arming
+      // the next page's prerender.
+      ttfUsePreRenderedBuffer = true;
+      lastPageTurnTime = millis();
+#ifdef READING_STATS_ENABLED
+      pageShownAtMs = millis();
+#endif
+      logMemAt("page_turn");
+      return true;
+    }
+  }
 
   if (isForwardTurn) {
     const bool partialCurrent = ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex;
@@ -3599,7 +4069,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const bool manualRefreshPending = forcedRefreshPending;
   forcedRefreshPending = false;
   const bool cleanImageBasePending = manualRefreshPending || pagesUntilFullRefresh <= 1;
-  const bool needsTextGrayscale = SETTINGS.textAntiAliasing;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  const bool needsTextGrayscale = !freeink::book::fontLoader.effectiveMonochrome();
+#else
+  const bool needsTextGrayscale = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
+#endif
   const bool needsAnyGrayscale = needsTextGrayscale || pageHasImages;
   const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
                                       display.getController() == HalDisplay::Controller::UC8279 &&
@@ -4440,6 +4914,12 @@ static constexpr uint32_t OVERLAY_REFRESH_SETTLE_TIMEOUT_MS = 3000;
 // the chrome answers taps and buttons the moment it is visible instead of only
 // after a blocking displayBuffer() returns. Caller must hold the RenderLock.
 void EpubReaderActivity::pushOverlayRefresh() {
+  // A full-FB flush outside the forward turn's own commit (review contract):
+  // any mid-pump prerender's partial framebuffer must die here — the glass
+  // is about to show this framebuffer's content.
+#if defined(CROSSPOINT_TTF_READER)
+  ttfInvalidatePreRender("overlay push");
+#endif
   if (renderer.supportsAsyncRefresh()) {
     if (renderer.refreshBusy()) {
       // A previous deferred refresh is still running (its settle timed out on
@@ -4470,6 +4950,12 @@ void EpubReaderActivity::pushOverlayRefresh() {
 // must hold the RenderLock.
 void EpubReaderActivity::settleOverlayRefresh() {
   if (!overlayRefreshPending.load(std::memory_order_acquire)) return;
+#if defined(CROSSPOINT_TTF_READER)
+  // The settle's baseline reseed re-flashes the framebuffer to the glass —
+  // same full-FB-flush contract as pushOverlayRefresh: no partial prerender
+  // may be on it.
+  ttfInvalidatePreRender("overlay settle");
+#endif
   if (overlaySettleTimedOut) {
     // A previous settle already burned the full deadline on this refresh: one
     // non-blocking check only, never re-poll under the RenderLock.

@@ -30,7 +30,7 @@ class TextSettingsActivity final : public UiTabListActivity {
   // Row indices per tab. enum class (not plain enum) so a LayoutRow can't be
   // silently confused with a StyleRow of equal value.
   enum class LayoutRow { LineSpacing, ParaSpacing, Alignment, ScreenMargin, Count };
-  enum class StyleRow { FocusReading, Hyphenation, EmbeddedStyle, AntiAliasing, Count };
+  enum class StyleRow { FocusReading, Hyphenation, EmbeddedStyle, TextRendering, Count };
 
   // --- UiTabListActivity contract ---
   int listCount() const override;

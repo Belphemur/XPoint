@@ -7,6 +7,7 @@
 #if FIBP_WORKER_ENABLED
 
 #include <Arduino.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -65,10 +66,18 @@ bool FibpPrefetchWorker::buildFaces() {
       fontBytes_[i].reset();
       continue;
     }
-    // Parity with tryLoadFace: same reader-wide render options (hinting).
+    // Parity with tryLoadFace: the loader's EFFECTIVE render options (the
+    // P2 stack probe may have degraded a slot) — same source of truth, so
+    // both fingerprint sites fold identical modes. The loader's degrade
+    // funnel guarantees this set is supported by this build; if it ever
+    // is not, skip the face rather than rasterize nullptrs into FIBP
+    // caches (blank-page regression class).
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-    if (!face->setRenderOptions(BookFontLoader::kRenderOptions)) {
-      LOG_ERR("PREF", "Render options unsupported for %s", fi.file);
+    if (!face->setRenderOptions(BookFontLoader::effectiveRenderOptions(i))) {
+      LOG_ERR("PREF", "Render options unsupported for %s — face skipped", fi.file);
+      face.reset();
+      fontBytes_[i].reset();
+      continue;
     }
 #endif
     if (!chain_.add(face.get(), fi.styleFlags)) {
@@ -291,6 +300,7 @@ bool FibpPrefetchWorker::cancel() {
   if (runtime_ != nullptr) runtime_->close();
   runtime_.reset();
   teardownFaces();
+  resumeSpine_.store(fibp::kNoChapter, std::memory_order_release);
   queue_.clear();
   queue_.shrink_to_fit();
   failed_.clear();
@@ -327,6 +337,43 @@ void FibpPrefetchWorker::run() {
       failed_.assign(spineCount_, 0);
       queue_.clear();
       queueCursor_ = 0;
+    }
+    // Reader-requested resume (soak addendum): the opened chapter's partial
+    // completion takes priority over the prefetch plan — it is the chapter
+    // the user is reading. Claim BEFORE the cache check (same race rule as
+    // the plan path); a cache that went COMPLETE since the request drops the
+    // claim instead of rewriting it.
+    const uint16_t resume = resumeSpine_.load(std::memory_order_acquire);
+    if (resume != fibp::kNoChapter && resume < spineCount_ && failed_[resume] == 0) {
+      resumeSpine_.store(fibp::kNoChapter, std::memory_order_release);
+      // Publish-wait BEFORE the cache check (same window as the plan path):
+      // a notifyGeneration landing between gen_ read and the params swap must
+      // not burn the claim on a Cancelled build — bailing here re-arms the
+      // loop under the new generation. The claim itself is RESTORED: it is
+      // pending restore/position state and must survive until the required
+      // data is actually available (the reader's re-arm may not re-land it
+      // after an arbitrary generation change).
+      if (!waitForParamsPublished(gen)) {
+        building_.store(fibp::kNoChapter, std::memory_order_release);
+        resumeSpine_.store(resume, std::memory_order_release);
+        continue;
+      }
+      building_.store(resume, std::memory_order_release);
+      bool complete = false;
+      if (runtime_->openChapterCache(resume, gen) == BookStatus::Ok) {
+        complete = !runtime_->cachePartial();
+        runtime_->closeChapterCache();
+      }
+      if (complete) {
+        // Built by someone else since the request: serve, never rewrite.
+        building_.store(fibp::kNoChapter, std::memory_order_release);
+      } else {
+        const ChapterRun r = buildSpine(resume, gen);
+        if (r == ChapterRun::Failed) failed_[resume] = 1;
+        building_.store(fibp::kNoChapter, std::memory_order_release);
+        vTaskDelay(pdMS_TO_TICKS(kSpineDelayMs));
+        continue;
+      }
     }
     if (queue_.empty() || queueCursor_ >= queue_.size()) {
       // A fully-drained queue counts as empty: a respawned worker (shared
@@ -383,20 +430,7 @@ void FibpPrefetchWorker::run() {
     }
     if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) continue;
 
-    // Publish-wait: gen_ lands before the params swap in notifyGeneration,
-    // so hold here until paramGen_ (read under paramsMux_) reaches this
-    // pass's generation — building a stale snapshot under the new
-    // generation would commit mismatched layout data.
-    for (;;) {
-      bool published = false;
-      if (paramsMux_ != nullptr) xSemaphoreTake(paramsMux_, portMAX_DELAY);
-      published = (paramGen_ == gen);
-      if (paramsMux_ != nullptr) xSemaphoreGive(paramsMux_);
-      if (published) break;
-      if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) break;
-      vTaskDelay(pdMS_TO_TICKS(kPageDelayMs));
-    }
-    if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) continue;
+    if (!waitForParamsPublished(gen)) continue;
 
     const ChapterRun r = buildSpine(spine, gen);
     if (r == ChapterRun::Failed) failed_[spine] = 1;
@@ -438,9 +472,29 @@ bool FibpPrefetchWorker::spineHasCache(const uint16_t spine, const uint32_t gene
   return false;
 }
 
+bool FibpPrefetchWorker::waitForParamsPublished(const uint32_t gen) {
+  // gen_ lands before the params swap in notifyGeneration, so hold here until
+  // paramGen_ (read under paramsMux_) reaches this pass's generation — a
+  // stale snapshot built under the new generation would commit mismatched
+  // layout data.
+  for (;;) {
+    bool published = false;
+    if (paramsMux_ != nullptr) xSemaphoreTake(paramsMux_, portMAX_DELAY);
+    published = (paramGen_ == gen);
+    if (paramsMux_ != nullptr) xSemaphoreGive(paramsMux_);
+    if (published) return true;
+    if (cancel_.load(std::memory_order_acquire) || gen_.load(std::memory_order_acquire) != gen) return false;
+    vTaskDelay(pdMS_TO_TICKS(kPageDelayMs));
+  }
+}
+
 ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t generation) {
   const TickType_t startTicks = xTaskGetTickCount();
   lastPages_ = 0;
+  progressPages_.store(0, std::memory_order_release);
+  logSpine_ = spine;
+  buildStartMs_ = millis();
+  lastHookMs_ = buildStartMs_;
   // Snapshot the params under the mutex: the engine copies them at begin,
   // and a concurrent notifyGeneration must not tear the scalar set. Reject
   // a snapshot whose parameter-generation does not match the requested one
@@ -478,7 +532,32 @@ ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t g
 
 bool FibpPrefetchWorker::yieldHook(void* ctx, const uint16_t pagesBuilt) {
   auto* self = static_cast<FibpPrefetchWorker*>(ctx);
-  self->lastPages_ = pagesBuilt;
+  self->progressPages_.store(pagesBuilt, std::memory_order_release);
+  const uint32_t now = millis();
+  const uint32_t pageMs = now - self->lastHookMs_;
+  self->lastHookMs_ = now;
+  // Soak addendum: per-page PROF sample (≤ every 10 pages) quantifies the
+  // hinting vs layout cost split on device — layout semantics unchanged.
+  // advance/kerning time = the font-backend metric path (hinting cost
+  // shows up here); the remainder of the page time is engine work. The
+  // accumulator is DRAINED on every page (take semantics) so the sampled
+  // value is the page this PROF line reports, not a 10-page accumulation.
+  const uint64_t advUs = self->chain_.takeMeasureAccumUs();
+  if (pagesBuilt == 1 || pagesBuilt % kIndexingProgressLogEveryPages == 0) {
+    LOG_DBG("PROF", "phase=ttf_build_page spine=%u page=%u page_ms=%lu adv_us=%llu",
+            static_cast<unsigned>(self->logSpine_), static_cast<unsigned>(pagesBuilt),
+            static_cast<unsigned long>(pageMs), static_cast<unsigned long long>(advUs));
+  }
+  // Indexing progress at LOG_INF (soak finding #6): first page and every
+  // kIndexingProgressLogEveryPages pages; the completion line covers the
+  // last page. A stuck build is diagnosable from any log level.
+  if (pagesBuilt == 1 || pagesBuilt % kIndexingProgressLogEveryPages == 0) {
+    LOG_INF("TTFB", "Indexing spine=%u page=%u (elapsed %us)", static_cast<unsigned>(self->logSpine_),
+            static_cast<unsigned>(pagesBuilt), static_cast<unsigned long>((now - self->buildStartMs_) / 1000));
+  }
+  // Active build tick: keep the CPU governor out of low power while pages
+  // pump (soak finding #6: [PWR] low-power cycling throttled the build).
+  powerManager.pokeNormalSpeed();
   if (fibp::shouldStopChunk(self->cancel_.load(std::memory_order_relaxed), self->gen_.load(std::memory_order_acquire),
                             self->sessionGen_)) {
     return false;

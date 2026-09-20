@@ -241,6 +241,7 @@ constexpr uint8_t kStyleBI = freeink::book::StyleBold | freeink::book::StyleItal
 void resetStorage() {
   Storage.files.clear();
   Storage.dirs.clear();
+  Storage.mtimes.clear();
 }
 
 // Registers a file entry (and every ancestor directory) in the stub storage.
@@ -803,3 +804,360 @@ TEST(FontChainMixedUpem, CmapMissFallsThroughToCoveringFace) {
   uint8_t faceFlags = 0xFF;
   EXPECT_EQ(chain.fontFor(missing, book::StyleNone, &faceFlags), &fontTail);
 }
+
+// ── P3.1 SD fingerprint cache ────────────────────────────────────────
+// Note: fontFingerprint() is documented as the PRE-fallback-tail identity
+// (ensureLoaded computes it before appendFallbackTail; the prefetch worker
+// mirrors that), so these tests never compare it against a post-tail
+// computeFingerprint() call — cached-vs-pure parity is pinned by the
+// corrupt-record recompute case instead.────
+// The chained per-face FNV-1a walk (up to 4 × 2 MB per family load) is cached
+// under /.crosspoint/fonts/ keyed by the face's path hash, valid only when
+// {fileSize, mtime, incoming chain seed} all match. These tests pin:
+// cache-hit == pure fingerprint (byte parity), mtime/size change → rehash,
+// corrupt cache file → recompute-and-rewrite, and mtime 0 → cache disabled.
+
+namespace {
+
+std::string fpCachePathFor(const char* facePath) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "/.crosspoint/fonts/fp_%08x.bin",
+                freeink::book::BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(facePath),
+                                                             std::strlen(facePath), 0x811c9dc5u));
+  return buf;
+}
+
+// One loadable DejaVu face driven through editFamily (scanFonts not needed).
+void seedLoadableFace(const std::string& bytes, const char* path, uint32_t mtime) {
+  writeFaceFile(path, bytes);
+  if (mtime != 0) Storage.mtimes[path] = mtime;
+}
+
+}  // namespace
+
+TEST(BookFontLoaderFingerprintCache, CacheRoundTripMatchesPureFingerprint) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
+  resetStorage();
+  constexpr uint32_t kMtime = 0x5F123456u;
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, kMtime);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = kMtime;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  // First load: cache MISS (no file yet) → byte-walk + cache WRITE.
+  loader.markDirty();
+  const uint32_t fpFirst = loader.getReaderFont()->styleCoverage() != 0 ? loader.fontFingerprint() : 0;
+  EXPECT_NE(fpFirst, 0u);
+  const std::string cachePath = fpCachePathFor(kFacePath);
+  ASSERT_EQ(Storage.files.count(cachePath), 1u);    // cache written
+  EXPECT_EQ(Storage.files[cachePath].size(), 28u);  // fixed record
+
+  // Second load: cache HIT must reproduce the exact fingerprint.
+  loader.markDirty();
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+  EXPECT_EQ(loader.fontFingerprint(), fpFirst);
+
+  // Head rewrite (same size + mtime): the review-hardened hit check covers
+  // the first 4 KB, so a changed header byte — still a valid, loadable sfnt
+  // — must REHASH, never serve the stale record.
+  std::string headModified = dejavu;
+  headModified[8] = static_cast<char>(headModified[8] ^ 0xFF);
+  ASSERT_NE(headModified, dejavu);
+  writeFaceFile(kFacePath, headModified);
+  loader.markDirty();
+  loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
+  EXPECT_NE(loader.fontFingerprint(), fpFirst);
+  const uint32_t fpHead = loader.fontFingerprint();
+
+  // Bounded window (documented): a rewrite beyond the 4 KB head with the
+  // same size + mtime keeps the head hash — the record is served (hit).
+  std::string tailModified = headModified;
+  ASSERT_GT(tailModified.size(), 6000u) << "fixture too small for the tail-modify step";
+  tailModified[6000] = static_cast<char>(tailModified[6000] ^ 0xFF);
+  writeFaceFile(kFacePath, tailModified);
+  loader.markDirty();
+  loader.getReaderFont();
+  EXPECT_EQ(loader.fontFingerprint(), fpHead);
+}
+
+TEST(BookFontLoaderFingerprintCache, MtimeChangeRehashes) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  std::string modified = dejavu;
+  modified[8] = static_cast<char>(modified[8] ^ 0xFF);  // same size, different content
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+  fam.faces[0].mtime = 0x5F123456u;
+  loader.markDirty();
+  const uint32_t fpOriginal = loader.getReaderFont()->styleCoverage() != 0 ? loader.fontFingerprint() : 0;
+  EXPECT_NE(fpOriginal, 0u);
+
+  // mtime bump with swapped content: cache must miss and rehash the NEW
+  // bytes — fingerprint follows the content, never the stale record.
+  seedLoadableFace(modified, kFacePath, 0x5FFFFFFFu);
+  fam.faces[0].mtime = 0x5FFFFFFFu;
+  loader.markDirty();
+  loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
+  const uint32_t fpNew = loader.fontFingerprint();
+  EXPECT_NE(fpNew, fpOriginal);
+}
+
+TEST(BookFontLoaderFingerprintCache, CorruptCacheFileRecomputesAndRewrites) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
+  resetStorage();
+  constexpr uint32_t kMtime = 0x5F123456u;
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, kMtime);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = kMtime;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  const uint32_t fpFirst = loader.getReaderFont()->styleCoverage() != 0 ? loader.fontFingerprint() : 0;
+  EXPECT_NE(fpFirst, 0u);
+
+  // Corrupt the cache record (wrong length, wrong magic) → the loader must
+  // fall back to the pure byte-walk, get the SAME fingerprint, and rewrite a
+  // valid 28-byte record for the next open.
+  const std::string cachePath = fpCachePathFor(kFacePath);
+  Storage.files[cachePath] = "garbage!";
+  loader.markDirty();
+  loader.getReaderFont();  // markDirty alone only arms; ensureLoaded runs here
+  EXPECT_EQ(loader.fontFingerprint(), fpFirst);
+  EXPECT_EQ(Storage.files[cachePath].size(), 28u);
+}
+
+TEST(BookFontLoaderFingerprintCache, MtimeZeroDisablesCache) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0);  // no SD timestamp
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = 0;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  EXPECT_EQ(loader.getReaderFont()->styleCoverage(), 0x07);
+  // Fail closed: without a rehash trigger there is no safe cache identity —
+  // no record may be written (or served) for that face.
+  EXPECT_EQ(Storage.files.count(fpCachePathFor(kFacePath)), 0u);
+}
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+// ── P2 hinting (Light) + stack-probe degrade identity ────────────────
+// kRenderOptions requests Light; the runtime stack probe may degrade a slot
+// to unhinted. The effective per-slot modes fold into the fingerprint tag
+// (renderOptionsFingerprintTag), which both the loader and the FIBP prefetch
+// worker mix into their parity hash — a degrade MUST change the tag.
+
+namespace {
+
+using RO = freeink::font::FtFont::RenderOptions;
+using HM = freeink::font::FtFont::HintingMode;
+
+uint32_t tagFor(std::initializer_list<HM> modes) {
+  uint32_t tag = 0;
+  uint8_t slot = 0;
+  for (HM mode : modes) tag |= static_cast<uint32_t>(mode) << (3 * slot++);
+  return tag;
+}
+
+}  // namespace
+
+TEST(BookFontLoaderHinting, RequestedModeIsLightAndTagFoldsPerSlot) {
+  BookFontLoader loader;
+  loader.resetHintStateForTest();
+  EXPECT_EQ(BookFontLoader::kRenderOptions.hinting, HM::Light);
+  for (uint8_t slot = 0; slot < 4; ++slot) {
+    EXPECT_EQ(BookFontLoader::effectiveRenderOptions(slot).hinting, HM::Light) << "slot " << slot;
+    // Crisp is the default render mode (task6 directive).
+    EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(slot).monochrome) << "slot " << slot;
+  }
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+}
+
+TEST(BookFontLoaderHinting, ApplyRenderModeFlipsMonochromeAndTag) {
+  BookFontLoader loader;
+  loader.resetHintStateForTest();
+  loader.applyRenderMode(false);  // Smooth
+  EXPECT_FALSE(BookFontLoader::effectiveRenderOptions(0).monochrome);
+  loader.applyRenderMode(true);  // Crisp
+  EXPECT_TRUE(BookFontLoader::effectiveRenderOptions(3).monochrome);
+  // Raster mode is NOT layout identity: advances are identical across
+  // modes, so the tag (and with it every FIBP gen) must stay stable or a
+  // firmware update flipping the default re-indexes every book (soak
+  // finding #6 correction: gen 1029201805 -> 3637587853 across builds).
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+  loader.resetHintStateForTest();
+}
+
+TEST(BookFontLoaderHinting, DegradeFlipsEffectiveOptionsAndTag) {
+  // A throwaway instance: the seam flips the file-scope effective-options
+  // state; this instance's own faces stay null so setRenderOptions is
+  // skipped (state-only degrade, exactly what the tag tests need).
+  BookFontLoader loader;
+  loader.degradeHintForTest(1);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(0).hinting, HM::Light);
+  const uint32_t degraded = BookFontLoader::renderOptionsFingerprintTag();
+  EXPECT_NE(degraded, tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(degraded, tagFor({HM::Light, HM::None, HM::Light, HM::Light}));
+  // Mutate-check the tag really folds the degraded slot: a second slot's
+  // degrade must move the tag again (no aliasing between slot fields).
+  loader.degradeHintForTest(2);
+  EXPECT_NE(BookFontLoader::renderOptionsFingerprintTag(), degraded);
+  loader.resetHintStateForTest();
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::Light, HM::Light, HM::Light, HM::Light}));
+}
+
+// A stack-probe degrade must survive Crisp/Smooth switches: applyRenderMode
+// changes ONLY the raster axis — re-enabling Light on a probed-off slot
+// would put the Adobe interpreter back onto the 32KB worker stack (r5).
+TEST(BookFontLoaderHinting, DegradeSurvivesApplyRenderMode) {
+  BookFontLoader loader;
+  loader.resetHintStateForTest();
+  loader.degradeHintForTest(1);
+  loader.applyRenderMode(false);  // Smooth
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).monochrome, false);
+  loader.applyRenderMode(true);  // Crisp
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(1).monochrome, true);
+  // Un-degraded slots keep the requested mode through the switches.
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(0).hinting, HM::Light);
+  loader.resetHintStateForTest();
+}
+
+// Device regression 2026-09-19: a mono request against a build whose
+// FreeType lacks the mono renderer module rasterized EVERY glyph to nullptr
+// (blank page). The load funnel must degrade to the nearest supported set
+// (AA first) and the face must still paint.
+TEST(BookFontLoaderHinting, UnsupportedMonoDegradesToAaAndStillRenders) {
+  // The host FT variant compiles neither the mono renderer nor the
+  // auto-hinter, so Crisp is refused here exactly like on a firmware env
+  // missing FREEINK_FONT_ENABLE_MONOCHROME.
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u) << "fixture too small to be a TTF (truncated?)";
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = 0x5F123456u;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+
+  // (C2) The degrade is visible in the effective mode: mono is dropped.
+  // The TAG reflects the degrade: the host FT variant compiles neither the
+  // mono renderer nor the auto-hinter, so the funnel drops BOTH on the
+  // seeded slot (device builds compile both — there the tag stays Light).
+  // Raster mode alone never moves the tag.
+  EXPECT_FALSE(BookFontLoader::effectiveMonochrome());
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
+
+  // (C1) The degraded face still rasterizes: non-null pixels, non-empty
+  // bitmap (the regression produced nullptr for every glyph).
+  freeink::font::FontChain* chain = loader.getReaderFont();
+  freeink::font::RasterFont* face = chain->fontFor('A');
+  ASSERT_NE(face, nullptr);
+  const freeink::font::GlyphBitmap* bmp = face->rasterize('A', 14);
+  ASSERT_NE(bmp, nullptr);
+  ASSERT_NE(bmp->pixels, nullptr);
+  EXPECT_GT(size_t(bmp->width) * bmp->height, 0u);
+}
+
+// Gen-stability contract (soak finding #6 correction): the font
+// fingerprint — the input every FIBP generation derives from — must be a
+// pure function of the font bytes + style coverage + hinting tag. Two
+// loader instances over unchanged files must agree exactly, or a firmware
+// update (or a second loader in the same boot) silently re-indexes every
+// book. layoutGenerationHash() hashes field-by-field (no struct padding),
+// so fingerprint determinism pins the whole chain.
+TEST(BookFontLoaderHinting, FingerprintStableAcrossLoaderInstances) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u);
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  uint32_t fingerprints[2] = {};
+  for (auto& fp : fingerprints) {
+    freeink::book::BookFontLoader loader;
+    loader.begin();
+    auto& fam = loader.editFamily(0);
+    std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+    fam.faceCount = 1;
+    fam.faces[0].styleFlags = freeink::book::StyleNone;
+    fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+    fam.faces[0].mtime = 0x5F123456u;
+    std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+    loader.setFamilyCountForTest(1);
+    loader.markDirty();
+    ASSERT_NE(loader.getReaderFont(), nullptr);
+    fp = loader.fontFingerprint();
+    EXPECT_NE(fp, 0u);
+  }
+  EXPECT_EQ(fingerprints[0], fingerprints[1]);
+}
+#endif

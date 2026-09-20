@@ -95,6 +95,12 @@ class FibpPrefetchWorker {
   // after each window drains, so chapter entries must respawn it). Returns
   // true when a task is (or already was) running.
   bool ensureTask();
+  // Main thread. Soak addendum: the reader hands a PARTIAL current chapter
+  // to the worker so it finishes off-task while the reader paints its target
+  // page from the partial immediately. Idempotent; the run loop claims it at
+  // the next pass boundary. Cleared by the worker after it builds (or finds
+  // the cache already complete) and invalidated on cancel().
+  void requestResumeClaim(uint16_t spine) { resumeSpine_.store(spine, std::memory_order_release); }
   // Main thread. Stops the task (bounded join) and frees the worker's
   // faces, bytes, and runtime. Returns false when the join times out: the
   // caller must then RELEASE ownership without destroying the object (its
@@ -105,6 +111,9 @@ class FibpPrefetchWorker {
   // Spine the task is currently laying out (fibp::kNoChapter when idle) —
   // the reader defers its own build of that chapter to the worker.
   uint16_t buildingSpine() const { return building_.load(std::memory_order_acquire); }
+  // Pages the current build session has laid out (0 when none) — the
+  // reader's estimate refines with this while a resume claim is in flight.
+  uint16_t buildingProgressPages() const { return progressPages_.load(std::memory_order_acquire); }
 
   // R1 stack budget: 32KB DRAM start (Adobe CFF frames are deep even for
   // advance-only loads). 24KB overflowed on device: a long 93-page spine
@@ -129,6 +138,12 @@ class FibpPrefetchWorker {
   // Runs one spine's build session to completion (or the next cancel /
   // generation change). Returns the run outcome.
   ChapterRun buildSpine(uint16_t spine, uint32_t generation);
+  // Blocks until paramGen_ (read under paramsMux_) reaches `gen` — notifyGeneration
+  // stores gen_ before the params swap, so a build without this wait snapshots
+  // stale scalars and buildSpine's last-line guard rejects them as Cancelled.
+  // Returns false when the session is over (cancel or generation bump): the
+  // caller must not build and should release its claim/claim-adjacent state.
+  bool waitForParamsPublished(uint32_t gen);
   // Replans the queue from the current notified spine (capped window) and
   // returns the spine snapshot the plan was built from — callers must use it
   // for their notified-spine change detection so plan and comparison share
@@ -142,6 +157,9 @@ class FibpPrefetchWorker {
   static constexpr uint32_t kSpineDelayMs = 30;  // R4: 20-50ms between spines
   static constexpr uint32_t kHeapWaitMs = 250;
   static constexpr uint32_t kJoinTimeoutMs = 3000;
+  // Soak addendum: indexing progress is LOG_INF every N pages (first and
+  // last page always log) so a stuck build is diagnosable at any LOG_LEVEL.
+  static constexpr uint16_t kIndexingProgressLogEveryPages = 10;
 
   std::atomic<bool> cancel_{false};
   std::atomic<bool> running_{false};
@@ -149,6 +167,7 @@ class FibpPrefetchWorker {
   std::atomic<uint16_t> notifiedSpine_{fibp::kNoChapter};
   std::atomic<uint16_t> lastPrefetchFiredSpine_{fibp::kNoChapter};  // spawn dedup (notifyChapterProgress)
   std::atomic<uint16_t> building_{fibp::kNoChapter};                // spine the task is laying out
+  std::atomic<uint16_t> resumeSpine_{fibp::kNoChapter};             // reader-requested partial resume claim
   SemaphoreHandle_t exitedSem_ = nullptr;                           // worker gives before self-delete
   SemaphoreHandle_t paramsMux_ = nullptr;                           // guards params_ scalar swaps
   TaskHandle_t task_ = nullptr;
@@ -185,14 +204,25 @@ class FibpPrefetchWorker {
   uint16_t queueCursor_ = 0;     // next index into queue_ to consider
   uint32_t sessionGen_ = 0;      // generation the current pass builds under
   uint16_t lastPages_ = 0;       // telemetry: pages of the last build
+  // Live indexing progress for the reader's page-count estimate while the
+  // worker holds a resume claim (0 when idle). Worker-task written, reader
+  // polled — relaxed is fine for a display estimate.
+  std::atomic<uint16_t> progressPages_{0};
+  // Progress-log state (soak addendum): spine being indexed, build start,
+  // and the previous yield's timestamp for the per-page PROF sample.
+  uint16_t logSpine_ = 0;
+  uint32_t buildStartMs_ = 0;
+  uint32_t lastHookMs_ = 0;
 #else
   // Inert stub (single-core / PSRAM-less / stb-rollback builds).
   bool begin(const BeginContext&) { return false; }
   void notifyChapterProgress(uint16_t spine, uint16_t page, uint16_t pageCount) {}
   void notifyGeneration(uint32_t, const LayoutParams&) {}
+  void requestResumeClaim(uint16_t) {}
   bool cancel() { return true; }
   bool active() const { return false; }
   uint16_t buildingSpine() const { return fibp::kNoChapter; }
+  uint16_t buildingProgressPages() const { return 0; }
 #endif  // FIBP_WORKER_ENABLED
 };
 

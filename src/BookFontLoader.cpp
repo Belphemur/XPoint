@@ -33,6 +33,9 @@
 
 #include "BookFontLoader.h"
 
+#if defined(ARDUINO)
+#include <CrossPointSettings.h>  // probe: configured body size (SETTINGS)
+#endif
 #include <FreeInkUIBookFont.h>
 #include <HalMemory.h>
 #include <HalStorage.h>
@@ -51,6 +54,9 @@
 
 #ifdef HOST_TEST
 #include "Arduino.h"  // host-test stub for ESP.getFreeHeap
+#if defined(ARDUINO) && defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+#include <freertos/task.h>  // P2 hint stack probe: uxTaskGetStackHighWaterMark
+#endif
 #endif
 
 #include <algorithm>
@@ -66,7 +72,172 @@ namespace book {
 // Italic is passed separately; FT synthesizes oblique/embolden when an axis
 // is absent.
 constexpr int styleToWeight(uint8_t styleFlags) { return (styleFlags & StyleBold) ? 700 : 400; }
-#endif
+
+// P2 effective render options, one slot per family face (REGULAR, BOLD,
+// ITALIC, BOLD_ITALIC). Starts at the requested mode; probeHintStackSafety()
+// may degrade a slot to unhinted. File-scope so renderOptionsFingerprintTag()
+// stays a cheap register-fold, and so the prefetch worker (via the static
+// accessor) folds the identical state into its parity hash. Written only on
+// the loopTask inside ensureLoaded(); the worker reads it between loader
+// generations, so the sequencing keeps the accesses non-overlapping.
+freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
+    BookFontLoader::kCrispRenderOptions, BookFontLoader::kCrispRenderOptions, BookFontLoader::kCrispRenderOptions,
+    BookFontLoader::kCrispRenderOptions};
+
+// Build-wide mono support as OBSERVED through the degrade funnel: false once
+// any loaded face's mono request was refused. effectiveMonochrome() consults
+// it so paint-path decisions never select Crisp/1bpp against AA rasters when
+// slot 0's own face never got to observe the refusal (load failure).
+bool monoAcceptable_ = true;
+
+// Additional stack depth a face's hinted render may consume before the probe
+// degrades it. The bound protects the smallest consumer stack: the 32KB
+// FibpPrefetchWorker task (R1: 24KB overflowed on device, its pipeline
+// measured HWM 1792B — a ~22.2KB peak), so at most ~9.8KB remain for the
+// Adobe interpreter's frames when it re-renders the same hinted glyphs;
+// 8KB keeps ≥1.8KB of that task's headroom at the absolute peak.
+constexpr uint32_t kHintProbeStackBudgetBytes = 8 * 1024;
+
+// Fail-closed floor for the probe's lifetime-HWM hole: uxTaskGetStackHigh-
+// WaterMark is a lifetime minimum, so the before/after delta UNDER-reports
+// whenever the calling task had already gone deeper than the probe reaches.
+// If the loopTask's lifetime free stack is below budget + reader-pipeline
+// peak (~13KB) + margin by the time the probe samples, the measurement can
+// no longer be attributed to the probe — degrade instead of trusting it.
+constexpr uint32_t kHintProbeFloorBytes =
+    kHintProbeStackBudgetBytes + 17 * 1024 + 2 * 1024;  // pipeline peak = measured 16.5KB paint depth
+
+// Stress set for the probe: hinted outlines with distinctive contours, at
+// sizes spanning the reader's runtime range (body, ruby, large) so the
+// deepest autohint/Adobe paths are exercised.
+constexpr uint32_t kHintProbeCodepoints[] = {'A', 'g', 'M', '@', 0x00C6u, 0x2019u};
+
+void BookFontLoader::degradeHint(uint8_t faceSlot) {
+  freeink::font::FtFont::RenderOptions degraded = effectiveRenderOptions_[faceSlot];
+  degraded.hinting = freeink::font::FtFont::HintingMode::None;
+  // Route through setRenderOptions(): the P1 glyph-cache flush point, so no
+  // stale hinted bitmap survives the mode change (review contract).
+  applySlotRenderOptions(faces_[faceSlot], faceSlot, degraded, "stack probe");
+  LOG_ERR("BFNT", "Hinting degraded to None for face slot %u (stack probe)", faceSlot);
+}
+
+void BookFontLoader::applySlotRenderOptions(NativeFace* face, uint8_t faceSlot,
+                                            const freeink::font::FtFont::RenderOptions& requested, const char* label) {
+  freeink::font::FtFont::RenderOptions opts = requested;
+  if (face != nullptr && !face->setRenderOptions(opts)) {
+    // Degrade to the nearest SUPPORTED set — never keep unsupported options:
+    // a mono request without the compiled-in mono module rasterizes EVERY
+    // glyph to nullptr (blank page, the device regression this guards).
+    opts.monochrome = false;  // drop mono first: AA Smooth is the nearest render
+    if (!face->setRenderOptions(opts)) {
+      opts.hinting = freeink::font::FtFont::HintingMode::None;
+      if (!face->setRenderOptions(opts)) {
+        LOG_ERR("BFNT", "Render options unusable (slot %u, %s)", faceSlot, label);
+      }
+    } else {
+      LOG_ERR("BFNT", "Render options degraded to AA (slot %u, %s)", faceSlot, label);
+    }
+    // Mono support is a build-wide constant, so one refusal settles it for
+    // every slot — including slots whose face never loaded (and thus never
+    // observed a refusal themselves).
+    monoAcceptable_ = false;
+  } else if (face != nullptr && opts.monochrome) {
+    monoAcceptable_ = true;
+  }
+  // The effective set drives the fingerprint tag and every paint-path mode
+  // decision (effectiveMonochrome), so FIBP identity always matches what
+  // actually renders.
+  effectiveRenderOptions_[faceSlot] = opts;
+}
+
+const freeink::font::FtFont::RenderOptions& BookFontLoader::effectiveRenderOptions(uint8_t faceSlot) {
+  return effectiveRenderOptions_[faceSlot];
+}
+
+bool BookFontLoader::effectiveMonochrome() { return monoAcceptable_ && effectiveRenderOptions_[0].monochrome; }
+
+void BookFontLoader::applyRenderMode(bool crispMode) {
+  // Crisp/Smooth switch without a face reload: the mode changes glyph
+  // RASTERIZATION only (advances are unchanged — Light hinting is on in
+  // both modes), so the faces stay resident. setRenderOptions() is the P1
+  // glyph-cache flush point; the fingerprint tag folds the new mode, so
+  // FIBP cache identity regenerates on the next layoutGenerationHash. No
+  // stack re-probe: the Adobe interpreter footprint is the same in both
+  // modes (only the rasterizer differs), so the load-time probe verdict
+  // stays valid.
+  requestedMonochrome_ = crispMode;
+  for (uint8_t i = 0; i < 4; ++i) {
+    freeink::font::FtFont::RenderOptions requested = currentRenderOptions();
+    // A stack-probe degrade must survive the mode switch: the requested set
+    // carries Light, but the slot's PROBE VERDICT is None — re-enabling
+    // hinted CFF here would put the Adobe interpreter back onto the 32KB
+    // worker stack it was probed off of (review r5).
+    requested.hinting = effectiveRenderOptions_[i].hinting;
+    applySlotRenderOptions(faces_[i], i, requested, "applyRenderMode");
+  }
+  // Re-derive the cached fingerprint so the next generation hash sees the
+  // new tag (cheap post-P3.1; 0-consistent for unloaded/fallback states).
+  if (loaded_) fingerprint_ = computeFingerprintCached();
+}
+
+uint32_t BookFontLoader::renderOptionsFingerprintTag() {
+  // 3 bits per slot for HintingMode (values fit 0..4). ONLY hinting folds
+  // here: hinting changes ADVANCES, so it is part of layout identity (FIBP
+  // gen). The raster mode (monochrome vs AA) alters glyph BITMAPS only —
+  // advances are byte-identical across modes — so folding it would
+  // re-index every book on a firmware update that merely flips the Crisp
+  // default (the soak observed exactly that); bitmap identity is governed
+  // by the P1 glyph cache's setRenderOptions() flush instead.
+  uint32_t tag = 0;
+  for (uint8_t i = 0; i < 4; ++i) {
+    tag |= static_cast<uint32_t>(effectiveRenderOptions_[i].hinting) << (3 * i);
+  }
+  return tag;
+}
+
+#if defined(ARDUINO)
+void BookFontLoader::probeHintStackSafety() {
+  if (kRenderOptions.hinting == freeink::font::FtFont::HintingMode::None) return;
+  // Sizes span the reader's REAL runtime range: the configured body size
+  // (same pt→px conversion TtfBookRuntime::makeLayoutParams uses — 150 dpi
+  // panel) plus a 2× headroom multiple, not just kInitSizePx multiples.
+  const uint16_t bodyPx = static_cast<uint16_t>(lroundf(SETTINGS.ttfFontPointSize * 150.0f / 72.0f));
+  const uint16_t probeSizes[3] = {kInitSizePx, bodyPx, static_cast<uint16_t>(bodyPx * 2 > 240 ? 240 : bodyPx * 2)};
+  for (uint8_t i = 0; i < 4; ++i) {
+    NativeFace* face = faces_[i];
+    if (face == nullptr) continue;
+    const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);  // bytes on ESP-IDF
+    for (const uint32_t cp : kHintProbeCodepoints) {
+      for (const uint16_t size : probeSizes) {
+        face->rasterize(cp, size);
+      }
+    }
+    const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
+    const uint32_t consumed = before > after ? before - after : 0;
+    LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", i, static_cast<unsigned>(consumed));
+    if (consumed > kHintProbeStackBudgetBytes) {
+      degradeHint(i);
+    } else if (consumed == 0 && after < kHintProbeFloorBytes) {
+      // The lifetime high-water never moved during the probe, so the probe
+      // contributed nothing NEW — and the task's history already ran deeper
+      // than the floor: the before/after delta cannot attribute the Adobe
+      // depth to this face. Fail closed (kody FX1u: a merely-deep history
+      // with a measurable delta must NOT kill hinting; only an unmeasurable
+      // probe may).
+      LOG_ERR("BFNT", "Hint probe slot %u unmeasurable (HWM %u B < floor, no delta)", i, static_cast<unsigned>(after));
+      degradeHint(i);
+    }
+  }
+}
+#else
+void BookFontLoader::probeHintStackSafety() {}
+#endif  // ARDUINO
+
+void BookFontLoader::resetHintState() {
+  for (uint8_t i = 0; i < 4; ++i) effectiveRenderOptions_[i] = currentRenderOptions();
+  monoAcceptable_ = true;  // fresh load: support is re-observed by the funnel
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 // Hard bounds for the DRAM-tier font file size gate. Design §3.3: the value is
 // derived from ESP.getFreeHeap()/getMaxAllocHeap() after all arenas are
@@ -89,6 +260,111 @@ static uint32_t fontFNV1a(const uint8_t* data, size_t len, uint32_t seed = 0x811
     h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
   }
   return h;
+}
+
+// ── SD fingerprint cache (P3.1) ───────────────────────────────────────────
+// One 28-byte record per face under /.crosspoint/fonts/, keyed by the face's
+// path hash: {magic, version, inSeed, hash, headHash, fileSize, mtime}.
+// `hash` is the CHAINED FNV-1a over the face bytes with incoming seed
+// `inSeed`, so it is only served when the recorded seed matches the running
+// chain — a face's entry can never poison the fingerprint after a
+// predecessor changed. mtime is only a rehash trigger, never a hash input
+// (design P3.1). `headHash` is the FNV-1a over the first kFingerprintHeadBytes
+// bytes: verifying it on a hit (~4 KB of the resident bytes, ~2% of a full
+// walk) closes the same-size/same-mtime rewrite hole from review — a font
+// replacement changes the header (checkSumAdjustment/head timestamps) with
+// near-certainty. Residual window: a rewrite keeping size, mtime AND the
+// whole first 4 KB identical — accepted and documented (design P3.1).
+struct FingerprintCacheRecord {
+  uint32_t magic;    // 'BFP2'
+  uint32_t version;  // 2
+  uint32_t inSeed;
+  uint32_t hash;
+  uint32_t headHash;
+  uint32_t fileSize;
+  uint32_t mtime;
+};
+static_assert(sizeof(FingerprintCacheRecord) == 28, "fixed-size SD record");
+static_assert(alignof(FingerprintCacheRecord) <= alignof(uint32_t), "no alignment surprises");
+constexpr uint32_t kFingerprintCacheMagic = 0x42465032u;  // 'BFP2'
+constexpr uint32_t kFingerprintCacheVersion = 2;
+constexpr size_t kFingerprintCacheBytes = sizeof(FingerprintCacheRecord);
+constexpr size_t kFingerprintHeadBytes = 4096;
+
+// Cache file path for a face's path hash. Fixed cap: 8 hex digits + dir.
+void fingerprintCachePath(uint32_t pathHash, char (&out)[64]) {
+  snprintf(out, sizeof(out), "/.crosspoint/fonts/fp_%08x.bin", static_cast<unsigned>(pathHash));
+}
+
+// Unaligned-buffer-safe record decode (RISC-V alignment rule): fields are
+// uint32 at 4-byte stride, so memcpy each instead of casting the buffer.
+bool decodeFingerprintRecord(const uint8_t* buf, size_t len, FingerprintCacheRecord& rec) {
+  if (len != kFingerprintCacheBytes) return false;
+  memcpy(&rec, buf, kFingerprintCacheBytes);  // 24-byte POD at a heap-aligned buffer start
+  return rec.magic == kFingerprintCacheMagic && rec.version == kFingerprintCacheVersion;
+}
+
+// Returns true + fills `hash` when a valid cache record matches the face's
+// current {fileSize, mtime, headHash} and the chain's incoming seed. mtime 0
+// (missing SD timestamp) disables the cache for that face: size alone cannot
+// tell a rewritten file apart, so fail closed and recompute.
+bool BookFontLoader_readFingerprintCache(uint32_t pathHash, uint32_t fileSize, uint32_t mtime, uint32_t inSeed,
+                                         uint32_t headHash, uint32_t& hash) {
+  if (mtime == 0) return false;
+  char path[64];
+  fingerprintCachePath(pathHash, path);
+  HalFile file;
+  if (!Storage.openFileForRead("BFNT", path, file)) return false;
+  if (file.fileSize() != kFingerprintCacheBytes) return false;  // corrupt/oversize → recompute
+  uint8_t buf[kFingerprintCacheBytes];
+  if (file.read(buf, kFingerprintCacheBytes) != static_cast<int>(kFingerprintCacheBytes)) return false;
+  FingerprintCacheRecord rec{};
+  if (!decodeFingerprintRecord(buf, kFingerprintCacheBytes, rec)) return false;
+  if (rec.fileSize != fileSize || rec.mtime != mtime || rec.inSeed != inSeed || rec.headHash != headHash) {
+    return false;
+  }
+  hash = rec.hash;
+  return true;
+}
+
+// Writes the record atomically: stage to <path>.tmp, close, then rename over
+// the final path. A partial write can never leave a torn final record (the
+// rename publishes only complete 28-byte stages), and every failure path
+// removes the temp file. Best effort — a failed write only costs the next
+// open one byte-walk rehash.
+void BookFontLoader_writeFingerprintCache(uint32_t pathHash, uint32_t fileSize, uint32_t mtime, uint32_t inSeed,
+                                          uint32_t headHash, uint32_t hash) {
+  if (mtime == 0) return;  // cache disabled without a usable rehash trigger
+  char path[64];
+  char tmpPath[70];
+  fingerprintCachePath(pathHash, path);
+  snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
+  Storage.ensureDirectoryExists("/.crosspoint/fonts");
+  bool staged = false;
+  {
+    // Scope: the handle must be closed before the rename/remove below
+    // (DESTRUCTOR_CLOSES_FILE=1 — close happens at the block exit).
+    HalFile file;
+    const FingerprintCacheRecord rec{
+        kFingerprintCacheMagic, kFingerprintCacheVersion, inSeed, hash, headHash, fileSize, mtime};
+    staged = Storage.openFileForWrite("BFNT", tmpPath, file) &&
+             file.write(&rec, kFingerprintCacheBytes) == kFingerprintCacheBytes;
+  }
+  if (!staged) {
+    LOG_DBG("BFNT", "fp-cache stage failed for %s", tmpPath);
+    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
+    return;
+  }
+  // SdFat rename refuses an existing destination: publish by replace.
+  if (Storage.exists(path) && !Storage.remove(path)) {
+    LOG_ERR("BFNT", "fp-cache: cannot replace %s", path);
+    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
+    return;
+  }
+  if (!Storage.rename(tmpPath, path)) {
+    LOG_DBG("BFNT", "fp-cache publish failed for %s", path);
+    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
+  }
 }
 
 // Read a font file's bytes via HalStorage into a caller-provided buffer.
@@ -255,6 +531,12 @@ void BookFontLoader::ensureLoaded() {
     fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
+    facePathHash_[i] = 0;
+    faceMtime_[i] = 0;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    // Fresh load: re-probe hinting from the requested mode.
+    resetHintState();
+#endif
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
   }
@@ -301,7 +583,13 @@ void BookFontLoader::ensureLoaded() {
       // Face skipped (too large, invalid sfnt, OOM); continue with fewer faces.
     }
   }
-  fingerprint_ = computeFingerprint();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // P2 stack gate: probe the requested (Light) hinting BEFORE the fingerprint
+  // is computed, so a probe-driven degrade participates in the FIBP identity
+  // from the first cache write onward.
+  probeHintStackSafety();
+#endif
+  fingerprint_ = computeFingerprintCached();
   memSentinelCheck("font ensureLoaded");
   appendFallbackTail(chain_);
   loaded_ = true;
@@ -356,6 +644,8 @@ void BookFontLoader::releaseResidentCaches() {
     fontDramBytes_[i].reset();
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
+    facePathHash_[i] = 0;
+    faceMtime_[i] = 0;
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
   }
@@ -422,6 +712,44 @@ uint32_t BookFontLoader::computeFingerprint() const {
   h ^= 0x46545531u;
   // Render-affecting options (hinting) participate in cache identity —
   // see kRenderOptions / renderOptionsFingerprintTag().
+  h ^= renderOptionsFingerprintTag();
+#endif
+  return h;
+}
+
+uint32_t BookFontLoader::computeFingerprintCached() {
+  // Same content semantics as computeFingerprint(), but each slot's chained
+  // byte-walk is served from (and refreshed into) the SD cache keyed by the
+  // face's path hash. The incoming chain seed is part of every cache record,
+  // so a slot can never be served for a different predecessor chain (e.g.
+  // after slot 0's file was replaced). Faces without an SD mtime bypass the
+  // cache entirely — readFingerprintCache fails closed for them.
+  bool anyLoaded = false;
+  uint32_t h = 0x811c9dc5;
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
+      anyLoaded = true;
+      const uint32_t inSeed = h;
+      const auto* bytes = static_cast<const uint8_t*>(fontBytes_[i]);
+      // Head hash: the cheap identity check that runs on every hit (~4 KB,
+      // ~2% of a full walk). FNV-1a folds sequentially, so the miss path
+      // chains the head walk straight into the full hash — no re-walk.
+      const size_t headLen = fontFileSizes_[i] < kFingerprintHeadBytes ? fontFileSizes_[i] : kFingerprintHeadBytes;
+      const uint32_t headHash = fontFNV1a(bytes, headLen, inSeed);
+      uint32_t slotHash = 0;
+      if (!BookFontLoader_readFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, headHash,
+                                               slotHash)) {
+        slotHash = fontFNV1a(bytes + headLen, fontFileSizes_[i] - headLen, headHash);
+        BookFontLoader_writeFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, headHash,
+                                             slotHash);
+      }
+      h = slotHash;
+    }
+  }
+  if (!anyLoaded) return 0;
+  h ^= static_cast<uint32_t>(chain_.styleCoverage());
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  h ^= 0x46545531u;  // backend tag, mirrors computeFingerprint()
   h ^= renderOptionsFingerprintTag();
 #endif
   return h;
@@ -531,6 +859,8 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     FamilyInfo fam;                              // ~940B manifest row — heap, reset per family
     uint32_t soloSize = 0;
     uint32_t tokenlessSize = 0;
+    uint32_t soloMtime = 0;
+    uint32_t tokenlessMtime = 0;
   };
   // sizeof() on the decayed pointers would measure the pointer, not the
   // buffer — the walk uses the struct's member sizes everywhere.
@@ -601,15 +931,19 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
     char* const tokenlessLower = scratch->tokenlessLower;
     uint32_t& soloSize = scratch->soloSize;
     uint32_t& tokenlessSize = scratch->tokenlessSize;
+    uint32_t& soloMtime = scratch->soloMtime;
+    uint32_t& tokenlessMtime = scratch->tokenlessMtime;
     // These candidates persist in the shared scratch across the outer family
     // loop; reset them so one family's Regular candidates cannot leak into
     // the next family's post-loop resolution.
     soloFile[0] = '\0';
     soloLower[0] = '\0';
     soloSize = 0;
+    soloMtime = 0;
     tokenlessFile[0] = '\0';
     tokenlessLower[0] = '\0';
     tokenlessSize = 0;
+    tokenlessMtime = 0;
     uint8_t candidateCount = 0;
 
     while (true) {
@@ -628,6 +962,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       if (candidateCount == 1) {
         snprintf(soloFile, kFileNameCap, "%s", fileName);
         soloSize = entry.fileSize();
+        soloMtime = entry.modificationTime();
         soloLower[0] = '\0';
       }
 
@@ -650,6 +985,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           snprintf(tokenlessFile, kFileNameCap, "%s", fileName);
           snprintf(tokenlessLower, kLowerCap, "%s", lower);
           tokenlessSize = entry.fileSize();
+          tokenlessMtime = entry.modificationTime();
         }
         continue;
       }
@@ -685,6 +1021,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       snprintf(face.file, sizeof(face.file), "%s", newFile);
       face.styleFlags = style;
       face.fileSize = entry.fileSize();
+      face.mtime = entry.modificationTime();
     }
 
     if (fam.faceCount == 0) {
@@ -699,6 +1036,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           continue;
         }
         face.fileSize = soloSize;
+        face.mtime = soloMtime;
         face.styleFlags = StyleNone;
       } else if (tokenlessLower[0] != '\0') {
         // Multiple no-token candidates: lexicographically-first becomes Regular.
@@ -712,6 +1050,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
           continue;
         }
         face.fileSize = tokenlessSize;
+        face.mtime = tokenlessMtime;
         face.styleFlags = StyleNone;
       } else {
         continue;  // empty / unparseable family
@@ -745,6 +1084,7 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
             continue;
           }
           face.fileSize = tokenlessSize;
+          face.mtime = tokenlessMtime;
           face.styleFlags = StyleNone;
         }
       } else if (!hasRegular) {
@@ -776,6 +1116,13 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
 // fontPsramBytes_, fontDramBytes_, fontBytes_, arenas_, remainingBudget_).
 
 bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain) {
+  // Fingerprint-cache identity (P3.1): path hash is the SD cache key, mtime
+  // the rehash trigger beside size. Captured up front; a later failure in
+  // this slot leaves the identity set but harmless (no fontBytes_ = the slot
+  // is skipped by the fingerprint walk).
+  facePathHash_[faceIdx] = fontFNV1a(reinterpret_cast<const uint8_t*>(fi.file), strlen(fi.file));
+  faceMtime_[faceIdx] = fi.mtime;
+
   // DRAM-tier size gate: skip oversized files (design §3.3). PSRAM-backed
   // boards bypass this DRAM budget; the PSRAM tier has its own guard below.
   if (HalMemory::getPsramHeap().totalBytes == 0) {
@@ -884,8 +1231,9 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   }
   // Borrowed bytes: the file bytes outlive the face (same lifetime rules as
   // the stb path — released only in ensureLoaded()/releaseResidentCaches()).
-  if (!face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, kInitSizePx, styleToWeight(fi.styleFlags),
-                  (fi.styleFlags & StyleItalic) != 0)) {
+  const bool initOk = face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, kInitSizePx,
+                                 styleToWeight(fi.styleFlags), (fi.styleFlags & StyleItalic) != 0);
+  if (!initOk) {
     LOG_ERR("BFNT", "FtFont::init failed for %s", fi.file);
     delete face;
     if (isPsram) {
@@ -895,11 +1243,10 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
     }
     return false;
   }
-  // Reader-wide render options (hinting). None never reports unsupported (no
-  // optional module needed); a future mode change must keep this check.
-  if (!face->setRenderOptions(kRenderOptions)) {
-    LOG_ERR("BFNT", "Render options unsupported for %s", fi.file);
-  }
+  // Reader-wide render options (hinting + text render mode) through the
+  // single supported/degrade funnel; the effective set lands in
+  // effectiveRenderOptions_ either way.
+  applySlotRenderOptions(face, faceIdx, effectiveRenderOptions(faceIdx), fi.file);
 #else
   if (!glyphBacking_[faceIdx]) {
     glyphBacking_[faceIdx] = poolMakeBytes(kGlyphArenaBytes);

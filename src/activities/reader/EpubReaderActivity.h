@@ -222,9 +222,19 @@ class EpubReaderActivity final : public ReaderActivity {
   bool fibpDeferred_ = false;           // a build is delegated to the worker
   unsigned long fibpDeferPollMs_ = 0;   // last deferred-build poll (throttle)
   unsigned long fibpDeferStartMs_ = 0;  // when the current delegation began
-  int ttfSpine = -1;                    // spine the runtime's reader/session belong to
-  int ttfPage = 0;                      // chapter-local page index
-  uint32_t ttfPageCount = 0;            // pages available for the current chapter
+  // Soak addendum: the opened chapter's partial completion handed to the
+  // worker (requestResumeClaim) while the reader paints from the partial.
+  int16_t fibpResumeClaimedSpine_ = -1;
+  bool fibpResumeSeenBuilding_ = false;  // worker observed holding the claim
+  unsigned long fibpResumeRequestMs_ = 0;
+  int ttfSpine = -1;          // spine the runtime's reader/session belong to
+  int ttfPage = 0;            // chapter-local page index
+  uint32_t ttfPageCount = 0;  // pages available for the current chapter
+  // Estimated chapter total while a build is in flight: pages built scaled
+  // by the layout session's input progress (the old Section engine's
+  // extrapolation, owner steer: return after a few pages and let the user
+  // read; the count refines as indexing progresses).
+  uint32_t ttfEstimatedPageCount() const;
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
@@ -268,6 +278,72 @@ class EpubReaderActivity final : public ReaderActivity {
   void ttfSaveProgress();
   void finishTtfPageRender();
   bool ttfPageTurn(bool isForwardTurn);
+  // P4 one-page-ahead prerender (port of upstream 60079923, adapted to the
+  // TTF engine): after a fully committed page-N frame, paint page N+1's
+  // content-only (no status bar, no flush) into the framebuffer so the next
+  // FORWARD turn skips layout+build+base-paint entirely. The prerender is
+  // one RenderLock-protected transaction (renderBookTtf's prerender pass)
+  // that starts only after the previous pass's waitRefreshComplete(); ready
+  // is published only after the paint. Any other render pass invalidates it.
+  // See the review contract in docs/design/2026-09-19-freetype-render-cache.md:
+  // it is also invalidated (or the current page re-rendered) on any full-FB
+  // flush outside the forward turn's own commit (deferred overlay pushes,
+  // popup chrome opens).
+  struct TtfPreRenderedPage {
+    bool ready = false;
+    int16_t spineIndex = -1;
+    int16_t pageIndex = -1;
+    // Validity axes the consume guard must match (soak finding #3: the
+    // framebuffer content is only the target page when ALL of these are
+    // unchanged since the prerender painted it).
+    uint32_t generation = 0;     // layoutGenerationHash at prerender time
+    uint8_t orientation = 0xFF;  // GfxRenderer::Orientation snapshot
+    bool monochrome = false;     // effective text raster mode snapshot
+    // Chunked-pump state (soak finding #5): the prerender paints in ≤
+    // kPreRenderSliceBudgetMs slices, one per loop tick, so a button press
+    // is never more than one slice away from being served. pumping marks an
+    // unfinished paint (the framebuffer holds a PARTIAL page — never
+    // consumable); nextRun/nextChar is the paint cursor across slices
+    // (run index; nextChar = intra-run glyph offset — review r5).
+    bool pumping = false;
+    uint16_t nextRun = 0;
+    uint32_t nextChar = 0;
+    uint8_t slicesUsed = 0;
+  };
+  TtfPreRenderedPage ttfPreRendered;
+  // millis() at renderBookTtf entry — busy-window telemetry (soak finding
+  // #3 P2): input is polled, so presses fully inside a long render window
+  // are dropped; the window length must be visible in the soak log.
+  uint32_t ttfRenderBusyStartMs = 0;
+  // Set by finishTtfPageRender() after a normal page render to request the
+  // prerender pass; consumed and cleared by renderBookTtf() before any state
+  // checks. Never set while an overlay/deferred overlay refresh is live.
+  bool ttfPendingPreRender = false;
+  // Set by the ttfPageTurn() fast path to tell renderBookTtf() the frame
+  // buffer already holds the next page's content: only the status bar and
+  // the display commit are needed.
+  bool ttfUsePreRenderedBuffer = false;
+  // True when finishTtfPageRender() painted a chrome popup this pass — such
+  // a frame must stay page N's context, so the prerender stays unscheduled.
+  bool ttfChromePopupShown = false;
+  void ttfInvalidatePreRender(const char* reason);
+  // Soak triage: log a fast-path miss reason once per distinct reason.
+  void ttfLogPrerenderMiss(const char* reason);
+  // The ACTIVE text raster mode (degrade-aware snapshot axis).
+  bool ttfEffectiveMonochromeSnapshot() const;
+  void ttfSchedulePreRender();
+  // Both passes re-derive their target from live state (the flags only say a
+  // pass was requested) and need the layout params for the paint font.
+  void ttfRunPreRenderPass(const freeink::book::LayoutParams& params);
+  bool ttfFastDisplayPass(const freeink::book::LayoutParams& params);
+  // Extracts the engine page's internal (resolvable) footnote links into
+  // currentPageFootnotes; shared by the normal and fast-display passes.
+  void ttfExtractFootnotes(const freeink::book::Page& page);
+  // Display commit + finalize tail shared by the normal and fast-display
+  // passes: gray-route dispatch (strips/full-frame), 1bpp fallback with the
+  // async-overlap window, telemetry, frame-complete publication, progress
+  // save, chrome popups, and the prerender scheduling hook.
+  void ttfCommitFrame(const freeink::book::Page& page, const freeink::book::LayoutParams& params, size_t scratchMark);
 #endif
 
   static constexpr int BUILD_PAGES_PER_CHUNK = 8;
@@ -278,6 +354,10 @@ class EpubReaderActivity final : public ReaderActivity {
   bool buildHeapPaused = false;
   void prefetchNextChapterDuringDisplay();
   static constexpr size_t RENDER_MIN_FREE_HEAP = 24 * 1024;
+  // Chunked prerender slice budget (soak finding #5): one prerender slice per
+  // loop tick, so a button press is served at most one slice after it lands
+  // (the loop processes input before the render pass runs).
+  static constexpr uint32_t kPreRenderSliceBudgetMs = 120;
   static constexpr int BUILD_WINDOW_AHEAD = 5;
   static constexpr int PARTIAL_REBUILD_START_MARGIN = 15;
   static constexpr int BUILD_POPUP_PAGE_THRESHOLD = 20;

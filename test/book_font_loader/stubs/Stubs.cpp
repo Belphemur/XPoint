@@ -19,6 +19,44 @@ bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFi
   return true;
 }
 
+bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalFile& file) {
+  (void)moduleName;
+  file = HalFile{};
+  auto& bytes = files[path];  // create-or-truncate (production O_TRUNC semantics)
+  bytes.clear();              // existing content must not leak into the new write
+  file.data = &bytes;
+  file.path = &files.find(path)->first;
+  file.writable = true;
+  file.storage = this;
+  return true;
+}
+
+bool HalStorage::remove(const char* path) {
+  files.erase(path);
+  mtimes.erase(path);
+  return true;
+}
+
+bool HalStorage::rename(const char* oldPath, const char* newPath) {
+  if (files.count(oldPath) == 0 || files.count(newPath) != 0) return false;  // SdFat refuses existing dest
+  files[newPath] = files[oldPath];
+  files.erase(oldPath);
+  return true;
+}
+
+size_t HalFile::write(const void* buf, size_t count) {
+  if (!writable || path == nullptr || storage == nullptr) return 0;
+  std::string& dst = storage->files[*path];
+  dst.append(static_cast<const char*>(buf), count);
+  return count;
+}
+
+uint32_t HalFile::modificationTime() {
+  if (path == nullptr || storage == nullptr) return 0;
+  auto it = storage->mtimes.find(*path);
+  return it == storage->mtimes.end() ? 0u : it->second;
+}
+
 HalFile HalStorage::open(const char* path) {
   HalFile f;
   if (dirs.count(path) != 0) {

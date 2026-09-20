@@ -1,5 +1,9 @@
 #include "FrameTargetFactory.h"
 
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+#include "BookFontLoader.h"
+#endif
+
 #include <CrossPointSettings.h>
 
 namespace book = freeink::book;
@@ -19,7 +23,15 @@ book::FrameTarget makeFrameTarget(const GfxRenderer& renderer) {
   target.width = static_cast<int16_t>(renderer.getDisplayWidth());  // panel-native
   target.height = static_cast<int16_t>(renderer.getDisplayHeight());
   target.widthBytes = static_cast<int16_t>(renderer.getDisplayWidthBytes());
-  target.format = SETTINGS.textAntiAliasing ? book::FrameFormat::Mono1Dithered : book::FrameFormat::Mono1Sharp;
+  // Degrade-aware: a build without the mono module paints Smooth planes
+  // even when the setting asks for Crisp (the loader degraded the faces).
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  target.format = freeink::book::fontLoader.effectiveMonochrome() ? book::FrameFormat::Mono1Sharp
+                                                                  : book::FrameFormat::Mono1Dithered;
+#else
+  target.format = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH ? book::FrameFormat::Mono1Dithered
+                                                                                    : book::FrameFormat::Mono1Sharp;
+#endif
 
   switch (renderer.getOrientation()) {
     case GfxRenderer::Portrait:
