@@ -318,7 +318,11 @@ bool dispatchGlobalHomeButtonAction() {
 }
 
 bool handleX4ProFrontlightDoubleClick() {
-  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
+  // Snapshot read (soak-fix7): routes through the manager's per-tick mask —
+  // a direct gpio.wasReleased here would CONSUME the edge before the
+  // activity's mappedInput reads see it.
+  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight ||
+      !mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     return false;
   }
 
@@ -1029,7 +1033,7 @@ void loop() {
   }
   if (screenshotComboActive) {
     if (gpio.isPressed(HalGPIO::BTN_POWER)) return;
-    if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
+    if (mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
       screenshotButtonsReleased = true;
       screenshotComboActive = false;
       return;

@@ -15,11 +15,20 @@ namespace fui = freeink::ui;
 
 void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // Frame boundary for async input sampling (docs/design/2026-09-20-async-
-  // input.md §2.2): edges latched by drain-path update() calls since the
-  // previous tick (including HalGPIO's wait-loop calls inside e-ink waits)
-  // are delivered to THIS frame exactly once. No-op on sync builds.
-  gpio.beginInputFrame();
+  // Consume what the poll task produced (soak-fix7 consume-on-check):
+  // gpio.update() is a no-op in async mode (edges move only through the
+  // per-read pop); on sync builds update() keeps the historical one-shot
+  // path and consumeTouchFrame() is a no-op. Then take the per-tick edge
+  // snapshot — each physical button's edges consumed exactly once here,
+  // served to every activity read this tick (multi-read safe).
   gpio.update();
+  gpio.consumeTouchFrame();
+  framePressedEdges = 0;
+  frameReleasedEdges = 0;
+  for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
+    if (gpio.wasPressed(physical)) framePressedEdges |= static_cast<uint8_t>(1u << physical);
+    if (gpio.wasReleased(physical)) frameReleasedEdges |= static_cast<uint8_t>(1u << physical);
+  }
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
   if (gpio.hasHomeKey()) {
@@ -97,40 +106,47 @@ MappedInputManager::Button MappedInputManager::mapScreenDirection(const Button b
 }
 
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
+  return mapButtonWith(button, [this, fn](const uint8_t physical) { return (gpio.*fn)(physical); });
+}
+
+bool MappedInputManager::edgeSnapshot(const Button button, const bool pressed) const {
+  const uint8_t edges = pressed ? framePressedEdges : frameReleasedEdges;
+  return mapButtonWith(button, [edges](const uint8_t physical) { return (edges & (1u << physical)) != 0; });
+}
+
+template <typename Probe>
+bool MappedInputManager::mapButtonWith(const Button button, Probe&& probe) const {
   const auto sideLayout = SETTINGS.sideButtonLayout;
 
   switch (button) {
     case Button::Back:
       // Logical Back maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonBack);
+      return probe(SETTINGS.frontButtonBack);
     case Button::Confirm:
       // Logical Confirm maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonConfirm);
+      return probe(SETTINGS.frontButtonConfirm);
     case Button::Left:
       // Logical Left maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonLeft);
+      return probe(SETTINGS.frontButtonLeft);
     case Button::Right:
       // Logical Right maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonRight);
+      return probe(SETTINGS.frontButtonRight);
     case Button::Up:
       // Side buttons remain fixed for Up/Down.
-      return (gpio.*fn)(HalGPIO::BTN_UP);
+      return probe(HalGPIO::BTN_UP);
     case Button::Down:
       // Side buttons remain fixed for Up/Down.
-      return (gpio.*fn)(HalGPIO::BTN_DOWN);
+      return probe(HalGPIO::BTN_DOWN);
     case Button::Power:
       // Power button bypasses remapping.
-      return (gpio.*fn)(HalGPIO::BTN_POWER);
+      return probe(HalGPIO::BTN_POWER);
     case Button::PageBack:
       // Reader page navigation uses side buttons and can be swapped via settings.
       switch (sideLayout) {
         case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
+          return probe(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
-        case CrossPointSettings::PREV_PREV:
-          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
-        case CrossPointSettings::NEXT_NEXT:
+          return probe(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
@@ -139,12 +155,9 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
       // Reader page navigation uses side buttons and can be swapped via settings.
       switch (sideLayout) {
         case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
+          return probe(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
-        case CrossPointSettings::NEXT_NEXT:
-          return (gpio.*fn)(HalGPIO::BTN_UP) || (gpio.*fn)(HalGPIO::BTN_DOWN);
-        case CrossPointSettings::PREV_PREV:
+          return probe(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
@@ -152,17 +165,17 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
     case Button::NavNext:
       // Logical "next item" navigation: side Down + front Right, with the control axis flipped in
       // INVERTED / LANDSCAPE_CCW under the live orientation policy, matching the rotated hint labels.
-      return isNavDirectionSwapped() ? (mapButton(Button::Up, fn) || mapButton(Button::Left, fn))
-                                     : (mapButton(Button::Down, fn) || mapButton(Button::Right, fn));
+      return isNavDirectionSwapped() ? (mapButtonWith(Button::Up, probe) || mapButtonWith(Button::Left, probe))
+                                     : (mapButtonWith(Button::Down, probe) || mapButtonWith(Button::Right, probe));
     case Button::NavPrevious:
       // Logical "previous item" navigation: side Up + front Left, axis-flipped in the same orientations.
-      return isNavDirectionSwapped() ? (mapButton(Button::Down, fn) || mapButton(Button::Right, fn))
-                                     : (mapButton(Button::Up, fn) || mapButton(Button::Left, fn));
+      return isNavDirectionSwapped() ? (mapButtonWith(Button::Down, probe) || mapButtonWith(Button::Right, probe))
+                                     : (mapButtonWith(Button::Up, probe) || mapButtonWith(Button::Left, probe));
     case Button::ScreenLeft:
     case Button::ScreenRight:
     case Button::ScreenUp:
     case Button::ScreenDown:
-      return mapButton(mapScreenDirection(button), fn);
+      return mapButtonWith(mapScreenDirection(button), probe);
   }
 
   return false;
@@ -357,7 +370,7 @@ bool MappedInputManager::wasPressed(const Button button) const {
 #if FREEINK_CAP_TOUCH
   if (button == Button::Confirm && wasPowerConfirmClick()) return true;
 #endif
-  return mapButton(button, &HalGPIO::wasPressed);
+  return edgeSnapshot(button, true);
 }
 
 bool MappedInputManager::wasReleased(const Button button) const {
@@ -366,7 +379,7 @@ bool MappedInputManager::wasReleased(const Button button) const {
 #if FREEINK_CAP_TOUCH
   if (button == Button::Confirm && wasPowerConfirmClick()) return true;
 #endif
-  return mapButton(button, &HalGPIO::wasReleased);
+  return edgeSnapshot(button, false);
 }
 
 bool MappedInputManager::wasLongPressed(const Button button, const unsigned long thresholdMs) const {
@@ -386,7 +399,7 @@ bool MappedInputManager::consumeSuppressedRelease() const {
   uint16_t released = 0;
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
     const uint16_t bit = 1u << value;
-    if ((suppressedReleaseButtons & bit) != 0 && mapButton(static_cast<Button>(value), &HalGPIO::wasReleased)) {
+    if ((suppressedReleaseButtons & bit) != 0 && edgeSnapshot(static_cast<Button>(value), false)) {
       released |= bit;
     }
   }
@@ -396,14 +409,14 @@ bool MappedInputManager::consumeSuppressedRelease() const {
 
 bool MappedInputManager::isPressed(const Button button) const { return mapButton(button, &HalGPIO::isPressed); }
 
-bool MappedInputManager::wasAnyPressed() const { return gpio.wasAnyPressed(); }
+bool MappedInputManager::wasAnyPressed() const { return framePressedEdges != 0; }
 
-bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased(); }
+bool MappedInputManager::wasAnyReleased() const { return frameReleasedEdges != 0; }
 
 unsigned long MappedInputManager::getHeldTime() const {
   // A mapped action has its own meaning, independent of the contact duration.
   if (homeAction != HomeButtonAction::Ignore) return 0;
-  if (!gpio.wasAnyPressed() && !gpio.wasAnyReleased() && touchHeldOverrideValid &&
+  if (framePressedEdges == 0 && frameReleasedEdges == 0 && touchHeldOverrideValid &&
       millis() - touchHeldOverrideAt <= TOUCH_HELD_OVERRIDE_WINDOW_MS) {
     return touchHeldOverrideMs;
   }
@@ -461,16 +474,17 @@ MappedInputManager::Labels MappedInputManager::mapFrontLabels(const char* back, 
 int MappedInputManager::getPressedFrontButton() const {
   // Scan the raw front buttons in hardware order.
   // This bypasses remapping so the remap activity can capture physical presses.
-  if (gpio.wasPressed(HalGPIO::BTN_BACK)) {
+  // Reads the per-tick snapshot (multi-read safe under consume-on-check).
+  if ((framePressedEdges & (1u << HalGPIO::BTN_BACK)) != 0) {
     return HalGPIO::BTN_BACK;
   }
-  if (gpio.wasPressed(HalGPIO::BTN_CONFIRM)) {
+  if ((framePressedEdges & (1u << HalGPIO::BTN_CONFIRM)) != 0) {
     return HalGPIO::BTN_CONFIRM;
   }
-  if (gpio.wasPressed(HalGPIO::BTN_LEFT)) {
+  if ((framePressedEdges & (1u << HalGPIO::BTN_LEFT)) != 0) {
     return HalGPIO::BTN_LEFT;
   }
-  if (gpio.wasPressed(HalGPIO::BTN_RIGHT)) {
+  if ((framePressedEdges & (1u << HalGPIO::BTN_RIGHT)) != 0) {
     return HalGPIO::BTN_RIGHT;
   }
   return -1;

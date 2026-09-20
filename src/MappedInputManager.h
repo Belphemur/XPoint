@@ -145,7 +145,15 @@ class MappedInputManager {
 
   Button mapScreenDirection(Button button) const;
   Labels mapFrontLabels(const char* back, const char* confirm, const char* left, const char* right) const;
+  // Resolves `button` to a physical button (0..6) and evaluates `probe`
+  // there; composite logical buttons (Nav*, Screen*) recurse. Returns false
+  // when the logical button is disabled (side buttons off).
+  template <typename Probe>
+  bool mapButtonWith(const Button button, Probe&& probe) const;
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
+  // This tick's edge read for `button`, from the snapshot taken in update()
+  // (soak-fix7: consume-once at the snapshot, multi-read safe).
+  bool edgeSnapshot(const Button button, const bool pressed) const;
   // SDK edge classification (fui::edgeSwipe) + the shared decode/held-time
   // bookkeeping; the wrappers below give each edge its board meaning.
   bool wasEdgeSwipe(freeink::ui::ScreenEdge edge) const;
@@ -169,6 +177,11 @@ class MappedInputManager {
   mutable unsigned long touchHeldOverrideAt = 0;
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
+  // This tick's physical button edges, taken ONCE in update() (soak-fix7:
+  // consume-on-check at the snapshot — each edge consumed exactly once and
+  // served to every activity read this tick). Bit i = physical BTN_i.
+  mutable uint8_t framePressedEdges = 0;
+  mutable uint8_t frameReleasedEdges = 0;
 #if FREEINK_CAP_TOUCH
   bool powerConfirmClickFrame = false;
 #endif
