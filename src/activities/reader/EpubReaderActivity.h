@@ -230,6 +230,11 @@ class EpubReaderActivity final : public ReaderActivity {
   int ttfSpine = -1;          // spine the runtime's reader/session belong to
   int ttfPage = 0;            // chapter-local page index
   uint32_t ttfPageCount = 0;  // pages available for the current chapter
+  // Estimated chapter total while a build is in flight: pages built scaled
+  // by the layout session's input progress (the old Section engine's
+  // extrapolation, owner steer: return after a few pages and let the user
+  // read; the count refines as indexing progresses).
+  uint32_t ttfEstimatedPageCount() const;
   uint32_t ttfGeneration = 0;
   bool ttfGenerationValid = false;
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter

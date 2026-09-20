@@ -2479,6 +2479,38 @@ void EpubReaderActivity::renderBook() {
 
 #if defined(CROSSPOINT_TTF_READER)
 
+// Estimated chapter total while a build is in flight (owner steer: the old
+// engine's behavior — return after a few pages, let the user read, refine
+// the count as indexing progresses). Exact once the chapter is complete.
+uint32_t EpubReaderActivity::ttfEstimatedPageCount() const {
+  if (!ttf_ || ttfSpine != currentSpineIndex) return ttfPageCount;
+  uint64_t est = ttfPageCount;
+  const bool building = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) != nullptr;
+  const bool workerBuilding = fibpWorker_ != nullptr && fibpWorker_->buildingSpine() == currentSpineIndex;
+  if (building) {
+    // Live session: scale built pages by the layout session's input progress.
+    const uint64_t consumed = ttf_->sessionBytesConsumed();
+    const uint64_t total = ttf_->sessionBytesTotal();
+    if (ttfPageCount > 0 && consumed > 0 && total > consumed) {
+      est = static_cast<uint64_t>(ttfPageCount) * total / consumed;
+    }
+  } else if (ttf_->cacheReady() && ttf_->cachePartial()) {
+    // Partial cache (worker may be extending it off-task): the cache
+    // records its own input progress; while the worker holds the claim,
+    // its live page count refines the extrapolation.
+    const uint64_t consumed = ttf_->cacheBuildBytesConsumed();
+    const uint64_t total = ttf_->cacheBuildBytesTotal();
+    if (consumed > 0 && total > consumed) {
+      uint64_t pages = ttfPageCount;
+      if (workerBuilding) pages += fibpWorker_->buildingProgressPages();
+      est = pages * total / consumed;
+    }
+  }
+  if (est < ttfPageCount) est = ttfPageCount;     // never below what is servable
+  constexpr uint64_t kMaxEstimatedPages = 60000;  // same clamp the old engine used
+  return est > kMaxEstimatedPages ? static_cast<uint32_t>(kMaxEstimatedPages) : static_cast<uint32_t>(est);
+}
+
 void EpubReaderActivity::ttfSaveProgress() {
   // progressManager stays the single writer; this reports the
   // generation-tagged record shape (charOffset + generation) instead of a
@@ -2981,7 +3013,8 @@ void EpubReaderActivity::renderBookTtf() {
     // Further chunks are driven by the next render/background tick so long
     // jumps still cannot freeze input.
     constexpr uint8_t kWarmSyncBuildChunks = 1;
-    constexpr uint8_t kColdStartSyncBuildChunks = 2;
+    // Owner steer: return to the reader after ~one chunk (5-10 pages).
+    constexpr uint8_t kColdStartSyncBuildChunks = 1;
     const uint8_t chunksPerPass = ttfPageCount == 0 ? kColdStartSyncBuildChunks : kWarmSyncBuildChunks;
     uint8_t chunksThisPass = 0;
     while (ttf_->sessionActive() &&
@@ -3006,6 +3039,14 @@ void EpubReaderActivity::renderBookTtf() {
       }
     }
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+    // Owner steer: after the first few pages, hand the rest to the worker —
+    // suspend the inline session to a partial commit; the resume-claim
+    // handoff (2b) picks it up next pass and the reader reads while the
+    // chapter finishes off-task. Non-worker builds keep the session (the
+    // background tick pump drives it with per-page progress logs).
+    if (ttf_->sessionActive() && fibpWorker_ != nullptr) {
+      ttf_->abortSession();
+    }
   }
   if (wasBuilding && !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     // The build finished (or aborted) during this pass — reopen the cache so
@@ -3015,9 +3056,13 @@ void EpubReaderActivity::renderBookTtf() {
   }
 
   if (!resolved) {
-    // Target not derivable yet (full build in flight). Background ticks keep
-    // going; jump states stay pending for the next pass.
-    requestUpdate();
+    // Target not derivable yet — the worker owns the build now (or the
+    // background tick pump on non-worker builds). Re-check at a slow
+    // cadence instead of spinning full render passes.
+    if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
+      fibpDeferPollMs_ = millis();
+      requestUpdate();
+    }
     return;
   }
 
@@ -3074,9 +3119,9 @@ void EpubReaderActivity::renderBookTtf() {
 #endif
 
   // 6) Chrome after the page: keep the legacy position mirrors in sync so
-  // renderStatusBar/KOReader/bookmark code reads the same values.
+  // renderStatusBar/KOreader/bookmark code reads the same values.
   nextPageNumber = ttfPage;
-  cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
+  cachedChapterTotalPageCount = static_cast<int>(ttfEstimatedPageCount());
   renderStatusBar();
   // Do not mark the frame complete yet: the TTF gray/image-specific passes
   // below may still be modifying the display planes.
@@ -3332,7 +3377,7 @@ bool EpubReaderActivity::ttfFastDisplayPass(const freeink::book::LayoutParams& p
 
   // Content is already in the framebuffer — chrome only, then commit.
   nextPageNumber = ttfPage;
-  cachedChapterTotalPageCount = static_cast<int>(ttfPageCount);
+  cachedChapterTotalPageCount = static_cast<int>(ttfEstimatedPageCount());
   renderStatusBar();
 #ifdef READING_STATS_ENABLED
   currentPageWordsOnPage = page.wordCount;
@@ -3603,6 +3648,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     const uint16_t after = ttf_->availablePageCount(spine);
     LOG_INF("ERS", "bg build spine %u: %u pages (+%u, %lu ms)", spine, after, after - before,
             static_cast<unsigned long>(millis() - tickStart));
+    powerManager.pokeNormalSpeed();
     if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
       if (spine == static_cast<uint16_t>(currentSpineIndex)) {
         ttf_->openChapterCache(spine, ttfGeneration);
@@ -3645,6 +3691,7 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       const uint16_t after = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
       LOG_INF("ERS", "resume build spine %d: %u pages (+%u, %lu ms)", currentSpineIndex, after, after - before,
               static_cast<unsigned long>(millis() - tickStart));
+      powerManager.pokeNormalSpeed();
       if (pump == freeink::book::ChapterPump::Complete) {
         ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration);
       }
@@ -3715,6 +3762,8 @@ void EpubReaderActivity::stopFibpWorker() {
   fibpBegun_ = false;
   fibpFamily_[0] = '\0';
   fibpDeferred_ = false;
+  fibpResumeClaimedSpine_ = -1;
+  fibpResumeSeenBuilding_ = false;
 }
 
 void EpubReaderActivity::ttfPrefetchTick() {

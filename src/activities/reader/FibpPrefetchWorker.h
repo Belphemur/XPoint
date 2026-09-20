@@ -111,6 +111,9 @@ class FibpPrefetchWorker {
   // Spine the task is currently laying out (fibp::kNoChapter when idle) —
   // the reader defers its own build of that chapter to the worker.
   uint16_t buildingSpine() const { return building_.load(std::memory_order_acquire); }
+  // Pages the current build session has laid out (0 when none) — the
+  // reader's estimate refines with this while a resume claim is in flight.
+  uint16_t buildingProgressPages() const { return progressPages_.load(std::memory_order_acquire); }
 
   // R1 stack budget: 32KB DRAM start (Adobe CFF frames are deep even for
   // advance-only loads). 24KB overflowed on device: a long 93-page spine
@@ -195,6 +198,10 @@ class FibpPrefetchWorker {
   uint16_t queueCursor_ = 0;     // next index into queue_ to consider
   uint32_t sessionGen_ = 0;      // generation the current pass builds under
   uint16_t lastPages_ = 0;       // telemetry: pages of the last build
+  // Live indexing progress for the reader's page-count estimate while the
+  // worker holds a resume claim (0 when idle). Worker-task written, reader
+  // polled — relaxed is fine for a display estimate.
+  std::atomic<uint16_t> progressPages_{0};
   // Progress-log state (soak addendum): spine being indexed, build start,
   // and the previous yield's timestamp for the per-page PROF sample.
   uint16_t logSpine_ = 0;
@@ -209,6 +216,7 @@ class FibpPrefetchWorker {
   bool cancel() { return true; }
   bool active() const { return false; }
   uint16_t buildingSpine() const { return fibp::kNoChapter; }
+  uint16_t buildingProgressPages() const { return 0; }
 #endif  // FIBP_WORKER_ENABLED
 };
 

@@ -316,7 +316,10 @@ void ProgressManager::saveTtf(const uint16_t spineIndex, const uint16_t pageNumb
       changed = !(*current_ == *lastFlushed_);
       sinceFlushSec = secsSinceFlush(lastFlushSec_);
       const bool intervalElapsed = sinceFlushSec >= (FLUSH_INTERVAL_MS / 1000);
-      due = changed && (intervalElapsed || lowBat || writeQueued_);
+      // A chapter start always flushes: a crash mid-chapter must resume at
+      // the chapter boundary, not the last throttled checkpoint.
+      const bool chapterStart = current_->spineIndex != lastFlushed_->spineIndex;
+      due = changed && (intervalElapsed || lowBat || writeQueued_ || chapterStart);
       if (due) writeQueued_ = true;
       queued = writeQueued_;
     }

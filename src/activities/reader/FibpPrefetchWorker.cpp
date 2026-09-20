@@ -476,6 +476,7 @@ bool FibpPrefetchWorker::spineHasCache(const uint16_t spine, const uint32_t gene
 ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t generation) {
   const TickType_t startTicks = xTaskGetTickCount();
   lastPages_ = 0;
+  progressPages_.store(0, std::memory_order_release);
   logSpine_ = spine;
   buildStartMs_ = millis();
   lastHookMs_ = buildStartMs_;
@@ -516,14 +517,19 @@ ChapterRun FibpPrefetchWorker::buildSpine(const uint16_t spine, const uint32_t g
 
 bool FibpPrefetchWorker::yieldHook(void* ctx, const uint16_t pagesBuilt) {
   auto* self = static_cast<FibpPrefetchWorker*>(ctx);
+  self->progressPages_.store(pagesBuilt, std::memory_order_release);
   const uint32_t now = millis();
   const uint32_t pageMs = now - self->lastHookMs_;
   self->lastHookMs_ = now;
   // Soak addendum: per-page PROF sample (≤ every 10 pages) quantifies the
   // hinting vs layout cost split on device — layout semantics unchanged.
+  // advance/kerning time = the font-backend metric path (hinting cost
+  // shows up here); the remainder of the page time is engine work.
   if (pagesBuilt == 1 || pagesBuilt % kIndexingProgressLogEveryPages == 0) {
-    LOG_DBG("PROF", "phase=ttf_build_page spine=%u page=%u page_ms=%lu", static_cast<unsigned>(self->logSpine_),
-            static_cast<unsigned>(pagesBuilt), static_cast<unsigned long>(pageMs));
+    const uint64_t advUs = self->chain_.takeMeasureAccumUs();
+    LOG_DBG("PROF", "phase=ttf_build_page spine=%u page=%u page_ms=%lu adv_us=%llu",
+            static_cast<unsigned>(self->logSpine_), static_cast<unsigned>(pagesBuilt),
+            static_cast<unsigned long>(pageMs), static_cast<unsigned long long>(advUs));
   }
   // Indexing progress at LOG_INF (soak finding #6): first page and every
   // kIndexingProgressLogEveryPages pages; the completion line covers the

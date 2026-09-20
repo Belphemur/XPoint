@@ -75,6 +75,11 @@ class TtfBookRuntime : public ChapterIndexTarget {
   uint16_t cacheSpine() const { return cacheSpine_; }
   bool cachePartial() const { return cacheReady_ && cacheReader_.isPartial(); }
   uint32_t cacheTotalChars() const { return cacheReady_ ? cacheReader_.totalChars() : 0; }
+  // Partial-cache input-side progress (PageCacheReader): the basis for the
+  // estimated total page count while the rest of the chapter builds in the
+  // background (the old Section engine's extrapolation, mirrored).
+  uint32_t cacheBuildBytesConsumed() const { return cacheReady_ ? cacheReader_.buildBytesConsumed() : 0; }
+  uint32_t cacheBuildBytesTotal() const { return cacheReady_ ? cacheReader_.buildBytesTotal() : 0; }
   uint32_t cacheGeneration() const { return cacheReady_ ? cacheGen_ : 0; }
 
   // Chapter build session for one spine. Begins the writer + layout session;
