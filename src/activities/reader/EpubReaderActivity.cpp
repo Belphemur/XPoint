@@ -4905,7 +4905,9 @@ void EpubReaderActivity::pushOverlayRefresh() {
   // A full-FB flush outside the forward turn's own commit (review contract):
   // any mid-pump prerender's partial framebuffer must die here — the glass
   // is about to show this framebuffer's content.
+#if defined(CROSSPOINT_TTF_READER)
   ttfInvalidatePreRender("overlay push");
+#endif
   if (renderer.supportsAsyncRefresh()) {
     if (renderer.refreshBusy()) {
       // A previous deferred refresh is still running (its settle timed out on
@@ -4936,10 +4938,12 @@ void EpubReaderActivity::pushOverlayRefresh() {
 // must hold the RenderLock.
 void EpubReaderActivity::settleOverlayRefresh() {
   if (!overlayRefreshPending.load(std::memory_order_acquire)) return;
+#if defined(CROSSPOINT_TTF_READER)
   // The settle's baseline reseed re-flashes the framebuffer to the glass —
   // same full-FB-flush contract as pushOverlayRefresh: no partial prerender
   // may be on it.
   ttfInvalidatePreRender("overlay settle");
+#endif
   if (overlaySettleTimedOut) {
     // A previous settle already burned the full deadline on this refresh: one
     // non-blocking check only, never re-poll under the RenderLock.
