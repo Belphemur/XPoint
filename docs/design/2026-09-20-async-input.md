@@ -179,13 +179,23 @@ do first when the frame sees the edge), not by *sampling*.
   wait-loop call takes the drain path (not the sampling path) — no
   concurrent hardware sampling. The ONLY sampler is the async task.
 
-## 7. Implementation order
+## 7. Implementation order (as-built @ SDK 3874506 / app 92227c4d+)
 
-1. SDK: event record + release-edge queuing in `asyncPoll`.
+1. SDK: event record + release-edge queuing in `asyncPoll` — DONE (3874506).
 2. SDK: task-local real path vs drain path in `update()`; latch registers;
-   `beginInputFrame()`.
-3. SDK: touch queue drain replay.
+   `beginInputFrame()` — DONE (3874506). Follow-ups (review-r6): the real
+   path's internal reads of `releasedEvents`/`pressedEvents` are mode-aware
+   (task registers on the poll task, shared latch on the app task — the
+   shared latch is another task's data there), and `asyncActive()` exposes
+   the mode to wait loops that must not drain.
+3. SDK: touch queue drain replay — DEFERRED to v2 (documented in §2.1:
+   touch one-shot flags accumulate on the poll task and are acknowledged
+   per frame; queue replay would re-latch every poll and flood). The
+   `pop*()` API stays for standalone consumers.
 4. App: `MappedInputManager` frame boundary; `HalGPIO::begin` wiring
-   (PSRAM-gated); wait-loop audit.
-5. Host tests + gates (ctest, clang-format, pio default + x4pro) + docs
-   (CHANGELOG, PR body, this doc committed as the design of record).
+   (PSRAM-gated) — DONE (4377a802). Wait-loop audit (review-r6):
+   `verifyPowerButtonWakeup` skips its `update()` calls while async
+   polling is active (it reads physical levels only; draining there would
+   erase queued edges unread).
+5. Gates (ctest, clang-format, pio default + x4pro) + docs — DONE per
+   commit; CHANGELOG and PR body carried the async-input section.

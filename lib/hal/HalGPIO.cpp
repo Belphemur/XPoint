@@ -255,10 +255,15 @@ bool HalGPIO::verifyPowerButtonWakeup() {
   constexpr unsigned long POWER_WAKE_STABILITY_MS = 10;
   const bool heldAtFirstSample = inputMgr.isPowerButtonPhysicallyPressed();
   const unsigned long sampleStart = millis();
-  inputMgr.update();
+  // Async mode: the poll task keeps the edge state alive at pollMs cadence,
+  // and an update() here would drain queued edges into the frame latch
+  // where this level-only check never reads them — the next
+  // beginInputFrame() would erase them unprocessed.
+  const bool needsOwnSampling = !inputMgr.asyncActive();
+  if (needsOwnSampling) inputMgr.update();
   while (millis() - sampleStart < POWER_WAKE_STABILITY_MS || inputMgr.isDebouncePending()) {
     delay(1);
-    inputMgr.update();
+    if (needsOwnSampling) inputMgr.update();
   }
   return heldAtFirstSample && inputMgr.isPowerButtonPhysicallyPressed();
 }

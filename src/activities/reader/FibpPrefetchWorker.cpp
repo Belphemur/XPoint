@@ -349,10 +349,13 @@ void FibpPrefetchWorker::run() {
       // Publish-wait BEFORE the cache check (same window as the plan path):
       // a notifyGeneration landing between gen_ read and the params swap must
       // not burn the claim on a Cancelled build — bailing here re-arms the
-      // loop under the new generation and the reader's idempotent re-arm
-      // request re-lands the claim.
+      // loop under the new generation. The claim itself is RESTORED: it is
+      // pending restore/position state and must survive until the required
+      // data is actually available (the reader's re-arm may not re-land it
+      // after an arbitrary generation change).
       if (!waitForParamsPublished(gen)) {
         building_.store(fibp::kNoChapter, std::memory_order_release);
+        resumeSpine_.store(resume, std::memory_order_release);
         continue;
       }
       building_.store(resume, std::memory_order_release);
