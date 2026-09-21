@@ -1,14 +1,14 @@
 # CrossPoint Reader Development Guide
 
-Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
+Project: Open-source e-reader firmware for the Xteink X4 line (ESP32-S3 default target; ESP32-C3 compatibility maintained)
 Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
 
 ## AI Agent Identity and Cognitive Rules
 
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
-* Primary Constraint: 380KB RAM is the hard ceiling. Stability is non-negotiable.
+* Primary Constraint: The X4 Pro (ESP32-S3) is the default development and validation target (~512KB DRAM + 8MB PSRAM, dual-core). Every feature must remain ESP32-C3-compatible (~380KB RAM, no PSRAM, single core) — if a feature cannot fit the C3, gate it behind a build flag. Stability is non-negotiable.
 * Evidence-Based Reasoning: Before proposing a change, you MUST cite the specific file path and line numbers that justify the modification.
-* Anti-Hallucination: Do not assume the existence of libraries or ESP-IDF functions. If you are unsure of an API's availability for the ESP32-C3 RISC-V target, check the freeink-sdk source or the FreeInk SDK docs (https://freeink.org/llms.txt for an LLM-readable index) first.
+* Anti-Hallucination: Do not assume the existence of libraries or ESP-IDF functions. If you are unsure of an API's availability for the ESP32-S3 (Xtensa) or ESP32-C3 (RISC-V) target, check the freeink-sdk source or the FreeInk SDK docs (https://freeink.org/llms.txt for an LLM-readable index) first.
 * No Unfounded Claims: Do not claim performance gains or memory savings without explaining the technical mechanism (e.g., DRAM vs IRAM usage).
 * Resource Justification: You must justify any new heap allocation (new, malloc, std::vector) or explain why a stack/static alternative was rejected.
 * Verification: After suggesting a fix, instruct the user on how to verify it (e.g., monitoring heap via Serial or checking a specific cache file).
@@ -48,8 +48,9 @@ Never invoke or probe `clang-format` directly. The repository wrapper is the onl
 
 ### Hardware Specs
 
-* MCUs: ESP32-C3 (single-core RISC-V @ 160MHz) and ESP32-S3 (`sticky`, `x4pro`, dual-core Xtensa LX7)
-* RAM: ~380KB usable on ESP32-C3 (VERY LIMITED - primary project constraint)
+* **Default target: ESP32-S3 (X4 Pro, `x4pro` env)** — dual-core Xtensa LX7. Develop and validate against S3 first; keep the C3 build green (`pio run -e default`) as the compatibility gate.
+* MCUs: ESP32-S3 (`x4pro`, `sticky`, `x4c`, `papermono`; dual-core Xtensa LX7 — default target) and ESP32-C3 (`default` env; single-core RISC-V @ 160MHz — compatibility floor)
+* RAM: ~380KB usable on ESP32-C3 (compatibility floor; VERY LIMITED)
   * **NO PSRAM on C3**.
   * **Single Buffer Mode**: Only ONE 48KB framebuffer (not double-buffered)
 * RAM (X4 Pro / ESP32-S3): ~512KB DRAM + **8MB PSRAM** (`BOARD_HAS_PSRAM`)
@@ -228,7 +229,20 @@ if (Storage.openFileForRead("MODULE", "/path/to/file.bin", file)) {
 * Smart Pointers: Prefer std::unique_ptr. 
 * RAII: Use destructors for cleanup. Call `vTaskDelete()` explicitly for deterministic task release. Do NOT call `file.close()` on local `FsFile` variables — `DESTRUCTOR_CLOSES_FILE=1` handles it at scope exit (see Critical Build Flags).
 
-### ESP32-C3 Platform Pitfalls
+### Task and Core Affinity (S3 dual-core)
+
+* Always create tasks with `xTaskCreatePinnedToCore` — never rely on scheduler defaults for where a worker lands.
+* Core assignment: the Arduino `loop()` task (rendering + UI) runs on **core 1**; background workers (FibpPrefetchWorker, ProgressManager save task, input poll) are pinned to **core 0** (`kCore` pattern, e.g. `FibpPrefetchWorker.h`).
+* On C3 (single core) the pin value is ignored — keep one `kCore` constant, no `#if` needed, so the code stays identical across targets.
+* How to verify which core a task runs on:
+  * **Static**: grep `xTaskCreatePinnedToCore` and check the pin argument (last parameter).
+  * **Runtime, per task**: call `xPortGetCoreID()` once at task start and `LOG_INF` it.
+  * **Runtime, all tasks**: `uxTaskGetSystemState()` — each `TaskStatus_t` carries `xCoreID` (ESP-IDF extension); or `vTaskCoreAffinityGet(handle)` on IDF 5.x.
+  * **On-device snapshot**: `vTaskList()` output over serial shows all tasks; cross-check each worker against its intended core.
+
+### Platform Pitfalls (ESP32-S3 and ESP32-C3)
+
+Note: the `std::string_view`, IRAM/flash-cache, ISR, and unaligned-access rules below apply on **both** targets — keep the `memcpy` rule for unaligned multi-byte reads on Xtensa as well; do not rely on per-target exception handling.
 
 #### `std::string_view` and Null Termination
 
