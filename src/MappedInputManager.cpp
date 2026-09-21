@@ -29,6 +29,7 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     if (gpio.wasPressed(physical)) framePressedEdges |= static_cast<uint8_t>(1u << physical);
     if (gpio.wasReleased(physical)) frameReleasedEdges |= static_cast<uint8_t>(1u << physical);
   }
+  resolvePowerDoubleClickWindow();
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
   if (gpio.hasHomeKey()) {
@@ -189,7 +190,10 @@ constexpr unsigned long TOUCH_HELD_OVERRIDE_WINDOW_MS = 250;
 bool MappedInputManager::hasTouch() const { return gpio.hasTouch(); }
 
 bool MappedInputManager::rawInputPriority() {
-  return gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || gpio.isTouchContactActive() ||
+  // Snapshot masks, not gpio.wasAny*: in async mode the SDK's pending
+  // counts are empty once update()'s snapshot consumed the edges (report-
+  // only leftovers), so the button component must read this tick's masks.
+  return framePressedEdges != 0 || frameReleasedEdges != 0 || gpio.wasTouchActivity() || gpio.isTouchContactActive() ||
          gpio.rawInputActive();
 }
 
@@ -353,14 +357,68 @@ bool MappedInputManager::wasLightPanelGesture() const {
   return Frontlight.present() && wasTopEdgeDownSwipe();
 }
 
+void MappedInputManager::resolvePowerDoubleClickWindow() const {
+#if FREEINK_CAP_TOUCH
+  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight) return;
+  const unsigned long now = millis();
+  // Window expiry without a second click: the held release is delivered to
+  // activities now (short-power actions, and Confirm via
+  // powerConfirmClickFrame for the PWR_CONFIRM shortcut).
+  if (powerReleaseWindowStart != 0 && now - powerReleaseWindowStart > kPowerDoubleClickWindowMs) {
+    frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
+    powerConfirmClickFrame = true;
+    powerReleaseWindowStart = 0;
+  }
+  if ((frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) == 0) return;
+  frameReleasedEdges &= static_cast<uint8_t>(~(1u << HalGPIO::BTN_POWER));
+  const bool secondClick = powerReleaseWindowStart != 0;
+  if (secondClick && gpio.getPowerButtonHeldTime() <= kPowerClickMaxHoldMs) {
+    // Double click: the main loop toggles the frontlight; both releases stay
+    // swallowed so no short-power action runs.
+    powerDoubleClickFrame = true;
+    powerReleaseWindowStart = 0;
+  } else if (!secondClick && gpio.getPowerButtonHeldTime() <= kPowerClickMaxHoldMs) {
+    powerReleaseWindowStart = now;  // arm: ambiguous first click
+  } else {
+    // Long press. PWR_CONFIRM carve-out (upstream 6f94d1ad): a hold too long
+    // for the double-click window but still within the Confirm duration is a
+    // Confirm, not the short-power action — swallow it (the activity reads
+    // wasPowerConfirmClick). Anything else delivers to the Power handlers.
+    if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM &&
+        gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
+      powerConfirmClickFrame = true;
+    } else {
+      frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
+    }
+    powerReleaseWindowStart = 0;
+  }
+#endif
+}
+
+bool MappedInputManager::isPowerClickHoldCandidate() const {
+  // A power press in progress still inside the click window could resolve as
+  // a double-click candidate on release — suppress button-down power-off.
+  return BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight &&
+         gpio.getPowerButtonHeldTime() <= kPowerClickMaxHoldMs;
+}
+
+bool MappedInputManager::consumePowerDoubleClick() {
+  if (!powerDoubleClickFrame) return false;
+  powerDoubleClickFrame = false;
+  return true;
+}
+
 #if FREEINK_CAP_TOUCH
 bool MappedInputManager::wasPowerConfirmClick() const {
   if (!gpio.hasTouch() || SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM) return false;
   // Wait out the X4 Pro's frontlight double-click window before treating its
   // first release as Confirm. With the shortcut disabled, and on other touch
-  // boards, the release counts directly.
+  // boards, the release counts directly — from the SNAPSHOT (soak-fix7): a
+  // direct gpio.wasReleased would find the edge already consumed by the
+  // snapshot loop (double-read loses it) and always report false.
   if (BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight) return powerConfirmClickFrame;
-  return gpio.wasReleased(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
+  return edgeSnapshot(Button::Power, /*pressed=*/false) &&
+         gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
 }
 #endif
 

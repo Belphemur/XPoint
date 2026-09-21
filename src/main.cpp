@@ -59,7 +59,6 @@ FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
 static unsigned long allowSleepAt = 0;
-static unsigned long lastX4ProPowerClickAt = 0;
 
 // Profiling counters for Phase 1 memory instrumentation. g_psram_free_at_boot
 // is the boot-time PSRAM baseline (defined here, extern'd in Logging.h). The
@@ -84,11 +83,6 @@ BookFontLoader fontLoader;
 // instead.
 using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
 [[gnu::used]] static const BookStatusProbe bookStatusProbe = &freeink::book::bookStatusName;
-
-namespace {
-constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
-constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
-}  // namespace
 
 // A wake hold must never become an in-app power-button action.  Boot may continue
 // while the button is held; swallow the one release that ends that wake gesture.
@@ -318,28 +312,15 @@ bool dispatchGlobalHomeButtonAction() {
 }
 
 bool handleX4ProFrontlightDoubleClick() {
-  // Snapshot read (soak-fix7): routes through the manager's per-tick mask —
-  // a direct gpio.wasReleased here would CONSUME the edge before the
-  // activity's mappedInput reads see it.
-  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight ||
-      !mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
-    return false;
+  // Window ownership moved into MappedInputManager (soak-fix7 JFhK): the
+  // manager holds the first release out of the served mask until the window
+  // resolves, so Sleep/Force-Refresh handlers cannot fire on an ambiguous
+  // click. This consumes only the resolved double-click verdict.
+  if (mappedInputManager.consumePowerDoubleClick()) {
+    toggleFrontlight();
+    return true;
   }
-
-  const unsigned long now = millis();
-  if (gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) {
-    lastX4ProPowerClickAt = 0;
-    return false;
-  }
-
-  if (lastX4ProPowerClickAt == 0 || now - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-    lastX4ProPowerClickAt = now;
-    return false;
-  }
-
-  lastX4ProPowerClickAt = 0;
-  toggleFrontlight();
-  return true;
+  return false;
 }
 
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
@@ -1004,8 +985,11 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+  // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
+  // consumed by the manager's snapshot — after update() that's always
+  // nothing, and the inactivity timer would never reset on buttons.
+  if (mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased() || gpio.wasTouchActivity() ||
+      halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -1043,42 +1027,9 @@ void loop() {
   }
 
   // Consume the second X4 Pro power-button release so it does not also run a
-  // configured short-power action after toggling the frontlight.
+  // configured short-power action after toggling the frontlight. The window
+  // itself (arming, expiry → powerConfirmClickFrame) lives in the manager.
   if (handleX4ProFrontlightDoubleClick()) {
-    return;
-  }
-
-  const bool x4ProDoubleClickPwrLight = BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight;
-
-#if FREEINK_CAP_TOUCH
-  // A single X4 Pro power click becomes Confirm only after the frontlight
-  // double-click window expires without a second click.
-  mappedInputManager.setPowerConfirmClickFrame(false);
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM && x4ProDoubleClickPwrLight) {
-    if (lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-      lastX4ProPowerClickAt = 0;
-      mappedInputManager.setPowerConfirmClickFrame(true);
-    }
-    // A release held too long to be a double-click candidate (but still within
-    // the normal Confirm press duration) never reaches handleX4ProFrontlightDoubleClick's
-    // click tracking above, so it needs its own Confirm check here.
-    if (mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
-        gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS &&
-        gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
-      mappedInputManager.setPowerConfirmClickFrame(true);
-    }
-  }
-#endif
-
-  // Same deferral for SLEEP: the release-based sleep below skips the first
-  // click of an X4 Pro frontlight double-click while a candidate is pending;
-  // the device sleeps here once the window expires without a second click.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && x4ProDoubleClickPwrLight &&
-      millis() >= allowSleepAt && lastX4ProPowerClickAt != 0 &&
-      millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-    lastX4ProPowerClickAt = 0;
-    enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
 
@@ -1099,9 +1050,8 @@ void loop() {
   // On X4 Pro with SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated by the click
   // tracking below instead of powering off on button-down.
-  const bool x4ProAwaitingClickWindow = x4ProDoubleClickPwrLight &&
-                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
-                                        gpio.getPowerButtonHeldTime() <= X4PRO_POWER_CLICK_MAX_HOLD_MS;
+  const bool x4ProAwaitingClickWindow = mappedInputManager.isPowerClickHoldCandidate() &&
+                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
 
   if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
       gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
@@ -1123,11 +1073,6 @@ void loop() {
   // device when wakePowerReleasePending missed it.
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && millis() >= allowSleepAt &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
-    // First click of an X4 Pro frontlight double-click: leave sleep to the
-    // window-expiry check above so the second click can toggle the light.
-    if (x4ProDoubleClickPwrLight && lastX4ProPowerClickAt != 0) {
-      return;
-    }
     LOG_INF("MAIN", "Sleep triggered by power-button click");
     enterDeepSleep();
     return;

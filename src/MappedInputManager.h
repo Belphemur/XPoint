@@ -47,8 +47,25 @@ class MappedInputManager {
   void update(bool deferHomeButtonAction = false) const;
 #if FREEINK_CAP_TOUCH
   // X4 Pro delays a single power click until its frontlight double-click window
-  // expires. The main loop supplies that one-frame event here.
+  // expires. The manager owns the window (see update()); this member just
+  // publishes the resolved verdict for this tick.
   void setPowerConfirmClickFrame(const bool clicked) { powerConfirmClickFrame = clicked; }
+#endif
+  // True exactly once when the frontlight double-click window resolved with a
+  // second click (soak-fix7 JFhK): the main loop toggles the frontlight on
+  // this and must not see the swallowed releases.
+  bool consumePowerDoubleClick();
+  // X4 Pro frontlight double-click window owner (update() calls it).
+  static constexpr unsigned long kPowerDoubleClickWindowMs = 500;
+  static constexpr unsigned long kPowerClickMaxHoldMs = 300;
+  void resolvePowerDoubleClickWindow() const;
+  // True while an ambiguous first click is parked in the frontlight
+  // double-click window (main.cpp's sleep-on-release + power-off guards read
+  // this instead of the old file-scope click state).
+  bool isPowerClickWindowPending() const { return powerReleaseWindowStart != 0; }
+  // True while a power press in progress is still a double-click candidate
+  // (hold not yet past the click window): suppresses button-down power-off.
+  bool isPowerClickHoldCandidate() const;
 #endif
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
@@ -183,6 +200,12 @@ class MappedInputManager {
   mutable uint8_t framePressedEdges = 0;
   mutable uint8_t frameReleasedEdges = 0;
 #if FREEINK_CAP_TOUCH
-  bool powerConfirmClickFrame = false;
+  mutable bool powerConfirmClickFrame = false;
 #endif
+  // X4 Pro frontlight double-click window (soak-fix7 JFhK): the FIRST short
+  // power release is ambiguous (frontlight toggle vs configured short-power
+  // action) and is held out of the served mask until the window resolves.
+  // 0 = window closed.
+  mutable uint32_t powerReleaseWindowStart = 0;
+  mutable bool powerDoubleClickFrame = false;
 };
