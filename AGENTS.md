@@ -233,7 +233,7 @@ if (Storage.openFileForRead("MODULE", "/path/to/file.bin", file)) {
 
 * Always create tasks with `xTaskCreatePinnedToCore` — never rely on scheduler defaults for where a worker lands.
 * Core assignment: the Arduino `loop()` task (rendering + UI) runs on **core 1**; background workers (FibpPrefetchWorker, ProgressManager save task, input poll) are pinned to **core 0** (`kCore` pattern, e.g. `FibpPrefetchWorker.h`).
-* On C3 (single core) the pin value is ignored — keep one `kCore` constant, no `#if` needed, so the code stays identical across targets.
+* On C3 (single core) pinning to core 1 ABORTS at startup (`configASSERT` fires: 'Invalid argument' — the core does not exist), it is NOT ignored. Keep every `kCore` constant **0** (worker convention, `FibpPrefetchWorker.h`) so one constant works on both targets; if a task ever truly needs core 1 on the S3, guard the pin with a target conditional (`#if CONFIG_FREERTOS_UNICORE`) or use `tskNO_AFFINITY`.
 * How to verify which core a task runs on:
   * **Static**: grep `xTaskCreatePinnedToCore` and check the pin argument (last parameter).
   * **Runtime, per task**: call `xPortGetCoreID()` once at task start and `LOG_INF` it.

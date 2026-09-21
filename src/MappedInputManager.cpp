@@ -363,11 +363,16 @@ void MappedInputManager::resolvePowerDoubleClickWindow() const {
   const unsigned long now = millis();
   // Window expiry without a second click: the held release is delivered to
   // activities now (short-power actions, and Confirm via
-  // powerConfirmClickFrame for the PWR_CONFIRM shortcut).
+  // powerConfirmClickFrame for the PWR_CONFIRM shortcut). RETURN — the
+  // injected release must NOT fall through to the classify step below:
+  // that would strip it back out and re-arm a window on the synthetic edge
+  // (the stale state loop kody NkEY/NjSg caught: a real single click would
+  // never reach the Power-release handlers).
   if (powerReleaseWindowStart != 0 && now - powerReleaseWindowStart > kPowerDoubleClickWindowMs) {
     frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
     powerConfirmClickFrame = true;
     powerReleaseWindowStart = 0;
+    return;
   }
   if ((frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) == 0) return;
   frameReleasedEdges &= static_cast<uint8_t>(~(1u << HalGPIO::BTN_POWER));
