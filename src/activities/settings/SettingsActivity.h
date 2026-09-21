@@ -21,7 +21,6 @@ enum class SettingAction {
   OPDSBrowser,
   Network,
   ClearCache,
-  RebuildLibraryIndex,
   CheckForUpdates,
   SdFirmwareUpdate,
   Language,

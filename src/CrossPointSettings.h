@@ -266,6 +266,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // the fast, hard-edged baseline; Smooth is the opt-in AA mode).
   enum TEXT_RENDER_MODE { TEXT_RENDER_SMOOTH = 0, TEXT_RENDER_CRISP = 1 };
   uint8_t textRenderMode = TEXT_RENDER_CRISP;
+  // Word spacing: percent of the font's space advance. Character spacing is a
+  // signed pixel offset stored 0..4 (= -2..+2 px).
+  static constexpr uint8_t WORD_SPACING_MIN = 50;
+  static constexpr uint8_t WORD_SPACING_MAX = 200;
+  static constexpr uint8_t WORD_SPACING_STEP = 25;
+  uint8_t wordSpacing = 100;
+  static constexpr uint8_t CHARACTER_SPACING_OFFSET = 2;  // stored 0..4 maps to -2..+2 px
+  uint8_t characterSpacing = CHARACTER_SPACING_OFFSET;
+  int8_t getCharacterSpacing() const { return static_cast<int8_t>(characterSpacing - CHARACTER_SPACING_OFFSET); }
   // Short power button click behaviour. The default Sleep binding makes the
   // short click sleep; a long press (see POWER_BUTTON_HOLD_MS) always powers
   // the device off, regardless of this setting.

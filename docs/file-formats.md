@@ -90,13 +90,20 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
-### Version 47
+### Version 48
 
-Version 47 keeps the version 46 serialized layout unchanged. Both sides of the
-2026-09-13 upstream sync independently consumed version 46 — the fork for
-logical selection groups and synthetic line-break hyphen flags, upstream for
-ordered-list numbering — so a cache written by either parent's v46 build would
-pass the version check while being stale. The bump invalidates both.
+The section header adds signed `characterSpacing` (pixels) and unsigned
+`wordSpacingPercent` after `focusReadingEnabled`; both participate in cache
+validation. Each TextBlock's BlockStyle stores only `characterSpacing` after
+`directionDefined`. Word spacing is resolved into cached word positions during
+layout.
+
+Version 48 supersedes two incompatible "version 47" layouts: the fork's v47
+(logical selection groups + synthetic line-break hyphen flags in TextBlock word
+data, from the 2026-09-13 sync) and upstream's v47 (word/character spacing).
+Both sides' v47 caches would pass a v47 check while being structurally stale,
+so the merged build is version 48 and caches from either parent's v47 build
+are invalidated. Sections from earlier versions are rebuilt.
 
 ### Version 46
 
@@ -191,7 +198,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 41
+#define EXPECTED_VERSION 48
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256
@@ -248,6 +255,7 @@ struct BlockStyle {
     bool textIndentDefined;
     bool isRtl;
     bool directionDefined;
+    s8 characterSpacing;
 };
 
 struct TextBlock {
@@ -354,6 +362,8 @@ struct SectionBin {
     bool embeddedStyle;
     u8 imageRendering;
     bool focusReadingEnabled;
+    s8 characterSpacing;
+    u8 wordSpacingPercent;
 
     u16 pageCount;
     u32 pageLutOffset;
