@@ -361,6 +361,13 @@ void MappedInputManager::resolvePowerDoubleClickWindow() const {
 #if FREEINK_CAP_TOUCH
   if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight) return;
   const unsigned long now = millis();
+  // Per-tick verdict reset: powerConfirmClickFrame is an edge (one Confirm
+  // per resolved window), not a level — without this the first expiry
+  // latches it and PWR_CONFIRM replays Confirm every frame forever (the
+  // replay regression this PR fixes, resurfaced on the expiry path; the
+  // per-tick clear used to live in main.cpp, which the window migration
+  // absorbed).
+  powerConfirmClickFrame = false;
   // Window expiry without a second click: the held release is delivered to
   // activities now (short-power actions, and Confirm via
   // powerConfirmClickFrame for the PWR_CONFIRM shortcut). RETURN — the
