@@ -356,6 +356,12 @@ against HEAD before this round's code changes:
   masks; `wasAnyReleased()` returns `frameReleasedEdges != 0 ||
   frameHiddenActivity`.
 
-Regression tests (input_grammar suite): repeated press/release reads for one
-PWR_CONFIRM release; inactivity visibility during an armed first-click
-window.
+Regression tests: the policy layer these fixes key off is already locked by
+`PowerClickWindowTest` (withhold-then-deliver `SingleClickArmsThenExpiryDelivers`,
+carve-out `ConfirmCarveOut*`, re-arm `ExpiryReArmHoldsTheMaskBit`). Adapter-level
+tests (repeated `wasPressed`/`wasReleased(Confirm)` reads, `wasAnyReleased()`
+during an armed window) need a `MappedInputManager` host harness, which does not
+exist: `HalGPIO` is concrete with zero virtuals and includes `Arduino.h`, so it
+is not host-injectable, and building the fake-Arduino + fake-InputManager +
+GfxRenderer chain is a follow-up task, deliberately not absorbed into this
+review round (scope discipline; recorded for the harness follow-up).

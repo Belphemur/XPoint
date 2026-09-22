@@ -204,6 +204,11 @@ class MappedInputManager {
   // served to every activity read this tick). Bit i = physical BTN_i.
   mutable uint8_t framePressedEdges = 0;
   mutable uint8_t frameReleasedEdges = 0;
+  // A physical release withheld from frameReleasedEdges this tick (armed
+  // double-click candidate / carve-out) still counts as user activity —
+  // otherwise the inactivity timer can expire during the 500 ms window
+  // despite a real click (qodo Q2).
+  mutable bool frameHiddenActivity = false;
 #if FREEINK_CAP_TOUCH
   mutable bool powerConfirmClickFrame = false;
 #endif

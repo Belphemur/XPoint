@@ -25,6 +25,7 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   gpio.consumeTouchFrame();
   framePressedEdges = 0;
   frameReleasedEdges = 0;
+  frameHiddenActivity = false;
   for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
     if (gpio.wasPressed(physical)) framePressedEdges |= static_cast<uint8_t>(1u << physical);
     if (gpio.wasReleased(physical)) frameReleasedEdges |= static_cast<uint8_t>(1u << physical);
@@ -390,6 +391,11 @@ void MappedInputManager::resolvePowerDoubleClickWindow() const {
   }
   if (result.doubleClick) powerDoubleClickFrame = true;
   if (result.confirmEdge) powerConfirmClickFrame = true;
+  // A real release withheld from the served mask (armed, re-armed, or
+  // carve-out) still counts as activity (qodo Q2).
+  if (physicalRelease && (frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) == 0) {
+    frameHiddenActivity = true;
+  }
 #endif
 }
 
@@ -423,9 +429,9 @@ bool MappedInputManager::wasPowerConfirmClick() const {
 bool MappedInputManager::wasPressed(const Button button) const {
   if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm) return true;
   if (button == Button::Back && wasBackGesture()) return true;
-#if FREEINK_CAP_TOUCH
-  if (button == Button::Confirm && wasPowerConfirmClick()) return true;
-#endif
+  // The PWR_CONFIRM click is release-driven (all Confirm consumers read
+  // wasReleased) and surfaces only there — reporting it here too made one
+  // power release act as both a press and a release edge (qodo Q1).
   return edgeSnapshot(button, true);
 }
 
@@ -475,7 +481,7 @@ bool MappedInputManager::isPressed(const Button button) const { return mapButton
 
 bool MappedInputManager::wasAnyPressed() const { return framePressedEdges != 0; }
 
-bool MappedInputManager::wasAnyReleased() const { return frameReleasedEdges != 0; }
+bool MappedInputManager::wasAnyReleased() const { return frameReleasedEdges != 0 || frameHiddenActivity; }
 
 unsigned long MappedInputManager::getHeldTime() const {
   // A mapped action has its own meaning, independent of the contact duration.
