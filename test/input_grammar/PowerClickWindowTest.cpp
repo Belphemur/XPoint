@@ -18,7 +18,7 @@ constexpr uint32_t kConfirm = 400;
 
 struct TickResult {
   P::Result result;
-  uint32_t windowStart;
+  P::WindowState state;
 };
 
 class PowerClickWindowTest : public ::testing::Test {
@@ -26,11 +26,11 @@ class PowerClickWindowTest : public ::testing::Test {
   // One tick against a member window state.
   TickResult tick(const bool release, const bool combo, const uint32_t now, const uint32_t held,
                   const uint32_t confirmHold = kNoConfirm) {
-    const auto r = P::tick(windowStart_, release, combo, now, held, confirmHold);
-    return {r, windowStart_};
+    const auto r = P::tick(state_, release, combo, now, held, confirmHold);
+    return {r, state_};
   }
 
-  uint32_t windowStart_ = 0;
+  P::WindowState state_;
 };
 
 // A single short click arms the window and holds its release; the window
@@ -40,7 +40,8 @@ TEST_F(PowerClickWindowTest, SingleClickArmsThenExpiryDelivers) {
   const auto armed = tick(true, false, 1000, 120);
   EXPECT_EQ(armed.result.serveRelease, false);
   EXPECT_EQ(armed.result.holdRelease, true);
-  EXPECT_EQ(armed.windowStart, 1000u);
+  EXPECT_EQ(armed.state.open, true);
+  EXPECT_EQ(armed.state.start, 1000u);
 
   const auto held = tick(false, false, 1400, 0);
   EXPECT_EQ(held.result.serveRelease, false);
@@ -48,12 +49,12 @@ TEST_F(PowerClickWindowTest, SingleClickArmsThenExpiryDelivers) {
   const auto expired = tick(false, false, 1501, 0);
   EXPECT_EQ(expired.result.serveRelease, true);
   EXPECT_EQ(expired.result.confirmEdge, true);
-  EXPECT_EQ(expired.windowStart, 0u);
+  EXPECT_EQ(expired.state.open, false);
 }
 
 // Window expiry exactly at the boundary (<= 500ms) is NOT expiry.
 TEST_F(PowerClickWindowTest, ExpiryUsesStrictlyGreaterThan) {
-  EXPECT_EQ(tick(true, false, 1000, 100).windowStart, 1000u);
+  EXPECT_EQ(tick(true, false, 1000, 100).state.start, 1000u);
   const auto atBoundary = tick(false, false, 1500, 0);
   EXPECT_EQ(atBoundary.result.serveRelease, false);
   const auto pastBoundary = tick(false, false, 1501, 0);
@@ -68,7 +69,7 @@ TEST_F(PowerClickWindowTest, DoubleClickSwallowsBoth) {
   EXPECT_EQ(second.result.doubleClick, true);
   EXPECT_EQ(second.result.serveRelease, false);
   EXPECT_EQ(second.result.holdRelease, false);
-  EXPECT_EQ(second.windowStart, 0u);
+  EXPECT_EQ(second.state.open, false);
 }
 
 // A hold past the click window but inside the Confirm carve-out raises the
@@ -104,36 +105,36 @@ TEST_F(PowerClickWindowTest, ComboReleaseNotArmed) {
   EXPECT_EQ(r.result.serveRelease, true);
   EXPECT_EQ(r.result.holdRelease, false);
   EXPECT_EQ(r.result.confirmEdge, false);
-  EXPECT_EQ(r.windowStart, 0u);
+  EXPECT_EQ(r.state.open, false);
 }
 
 // F2 (staggered): with a window already open, the combo release closes it and
 // serves (cancel semantics the main.cpp combo-end path relies on via
 // cancelPowerClickWindow()).
 TEST_F(PowerClickWindowTest, ComboReleaseClosesOpenWindow) {
-  EXPECT_EQ(tick(true, false, 1000, 120).windowStart, 1000u);
+  EXPECT_EQ(tick(true, false, 1000, 120).state.start, 1000u);
   const auto combo = tick(true, true, 1100, 130);
   EXPECT_EQ(combo.result.serveRelease, true);
   EXPECT_EQ(combo.result.doubleClick, false);
-  EXPECT_EQ(combo.windowStart, 0u);
+  EXPECT_EQ(combo.state.open, false);
 }
 
 // F3: a new physical release on the expiry tick re-arms for its own window
 // (a double-click spanning the expiry boundary) while the deferred release is
 // still delivered.
 TEST_F(PowerClickWindowTest, ExpiryPreservesNewRelease) {
-  windowStart_ = 500;  // expires at 1001
+  state_ = {true, 500};  // expires at 1001
   const auto expiry = tick(true, false, 1100, 100);
   EXPECT_EQ(expiry.result.serveRelease, true);
   EXPECT_EQ(expiry.result.confirmEdge, true);
   EXPECT_EQ(expiry.result.holdRelease, true);
-  EXPECT_EQ(expiry.windowStart, 1100u);
+  EXPECT_EQ(expiry.state.start, 1100u);
 
   // The re-armed click still resolves as a double-click when its own second
   // click arrives inside the new window.
   const auto second = tick(true, false, 1200, 90);
   EXPECT_EQ(second.result.doubleClick, true);
-  EXPECT_EQ(second.windowStart, 0u);
+  EXPECT_EQ(second.state.open, false);
 }
 
 // Adapter contract (kody review, S11): when expiry coincides with a new
@@ -142,7 +143,7 @@ TEST_F(PowerClickWindowTest, ExpiryPreservesNewRelease) {
 // once. The manager applies serve+hold as hold; the re-armed click resolves
 // at its own window's expiry instead of firing a short-power action.
 TEST_F(PowerClickWindowTest, ExpiryReArmHoldsTheMaskBit) {
-  windowStart_ = 500;
+  state_ = {true, 500};
   const auto expiry = tick(true, false, 1100, 100);
   // The adapter maps this combination to: bit held (NOT served this tick).
   EXPECT_EQ(expiry.result.serveRelease && expiry.result.holdRelease, true);
@@ -155,21 +156,21 @@ TEST_F(PowerClickWindowTest, ExpiryReArmHoldsTheMaskBit) {
 // A held (long) release on the expiry tick does not re-arm: it delivers
 // through the deferred publish and is classified on its own (carve-out here).
 TEST_F(PowerClickWindowTest, ExpiryWithHoldReleaseDeliversWithoutArm) {
-  windowStart_ = 500;
+  state_ = {true, 500};
   const auto expiry = tick(true, false, 1100, 350, kConfirm);
   EXPECT_EQ(expiry.result.serveRelease, true);
   EXPECT_EQ(expiry.result.confirmEdge, true);
   EXPECT_EQ(expiry.result.holdRelease, false);
-  EXPECT_EQ(expiry.windowStart, 0u);
+  EXPECT_EQ(expiry.state.open, false);
 }
 
 // Combo release on the expiry tick: only the deferred delivery, no re-arm.
 TEST_F(PowerClickWindowTest, ExpiryWithComboReleaseDoesNotArm) {
-  windowStart_ = 500;
+  state_ = {true, 500};
   const auto expiry = tick(true, true, 1100, 100);
   EXPECT_EQ(expiry.result.serveRelease, true);
   EXPECT_EQ(expiry.result.holdRelease, false);
-  EXPECT_EQ(expiry.windowStart, 0u);
+  EXPECT_EQ(expiry.state.open, false);
 }
 
 // No release and no open window: inert.
@@ -178,7 +179,29 @@ TEST_F(PowerClickWindowTest, QuietTickIsInert) {
   EXPECT_EQ(r.result.serveRelease, false);
   EXPECT_EQ(r.result.confirmEdge, false);
   EXPECT_EQ(r.result.doubleClick, false);
-  EXPECT_EQ(r.windowStart, 0u);
+  EXPECT_EQ(r.state.open, false);
+}
+
+// T3 (qodo): 0 is a legal millis() value (boot start, 49.7-day wrap). A
+// release exactly at the wrap must arm a window that reads OPEN and later
+// resolves — the old `windowStart != 0` sentinel treated it as closed and
+// swallowed the click forever.
+TEST_F(PowerClickWindowTest, ArmAtTimerWrapSurvives) {
+  state_ = {};  // closed; now wraps to 0
+  const auto armed = tick(true, false, 0, 120);
+  EXPECT_EQ(armed.result.holdRelease, true);
+  EXPECT_EQ(armed.state.open, true);
+  EXPECT_EQ(armed.state.start, 0u);
+
+  // Still open inside the window (the sentinel would have reported closed).
+  const auto held = tick(false, false, 300, 0);
+  EXPECT_EQ(held.result.serveRelease, false);
+
+  // Resolves at expiry, delivering the deferred release.
+  const auto expired = tick(false, false, 501, 0);
+  EXPECT_EQ(expired.result.serveRelease, true);
+  EXPECT_EQ(expired.result.confirmEdge, true);
+  EXPECT_EQ(expired.state.open, false);
 }
 
 // The classify contract the carve-out and window share (verdict matrix).

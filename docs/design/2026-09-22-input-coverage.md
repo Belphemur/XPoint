@@ -365,3 +365,38 @@ exist: `HalGPIO` is concrete with zero virtuals and includes `Arduino.h`, so it
 is not host-injectable, and building the fake-Arduino + fake-InputManager +
 GfxRenderer chain is a follow-up task, deliberately not absorbed into this
 review round (scope discipline; recorded for the harness follow-up).
+
+## 9. Qodo round 2 (/review trigger, 2026-09-22): three more findings
+
+- **T1 (high): blocking-transfer pumps discard button input.** `update(true)`
+  (OpdsBookBrowserActivity:531, FontDownloadActivity:599,
+  CrossPointWebServerActivity:383) clears both masks and drains every physical
+  edge each pump, but the blocking callbacks inspect only Back/Home/touch.
+  Pre-snapshot, un-inspected edges latched in gpio until the post-transfer
+  dispatch read them; the snapshot's per-tick clear made this a regression.
+  Fix: a `carryEdges` flag — deferred pumps OR fresh edges into the surviving
+  masks and keep the flag set; the FIRST normal dispatch after blocking
+  merges the carried edges, then resumes the per-tick clear. The callback
+  comment already promised this ("other configured actions are deferred to
+  the next main-loop pass"); the code now honors it. Known limitation,
+  recorded: a Power release mid-transfer on an X4 Pro with
+  `doubleClickPwrLight` resolves its window mid-blocking and its Confirm
+  edge is per-tick — it is dropped; carrying the window across the transfer
+  is not attempted this round.
+- **T2 (high): wake-up can trigger a power action.** The wake-release branch
+  (main.cpp:1002) returns without cancelling the click window the wake
+  release may have armed in that tick's `update()`; on an X4 Pro with
+  `doubleClickPwrLight` the window later publishes the deferred release +
+  Confirm edge and fires the configured short-power action post-wake. Fix:
+  `cancelPowerClickWindow()` in the wake-release branch before returning —
+  the branch's contract is "consume the wake input frame, dispatch nothing".
+- **T3 (medium): power clicks lost at timer wrap.** `PowerClickWindow` used
+  `windowStart != 0` as its open/closed sentinel while `tick()` arms with
+  `millis()`; a release exactly at a wrap (or within the first ms after
+  boot, where millis() starts at 0) armed a window that reads as closed —
+  the release is withheld and never delivered. The same sentinel leaked
+  into `isPowerClickWindowPending()`/`cancelPowerClickWindow()`. Fix: the
+  window state becomes `WindowState {bool open; uint32_t start;}`; the
+  sentinel is gone from the policy and both manager readers. Host-testable:
+  `ArmAtTimerWrapSurvives` locks the wrap case in `PowerClickWindowTest`.
+  T1/T2 are adapter/main-level and share the harness defer recorded in §8.

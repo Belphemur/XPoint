@@ -28,8 +28,16 @@ class PowerClickWindow {
     bool doubleClick = false;   // raise the frontlight double-click verdict
   };
 
-  static bool expired(const uint32_t windowStart, const uint32_t now) {
-    return windowStart != 0 && now - windowStart > kDoubleClickWindowMs;
+  // Open/closed is explicit: start is a raw millis() value, and 0 is a legal
+  // timestamp (boot start and the 49.7-day wrap), so it cannot double as the
+  // closed sentinel (qodo T3).
+  struct WindowState {
+    bool open = false;
+    uint32_t start = 0;
+  };
+
+  static bool expired(const WindowState& state, const uint32_t now) {
+    return state.open && now - state.start > kDoubleClickWindowMs;
   }
 
   // Classify one Power release. secondClick: another release is already
@@ -44,23 +52,24 @@ class PowerClickWindow {
   // One window tick. physicalRelease: a Power release edge is in this tick's
   // snapshot; comboRelease: a Down release edge accompanies it — the screenshot
   // combo is ending, whose Power release is inert (never armed, always served).
-  // Updates windowStart in place (0 = window closed).
-  static Result tick(uint32_t& windowStart, const bool physicalRelease, const bool comboRelease, const uint32_t now,
+  // Updates state in place.
+  static Result tick(WindowState& state, const bool physicalRelease, const bool comboRelease, const uint32_t now,
                      const uint32_t heldMs, const uint32_t confirmHoldMs) {
     Result out;
-    if (expired(windowStart, now)) {
+    if (expired(state, now)) {
       // The held release resolves: delivered now, with the Confirm edge the
       // PWR_CONFIRM shortcut keys off. A physical release on the same tick
       // classifies on its own — a short click re-arms for its own window
       // (a double-click spanning the expiry boundary) instead of merging
       // into the deferred delivery.
-      windowStart = 0;
+      state.open = false;
       out.serveRelease = true;
       out.confirmEdge = true;
       if (physicalRelease && !comboRelease) {
         switch (classify(false, heldMs, confirmHoldMs)) {
           case Verdict::Arm:
-            windowStart = now;
+            state.open = true;
+            state.start = now;
             out.holdRelease = true;
             break;
           case Verdict::Confirm:
@@ -79,25 +88,26 @@ class PowerClickWindow {
     if (comboRelease) {
       // The screenshot combo's Power release is not a short-power click:
       // serve it and drop any window state.
-      windowStart = 0;
+      state.open = false;
       out.serveRelease = true;
       return out;
     }
-    switch (classify(windowStart != 0, heldMs, confirmHoldMs)) {
+    switch (classify(state.open, heldMs, confirmHoldMs)) {
       case Verdict::Arm:
-        windowStart = now;
+        state.open = true;
+        state.start = now;
         out.holdRelease = true;
         break;
       case Verdict::DoubleClick:
-        windowStart = 0;
+        state.open = false;
         out.doubleClick = true;
         break;
       case Verdict::Confirm:
-        windowStart = 0;
+        state.open = false;
         out.confirmEdge = true;
         break;
       case Verdict::Deliver:
-        windowStart = 0;
+        state.open = false;
         out.serveRelease = true;
         break;
     }

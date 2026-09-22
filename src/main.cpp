@@ -1001,6 +1001,11 @@ void loop() {
   // manager (logical buttons map 1:1 for Power/Down); no raw BTN reads here.
   if (wakePowerReleasePending && !mappedInputManager.isPressed(MappedInputManager::Button::Power)) {
     wakePowerReleasePending = false;
+    // The wake release armed the frontlight double-click window in this
+    // tick's update() — its deferred expiry would republish the swallowed
+    // release as a short-power action post-wake. The branch's contract is
+    // "consume the wake input frame, dispatch nothing" (qodo T2).
+    mappedInputManager.cancelPowerClickWindow();
     return;
   }
 

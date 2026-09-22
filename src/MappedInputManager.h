@@ -63,12 +63,12 @@ class MappedInputManager {
   // Drops any open frontlight click window and discards its held release —
   // the screenshot combo's Power release must not resolve as a short-power
   // click (main.cpp combo handler calls this when the combo ends staggered).
-  void cancelPowerClickWindow() const { powerReleaseWindowStart = 0; }
+  void cancelPowerClickWindow() const { powerClickWindowState.open = false; }
   void resolvePowerDoubleClickWindow() const;
   // True while an ambiguous first click is parked in the frontlight
   // double-click window (main.cpp's sleep-on-release + power-off guards read
   // this instead of the old file-scope click state).
-  bool isPowerClickWindowPending() const { return powerReleaseWindowStart != 0; }
+  bool isPowerClickWindowPending() const { return powerClickWindowState.open; }
   // True while a power press in progress is still a double-click candidate
   // (hold not yet past the click window): suppresses button-down power-off.
   bool isPowerClickHoldCandidate() const;
@@ -204,6 +204,10 @@ class MappedInputManager {
   // served to every activity read this tick). Bit i = physical BTN_i.
   mutable uint8_t framePressedEdges = 0;
   mutable uint8_t frameReleasedEdges = 0;
+  // A blocking-transfer pump (update(true)) ORs edges into the surviving
+  // masks; the first normal dispatch after blocking merges them, then the
+  // flag clears and per-tick masks resume (qodo T1).
+  mutable bool carryEdges = false;
   // A physical release withheld from frameReleasedEdges this tick (armed
   // double-click candidate / carve-out) still counts as user activity —
   // otherwise the inactivity timer can expire during the 500 ms window
@@ -215,7 +219,7 @@ class MappedInputManager {
   // X4 Pro frontlight double-click window (soak-fix7 JFhK): the FIRST short
   // power release is ambiguous (frontlight toggle vs configured short-power
   // action) and is held out of the served mask until the window resolves.
-  // 0 = window closed.
-  mutable uint32_t powerReleaseWindowStart = 0;
+  // Open/closed is explicit — 0 is a legal millis() value (boot, timer wrap).
+  mutable PowerClickWindow::WindowState powerClickWindowState;
   mutable bool powerDoubleClickFrame = false;
 };

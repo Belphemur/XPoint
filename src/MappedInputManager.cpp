@@ -23,13 +23,27 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // served to every activity read this tick (multi-read safe).
   gpio.update();
   gpio.consumeTouchFrame();
-  framePressedEdges = 0;
-  frameReleasedEdges = 0;
-  frameHiddenActivity = false;
+  uint8_t pressedEdges = 0;
+  uint8_t releasedEdges = 0;
   for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
-    if (gpio.wasPressed(physical)) framePressedEdges |= static_cast<uint8_t>(1u << physical);
-    if (gpio.wasReleased(physical)) frameReleasedEdges |= static_cast<uint8_t>(1u << physical);
+    if (gpio.wasPressed(physical)) pressedEdges |= static_cast<uint8_t>(1u << physical);
+    if (gpio.wasReleased(physical)) releasedEdges |= static_cast<uint8_t>(1u << physical);
   }
+  if (deferHomeButtonAction || carryEdges) {
+    // Blocking-transfer pump (OpdsBookBrowserActivity, FontDownloadActivity,
+    // CrossPointWebServerActivity): the callbacks inspect only Back/Home/touch,
+    // so other buttons' edges must survive the pump until the next main-loop
+    // dispatch — pre-snapshot they latched in gpio until read. The first
+    // dispatch after blocking merges the carried edges, then resumes the
+    // per-tick clear (qodo T1).
+    framePressedEdges = static_cast<uint8_t>(framePressedEdges | pressedEdges);
+    frameReleasedEdges = static_cast<uint8_t>(frameReleasedEdges | releasedEdges);
+    carryEdges = deferHomeButtonAction;
+  } else {
+    framePressedEdges = pressedEdges;
+    frameReleasedEdges = releasedEdges;
+  }
+  frameHiddenActivity = false;
   resolvePowerDoubleClickWindow();
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
@@ -374,7 +388,7 @@ void MappedInputManager::resolvePowerDoubleClickWindow() const {
   // PWR_CONFIRM carve-out threshold; 0 disables the carve-out.
   const uint32_t confirmHoldMs =
       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM ? SETTINGS.getPowerButtonDuration() : 0;
-  const auto result = PowerClickWindow::tick(powerReleaseWindowStart, physicalRelease, comboRelease, now,
+  const auto result = PowerClickWindow::tick(powerClickWindowState, physicalRelease, comboRelease, now,
                                              gpio.getPowerButtonHeldTime(), confirmHoldMs);
   if (result.serveRelease && result.holdRelease) {
     // Expiry + a new short click: the deferred release resolves but the NEW
