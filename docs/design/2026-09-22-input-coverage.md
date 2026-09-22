@@ -19,7 +19,9 @@ refactor/fix plan (§5) before any code change of this round. Paradigm rules
   logical-button authority; `HalGPIO` (lib/hal/HalGPIO.h) is the SDK adapter;
   `HomeButtonInput` (src/util/HomeButtonInput.h) is the capacitive-home-key
   classifier; main.cpp owns the power/sleep ACTIONS.
-- SDK layer (submodule, pinned — NOT modified this round):
+- SDK layer (submodule — NOT modified by this campaign; final pin
+  `76d9cd5da51d8741bc88a71c8938314e8cb375ec`, develop's #157 digest, which
+  contains the consume-on-check pop protocol the app integrates):
   `freeink-sdk/libs/hardware/InputManager` owns edges (consume-on-check pop
   protocol, per-button saturating pending counts, touch one-shot snapshot via
   `consumeTouchFrame()`), touch/multi-touch classification, and the
@@ -54,10 +56,12 @@ refactor/fix plan (§5) before any code change of this round. Paradigm rules
 | B16 | Long-press threshold events (`wasLongPressed`) | one-shot + release suppression; consumed globally by ActivityManager | n/a (mechanism) | MappedInputManager.cpp:455-461, ActivityManager.cpp:76 |
 
 Audit result: every button consumer reachable in this repo resolves through
-`mapButtonWith` (logical enums) or the main.cpp power zone, whose five
-interactions (B4,B5,B6,B10,B12) each read their binding from SETTINGS. No
-undiscovered raw-BTN consumer exists: `grep -rn "HalGPIO::BTN_" src` returns
-only MappedInputManager.cpp, main.cpp, and ButtonRemapActivity.
+`mapButtonWith` (logical enums) or the main.cpp power zone. Of the power
+zone's interactions, B4, B5, B6, and B12 read their binding from SETTINGS;
+B10 (the screenshot combo) is deliberately FIXED policy — not a settings
+binding, kept stock-parity on purpose. No undiscovered raw-BTN consumer
+exists: `grep -rn "HalGPIO::BTN_" src` returns only MappedInputManager.cpp,
+main.cpp, and ButtonRemapActivity.
 
 ### 2.2 Capacitive home key (X4 Pro-class; GT911 `hasHomeKey`)
 
@@ -168,7 +172,7 @@ Settings permutations:
 | Home double-tap × each legal action | ✅ | GestureActionMatrixDouble |
 | Home long-press × each legal action | ✅ | GestureActionMatrixHold |
 | Home tap action = Ignore (double-tap window removed) | ✅ | DisabledDoubleTapRemovesDelay (existing, kept) |
-| sideButtonLayout swap (PREV_NEXT/NEXT_PREV/DISABLED) | 🔒 | pure settings→enum lookup in mapButtonWith; compile-verified both envs; inspection |
+| sideButtonLayout swap (all 5 values: PREV_NEXT/NEXT_PREV/PREV_PREV/NEXT_NEXT/DISABLED) | 🔒 | pure settings→enum lookup in mapButtonWith; compile-verified both envs; inspection |
 | Front-button remaps (4! assignments) | 🔒 | pure settings→index lookup (cpp:129-139); ButtonRemapActivity persists + reload test on device |
 | shortPwrBtn ∈ {SLEEP, IGNORE, PAGE_TURN, FORCE_REFRESH, FOOTNOTES, PWR_CONFIRM} × X4Pro doubleClickPwrLight on/off | ✅ (policy part) | PowerClickWindowTest: windowEnabled true/false × confirm carve-out on/off |
 
@@ -275,9 +279,12 @@ profiles).
    `pio run -e default` + `pio run -e x4pro` → /tmp/pio_default.log,
    /tmp/pio_x4pro.log. Push, CI green, `pre-merge --pr 158`, triage threads.
 
-SDK files: NOT touched (submodule pin unchanged) — the SDK-side combination
-rows remain covered by the SDK's own host suite (assert-run) and the async
-input design; recorded as such in the final report.
+SDK files: NOT touched by this campaign — final pin 76d9cd5 (develop's #157
+digest, contains the consume-on-check protocol; validated by the SDK host
+suite at that revision and by the app's 675-test host suite + both firmware
+envs). SDK-side combination rows remain covered by the SDK's own host suite
+(assert-run) and the async input design; recorded as such in the final
+report.
 
 ## 6. Risks
 
@@ -378,11 +385,15 @@ review round (scope discipline; recorded for the harness follow-up).
   masks and keep the flag set; the FIRST normal dispatch after blocking
   merges the carried edges, then resumes the per-tick clear. The callback
   comment already promised this ("other configured actions are deferred to
-  the next main-loop pass"); the code now honors it. Known limitation,
-  recorded: a Power release mid-transfer on an X4 Pro with
-  `doubleClickPwrLight` resolves its window mid-blocking and its Confirm
-  edge is per-tick — it is dropped; carrying the window across the transfer
-  is not attempted this round.
+  the next main-loop pass"); the code now honors it.
+  Review round 3 (coderabbit 5r7c, resolved): the earlier "Power release
+  mid-transfer drops its Confirm edge" limitation is GONE — the same carry
+  contract that preserves button edges preserves the window verdicts: a
+  verdict raised mid-transfer stays set (per-frame reset runs only on a
+  fresh dispatch), so the resolved Confirm / double-click dispatches with
+  the first post-transfer frame. The classifier now reads only newly
+  captured edges (5r7g), so carried/published mask bits can never re-arm
+  the window.
 - **T2 (high): wake-up can trigger a power action.** The wake-release branch
   (main.cpp:1002) returns without cancelling the click window the wake
   release may have armed in that tick's `update()`; on an X4 Pro with
@@ -400,3 +411,37 @@ review round (scope discipline; recorded for the harness follow-up).
   sentinel is gone from the policy and both manager readers. Host-testable:
   `ArmAtTimerWrapSurvives` locks the wrap case in `PowerClickWindowTest`.
   T1/T2 are adapter/main-level and share the harness defer recorded in §8.
+
+## 10. Rebase round (S12, 2026-09-22): develop-delta re-integration + coderabbit round 3
+
+- Rebased onto 175c8134 (SDK 76d9cd5). The replayed branch pin bump
+  (b622c4c) had overwritten develop's newer digest — restored 76d9cd5
+  (b622c4c is its ancestor; the consume-on-check protocol is in both).
+  Develop-side deltas re-integrated on top of the snapshot architecture:
+  upstream's PREV_PREV/NEXT_NEXT side-button modes; develop's
+  `beginInputFrame()` call is superseded (the pinned SDK's consume-on-check
+  protocol needs no frame ack; this branch's HalGPIO exposes only
+  `consumeTouchFrame()`).
+- Coderabbit round 3 findings (all resolved):
+  - **3dSJ (major):** on the expiry + new-short-click tick the SERVED bit
+    carries the EXPIRED release — publish it; the new click's edge was
+    consumed by the snapshot and lives only in the re-armed window. The
+    S11 hold-both reading (kody) is superseded: one mask bit cannot serve
+    and hold, but the two release EVENTS are distinct — the mask carries
+    the expired one, the window carries the new one.
+  - **5r7g (major):** the classifier must read only NEWLY captured edges —
+    the frame mask carries published bits across blocking pumps, and
+    feeding those back re-arms/re-defers the already-resolved release.
+    `resolvePowerDoubleClickWindow(newReleasedEdges)` now takes the fresh
+    snapshot; publication still works on the full mask.
+  - **5r7l:** the double-click/Confirm verdicts reset on every fresh
+    dispatch (pump/first-post-transfer frames keep them, matching the
+    edge-carry contract) — a verdict can no longer outlive its dispatch
+    frame through an exclusive-storage loop.
+  - **5r7c (major):** the T1 "Confirm edge dropped mid-transfer" limitation
+    is resolved by the same carry contract (verdicts ride the first
+    post-transfer dispatch); the doc's limitation paragraph is replaced.
+  - Doc fixes: B10 marked fixed-policy (not a settings binding); the
+    sideButtonLayout matrix lists all five values; the SDK pin/validation
+    revision recorded.
+- Adapter test renamed: `ExpiryReArmPublishesTheExpiredRelease`.

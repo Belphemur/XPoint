@@ -47,9 +47,18 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   } else {
     framePressedEdges = pressedEdges;
     frameReleasedEdges = releasedEdges;
+#if FREEINK_CAP_TOUCH
+    // Per-frame verdict reset (T1 carry contract / coderabbit 5r7l): the
+    // double-click / Confirm verdicts are ONE dispatch frame's output. A
+    // fresh dispatch clears them before the window resolves below; a pump
+    // or the first-post-transfer dispatch keeps them, so they deliver with
+    // their carried edges on that first dispatch (like the masks above).
+    powerConfirmClickFrame = false;
+    powerDoubleClickFrame = false;
+#endif
   }
   frameHiddenActivity = false;
-  resolvePowerDoubleClickWindow();
+  resolvePowerDoubleClickWindow(releasedEdges);
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
   if (gpio.hasHomeKey()) {
@@ -383,31 +392,26 @@ bool MappedInputManager::wasLightPanelGesture() const {
   return Frontlight.present() && wasTopEdgeDownSwipe();
 }
 
-void MappedInputManager::resolvePowerDoubleClickWindow() const {
+void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleasedEdges) const {
 #if FREEINK_CAP_TOUCH
   if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight) return;
   const unsigned long now = millis();
-  // Per-tick verdict reset: powerConfirmClickFrame is an edge (one Confirm
-  // per resolved window), not a level — without this the first expiry
-  // latches it and PWR_CONFIRM replays Confirm every frame forever (the
-  // replay regression this PR fixes, resurfaced on the expiry path; the
-  // per-tick clear used to live in main.cpp, which the window migration
-  // absorbed).
-  powerConfirmClickFrame = false;
-  const bool physicalRelease = (frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) != 0;
-  const bool comboRelease = physicalRelease && (frameReleasedEdges & (1u << HalGPIO::BTN_DOWN)) != 0;
+  // Classify only NEWLY captured releases (coderabbit 5r7g): the frame mask
+  // also carries published (deferred-expiry) bits across blocking pumps —
+  // feeding those back would re-arm and re-defer the already-resolved
+  // release forever. Publication below still works on the full mask.
+  const bool physicalRelease = (newReleasedEdges & (1u << HalGPIO::BTN_POWER)) != 0;
+  const bool comboRelease = physicalRelease && (newReleasedEdges & (1u << HalGPIO::BTN_DOWN)) != 0;
   // PWR_CONFIRM carve-out threshold; 0 disables the carve-out.
   const uint32_t confirmHoldMs =
       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM ? SETTINGS.getPowerButtonDuration() : 0;
   const auto result = PowerClickWindow::tick(powerClickWindowState, physicalRelease, comboRelease, now,
                                              gpio.getPowerButtonHeldTime(), confirmHoldMs);
-  if (result.serveRelease && result.holdRelease) {
-    // Expiry + a new short click: the deferred release resolves but the NEW
-    // physical release re-arms its own window — one mask bit cannot serve
-    // and hold at once, so the bit stays held and delivers at the new
-    // window's resolution (kody review, S11).
-    frameReleasedEdges &= static_cast<uint8_t>(~(1u << HalGPIO::BTN_POWER));
-  } else if (result.serveRelease) {
+  if (result.serveRelease) {
+    // The bit carries the EXPIRED release (coderabbit 3dSJ): publish it even
+    // when a new click re-armed — the new click's edge was consumed by this
+    // tick's snapshot and lives only in the re-armed window, so publishing
+    // cannot double-fire it.
     frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
   } else if (physicalRelease) {
     // Held (armed) or consumed by a double-click: the release stays out of

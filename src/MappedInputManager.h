@@ -64,7 +64,7 @@ class MappedInputManager {
   // the screenshot combo's Power release must not resolve as a short-power
   // click (main.cpp combo handler calls this when the combo ends staggered).
   void cancelPowerClickWindow() const { powerClickWindowState.open = false; }
-  void resolvePowerDoubleClickWindow() const;
+  void resolvePowerDoubleClickWindow(uint8_t newReleasedEdges) const;
   // True while an ambiguous first click is parked in the frontlight
   // double-click window (main.cpp's sleep-on-release + power-off guards read
   // this instead of the old file-scope click state).

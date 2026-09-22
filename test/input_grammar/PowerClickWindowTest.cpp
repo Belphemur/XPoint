@@ -137,16 +137,17 @@ TEST_F(PowerClickWindowTest, ExpiryPreservesNewRelease) {
   EXPECT_EQ(second.state.open, false);
 }
 
-// Adapter contract (kody review, S11): when expiry coincides with a new
-// short click (serveRelease AND holdRelease), the mask bit must be HELD —
-// one bit cannot serve the deferred delivery and arm the new window at
-// once. The manager applies serve+hold as hold; the re-armed click resolves
-// at its own window's expiry instead of firing a short-power action.
-TEST_F(PowerClickWindowTest, ExpiryReArmHoldsTheMaskBit) {
+// Adapter contract (coderabbit 3dSJ, S12): when expiry coincides with a
+// new short click (serveRelease AND holdRelease), the SERVED bit carries
+// the EXPIRED release — publish it; the re-armed click's own edge was
+// consumed by this tick's snapshot and lives only in the new window, so
+// publishing cannot double-fire it. The re-armed click resolves at its own
+// window's expiry.
+TEST_F(PowerClickWindowTest, ExpiryReArmPublishesTheExpiredRelease) {
   state_ = {true, 500};
   const auto expiry = tick(true, false, 1100, 100);
-  // The adapter maps this combination to: bit held (NOT served this tick).
-  EXPECT_EQ(expiry.result.serveRelease && expiry.result.holdRelease, true);
+  EXPECT_EQ(expiry.result.serveRelease, true);
+  EXPECT_EQ(expiry.result.holdRelease, true);
   // The new window resolves 500ms later, delivering the re-armed click.
   const auto resolve = tick(false, false, 1601, 0);
   EXPECT_EQ(resolve.result.serveRelease, true);
