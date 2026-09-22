@@ -17,7 +17,31 @@
 #   build is identical everywhere (sha256 6191fdcf...).
 set -euo pipefail
 
-exec pio check \
+resolve_pio() {
+  if [[ -n "${PIO_BIN:-}" ]]; then
+    echo "${PIO_BIN}"
+    return 0
+  fi
+  if command -v pio >/dev/null 2>&1; then
+    command -v pio
+    return 0
+  fi
+  # PlatformIO Core's own venv; PLATFORMIO_CORE_DIR relocates it.
+  local penv="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/penv/bin/pio"
+  if [[ -x "${penv}" ]]; then
+    echo "${penv}"
+    return 0
+  fi
+  return 1
+}
+
+if ! PIO="$(resolve_pio)"; then
+  echo "cppcheck-check: 'pio' not found on PATH or at \${PLATFORMIO_CORE_DIR:-\$HOME/.platformio}/penv/bin/pio." >&2
+  echo "Install PlatformIO Core or point PIO_BIN at the pio executable." >&2
+  exit 127
+fi
+
+exec "${PIO}" check \
   --fail-on-defect low \
   --fail-on-defect medium \
   --fail-on-defect high
