@@ -35,6 +35,14 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     if (gpio.wasReleased(physical)) releasedEdges |= static_cast<uint8_t>(1u << physical);
   }
   if (deferHomeButtonAction) {
+#if FREEINK_CAP_TOUCH
+    // Entering a blocking transfer (kody 7JYi): a verdict raised/consumed by
+    // THIS dispatch already delivered — clear it before the pump can carry
+    // it to the first post-transfer dispatch (a surviving Confirm edge
+    // re-triggered the OPDS fetch it just canceled).
+    powerConfirmClickFrame = false;
+    powerDoubleClickFrame = false;
+#endif
     // Blocking-transfer pump (OpdsBookBrowserActivity, FontDownloadActivity,
     // CrossPointWebServerActivity): the callbacks inspect only Back/Home/touch,
     // so un-inspected edges must survive the pump until the next main-loop
