@@ -997,14 +997,17 @@ void loop() {
   // Let wake continue as soon as its hold has been verified. The release can
   // arrive after setup, so consume that one input frame rather than making it
   // a page turn, refresh, or other short power-button action.
-  if (wakePowerReleasePending && !gpio.isPressed(HalGPIO::BTN_POWER)) {
+  // Wake release swallow and the screenshot combo read LEVELS through the
+  // manager (logical buttons map 1:1 for Power/Down); no raw BTN reads here.
+  if (wakePowerReleasePending && !mappedInputManager.isPressed(MappedInputManager::Button::Power)) {
     wakePowerReleasePending = false;
     return;
   }
 
   static bool screenshotButtonsReleased = true;
   static bool screenshotComboActive = false;
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+  if (mappedInputManager.isPressed(MappedInputManager::Button::Power) &&
+      mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
     screenshotComboActive = true;
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
@@ -1016,12 +1019,17 @@ void loop() {
     return;
   }
   if (screenshotComboActive) {
-    if (gpio.isPressed(HalGPIO::BTN_POWER)) return;
+    if (mappedInputManager.isPressed(MappedInputManager::Button::Power)) return;
     if (mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
       screenshotButtonsReleased = true;
       screenshotComboActive = false;
       return;
     }
+    // The combo's tail Power release was swallowed by the click window
+    // (manager armed + stripped it this tick): wasReleased(Power) above is
+    // false, so this branch ends the combo. Cancel the window so the armed
+    // release cannot resolve as a short-power click at expiry (audit F2).
+    mappedInputManager.cancelPowerClickWindow();
     screenshotButtonsReleased = true;
     screenshotComboActive = false;
   }
@@ -1045,7 +1053,7 @@ void loop() {
   // in-app long press. Otherwise a user who keeps holding after wake would put
   // the device straight back to sleep once allowSleepAt expires.
   static bool powerReleasedSinceWake = false;
-  if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerReleasedSinceWake = true;
+  if (!mappedInputManager.isPressed(MappedInputManager::Button::Power)) powerReleasedSinceWake = true;
 
   // On X4 Pro with SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated by the click
@@ -1054,9 +1062,10 @@ void loop() {
       mappedInputManager.isPowerClickHoldCandidate() && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
 
   if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
-      gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+      mappedInputManager.isPressed(MappedInputManager::Button::Power) &&
+      gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
     // If the screenshot combination is potentially being pressed, don't power off
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    if (mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
       return;
     }
     LOG_INF("MAIN", "Power button held %lums, powering off", gpio.getPowerButtonHeldTime());

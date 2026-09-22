@@ -93,6 +93,62 @@ TEST_F(HomeButtonInputTest, DisabledDoubleTapRemovesDelay) {
   EXPECT_EQ(input.lastGesture(), HomeButtonGesture::Tap);
 }
 
+// Combination matrix (docs/design/2026-09-22-input-coverage.md §3): every
+// gesture × every legal action value resolves through the passed mapping —
+// the classifier is agnostic to WHICH action it carries.
+TEST_F(HomeButtonInputTest, GestureActionMatrixTap) {
+  for (uint8_t a = 0; a < static_cast<uint8_t>(A::Count); ++a) {
+    const auto action = static_cast<A>(a);
+    HomeButtonInput in;
+    // Tap action delivered directly when the double-tap slot is Ignore.
+    EXPECT_EQ(in.update(1000, true, false, false, false, action, A::Ignore, action), action);
+    EXPECT_EQ(in.lastGesture(), HomeButtonGesture::Tap);
+  }
+}
+
+TEST_F(HomeButtonInputTest, GestureActionMatrixDouble) {
+  for (uint8_t a = 0; a < static_cast<uint8_t>(A::Count); ++a) {
+    const auto action = static_cast<A>(a);
+    HomeButtonInput in;
+    // First tap parks (Ignore arrives only when the window resolves) — except
+    // when the double-tap slot is Ignore, which disables the window and
+    // delivers the tap slot directly.
+    EXPECT_EQ(in.update(1000, true, false, false, false, A::Home, action, A::Home),
+              a == static_cast<uint8_t>(A::Ignore) ? A::Home : A::Ignore);
+    EXPECT_EQ(in.update(1100, true, false, false, false, A::Home, action, A::Home),
+              a == static_cast<uint8_t>(A::Ignore) ? A::Home : action);
+    EXPECT_EQ(in.lastGesture(),
+              a == static_cast<uint8_t>(A::Ignore) ? HomeButtonGesture::Tap : HomeButtonGesture::DoubleTap);
+  }
+}
+
+TEST_F(HomeButtonInputTest, GestureActionMatrixHold) {
+  for (uint8_t a = 0; a < static_cast<uint8_t>(A::Count); ++a) {
+    const auto action = static_cast<A>(a);
+    HomeButtonInput in;
+    EXPECT_EQ(in.update(1000, false, true, false, false, A::Home, A::Home, action), action);
+    EXPECT_EQ(in.lastGesture(), HomeButtonGesture::Hold);
+    // One action per hold: the next quiet tick is inert.
+    EXPECT_EQ(in.update(1100, false, false, false, false, A::Home, A::Home, action), A::Ignore);
+  }
+}
+
+// A second contact (press) inside the double-tap window converts the pending
+// tap into a double-tap on the NEXT tap — never a stray single tap in between.
+TEST_F(HomeButtonInputTest, SecondContactWithinWindowBridgesToDoubleTap) {
+  EXPECT_EQ(tick(1000, true), A::Ignore);
+  EXPECT_EQ(tick(1100, false, false, false, true), A::Ignore);
+  EXPECT_EQ(tick(1200, true), A::ToggleFrontlight);
+  EXPECT_EQ(input.lastGesture(), HomeButtonGesture::DoubleTap);
+}
+
+// Hold wins over a pending tap: the pending single tap is dropped when the
+// hold fires (no stale tap replay after the hold action).
+TEST_F(HomeButtonInputTest, HoldDuringPendingTapDropsTap) {
+  EXPECT_EQ(tick(1000, true), A::Ignore);
+  EXPECT_EQ(tick(1200, false, true), A::ReaderMenu);
+  EXPECT_EQ(tick(1400), A::Ignore);
+}
 TEST(HomeButtonValues, UpstreamAndForkIndicesAreStable) {
   EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Home), 0);
   EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Ignore), 1);

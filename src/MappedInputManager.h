@@ -3,6 +3,7 @@
 #include <HalGPIO.h>
 
 #include "util/HomeButtonInput.h"
+#include "util/PowerClickWindow.h"
 
 class GfxRenderer;
 namespace freeink {
@@ -56,8 +57,13 @@ class MappedInputManager {
   // this and must not see the swallowed releases.
   bool consumePowerDoubleClick();
   // X4 Pro frontlight double-click window owner (update() calls it).
-  static constexpr unsigned long kPowerDoubleClickWindowMs = 500;
-  static constexpr unsigned long kPowerClickMaxHoldMs = 300;
+  // Constants live in util/PowerClickWindow.h (the pure policy this adapts).
+  static constexpr unsigned long kPowerDoubleClickWindowMs = PowerClickWindow::kDoubleClickWindowMs;
+  static constexpr unsigned long kPowerClickMaxHoldMs = PowerClickWindow::kClickMaxHoldMs;
+  // Drops any open frontlight click window and discards its held release —
+  // the screenshot combo's Power release must not resolve as a short-power
+  // click (main.cpp combo handler calls this when the combo ends staggered).
+  void cancelPowerClickWindow() const { powerReleaseWindowStart = 0; }
   void resolvePowerDoubleClickWindow() const;
   // True while an ambiguous first click is parked in the frontlight
   // double-click window (main.cpp's sleep-on-release + power-off guards read

@@ -289,3 +289,33 @@ input design; recorded as such in the final report.
   caller semantics change.
 - Pure extractions add two small headers; zero DRAM/flash cost beyond code
   (all inline, no tables).
+
+## 7. As-built (2026-09-22, implementation decisions)
+
+- `src/util/PowerClickWindow.h` extracted as planned; `tick(windowStart,
+  physicalRelease, comboRelease, now, heldMs, confirmHoldMs)` carries the
+  whole per-tick decision (expiry branch FIRST — the deferred release
+  publishes + Confirm edge raises, then the same-tick physical release
+  re-classifies: short click re-arms, hold re-delivers/carve-outs, combo
+  never arms). Manager's `resolvePowerDoubleClickWindow()` is now a thin
+  adapter; `powerDoubleClickFrame`/`powerConfirmClickFrame` semantics
+  unchanged (per-tick edges).
+- `ReleaseSuppression.h` was NOT extracted: the armed mask is keyed by
+  LOGICAL button while the exactly-once clear must hit PHYSICAL edge bits,
+  and composite logical buttons (Nav*/Page*) map to several physicals with
+  `||` short-circuit semantics. The fix lives in
+  `consumeSuppressedRelease()` directly (probe the mapping, clear each
+  mapped physical bit) — one consumer, no abstraction (KISS after DRY).
+- `cancelPowerClickWindow()` used by main.cpp's staggered-combo-end branch
+  (the combo tail release was swallowed by the arm, so main's
+  `wasReleased(Power)` is false on that branch — verified against the mask
+  flow); the immediate-combo case needs no main-side call: the manager
+  serves the combo release itself (F2a).
+- Level reads in main.cpp loop zone now route through
+  `mappedInputManager.isPressed(Button::Power/Down)` (F5); `gpio.isPressed`
+  raw reads remain only in the manager, ButtonRemapActivity capture, and the
+  SDK.
+- Test suites: `test/input_grammar/` (new, 14 tests: window policy +
+  verdict matrix) and `test/home_button/HomeButtonInputTest.cpp` (+6:
+  gesture × action matrix ×3, second-contact bridge, hold-drops-tap,
+  quiet-tick invariants). SDK untouched (pin unchanged).

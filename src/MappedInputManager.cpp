@@ -368,42 +368,22 @@ void MappedInputManager::resolvePowerDoubleClickWindow() const {
   // per-tick clear used to live in main.cpp, which the window migration
   // absorbed).
   powerConfirmClickFrame = false;
-  // Window expiry without a second click: the held release is delivered to
-  // activities now (short-power actions, and Confirm via
-  // powerConfirmClickFrame for the PWR_CONFIRM shortcut). RETURN — the
-  // injected release must NOT fall through to the classify step below:
-  // that would strip it back out and re-arm a window on the synthetic edge
-  // (the stale state loop kody NkEY/NjSg caught: a real single click would
-  // never reach the Power-release handlers).
-  if (powerReleaseWindowStart != 0 && now - powerReleaseWindowStart > kPowerDoubleClickWindowMs) {
+  const bool physicalRelease = (frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) != 0;
+  const bool comboRelease = physicalRelease && (frameReleasedEdges & (1u << HalGPIO::BTN_DOWN)) != 0;
+  // PWR_CONFIRM carve-out threshold; 0 disables the carve-out.
+  const uint32_t confirmHoldMs =
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM ? SETTINGS.getPowerButtonDuration() : 0;
+  const auto result = PowerClickWindow::tick(powerReleaseWindowStart, physicalRelease, comboRelease, now,
+                                             gpio.getPowerButtonHeldTime(), confirmHoldMs);
+  if (result.serveRelease) {
     frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
-    powerConfirmClickFrame = true;
-    powerReleaseWindowStart = 0;
-    return;
+  } else if (physicalRelease) {
+    // Held (armed) or consumed by a double-click: the release stays out of
+    // the served mask.
+    frameReleasedEdges &= static_cast<uint8_t>(~(1u << HalGPIO::BTN_POWER));
   }
-  if ((frameReleasedEdges & (1u << HalGPIO::BTN_POWER)) == 0) return;
-  frameReleasedEdges &= static_cast<uint8_t>(~(1u << HalGPIO::BTN_POWER));
-  const bool secondClick = powerReleaseWindowStart != 0;
-  if (secondClick && gpio.getPowerButtonHeldTime() <= kPowerClickMaxHoldMs) {
-    // Double click: the main loop toggles the frontlight; both releases stay
-    // swallowed so no short-power action runs.
-    powerDoubleClickFrame = true;
-    powerReleaseWindowStart = 0;
-  } else if (!secondClick && gpio.getPowerButtonHeldTime() <= kPowerClickMaxHoldMs) {
-    powerReleaseWindowStart = now;  // arm: ambiguous first click
-  } else {
-    // Long press. PWR_CONFIRM carve-out (upstream 6f94d1ad): a hold too long
-    // for the double-click window but still within the Confirm duration is a
-    // Confirm, not the short-power action — swallow it (the activity reads
-    // wasPowerConfirmClick). Anything else delivers to the Power handlers.
-    if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM &&
-        gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
-      powerConfirmClickFrame = true;
-    } else {
-      frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
-    }
-    powerReleaseWindowStart = 0;
-  }
+  if (result.doubleClick) powerDoubleClickFrame = true;
+  if (result.confirmEdge) powerConfirmClickFrame = true;
 #endif
 }
 
@@ -471,6 +451,14 @@ bool MappedInputManager::consumeSuppressedRelease() const {
     const uint16_t bit = 1u << value;
     if ((suppressedReleaseButtons & bit) != 0 && edgeSnapshot(static_cast<Button>(value), false)) {
       released |= bit;
+      // Exactly-once (audit F1): also clear the PHYSICAL edge bits the
+      // logical button maps to, so the suppressed release cannot also fire
+      // wasReleased()/wasAnyReleased() later this tick. Composite logical
+      // buttons (Nav*/Page*) map to several physical buttons — clear each.
+      mapButtonWith(static_cast<Button>(value), [this](const uint8_t physical) {
+        frameReleasedEdges &= static_cast<uint8_t>(~(1u << physical));
+        return false;
+      });
     }
   }
   suppressedReleaseButtons &= ~released;
