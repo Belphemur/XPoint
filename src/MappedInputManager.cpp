@@ -34,25 +34,35 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     if (gpio.wasPressed(physical)) pressedEdges |= static_cast<uint8_t>(1u << physical);
     if (gpio.wasReleased(physical)) releasedEdges |= static_cast<uint8_t>(1u << physical);
   }
-  if (deferHomeButtonAction || carryEdges) {
+  if (deferHomeButtonAction) {
     // Blocking-transfer pump (OpdsBookBrowserActivity, FontDownloadActivity,
     // CrossPointWebServerActivity): the callbacks inspect only Back/Home/touch,
-    // so other buttons' edges must survive the pump until the next main-loop
-    // dispatch — pre-snapshot they latched in gpio until read. The first
-    // dispatch after blocking merges the carried edges, then resumes the
-    // per-tick clear (qodo T1).
-    framePressedEdges = static_cast<uint8_t>(framePressedEdges | pressedEdges);
-    frameReleasedEdges = static_cast<uint8_t>(frameReleasedEdges | releasedEdges);
-    carryEdges = deferHomeButtonAction;
+    // so un-inspected edges must survive the pump until the next main-loop
+    // dispatch (qodo T1). They are parked in the PENDING registers — never
+    // OR'd into the live masks (kody 6Ot2/6Oyk): the live frame is rebuilt
+    // from scratch every tick, and a pump callback that read an edge from
+    // the live masks consumed it for good (that pump frame's edges are
+    // simply gone, like any consumed edge). The pump frame itself serves
+    // the fresh edges to its callbacks and keeps nothing.
+    pendingPressed = static_cast<uint8_t>(pendingPressed | pressedEdges);
+    pendingReleased = static_cast<uint8_t>(pendingReleased | releasedEdges);
+    framePressedEdges = 0;
+    frameReleasedEdges = 0;
   } else {
-    framePressedEdges = pressedEdges;
-    frameReleasedEdges = releasedEdges;
+    // Normal dispatch: the pending edges compose into THIS frame exactly
+    // once, then both registers clear (each edge served at most once).
+    framePressedEdges = static_cast<uint8_t>(pressedEdges | pendingPressed);
+    frameReleasedEdges = static_cast<uint8_t>(releasedEdges | pendingReleased);
+    pendingPressed = 0;
+    pendingReleased = 0;
 #if FREEINK_CAP_TOUCH
-    // Per-frame verdict reset (T1 carry contract / coderabbit 5r7l): the
-    // double-click / Confirm verdicts are ONE dispatch frame's output. A
-    // fresh dispatch clears them before the window resolves below; a pump
-    // or the first-post-transfer dispatch keeps them, so they deliver with
-    // their carried edges on that first dispatch (like the masks above).
+    // Per-frame verdict reset (coderabbit 5r7l): the double-click / Confirm
+    // verdicts are ONE dispatch frame's output — cleared with the frame
+    // they were published into, so a verdict cannot outlive its dispatch
+    // frame (e.g. through an exclusive-storage loop). A verdict raised on a
+    // pump frame is published by resolvePowerDoubleClickWindow below and
+    // delivered by the pump's own main-loop consumer; the next normal
+    // dispatch re-clears whatever remains.
     powerConfirmClickFrame = false;
     powerDoubleClickFrame = false;
 #endif
@@ -413,6 +423,15 @@ void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleased
     // tick's snapshot and lives only in the re-armed window, so publishing
     // cannot double-fire it.
     frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
+    if (confirmHoldMs != 0) {
+      // PWR_CONFIRM press arm (kody 6O2u): the click is release-driven, but
+      // press-driven Confirm consumers need an activation edge too. The
+      // synthesized PRESS is served the tick AFTER the release — the same
+      // physical input never reports as both an edge of the same kind
+      // (qodo Q1's double-report is avoided; the press arm is a distinct,
+      // later edge).
+      powerConfirmPressPending = true;
+    }
   } else if (physicalRelease) {
     // Held (armed) or consumed by a double-click: the release stays out of
     // the served mask.
@@ -442,6 +461,12 @@ bool MappedInputManager::consumePowerDoubleClick() {
 }
 
 #if FREEINK_CAP_TOUCH
+bool MappedInputManager::consumePowerConfirmPress() const {
+  if (!powerConfirmPressPending) return false;
+  powerConfirmPressPending = false;
+  return true;
+}
+
 bool MappedInputManager::wasPowerConfirmClick() const {
   if (!gpio.hasTouch() || SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM) return false;
   // Wait out the X4 Pro's frontlight double-click window before treating its
@@ -458,9 +483,13 @@ bool MappedInputManager::wasPowerConfirmClick() const {
 bool MappedInputManager::wasPressed(const Button button) const {
   if (button == Button::Confirm && homeAction == HomeButtonAction::Confirm) return true;
   if (button == Button::Back && wasBackGesture()) return true;
-  // The PWR_CONFIRM click is release-driven (all Confirm consumers read
-  // wasReleased) and surfaces only there — reporting it here too made one
-  // power release act as both a press and a release edge (qodo Q1).
+#if FREEINK_CAP_TOUCH
+  // PWR_CONFIRM: the click is release-driven (qodo Q1 — one power release
+  // must not surface as press AND release in the same tick), but the
+  // synthesized activation PRESS is served on a later read so press-driven
+  // Confirm consumers still work (kody 6O2u).
+  if (button == Button::Confirm && consumePowerConfirmPress()) return true;
+#endif
   return edgeSnapshot(button, true);
 }
 
