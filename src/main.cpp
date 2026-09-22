@@ -1050,8 +1050,8 @@ void loop() {
   // On X4 Pro with SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated by the click
   // tracking below instead of powering off on button-down.
-  const bool x4ProAwaitingClickWindow = mappedInputManager.isPowerClickHoldCandidate() &&
-                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
+  const bool x4ProAwaitingClickWindow =
+      mappedInputManager.isPowerClickHoldCandidate() && SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP;
 
   if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
       gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
