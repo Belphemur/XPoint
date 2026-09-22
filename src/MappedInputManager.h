@@ -66,7 +66,6 @@ class MappedInputManager {
   // True while a power press in progress is still a double-click candidate
   // (hold not yet past the click window): suppresses button-down power-off.
   bool isPowerClickHoldCandidate() const;
-#endif
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
   // One-shot threshold event while the button is down; consumes its release.
