@@ -14,7 +14,12 @@
 namespace fui = freeink::ui;
 
 void MappedInputManager::update(const bool deferHomeButtonAction) const {
-  // Frame boundary for async input sampling (docs/design/2026-09-20-async-
+  // Frame boundary history: develop's async-input lineage called
+  // gpio.beginInputFrame() here to clear drain-latched edges; the pinned
+  // SDK (#32 consume-on-check pop protocol) replaced the frame ack with a
+  // documented no-op, and this branch's HalGPIO therefore exposes only
+  // consumeTouchFrame(). Edges move exclusively through the per-read pop
+  // consumed by the snapshot below.
   // Consume what the poll task produced (soak-fix7 consume-on-check):
   // gpio.update() is a no-op in async mode (edges move only through the
   // per-read pop); on sync builds update() keeps the historical one-shot
@@ -163,6 +168,9 @@ bool MappedInputManager::mapButtonWith(const Button button, Probe&& probe) const
           return probe(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
         case CrossPointSettings::NEXT_PREV:
           return probe(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
+        case CrossPointSettings::PREV_PREV:
+          return probe(HalGPIO::BTN_UP) || probe(HalGPIO::BTN_DOWN);
+        case CrossPointSettings::NEXT_NEXT:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
@@ -174,6 +182,9 @@ bool MappedInputManager::mapButtonWith(const Button button, Probe&& probe) const
           return probe(isNavDirectionSwapped() ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
         case CrossPointSettings::NEXT_PREV:
           return probe(isNavDirectionSwapped() ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
+        case CrossPointSettings::NEXT_NEXT:
+          return probe(HalGPIO::BTN_UP) || probe(HalGPIO::BTN_DOWN);
+        case CrossPointSettings::PREV_PREV:
         case CrossPointSettings::SIDE_BUTTONS_DISABLED:
         default:
           return false;
