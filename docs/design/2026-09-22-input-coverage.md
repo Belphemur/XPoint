@@ -324,3 +324,38 @@ input design; recorded as such in the final report.
   verdict matrix) and `test/home_button/HomeButtonInputTest.cpp` (+6:
   gesture × action matrix ×3, second-contact bridge, hold-drops-tap,
   quiet-tick invariants). SDK untouched (pin unchanged).
+
+## 8. Qodo round (2026-09-22, post-S11 review)
+
+Two findings on the per-frame snapshot/power-window handling, both verified
+against HEAD before this round's code changes:
+
+- **Q1 (high): one PWR_CONFIRM release reported as both press and release.**
+  `wasPressed(Confirm)` and `wasReleased(Confirm)` both route through
+  `wasPowerConfirmClick()`; on non-X4 touch boards the underlying predicate
+  reads the persistent `frameReleasedEdges` snapshot, so one short power
+  release makes BOTH APIs true for the whole tick. Pre-snapshot, the
+  underlying `gpio.wasReleased` was consumed by the first read, so only one
+  API ever saw it. Consumer evidence: every Confirm consumer is
+  release-driven (`UiListActivity.cpp:52`, `EpubReaderActivity.cpp:1164/1280/
+  5359/5413/5588`) — no consumer uses `wasPressed(Confirm)`. Fix: the power
+  confirm click surfaces ONLY through `wasReleased(Confirm)`; the
+  `wasPowerConfirmClick()` shortcut is removed from `wasPressed(Confirm)`
+  (it falls through to the front-button press edge, untouched by a power
+  release). The home-key Confirm (`homeAction == Confirm`) keeps its
+  synthetic both-true shape — pre-existing, out of this PR's scope.
+- **Q2 (medium): the first X4 Pro double-click candidate does not count as
+  activity.** `resolvePowerDoubleClickWindow()` withholds the first short
+  power release from `frameReleasedEdges` while the window is armed (and in
+  the serve+hold re-arm case), so `wasAnyReleased()` misses it and
+  `lastActivityTime` is not reset — the device can auto-sleep during the
+  500 ms window despite a real click. Fix: a per-tick `frameHiddenActivity`
+  flag, set whenever a physical power release present this tick is withheld
+  from the served mask (any end state where `physicalRelease` was true but
+  the BTN_POWER bit is not set afterwards), cleared in `update()` with the
+  masks; `wasAnyReleased()` returns `frameReleasedEdges != 0 ||
+  frameHiddenActivity`.
+
+Regression tests (input_grammar suite): repeated press/release reads for one
+PWR_CONFIRM release; inactivity visibility during an armed first-click
+window.
