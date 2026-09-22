@@ -1044,16 +1044,39 @@ void loop() {
     return;
   }
 
+  const bool x4ProDoubleClickPwrLight = BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight;
+
 #if FREEINK_CAP_TOUCH
   // A single X4 Pro power click becomes Confirm only after the frontlight
   // double-click window expires without a second click.
   mappedInputManager.setPowerConfirmClickFrame(false);
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM && BoardConfig::isX4Pro() &&
-      lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-    lastX4ProPowerClickAt = 0;
-    mappedInputManager.setPowerConfirmClickFrame(true);
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM && x4ProDoubleClickPwrLight) {
+    if (lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
+      lastX4ProPowerClickAt = 0;
+      mappedInputManager.setPowerConfirmClickFrame(true);
+    }
+    // A release held too long to be a double-click candidate (but still within
+    // the normal Confirm press duration) never reaches handleX4ProFrontlightDoubleClick's
+    // click tracking above, so it needs its own Confirm check here.
+    if (mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
+        gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS &&
+        gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
+      mappedInputManager.setPowerConfirmClickFrame(true);
+    }
   }
 #endif
+
+  // Same deferral for SLEEP: the release-based sleep below skips the first
+  // click of an X4 Pro frontlight double-click while a candidate is pending;
+  // the device sleeps here once the window expires without a second click.
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && x4ProDoubleClickPwrLight &&
+      millis() >= allowSleepAt && lastX4ProPowerClickAt != 0 &&
+      millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
+    lastX4ProPowerClickAt = 0;
+    enterDeepSleep();
+    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
+    return;
+  }
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
@@ -1069,8 +1092,15 @@ void loop() {
   static bool powerReleasedSinceWake = false;
   if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerReleasedSinceWake = true;
 
-  if (powerReleasedSinceWake && millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
-      gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+  // On X4 Pro with SLEEP, a press still within the click window is a
+  // double-click candidate — let it be released and evaluated by the click
+  // tracking below instead of powering off on button-down.
+  const bool x4ProAwaitingClickWindow = x4ProDoubleClickPwrLight &&
+                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+                                        gpio.getPowerButtonHeldTime() <= X4PRO_POWER_CLICK_MAX_HOLD_MS;
+
+  if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
+      gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
     // If the screenshot combination is potentially being pressed, don't power off
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;
@@ -1089,6 +1119,11 @@ void loop() {
   // device when wakePowerReleasePending missed it.
   if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && millis() >= allowSleepAt &&
       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+    // First click of an X4 Pro frontlight double-click: leave sleep to the
+    // window-expiry check above so the second click can toggle the light.
+    if (x4ProDoubleClickPwrLight && lastX4ProPowerClickAt != 0) {
+      return;
+    }
     LOG_INF("MAIN", "Sleep triggered by power-button click");
     enterDeepSleep();
     return;

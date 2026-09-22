@@ -224,10 +224,9 @@ EpubReaderActivity::~EpubReaderActivity() {
 #ifdef BOARD_HAS_PSRAM
   ImageBlock::setPsramExtractor(nullptr, nullptr);
 #endif
-  if (overlayRefreshPending.load()) {
-    RenderLock lock;  // whatever screen follows paints the framebuffer
-    settleOverlayRefresh();
-  }
+  // ActivityManager destroys activities with its RenderLock already held;
+  // taking another here self-deadlocks (renderingMutex is non-recursive).
+  settleOverlayRefresh();
   discardOverlayPage();  // free the overlay's page snapshot if one is held
 
   // Design §4.4: exit flushing is the manager's job — closeBook() flushes
