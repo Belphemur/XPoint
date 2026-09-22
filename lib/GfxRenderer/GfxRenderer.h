@@ -14,6 +14,7 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 class FontCacheManager;
 class SdCardFont;
 
+#include <array>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -21,6 +22,10 @@ class SdCardFont;
 #include <vector>
 
 #include "Bitmap.h"
+
+namespace glyphBitmap {
+struct Frame;
+}
 
 // Color representation: uint8_t mapped to 4x4 Bayer matrix dithering levels
 // 0 = transparent, 1-16 = gray levels (white to black)
@@ -278,6 +283,9 @@ class GfxRenderer {
 
   // Drawing
   // UI drawing clip in logical coordinates; independent of panel orientation.
+  std::array<int, 4> getClipRect() const {
+    return {clipLeft_, clipTop_, clipRight_ - clipLeft_, clipBottom_ - clipTop_};
+  }
   void setClipRect(int x, int y, int width, int height) const {
     clipLeft_ = x;
     clipTop_ = y;
@@ -289,6 +297,9 @@ class GfxRenderer {
   // independently (msb/lsb decide per plane; e.g. light tone = MSB only,
   // dark = both). No-op outside an active dual strip target.
   void drawGrayDualPixel(int x, int y, bool msb, bool lsb) const;
+  // Fast path for unrotated glyphs: same result as drawPixel() per ink pixel, clipped and rotated once per glyph.
+  void drawGlyphBitmap(const uint8_t* bitmap, int width, int height, const glyphBitmap::Frame& frame, bool twoBit,
+                       RenderMode mode, bool state) const;
   void drawLine(int x1, int y1, int x2, int y2, bool state = true) const;
   void drawLine(int x1, int y1, int x2, int y2, int lineWidth, bool state) const;
   void drawArc(int maxRadius, int cx, int cy, int xDir, int yDir, int lineWidth, bool state) const;

@@ -23,6 +23,7 @@
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "components/icons/bookmark.h"
+#include "components/icons/cover.h"
 #include "fontIds.h"
 #include "util/ClockFormat.h"
 
@@ -115,6 +116,34 @@ void BaseTheme::drawBatteryLeft(const GfxRenderer& renderer, Rect rect, const bo
   const Rect iconRect{rect.x, y, rect.width, rect.height};
   drawBatteryOutline(renderer, rect.x, y, rect.width, rect.height);
   fillBatteryIcon(renderer, iconRect, percentage);
+}
+
+void BaseTheme::drawCoverPlaceholder(const GfxRenderer& renderer, Rect rect) {
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const int topHeight = rect.height / 3;
+  renderer.fillRect(rect.x, rect.y, rect.width, rect.height, false);
+  renderer.fillRect(rect.x, rect.y + topHeight, rect.width, rect.height - topHeight, true);
+  renderer.drawRect(rect.x, rect.y, rect.width, rect.height, true);
+  constexpr int ICON_SIZE = 32;
+  if (rect.width >= ICON_SIZE + 4 && topHeight >= ICON_SIZE + 4) {
+    const int insetX = std::min(24, (rect.width - ICON_SIZE) / 2);
+    const int insetY = std::min(24, (topHeight - ICON_SIZE) / 2);
+    renderer.drawIcon(CoverIcon, rect.x + insetX, rect.y + insetY, ICON_SIZE);
+  }
+}
+
+bool BaseTheme::drawCoverThumbFill(const GfxRenderer& renderer, const Bitmap& bitmap, Rect slot) {
+  if (slot.width <= 0 || slot.height <= 0) return false;
+  const int x = slot.x + (slot.width - bitmap.getWidth()) / 2;
+  const int y = slot.y + (slot.height - bitmap.getHeight()) / 2;
+  const auto clip = renderer.getClipRect();
+  const int left = std::max(slot.x, clip[0]);
+  const int top = std::max(slot.y, clip[1]);
+  renderer.setClipRect(left, top, std::max(0, std::min(slot.x + slot.width, clip[0] + clip[2]) - left),
+                       std::max(0, std::min(slot.y + slot.height, clip[1] + clip[3]) - top));
+  const bool drawn = renderer.drawBitmap(bitmap, x, y, bitmap.getWidth(), bitmap.getHeight());
+  renderer.setClipRect(clip[0], clip[1], clip[2], clip[3]);
+  return drawn;
 }
 
 void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const size_t current, const size_t total) {
@@ -278,6 +307,11 @@ void BaseTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* top
   }
 }
 
+int BaseTheme::headerStatusInset() {
+  const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
+  return metrics.headerBatteryDetached ? 12 : metrics.headerSidePadding;
+}
+
 void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* title, const char* subtitle) const {
   // Every activity header renders through the FreeInkUI header + battery
   // indicator components, styled by the active theme's tokens (padding,
@@ -321,7 +355,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   char clockText[ClockFormat::kDateAndTimeSize] = "";
   fui::Size clockSize{};
   int16_t clockReserve = 0;
-  if (SETTINGS.headerClock != 0 && halClock.isAvailable() &&
+  if (metrics.headerShowsClock && SETTINGS.headerClock != 0 && halClock.isAvailable() &&
       ClockFormat::formatDateAndTime(clockText, sizeof(clockText), time(nullptr), SETTINGS.clockEffectiveOffsetMin(),
                                      SETTINGS.clockFormat == 1)) {
     clockSize = ui.target.measureText(fui::GfxRendererTarget::FONT_SMALL, clockText, tokens.smallText);
@@ -391,7 +425,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   // strip (batteryBarHeight) — the legacy shared-line headers drew the battery
   // at the top edge, and it keeps the lower-right corner free for the manual
   // right label below.
-  const int16_t batteryEdgeInset = batteryDetached ? 12 : tokens.headerSidePadding;
+  const int16_t batteryEdgeInset = static_cast<int16_t>(headerStatusInset());
   const int16_t batteryX = batteryLeft ? static_cast<int16_t>(band.x + batteryEdgeInset)
                                        : static_cast<int16_t>(band.right() - batteryEdgeInset - batteryReserve);
   const int16_t batteryH = static_cast<int16_t>(metrics.batteryBarHeight);
@@ -515,8 +549,9 @@ void BaseTheme::drawRecentBookCover(GfxRenderer& renderer, Rect rect, const std:
         if (bitmap.parseHeaders() == BmpReaderError::Ok) {
           LOG_DBG("THEME", "Rendering bmp");
 
-          // Draw the cover image (bookWidth and bookHeight already match image aspect ratio)
-          renderer.drawBitmap(bitmap, bookX, bookY, bookWidth, bookHeight);
+          // The card matches the cover aspect except when width-capped; fill
+          // the card 1:1 and crop the overflow rather than rescale the dither.
+          drawCoverThumbFill(renderer, bitmap, Rect{bookX, bookY, bookWidth, bookHeight});
 
           // Draw border around the card
           renderer.drawRect(bookX, bookY, bookWidth, bookHeight);
