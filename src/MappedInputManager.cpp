@@ -375,7 +375,13 @@ void MappedInputManager::resolvePowerDoubleClickWindow() const {
       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM ? SETTINGS.getPowerButtonDuration() : 0;
   const auto result = PowerClickWindow::tick(powerReleaseWindowStart, physicalRelease, comboRelease, now,
                                              gpio.getPowerButtonHeldTime(), confirmHoldMs);
-  if (result.serveRelease) {
+  if (result.serveRelease && result.holdRelease) {
+    // Expiry + a new short click: the deferred release resolves but the NEW
+    // physical release re-arms its own window — one mask bit cannot serve
+    // and hold at once, so the bit stays held and delivers at the new
+    // window's resolution (kody review, S11).
+    frameReleasedEdges &= static_cast<uint8_t>(~(1u << HalGPIO::BTN_POWER));
+  } else if (result.serveRelease) {
     frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
   } else if (physicalRelease) {
     // Held (armed) or consumed by a double-click: the release stays out of

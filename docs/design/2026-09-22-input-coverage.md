@@ -311,6 +311,11 @@ input design; recorded as such in the final report.
   `wasReleased(Power)` is false on that branch — verified against the mask
   flow); the immediate-combo case needs no main-side call: the manager
   serves the combo release itself (F2a).
+- Review round 2 (kody): the expiry + new-short-click case sets BOTH
+  `serveRelease` and `holdRelease` — the adapter must HOLD the mask bit in
+  that combined case (the re-armed click delivers at its own window's
+  resolution; one mask bit cannot serve and hold simultaneously). Fixed in
+  `resolvePowerDoubleClickWindow()` with a dedicated first branch.
 - Level reads in main.cpp loop zone now route through
   `mappedInputManager.isPressed(Button::Power/Down)` (F5); `gpio.isPressed`
   raw reads remain only in the manager, ButtonRemapActivity capture, and the
