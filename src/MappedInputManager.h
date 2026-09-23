@@ -224,10 +224,18 @@ class MappedInputManager {
   mutable bool frameHiddenActivity = false;
 #if FREEINK_CAP_TOUCH
   mutable bool powerConfirmClickFrame = false;
-  // PWR_CONFIRM synthesized press arm (kody 6O2u): set when a power click's
-  // release is served; consumed by the FIRST wasPressed(Confirm) read of a
-  // later tick.
-  mutable bool powerConfirmPressPending = false;
+  // PWR_CONFIRM synthesized press (kody 6O2u, frame-scoped per kody
+  // 8Y5e/8Y70): ARMED on the dispatch that delivers the Confirm verdict;
+  // the next normal dispatch shifts armed into ACTIVE, which lives exactly
+  // one dispatch frame and is consumed by the first wasPressed(Confirm)
+  // read. Edge state never survives two dispatch boundaries.
+  mutable bool powerConfirmPressActive = false;
+  mutable bool powerConfirmPressArmed = false;
+  // True while a blocking transfer's pump ticks run: verdicts raised
+  // mid-transfer survive to the first post-transfer dispatch (which keeps
+  // them for that frame); the pump-entry transition clears pre-transfer
+  // verdict state (kody 7JYi).
+  mutable bool pumpingDispatch = false;
 #endif
   // X4 Pro frontlight double-click window (soak-fix7 JFhK): the FIRST short
   // power release is ambiguous (frontlight toggle vs configured short-power

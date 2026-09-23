@@ -36,47 +36,82 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   }
   if (deferHomeButtonAction) {
 #if FREEINK_CAP_TOUCH
-    // Entering a blocking transfer (kody 7JYi): a verdict raised/consumed by
-    // THIS dispatch already delivered — clear it before the pump can carry
-    // it to the first post-transfer dispatch (a surviving Confirm edge
-    // re-triggered the OPDS fetch it just canceled).
+    // Entering a blocking transfer (kody 7JYi): verdicts raised/consumed by
+    // THIS dispatch already delivered — clear them at the transition into
+    // the pump so they cannot re-fire on the first post-transfer dispatch.
+    // The synthesized press arm dies with them: edge state does not cross a
+    // transfer boundary (kody 8Y5e/8Y70 rule 34). Pump ticks AFTER entry do
+    // NOT clear — verdicts raised mid-transfer must survive to the dispatch
+    // that can act on them.
     powerConfirmClickFrame = false;
     powerDoubleClickFrame = false;
+    powerConfirmPressActive = false;
+    powerConfirmPressArmed = false;
+    pumpingDispatch = true;
 #endif
     // Blocking-transfer pump (OpdsBookBrowserActivity, FontDownloadActivity,
-    // CrossPointWebServerActivity): the callbacks inspect only Back/Home/touch,
-    // so un-inspected edges must survive the pump until the next main-loop
-    // dispatch (qodo T1). They are parked in the PENDING registers — never
-    // OR'd into the live masks (kody 6Ot2/6Oyk): the live frame is rebuilt
-    // from scratch every tick, and a pump callback that read an edge from
-    // the live masks consumed it for good (that pump frame's edges are
-    // simply gone, like any consumed edge). The pump frame itself serves
-    // the fresh edges to its callbacks and keeps nothing.
-    pendingPressed = static_cast<uint8_t>(pendingPressed | pressedEdges);
-    pendingReleased = static_cast<uint8_t>(pendingReleased | releasedEdges);
-    framePressedEdges = 0;
-    frameReleasedEdges = 0;
+    // CrossPointWebServerActivity). Pump frames serve THIS tick's fresh
+    // edges in the live masks (kody 8Y_L): Back cancellation reads
+    // wasPressed/wasReleased(Back) right after update(true), so the fresh
+    // edges must be visible there. The callbacks' contract (Back/Home/touch
+    // only) makes Back pump-owned: consumed by this pump frame or lost —
+    // never parked, so no phantom Back re-delivery after the transfer.
+    // Every other edge parks in the pending registers for the next
+    // main-loop dispatch (qodo T1); the live masks are rebuilt from
+    // scratch on the next tick, so nothing here persists in them.
+    constexpr uint8_t kBackEdge = static_cast<uint8_t>(1u << HalGPIO::BTN_BACK);
+    pendingPressed = static_cast<uint8_t>(pendingPressed | (pressedEdges & ~kBackEdge));
+    pendingReleased = static_cast<uint8_t>(pendingReleased | (releasedEdges & ~kBackEdge));
+    framePressedEdges = pressedEdges;
+    frameReleasedEdges = releasedEdges;
   } else {
-    // Normal dispatch: the pending edges compose into THIS frame exactly
-    // once, then both registers clear (each edge served at most once).
+#if FREEINK_CAP_TOUCH
+    if (pumpingDispatch) {
+      // First dispatch after a transfer: verdicts raised mid-transfer
+      // deliver in THIS frame — keep them; the per-frame reset resumes
+      // on the next dispatch.
+      pumpingDispatch = false;
+    } else {
+      // Per-frame verdict reset (coderabbit 5r7l): the double-click /
+      // Confirm verdicts are ONE dispatch frame's output — cleared with
+      // the frame they were published into, so a verdict cannot outlive
+      // its dispatch frame.
+      powerConfirmClickFrame = false;
+      powerDoubleClickFrame = false;
+    }
+    // Frame-scoped synthesized press shift (kody 8Y5e/8Y70): what the
+    // previous dispatch armed becomes this frame's deliverable press edge;
+    // the arm register clears so it cannot serve twice.
+    powerConfirmPressActive = powerConfirmPressArmed;
+    powerConfirmPressArmed = false;
+#endif
+    // Normal dispatch (kody 8ZCi): the pending edges compose into THIS
+    // frame exactly once, BEFORE the Power window classifies below.
+    // Parked release bits are post-classification outcomes (they were
+    // parked only after resolvePowerDoubleClickWindow ran at their pump
+    // tick), so they are deliverable as-is; the fresh releases classify
+    // normally. Registers clear once composed.
     framePressedEdges = static_cast<uint8_t>(pressedEdges | pendingPressed);
     frameReleasedEdges = static_cast<uint8_t>(releasedEdges | pendingReleased);
     pendingPressed = 0;
     pendingReleased = 0;
-#if FREEINK_CAP_TOUCH
-    // Per-frame verdict reset (coderabbit 5r7l): the double-click / Confirm
-    // verdicts are ONE dispatch frame's output — cleared with the frame
-    // they were published into, so a verdict cannot outlive its dispatch
-    // frame (e.g. through an exclusive-storage loop). A verdict raised on a
-    // pump frame is published by resolvePowerDoubleClickWindow below and
-    // delivered by the pump's own main-loop consumer; the next normal
-    // dispatch re-clears whatever remains.
-    powerConfirmClickFrame = false;
-    powerDoubleClickFrame = false;
-#endif
   }
   frameHiddenActivity = false;
   resolvePowerDoubleClickWindow(releasedEdges);
+  if (deferHomeButtonAction) {
+    // Park what classification left in the served mask (kody 8Y_ZCi): a
+    // serve outcome keeps the Power bit (delivered post-transfer), a hold
+    // stripped it from the mask, and a disabled window passes the raw
+    // release through unclassified. Pending never holds an unclassified
+    // Power release.
+    pendingReleased = static_cast<uint8_t>(pendingReleased | (frameReleasedEdges & (1u << HalGPIO::BTN_POWER)));
+  }
+#if FREEINK_CAP_TOUCH
+  // Arm the synthesized press the tick the Confirm verdict DELIVERS (kody
+  // 6O2u's one-frame lag): normal dispatches only — pump frames deliver
+  // nothing, and the arm is edge state that dies at the next shift.
+  if (!pumpingDispatch && powerConfirmClickFrame) powerConfirmPressArmed = true;
+#endif
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
   if (gpio.hasHomeKey()) {
@@ -431,15 +466,6 @@ void MappedInputManager::resolvePowerDoubleClickWindow(const uint8_t newReleased
     // tick's snapshot and lives only in the re-armed window, so publishing
     // cannot double-fire it.
     frameReleasedEdges |= static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
-    if (confirmHoldMs != 0) {
-      // PWR_CONFIRM press arm (kody 6O2u): the click is release-driven, but
-      // press-driven Confirm consumers need an activation edge too. The
-      // synthesized PRESS is served the tick AFTER the release — the same
-      // physical input never reports as both an edge of the same kind
-      // (qodo Q1's double-report is avoided; the press arm is a distinct,
-      // later edge).
-      powerConfirmPressPending = true;
-    }
   } else if (physicalRelease) {
     // Held (armed) or consumed by a double-click: the release stays out of
     // the served mask.
@@ -470,8 +496,8 @@ bool MappedInputManager::consumePowerDoubleClick() {
 
 #if FREEINK_CAP_TOUCH
 bool MappedInputManager::consumePowerConfirmPress() const {
-  if (!powerConfirmPressPending) return false;
-  powerConfirmPressPending = false;
+  if (!powerConfirmPressActive) return false;
+  powerConfirmPressActive = false;
   return true;
 }
 
