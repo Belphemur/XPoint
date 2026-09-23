@@ -134,8 +134,13 @@ void GfxRenderer::ensureSdCardFontReady(const int fontId, const char* const* seg
       const char* p = segments[seg];
       const char* const end = p + segmentLens[seg];
       while (p < end) {
+        // strnlen bounds the scan so a missing terminator cannot read past
+        // the segment (WordStore chunks are NUL-terminated; defense in depth).
+        const size_t remaining = static_cast<size_t>(end - p);
+        const size_t len = strnlen(p, remaining);
         appendShapedRtlTokens(p, shaped);
-        p += strlen(p) + 1;
+        if (len == remaining) break;
+        p += len + 1;
       }
     }
     int missed = it->second->buildAdvanceTablePacked(segments, segmentLens, segmentCount, includeSpace, includeHyphen,

@@ -196,6 +196,11 @@ class BookFontLoader {
 
   // Scrub arenas + unload file bytes when leaving the reader with low heap.
   void releaseResidentCaches();
+
+  // True when a reload is pending (begin()/selectFamily()/markDirty since
+  // the last ensureLoaded). Lets the TTF UI fallback release its borrowed
+  // faces BEFORE ensureLoaded() frees the bytes they borrow.
+  bool isDirty() const { return dirty_.load(std::memory_order_relaxed); }
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // Borrowed view of the loaded family's RESIDENT face bytes, by style slot
   // (0=regular, 1=bold, 2=italic, 3=bold-italic — the §4.1.1 role order).

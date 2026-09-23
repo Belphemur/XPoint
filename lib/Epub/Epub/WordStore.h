@@ -36,8 +36,12 @@ class WordStore {
 
   // A suffix of an existing word (shares its bytes and trailing NUL). The
   // suffix inherits the original's release obligation: release exactly one of
-  // the two, never both.
+  // the two, never both. byteOffset beyond the word yields a zero-length
+  // word (defensive: callers pass validated split offsets).
   static StoredWord suffix(const StoredWord& w, size_t byteOffset) {
+    if (byteOffset > w.len) {
+      return {w.chunk, w.off, 0};
+    }
     return {w.chunk, static_cast<uint16_t>(w.off + byteOffset), static_cast<uint16_t>(w.len - byteOffset)};
   }
 
@@ -49,22 +53,24 @@ class WordStore {
   // prewarm). Chunks hold consecutive NUL-terminated words; data may be null
   // for retired chunks.
   size_t chunkCount() const { return chunkCount_; }
-  const char* chunkData(size_t i) const { return chunks_[i].data.get(); }
+  const char* chunkData(size_t i) const { return reinterpret_cast<const char*>(chunks_[i].data.get()); }
   size_t chunkUsed(size_t i) const { return chunks_[i].used; }
 
  private:
   struct Chunk {
-    std::unique_ptr<char[]> data;
+    // PSRAM-first via poolMakeBytes (DRAM malloc fallback on no-PSRAM hosts);
+    // 2KB uniform requests stay allocatable under fragmentation.
+    PoolBytes data;
     uint16_t capacity = 0;
     uint16_t used = 0;
     uint16_t live = 0;
   };
 
   const char* charsAt(const StoredWord& w) const {
-    // Bind to a typed local first: unique_ptr<char[]>::get() is char*, but
+    // Bind to a typed local first: unique_ptr<T[]>::get() is T*, but
     // cppcheck can't resolve the array-form template and reads it as void*,
     // then flags the pointer arithmetic (arithOperationsOnVoidPointer).
-    const char* base = chunks_[w.chunk].data.get();
+    const char* base = reinterpret_cast<const char*>(chunks_[w.chunk].data.get());
     return base + w.off;
   }
   bool ensureChunkSlot();

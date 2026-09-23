@@ -204,7 +204,9 @@ unsigned long FibpPrefetchWorker::streamReadThunk(void* ctx, unsigned long offse
   const uint32_t cached = s->prefixLen;
   if (offset < cached) {
     if (count == 0) return 0;
-    const unsigned long fromCache = (offset + count <= cached) ? count : cached - offset;
+    // Subtraction-based: offset + count can wrap in 32-bit unsigned long on
+    // hostile offsets; cached - offset is safe because offset < cached.
+    const unsigned long fromCache = (count <= cached - offset) ? count : cached - offset;
     std::memcpy(buffer, s->prefix.get() + offset, fromCache);
     if (fromCache == count) return count;
     return fromCache + BookFontLoader::halFileRead(&s->file, offset + fromCache, buffer + fromCache, count - fromCache);

@@ -134,10 +134,7 @@ bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], c
 void TtfUiFont::end() {
   for (uint8_t s = 0; s < 4; ++s) {
     Slot& slot = slots_[s];
-    if (slot.face != nullptr) {
-      delete slot.face;  // main-thread only (FreeType shared-library rule)
-      slot.face = nullptr;
-    }
+    slot.face.reset();  // main-thread only (FreeType shared-library rule)
     slot.faceTried = false;
     slot.data = {};
     slot.font = EpdFont(nullptr);
@@ -151,11 +148,11 @@ void TtfUiFont::end() {
 }
 
 FtFont* TtfUiFont::ensureFace(Slot& slot) {
-  if (slot.face != nullptr || slot.faceTried) return slot.face;
+  if (slot.face != nullptr || slot.faceTried) return slot.face.get();
   slot.faceTried = true;
   if (slot.bytes == nullptr || slot.byteSize == 0) return nullptr;
   // Faces are main-thread-only; every TtfUiFont call site runs on loopTask.
-  auto* face = new (std::nothrow) FtFont();
+  auto face = makeUniqueNoThrow<FtFont>();
   if (face == nullptr) {
     LOG_ERR("TTFUI", "OOM: UI face style %u", static_cast<unsigned>(slot.styleSlot));
     return nullptr;
@@ -165,7 +162,6 @@ FtFont* TtfUiFont::ensureFace(Slot& slot) {
   // bytes (family change / releaseResidentCaches).
   if (!face->init(static_cast<const uint8_t*>(slot.bytes), slot.byteSize, sizePx_, 400, false, slot.faceIndex)) {
     LOG_ERR("TTFUI", "UI face init failed (style %u)", static_cast<unsigned>(slot.styleSlot));
-    delete face;
     return nullptr;
   }
   // Degrade funnel (same discipline as the loader's P2 stack probe): Light
@@ -184,8 +180,8 @@ FtFont* TtfUiFont::ensureFace(Slot& slot) {
       face->setRenderOptions(options);  // last rung: pure engine default
     }
   }
-  slot.face = face;
-  return slot.face;
+  slot.face = std::move(face);
+  return slot.face.get();
 }
 
 bool TtfUiFont::covered(Slot& slot, uint32_t codepoint) {

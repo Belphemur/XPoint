@@ -77,7 +77,9 @@ class TtfUiFont {
   struct Slot {
     EpdFontData data = {};
     EpdFont font{nullptr};
-    FtFont* face = nullptr;  // lazy, borrows `bytes`
+    // RAII: the lazily created FreeType face is owned here, so no error path
+    // in begin()/miss()/end() can leak it. Main-thread-only lifetime.
+    std::unique_ptr<FtFont> face = nullptr;
     const void* bytes = nullptr;
     uint32_t byteSize = 0;
     uint8_t faceIndex = 0;   // .ttc embedded face (loader-discovered)

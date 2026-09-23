@@ -50,6 +50,12 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     release(renderer);
     return;
   }
+  // Release BEFORE any reload: a dirty loader frees the borrowed bytes on
+  // ensureLoaded(), which must not happen while live faces still reference
+  // them. The fingerprint fast path below only covers reload-free calls.
+  if (registeredCount_ > 0 && fontLoader.isDirty()) {
+    release(renderer);
+  }
   fontLoader.ensureLoaded();
   const uint32_t fingerprint = fontLoader.fontFingerprint();
   if (fingerprint == 0) {

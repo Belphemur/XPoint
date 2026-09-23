@@ -558,9 +558,14 @@ TEST(BookFontLoaderSelection, AvailabilityRequiresPsramAndFaceGuard) {
 
   testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
   EXPECT_TRUE(loader.isFamilyAvailable(fam));
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
   // Oversized faces no longer grey the row — they stream (§14.5). Only the
   // absolute stream cap disqualifies a face.
   EXPECT_TRUE(loader.isFamilyAvailable(big));
+#else
+  // stb has no streaming: the residency guard still greys oversized rows.
+  EXPECT_FALSE(loader.isFamilyAvailable(big));
+#endif
   auto& huge = loader.editFamily(2);
   std::snprintf(huge.name, sizeof(huge.name), "%s", "Huge");
   huge.faceCount = 1;

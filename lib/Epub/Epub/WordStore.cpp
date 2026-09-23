@@ -10,15 +10,17 @@ namespace {
 // fit and failing on the very next allocation.
 constexpr size_t RECLAIM_HEADROOM = 8 * 1024;
 
-// Nothrow allocation with one evict-and-retry pass. ensureFree() asks the
-// registered cache sinks (SD-font mini data, render glyph cache) to release
-// rebuildable memory; only when even that cannot satisfy the request does the
-// caller's drop/fail path run.
-std::unique_ptr<char[]> allocWithReclaim(const size_t bytes) {
-  auto data = makeUniqueNoThrow<char[]>(bytes);
+// Nothrow PSRAM-first allocation with one evict-and-retry pass. ensureFree()
+// asks the registered cache sinks (SD-font mini data, render glyph cache) to
+// release rebuildable memory; only when even that cannot satisfy the request
+// does the caller's drop/fail path run. poolMakeBytes lands in PSRAM on
+// PSRAM boards and falls back to DRAM malloc otherwise (same tiering as the
+// loader's face bytes).
+PoolBytes allocWithReclaim(const size_t bytes) {
+  PoolBytes data = poolMakeBytes(bytes);
   if (data) return data;
   freeink::MemoryManager::instance().ensureFree(bytes + RECLAIM_HEADROOM);
-  data = makeUniqueNoThrow<char[]>(bytes);
+  data = poolMakeBytes(bytes);
   if (data) {
     LOG_DBG("WST", "Cache eviction rescued a %u-byte chunk allocation", static_cast<unsigned>(bytes));
   }
@@ -55,10 +57,17 @@ bool WordStore::append(const char* text, size_t len, StoredWord& out) {
   }
   if (!target) {
     if (!ensureChunkSlot()) return false;
+    // The previous tail is about to become non-tail: a DRAINED tail must not
+    // survive as a non-tail chunk — its stale word bytes would be re-enumerated
+    // by the packed advance-table scan as if they belonged to this paragraph.
+    if (chunkCount_ > 0) {
+      Chunk& prev = chunks_[chunkCount_ - 1];
+      if (prev.live == 0) prev.data.reset();
+    }
     // Words larger than a chunk get a dedicated exact-fit chunk so the offset
     // arithmetic stays uniform; everything else shares 2KB chunks.
     const size_t cap = need > CHUNK_SIZE ? need : CHUNK_SIZE;
-    auto data = allocWithReclaim(cap);
+    PoolBytes data = allocWithReclaim(cap);
     if (!data) return false;
     Chunk& fresh = chunks_[chunkCount_];
     fresh.data = std::move(data);
@@ -69,10 +78,9 @@ bool WordStore::append(const char* text, size_t len, StoredWord& out) {
     target = &fresh;
   }
 
-  // Typed locals: unique_ptr<T[]>::get() is T*, but cppcheck reads the
-  // array-form template's get() as void* and flags the arithmetic below.
+  // Typed locals: PoolBytes::get() is uint8_t*; bind to char* for the writes.
   const Chunk* chunkBase = chunks_.get();
-  char* dst = target->data.get();
+  char* dst = reinterpret_cast<char*>(target->data.get());
   out.chunk = static_cast<uint32_t>(target - chunkBase);
   out.off = static_cast<uint16_t>(target->used);
   out.len = static_cast<uint16_t>(len);

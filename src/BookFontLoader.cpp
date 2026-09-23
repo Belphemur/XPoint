@@ -640,9 +640,15 @@ const FamilyInfo* BookFontLoader::findFamily(const char* name) const {
 bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) {
   if (HalMemory::getPsramHeap().totalBytes == 0) return false;
   for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     // Oversized faces no longer grey the row: they stream from SD (§14.5).
     // Only the absolute stream cap still disqualifies a face.
     if (fam.faces[i].fileSize > kMaxStreamFaceBytes) return false;
+#else
+    // stb backend has no streaming: the residency guard still applies, so
+    // oversized rows are greyed instead of offered and silently degrading.
+    if (fam.faces[i].fileSize > kMaxFaceBytes) return false;
+#endif
   }
   return true;
 }
@@ -739,7 +745,9 @@ unsigned long BookFontLoader::streamReadThunk(void* ctx, unsigned long offset, u
   const uint32_t cached = s->prefixLen;
   if (offset < cached) {
     if (count == 0) return 0;  // seek probe
-    const unsigned long fromCache = (offset + count <= cached) ? count : cached - offset;
+    // Subtraction-based: offset + count can wrap in 32-bit unsigned long on
+    // hostile offsets; cached - offset is safe because offset < cached.
+    const unsigned long fromCache = (count <= cached - offset) ? count : cached - offset;
     std::memcpy(buffer, s->prefix.get() + offset, fromCache);
     if (fromCache == count) return count;
     return fromCache + halFileInspectRead(&s->file, offset + fromCache, buffer + fromCache, count - fromCache);

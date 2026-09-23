@@ -1588,12 +1588,18 @@ int SdCardFont::buildAdvanceTablePacked(const char* const* segments, const size_
   bool hitCap = false;
 
   // Each segment holds consecutive NUL-terminated words; walk word by word.
+  // strnlen bounds the scan to the segment so a missing terminator can never
+  // read past it (defensive: callers hand WordStore chunks, but the API takes
+  // raw pointers).
   for (size_t seg = 0; seg < segmentCount && !hitCap; ++seg) {
     const char* p = segments[seg];
     const char* const end = p + segmentLens[seg];
     while (p < end && !hitCap) {
+      const size_t remaining = static_cast<size_t>(end - p);
+      const size_t len = strnlen(p, remaining);
+      if (len == remaining) break;  // no NUL terminator within the segment
       hitCap = collectUniqueCodepoints(p, codepoints, cpCount, MAX_UNIQUE_CODEPOINTS);
-      p += strlen(p) + 1;
+      p += len + 1;
     }
   }
   if (extraText && !hitCap) {
@@ -1617,8 +1623,10 @@ int SdCardFont::buildAdvanceTablePacked(const char* const* segments, const size_
 }
 
 int SdCardFont::buildAdvanceTable(const char* utf8Text, uint8_t styleMask, const char* extraText) {
-  const size_t len = strlen(utf8Text);
-  return buildAdvanceTablePacked(&utf8Text, &len, 1, false, false, styleMask, extraText);
+  // Include the terminator in the segment length so the packed walk (which
+  // strnlen-bounds every word) finds it for this C-string entry point.
+  const size_t packedLen = strlen(utf8Text) + 1;
+  return buildAdvanceTablePacked(&utf8Text, &packedLen, 1, false, false, styleMask, extraText);
 }
 
 // --- Stats ---
