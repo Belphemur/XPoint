@@ -17,6 +17,7 @@
 #include "ReaderFontSizes.h"
 #include "SdCardFontSystem.h"
 #include "TextSettingsPreview.h"
+#include "TtfUiFallback.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #if defined(CROSSPOINT_TTF_READER)
@@ -440,6 +441,11 @@ void TextSettingsActivity::applyFamily(int listIndex) {
     // Load the selection now: the preview pane's next render calls getReaderFont
     // (ensureLoaded inside), and the reader picks the same family on relayout.
     freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+#if CROSSPOINT_TTF_UI_FALLBACK
+    // Re-sync the UI fallback registrations with the new family (or release
+    // them for the built-in fallback selection — update() handles both).
+    freeink::book::ttfUiFallback.update(renderer);
+#endif
     currentFamilyIndex_ = listIndex;
     rebuildSizeList();
     tabNavs[static_cast<int>(Tab::Size)].selected = 1;

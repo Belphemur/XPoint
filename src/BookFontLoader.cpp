@@ -647,6 +647,19 @@ bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) {
   return true;
 }
 
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+const void* BookFontLoader::slotFaceBytes(uint8_t slot) const {
+  // Owner 3 = streamed: no resident bytes to lend (see header contract).
+  if (slot >= 4 || faceBytesOwner_[slot] == 0 || faceBytesOwner_[slot] == 3) return nullptr;
+  return fontBytes_[slot];
+}
+
+uint32_t BookFontLoader::slotFaceByteSize(uint8_t slot) const {
+  if (slot >= 4 || faceBytesOwner_[slot] == 0 || faceBytesOwner_[slot] == 3) return 0;
+  return fontFileSizes_[slot];
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
+
 void BookFontLoader::releaseResidentCaches() {
   // Same release discipline as ensureLoaded(): RAII owners own the bytes.
   for (uint8_t i = 0; i < 4; ++i) {

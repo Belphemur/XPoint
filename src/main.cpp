@@ -41,6 +41,7 @@
 #include "ProgressManager.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "TtfUiFallback.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/boot_sleep/SleepActivity.h"
@@ -516,6 +517,13 @@ void setupDisplayAndFonts(bool seamless = false) {
 
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
+
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // TTF-backed CJK/script UI fallback (design §14.6): register the active
+  // TTF family at the UI sizes when it covers scripts the built-ins lack.
+  // Re-synced from the settings screens / reader entry like sdFontSystem.
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
 
   // Native-TTF reader font discovery (design §14.1): gated so PSRAM-less
   // builds never scan or allocate for the native-TTF path.

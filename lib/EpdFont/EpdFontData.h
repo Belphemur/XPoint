@@ -240,4 +240,16 @@ typedef struct {
   /// answer from RAM-resident data without storage I/O.  Shares glyphMissCtx.
   /// nullptr for fonts whose interval table is already complete (built-ins).
   bool (*coverageHandler)(void* ctx, uint32_t codepoint);
+
+  /// Kind of font behind glyphMissCtx (MISS_CTX_*). MISS_CTX_SD_CARD = legacy
+  /// SdCardFont overflow ring (getGlyphBitmap recovers the SdCardFont and
+  /// serves overflow bitmaps). MISS_CTX_RING = the adapter stores faulted
+  /// bitmaps at data->bitmap[glyph->dataOffset], so getGlyphBitmap takes the
+  /// standard tail — the ctx must NOT be reinterpreted as an SdCardFont.
+  uint8_t missKind;
 } EpdFontData;
+
+/// missCtx kind values (namespace scope — the EpdFontData typedef is an
+/// unnamed struct, which cannot host static members).
+constexpr uint8_t MISS_CTX_SD_CARD = 0;  ///< legacy SdCardFont overflow ring
+constexpr uint8_t MISS_CTX_RING = 1;     ///< adapter-owned ring at data->bitmap[dataOffset]

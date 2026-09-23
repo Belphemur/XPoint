@@ -62,6 +62,7 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "TtfUiFallback.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -5652,6 +5653,9 @@ void EpubReaderActivity::applyReaderTextSettings() {
   // The reader otherwise only loads SD fonts on book open, so without this an
   // in-reader font change wouldn't take effect until re-opening the book.
   sdFontSystem.ensureLoaded(renderer);
+#if CROSSPOINT_TTF_UI_FALLBACK
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   RenderLock lock;
   if (section) {
     rememberCurrentContentOffset();

@@ -17,6 +17,17 @@
 #include <FtFont.h>
 #endif
 
+// Umbrella gate for the TTF-backed UI fallback (TASK 4): needs the native-TTF
+// reader AND the FreeType backend (1bpp mono target + hasGlyph coverage).
+// HOST_TEST counts as TTF-enabled so the adapter is host-testable (device
+// builds only reach it under CROSSPOINT_TTF_READER).
+#if (defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)) && defined(CROSSPOINT_FONT_BACKEND_FT) && \
+    CROSSPOINT_FONT_BACKEND_FT
+#define CROSSPOINT_TTF_UI_FALLBACK 1
+#else
+#define CROSSPOINT_TTF_UI_FALLBACK 0
+#endif
+
 namespace freeink {
 namespace book {
 
@@ -185,6 +196,18 @@ class BookFontLoader {
 
   // Scrub arenas + unload file bytes when leaving the reader with low heap.
   void releaseResidentCaches();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Borrowed view of the loaded family's RESIDENT face bytes, by style slot
+  // (0=regular, 1=bold, 2=italic, 3=bold-italic — the §4.1.1 role order).
+  // Null/zero when the slot has no resident bytes: not loaded, or a STREAMED
+  // face (streaming keeps no resident bytes, so it cannot serve a UI
+  // fallback face — the UI stays bitmap for streamed families).
+  // The bytes are owned by the loader and valid until the next ensureLoaded
+  // reload or releaseResidentCaches — consumers must re-validate via
+  // fontFingerprint() and drop borrowed views when it changes.
+  const void* slotFaceBytes(uint8_t slot) const;
+  uint32_t slotFaceByteSize(uint8_t slot) const;
+#endif
 
   // Public fingerprint helper — content-based, never path/mtime.
   uint32_t computeFingerprint() const;

@@ -192,6 +192,9 @@ class GfxRenderer {
   // Register/clear size-matched CJK UI fallbacks (see fallbackFontMap_).
   // setFallbackFont maps a primary UI font id to an SD font id of the same size.
   void setFallbackFont(int primaryFontId, int fallbackFontId) { fallbackFontMap_[primaryFontId] = fallbackFontId; }
+  // Removes ONE fallback pairing — clearFallbackFonts() wipes every pairing
+  // including the SD-font ones, which callers elsewhere must not disturb.
+  void clearFallbackFont(int primaryFontId) { fallbackFontMap_.erase(primaryFontId); }
   void clearFallbackFonts() { fallbackFontMap_.clear(); }
   // Ensure SD card font glyph data is loaded for the given text. Called from layout code
   // (which holds a const GfxRenderer&) before measuring word widths. Safe to call on non-SD fonts (no-op).

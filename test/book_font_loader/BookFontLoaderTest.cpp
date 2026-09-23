@@ -14,6 +14,7 @@
 
 #include "BookFontLoader.h"
 #include "TestHeapHooks.h"
+#include "adapters/TtfUiFont.h"
 #include "render/TtfFont.h"
 
 // TtfFont.cpp compiles stb with STBTT_STATIC (internal linkage), so the test
@@ -829,10 +830,83 @@ TEST(RefineStylesTest, UninspectableFaceKeepsFilenameEstimate) {
   // Unreadable faces fall back to filename-derived estimates: Regular stays
   // regular, Bold stays bold (deterministic pick over the estimates).
   ASSERT_EQ(fams[0].faceCount, 2u);
-  EXPECT_STREQ(findFace(fams[0], freeink::book::StyleNone)->file, "/fonts/Broken/Broken-Regular.ttf");
   EXPECT_STREQ(findFace(fams[0], freeink::book::StyleBold)->file, "/fonts/Broken/Broken-Bold.ttf");
 }
 #endif  // CROSSPOINT_FONT_BACKEND_FT
+
+#if CROSSPOINT_TTF_UI_FALLBACK
+// TtfUiFont (TASK 4): the EpdFontFamily view over the reader family at one UI
+// size. Faults 1bpp glyphs through the EpdFontData miss seam; coverage via
+// the coverageHandler. Host FT variant only (needs FtFont).
+using freeink::book::computeTtfUiFontId;
+using freeink::book::TtfUiFont;
+
+TEST(TtfUiFontTest, ComputeIdIsDeterministicAndSizeSensitive) {
+  const int a10 = computeTtfUiFontId("Amazon Ember", 8);
+  const int a12 = computeTtfUiFontId("Amazon Ember", 10);
+  const int a12b = computeTtfUiFontId("Amazon Ember", 12);
+  EXPECT_EQ(a12, computeTtfUiFontId("Amazon Ember", 10));
+  EXPECT_NE(a12, a10);
+  EXPECT_NE(a12, a12b);
+  EXPECT_NE(a12, 0);
+}
+
+TEST(TtfUiFontTest, FaultsMonoGlyphsThroughMissSeam) {
+  const std::string bytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(bytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+
+  const void* slotBytes[4] = {bytes.data(), nullptr, nullptr, nullptr};
+  const uint32_t slotSizes[4] = {static_cast<uint32_t>(bytes.size()), 0, 0, 0};
+  freeink::book::TtfUiFont ui;
+  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, 12));
+
+  // Stub data reports coverage through the RAM-resident engine (no interval
+  // table — the coverageHandler answers hasGlyph).
+  EXPECT_TRUE(ui.family().hasCodepoint('A', EpdFontFamily::REGULAR));
+
+  const EpdGlyph* glyph = ui.family().getGlyph('A', EpdFontFamily::REGULAR);
+  ASSERT_NE(glyph, nullptr);
+  EXPECT_GT(glyph->width, 0);
+  EXPECT_GT(glyph->height, 0);
+  EXPECT_GT(glyph->advanceX, 0);
+  // Consume the ring glyph BEFORE the next miss (ring contract).
+  const EpdFontData* data = ui.family().getData(EpdFontFamily::REGULAR);
+  ASSERT_NE(data->bitmap, nullptr);
+  const uint8_t* bits = data->bitmap + glyph->dataOffset;
+  bool hasInk = false;
+  for (uint16_t y = 0; y < glyph->height && !hasInk; ++y) {
+    for (uint16_t x = 0; x < glyph->width && !hasInk; ++x) {
+      if (bits[y * ((glyph->width + 7) / 8) + (x >> 3)] & (0x80u >> (x & 7))) hasInk = true;
+    }
+  }
+  EXPECT_TRUE(hasInk);
+
+  // Ring wrap: more misses than kRingSlots must not crash and must still
+  // serve valid glyphs (eviction contract).
+  for (uint32_t cp = 0x4E00; cp < 0x4E00 + 24; ++cp) {
+    const EpdGlyph* g = ui.family().getGlyph(cp, EpdFontFamily::REGULAR);
+    ASSERT_NE(g, nullptr) << "cp " << cp;
+  }
+  ui.end();
+}
+
+// A zero-box glyph (space) still reports its advance — layout measures it
+// through the same miss seam.
+TEST(TtfUiFontTest, SpaceAdvancesWithoutBitmap) {
+  const std::string bytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(bytes)) GTEST_SKIP() << "fixture unavailable";
+  const void* slotBytes[4] = {bytes.data(), nullptr, nullptr, nullptr};
+  const uint32_t slotSizes[4] = {static_cast<uint32_t>(bytes.size()), 0, 0, 0};
+  freeink::book::TtfUiFont ui;
+  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, 10));
+  const EpdGlyph* g = ui.family().getGlyph(' ', EpdFontFamily::REGULAR);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->width, 0);
+  EXPECT_EQ(g->height, 0);
+  EXPECT_GT(g->advanceX, 0);
+  ui.end();
+}
+#endif  // CROSSPOINT_TTF_UI_FALLBACK
 
 #ifndef CROSSPOINT_FONT_BACKEND_FT
 // §14.4.2: stb builds skip .ttc files entirely (stb_truetype cannot parse

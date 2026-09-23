@@ -157,6 +157,44 @@ resident borrowed-bytes contract: released in `releaseResidentCaches()`/
 (`isFamilyAvailable`) no longer greys oversized rows — only the stream cap
 disqualifies. The stb backend has no `initStream` and keeps the skip.
 
+### 5.1 TTF-backed CJK/script UI fallback (design §14.6)
+
+Ported from upstream #3646's `setupTtfUiFallbacks`, adapted to the fork's
+architecture. On TTF builds, when the ACTIVE reader family covers scripts the
+built-in bitmap UI fonts lack (probes: Han, Hiragana, Katakana, Hangul,
+Greek, Cyrillic, Hebrew, Arabic, Thai, Devanagari — probed against the
+loaded chain), `freeink::book::ttfUiFallback.update()` registers an
+`EpdFontFamily` view of that family (one `TtfUiFont` instance per built-in
+UI size, SMALL/UI_10/UI_12) as the fallback for each UI font id through the
+EXISTING `GfxRenderer::setFallbackFont` / `resolveTextFontId` plumbing — no
+new draw path.
+
+- **Adapter** (`src/adapters/TtfUiFont.*`): stub `EpdFontData` per style with
+  the generic `glyphMissHandler`/`coverageHandler` hooks (the SD-font seam).
+  Glyphs fault on demand: each miss rasterizes the borrowed face at the UI
+  size and thresholds 8-bit coverage into a 1bpp MSB-first ring (16 slots).
+  A new `EpdFontData::missKind` tag (`MISS_CTX_RING`) tells
+  `GfxRenderer::getGlyphBitmap` to take the standard `bitmap[dataOffset]`
+  tail instead of reinterpreting the ctx as an SdCardFont overflow ring.
+- **Bytes DRY**: style faces borrow the loader's resident font bytes
+  (`BookFontLoader::slotFaceBytes`); streamed families (no resident bytes)
+  get no UI fallback. Faces are per-instance so a UI draw can never flip the
+  reader faces' AA/Crisp render mode; the adapter rasterizes monochrome when
+  the module exists, degrading Light→Default→mono-off (a refused
+  `setRenderOptions` leaves the requested options applied — every later
+  rasterize would fail — so the funnel must retry until accepted).
+- **Lazy**: non-regular style faces are created on first use; there is no SD
+  prewarm to pay (the brief's 'fault glyphs on demand' choice).
+- **Heap gate**: skipped when PSRAM largest block < 256KB; per-instance
+  ring/face allocation is nothrow and the instance is skipped on failure.
+- **Lifecycle**: registrations are fingerprint-keyed — a loader reload
+  (family change, release) invalidates them and the next `update()` releases
+  and re-registers. Wiring sites: boot, SettingsActivity refresh, reader
+  entry, TextSettings family apply. Non-TTF builds compile a stateless
+  no-op singleton (same call sites, zero cost).
+- **Fingerprint rule**: UI fallback registration does not alter layout or
+  the font fingerprint (UI chrome only), so no tag is folded.
+
 ## 5. Settings UI
 
 `TextSettingsActivity` keeps the 4-tab structure (`Font | Size | Layout |
@@ -248,6 +286,12 @@ normal render path restores AA plane parity on the final close/reflow.
   face-path hashes fold into the font fingerprint so a role re-assignment
   invalidates FIBP/section caches (FT backend only; stb keeps filename
   inference).
+- 2026-09-23 — TTF CJK/script UI fallback ported from upstream #3646:
+  `TtfUiFont` EpdFontFamily adapters at the built-in UI sizes fault glyphs
+  on demand through the `EpdFontData` miss seam (new `missKind` tag keeps
+  the SdCardFont overflow path separated), borrowing the loader's resident
+  bytes — no byte copies, no SD prewarm, PSRAM heap-gated, fingerprint-keyed
+  lifecycle.
 - 2026-09-23 — `.ttc` collection support ported from upstream #3646 via the
   SDK face-index PR (`FtFont::init/initStream/inspect*` gain faceIndex;
   inspect scan mode resolves the first Unicode-cmap face). Registry accepts
