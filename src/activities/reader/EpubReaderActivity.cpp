@@ -3807,6 +3807,12 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     // only the TTF mirrors apply here. ttfPage's -1 chapter-transition
     // sentinel (page not yet laid out) clamps to 0 — casting it raw would
     // read as 65535 and fire the trigger at ~0% progress.
+    // Skip while the mirrors still belong to the previous spine (the
+    // chapter-transition block has not refreshed them yet): reporting the old
+    // (page, pageCount) against the new spine would fire the 10%-remaining
+    // trigger at ~0% progress. The next render after the transition reports
+    // the refreshed mirrors.
+    if (ttfSpine != currentSpineIndex) return;
     const uint16_t page = ttfPage >= 0 ? static_cast<uint16_t>(ttfPage) : 0;
     fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), page,
                                        static_cast<uint16_t>(ttfPageCount));

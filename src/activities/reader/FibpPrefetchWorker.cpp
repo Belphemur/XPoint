@@ -270,8 +270,13 @@ void FibpPrefetchWorker::notifyGeneration(const uint32_t generation, const Layou
   // Re-arm the spawn dedup so the same spine can fire again under the new
   // generation.
   const bool fired = lastPrefetchFiredSpine_.load(std::memory_order_acquire) != fibp::kNoChapter;
-  lastPrefetchFiredSpine_.store(fibp::kNoChapter, std::memory_order_release);
-  if (fired) ensureTask();
+  // Re-arm the spawn dedup only when no task is running: a live task replans
+  // under the new generation and rebuilds the window itself, so clearing here
+  // would let the same spine fire a redundant re-index after that task exits.
+  if (fired && !running_.load(std::memory_order_acquire)) {
+    lastPrefetchFiredSpine_.store(fibp::kNoChapter, std::memory_order_release);
+    ensureTask();
+  }
 }
 
 bool FibpPrefetchWorker::cancel() {
