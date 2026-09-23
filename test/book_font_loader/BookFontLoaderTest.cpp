@@ -704,7 +704,68 @@ TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
   EXPECT_STREQ(boldItalic->file, "/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf");
 }
 
+namespace {
+// §14.4.2 helper: wraps one TTF into a 2-face synthetic .ttc container —
+// TTC header whose two offsets both point at the same embedded face, whose
+// table directory is patched to container-absolute offsets (per the TTC
+// spec). Mirrors the SDK's FtFontTtcTest container builder.
+std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& ttf) {
+  const uint32_t faceBase = 20;  // 12-byte TTC header + two offsets
+  std::vector<uint8_t> out(faceBase + ttf.size(), 0);
+  std::memcpy(out.data(), "ttcf", 4);
+  out[10] = 0;
+  out[11] = 2;  // numFonts = 2
+  const auto wr32 = [&](uint8_t* p, uint32_t v) {
+    p[0] = static_cast<uint8_t>(v >> 24);
+    p[1] = static_cast<uint8_t>(v >> 16);
+    p[2] = static_cast<uint8_t>(v >> 8);
+    p[3] = static_cast<uint8_t>(v);
+  };
+  const auto rd32 = [&](const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+  };
+  wr32(out.data() + 12, faceBase);
+  wr32(out.data() + 16, faceBase);
+  const uint16_t numTables = static_cast<uint16_t>((ttf[4] << 8) | ttf[5]);
+  std::vector<uint8_t> face = ttf;
+  for (size_t i = 0; i < numTables && 12 + 16 * (i + 1) <= face.size(); ++i) {
+    const size_t offField = 12 + 16 * i + 8;
+    wr32(face.data() + offField, rd32(face.data() + offField) + faceBase);
+  }
+  std::memcpy(out.data() + faceBase, face.data(), face.size());
+  return out;
+}
+}  // namespace
+
 #if defined(CROSSPOINT_FONT_BACKEND_FT)
+// §14.4.2: .ttc containers are accepted by the scan (FT backend) and
+// refineStyles resolves the collection face index (first face with a
+// Unicode cmap) into the manifest.
+TEST(RefineStylesTest, TtcContainerAcceptedAndFaceIndexResolved) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  const std::vector<uint8_t> ttfVec(regularBytes.begin(), regularBytes.end());
+  const std::vector<uint8_t> ttcBytes = makeTwoFaceTtc(ttfVec);
+  resetStorage();
+  seedFile("/fonts/Coll/Coll-Regular.ttc", std::string(ttcBytes.begin(), ttcBytes.end()));
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Coll");
+  ASSERT_EQ(fams[0].faceCount, 1u);
+  EXPECT_STREQ(fams[0].faces[0].file, "/fonts/Coll/Coll-Regular.ttc");
+  EXPECT_EQ(fams[0].faces[0].styleFlags, freeink::book::StyleNone);
+
+  BookFontLoader::refineStylesForTest(fams, count);
+  ASSERT_EQ(fams[0].faceCount, 1u);
+  // The inspect scan resolved the collection: face index 0 (first face with
+  // a Unicode cmap) stored on the manifest row.
+  EXPECT_EQ(fams[0].faces[0].faceIndex, 0u);
+}
+
 // §14.4.1: refineStyles resolves roles from the faces' REAL OS/2 weights, not
 // the filename tokens. The real Bold bytes live in a file named "Regular" and
 // the real Regular bytes in a file named "Italic" — filename inference tags
@@ -764,6 +825,23 @@ TEST(RefineStylesTest, UninspectableFaceKeepsFilenameEstimate) {
   EXPECT_STREQ(findFace(fams[0], freeink::book::StyleBold)->file, "/fonts/Broken/Broken-Bold.ttf");
 }
 #endif  // CROSSPOINT_FONT_BACKEND_FT
+
+#ifndef CROSSPOINT_FONT_BACKEND_FT
+// §14.4.2: stb builds skip .ttc files entirely (stb_truetype cannot parse
+// TTC) rather than offering a family whose faces fail to load.
+TEST(RefineStylesTest, TtcSkippedOnStbBackend) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  const std::vector<uint8_t> ttfVec(regularBytes.begin(), regularBytes.end());
+  const std::vector<uint8_t> ttcBytes = makeTwoFaceTtc(ttfVec);
+  resetStorage();
+  seedFile("/fonts/Coll/Coll-Regular.ttc", std::string(ttcBytes.begin(), ttcBytes.end()));
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  EXPECT_EQ(count, 0u);
+}
+#endif
 
 // Each face scales by its OWN unitsPerEm: the 1000-upem BoldItalic carries
 // ~half the raw hhea units of the 2048 faces, yet the pixel-scaled ascents

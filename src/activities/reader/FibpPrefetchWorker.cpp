@@ -49,7 +49,7 @@ bool FibpPrefetchWorker::buildFaces() {
       fontBytes_[i].reset();
       continue;
     }
-    if (!BookFontLoader::validateSfntBytes(bytes, fi.fileSize)) {
+    if (!BookFontLoader::validateSfntBytes(bytes, fi.fileSize, fi.faceIndex)) {
       fontBytes_[i].reset();
       continue;
     }
@@ -60,7 +60,7 @@ bool FibpPrefetchWorker::buildFaces() {
       continue;
     }
     if (!face->init(bytes, fi.fileSize, BookFontLoader::kInitSizePx, (fi.styleFlags & StyleBold) ? 700 : 400,
-                    (fi.styleFlags & StyleItalic) != 0)) {
+                    (fi.styleFlags & StyleItalic) != 0, fi.faceIndex)) {
       LOG_ERR("PREF", "Face init failed: %s", fi.file);
       face.reset();
       fontBytes_[i].reset();
@@ -91,6 +91,19 @@ bool FibpPrefetchWorker::buildFaces() {
     anyLoaded = true;
   }
   if (!anyLoaded) return false;
+
+  // Role-map tag parity (§14.4.1/§14.4.2): after the byte walk, the loader
+  // folds each loaded slot's path hash + collection face index — the worker
+  // must fold the same values in the same order or the derived fingerprint
+  // diverges from computeFingerprint() and every FIBP name misses.
+  for (uint8_t i = 0; i < 4 && i < fam->faceCount; ++i) {
+    if (faceOwners_[i] == nullptr) continue;
+    const FontFaceInfo& fi = fam->faces[i];
+    const uint32_t pathHash = BookFontLoader::facePathHash(fi.file);
+    h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&pathHash), sizeof(uint32_t), h);
+    const uint8_t faceIdx = fi.faceIndex;
+    h = BookFontLoader::fontBytesHash(&faceIdx, sizeof(uint8_t), h);
+  }
 
   // Fingerprint parity: the loader hashes bytes and xors the chain coverage
   // BEFORE appending the fallback tail (computeFingerprint() runs first in

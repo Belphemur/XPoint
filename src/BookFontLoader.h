@@ -39,6 +39,9 @@ struct FontFaceInfo {
   char name[48] = {};        // family display name (manifest or filename stem)
   char file[kFileCap] = {};  // full path under the font root
   uint8_t styleFlags = 0;    // BookFont::StyleFlags this file provides
+  // TrueType collection face index (§14.4.2): resolved by refineStyles'
+  // inspect scan (first face with a Unicode cmap); 0 for plain .ttf/.otf.
+  uint8_t faceIndex = 0;
   uint32_t fileSize = 0;
   uint32_t mtime = 0;  // for fingerprinting
 };
@@ -189,7 +192,13 @@ class BookFontLoader {
   static uint32_t fontBytesHash(const uint8_t* data, size_t len, uint32_t seed);
   // sfnt table-directory sanity gate shared by tryLoadFace and the worker's
   // face builder: numTables != 0 and every table's offset/length in-bounds.
-  static bool validateSfntBytes(const uint8_t* data, uint32_t size);
+  // TrueType collections: faceIndex selects which embedded face's directory
+  // is validated (container-absolute table offsets).
+  static bool validateSfntBytes(const uint8_t* data, uint32_t size, int faceIndex = 0);
+
+  // The path hash folded into the fingerprint's role-map tag (§14.4.1);
+  // exposed so FibpPrefetchWorker can replicate computeFingerprint() exactly.
+  static uint32_t facePathHash(const char* file);
 
   // Appends the four Atkinson faces to `chain` as its non-selectable tail:
   // a selected TTF family that lacks a glyph or style degrades to the
@@ -282,6 +291,10 @@ class BookFontLoader {
   // face's path hash (cache key) and mtime (rehash trigger beside size).
   uint32_t facePathHash_[4] = {};
   uint32_t faceMtime_[4] = {};
+  // TrueType collection face index actually loaded per slot — fingerprint
+  // identity (§14.4.2): two faces from one container share the file bytes,
+  // so the chosen face index must perturb the hash too.
+  uint8_t faceIndexUsed_[4] = {};
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
   // Size must fit TtfFont's profile-scaled slot tables before any glyph

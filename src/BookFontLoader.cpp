@@ -538,6 +538,7 @@ void BookFontLoader::ensureLoaded() {
     fontFileSizes_[i] = 0;
     facePathHash_[i] = 0;
     faceMtime_[i] = 0;
+    faceIndexUsed_[i] = 0;
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     // Fresh load: re-probe hinting from the requested mode.
     resetHintState();
@@ -651,6 +652,7 @@ void BookFontLoader::releaseResidentCaches() {
     fontFileSizes_[i] = 0;
     facePathHash_[i] = 0;
     faceMtime_[i] = 0;
+    faceIndexUsed_[i] = 0;
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
   }
@@ -663,12 +665,43 @@ uint32_t BookFontLoader::fontBytesHash(const uint8_t* data, const size_t len, co
   return fontFNV1a(data, len, seed);
 }
 
-bool BookFontLoader::validateSfntBytes(const uint8_t* data, const uint32_t size) {
+uint32_t BookFontLoader::facePathHash(const char* file) {
+  return fontFNV1a(reinterpret_cast<const uint8_t*>(file), strlen(file));
+}
+
+bool BookFontLoader::validateSfntBytes(const uint8_t* data, uint32_t size, const int faceIndex) {
   if (data == nullptr) return false;
   if (size < 12) {
     LOG_ERR("BFNT", "Font too small for sfnt header (%u bytes)", size);
     return false;
   }
+  // TrueType collection: validate the faceIndex-th embedded sfnt directory
+  // (table offsets are container-absolute per the TTC spec).
+  uint32_t base = 0;
+  if (data[0] == 't' && data[1] == 't' && data[2] == 'c' && data[3] == 'f') {
+    if (size < 16) {
+      LOG_ERR("BFNT", "Font too small for TTC header (%u bytes)", size);
+      return false;
+    }
+    const uint32_t numFonts = static_cast<uint32_t>(data[8]) << 24 | static_cast<uint32_t>(data[9]) << 16 |
+                              static_cast<uint32_t>(data[10]) << 8 | static_cast<uint32_t>(data[11]);
+    if (faceIndex < 0 || static_cast<uint32_t>(faceIndex) >= numFonts) {
+      LOG_ERR("BFNT", "TTC face %u out of range (%u faces)", faceIndex, numFonts);
+      return false;
+    }
+    const size_t offField = 12 + static_cast<size_t>(faceIndex) * 4;
+    base = static_cast<uint32_t>(data[offField]) << 24 | static_cast<uint32_t>(data[offField + 1]) << 16 |
+           static_cast<uint32_t>(data[offField + 2]) << 8 | static_cast<uint32_t>(data[offField + 3]);
+    if (base + 12 > size) {
+      LOG_ERR("BFNT", "TTC face %u base %u beyond size %u", faceIndex, base, size);
+      return false;
+    }
+    data += base;
+    size -= base;  // face-relative size for the directory bounds checks
+  }
+  // Table offsets in a TTC directory are container-absolute, so the per-
+  // table bounds checks below run against the FULL container size.
+  const uint32_t fullSize = size + base;
   const uint16_t numTables = static_cast<uint16_t>((data[4] << 8) | data[5]);
   if (numTables == 0) {
     LOG_ERR("BFNT", "Font invalid numTables 0");
@@ -686,7 +719,7 @@ bool BookFontLoader::validateSfntBytes(const uint8_t* data, const uint32_t size)
                             static_cast<uint32_t>(entry[10]) << 8 | static_cast<uint32_t>(entry[11]);
     const uint32_t length = static_cast<uint32_t>(entry[12]) << 24 | static_cast<uint32_t>(entry[13]) << 16 |
                             static_cast<uint32_t>(entry[14]) << 8 | static_cast<uint32_t>(entry[15]);
-    if (length > size || offset > size || offset + length < offset || offset + length > size) {
+    if (length > fullSize || offset > fullSize || offset + length < offset || offset + length > fullSize) {
       LOG_ERR("BFNT", "Font table %u O/L %u/%u exceeds size %u", i, offset, length, size);
       return false;
     }
@@ -712,10 +745,12 @@ uint32_t BookFontLoader::computeFingerprint() const {
   // re-assignment (§14.4.1) can swap files between slots without changing
   // the loaded byte SET's sequential FNV order, so the per-slot path hashes
   // must participate — otherwise a stale section cache renders the new role
-  // map over the old layout.
+  // map over the old layout. The collection face index joins the tag (two
+  // faces of one .ttc share the file bytes, §14.4.2).
   for (uint8_t i = 0; i < 4; ++i) {
     if (fontBytes_[i] && fontFileSizes_[i] > 0) {
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&facePathHash_[i]), sizeof(uint32_t), h);
+      h = fontFNV1a(&faceIndexUsed_[i], sizeof(uint8_t), h);
     }
   }
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
@@ -763,10 +798,12 @@ uint32_t BookFontLoader::computeFingerprintCached() {
   }
   if (!anyLoaded) return 0;
   // Role-map tag: same rationale as computeFingerprint() — a role
-  // re-assignment changes which file plays which slot.
+  // re-assignment changes which file plays which slot; the .ttc face index
+  // joins it (§14.4.2).
   for (uint8_t i = 0; i < 4; ++i) {
     if (fontBytes_[i] && fontFileSizes_[i] > 0) {
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&facePathHash_[i]), sizeof(uint32_t), h);
+      h = fontFNV1a(&faceIndexUsed_[i], sizeof(uint8_t), h);
     }
   }
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
@@ -979,7 +1016,16 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
       const size_t nameLen = strlen(fileName);
       if (nameLen > 0 && fileName[nameLen - 1] == '~') continue;
       const bool isTtf = endsWithIgnoreCase(fileName, ".ttf");
-      if (!isTtf && !endsWithIgnoreCase(fileName, ".otf")) continue;
+      const bool isOtf = !isTtf && endsWithIgnoreCase(fileName, ".otf");
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+      const bool isTtc = !isTtf && !isOtf && endsWithIgnoreCase(fileName, ".ttc");
+#else
+      // stb_truetype cannot parse TTC containers — skip them on the rollback
+      // backend rather than offering a family whose faces fail to load.
+      const bool isTtc = false;
+      if (endsWithIgnoreCase(fileName, ".ttc")) LOG_DBG("BFNT", "Skipping %s: .ttc needs the FT backend", fileName);
+#endif
+      if (!isTtf && !isOtf && !isTtc) continue;
       if (candidateCount < UINT8_MAX) ++candidateCount;
       if (candidateCount == 1) {
         snprintf(soloFile, kFileNameCap, "%s", fileName);
@@ -1163,10 +1209,13 @@ void BookFontLoader::refineStyles(FamilyInfo* families, uint8_t familyCount) {
       HalFile f = Storage.open(fi.file);
       if (f && !f.isDirectory()) {
         FtFont::FaceInfo info;
-        if (FtFont::inspectStream(&halFileInspectRead, &f, static_cast<unsigned long>(f.fileSize()), info) ==
-            FtFont::InspectResult::Ok) {
+        // faceIndex -1 scans the collection (§14.4.2) and reports the first
+        // face with a Unicode cmap — for plain .ttf/.otf that is face 0.
+        if (FtFont::inspectStream(&halFileInspectRead, &f, static_cast<unsigned long>(f.fileSize()), info, nullptr, 0,
+                                  -1) == FtFont::InspectResult::Ok) {
           weights[s] = info.weight;
           italics[s] = info.italic;
+          fam.faces[s].faceIndex = static_cast<uint8_t>(info.faceIndex);
         }
       }
     }
@@ -1253,8 +1302,9 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // the rehash trigger beside size. Captured up front; a later failure in
   // this slot leaves the identity set but harmless (no fontBytes_ = the slot
   // is skipped by the fingerprint walk).
-  facePathHash_[faceIdx] = fontFNV1a(reinterpret_cast<const uint8_t*>(fi.file), strlen(fi.file));
+  facePathHash_[faceIdx] = facePathHash(fi.file);
   faceMtime_[faceIdx] = fi.mtime;
+  faceIndexUsed_[faceIdx] = fi.faceIndex;
 
   // DRAM-tier size gate: skip oversized files (design §3.3). PSRAM-backed
   // boards bypass this DRAM budget; the PSRAM tier has its own guard below.
@@ -1329,7 +1379,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
 
   // sfnt validation boundary: numTables sanity + table-directory O/L checks.
   // Shared with the prefetch worker's face builder (one gate, one behavior).
-  if (!validateSfntBytes(static_cast<const uint8_t*>(fontBytes), fi.fileSize)) {
+  if (!validateSfntBytes(static_cast<const uint8_t*>(fontBytes), fi.fileSize, fi.faceIndex)) {
     if (isPsram) {
       fontPsramBytes_[faceIdx].reset();
     } else {
@@ -1365,7 +1415,7 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
   // Borrowed bytes: the file bytes outlive the face (same lifetime rules as
   // the stb path — released only in ensureLoaded()/releaseResidentCaches()).
   const bool initOk = face->init(static_cast<const uint8_t*>(fontBytes), fi.fileSize, kInitSizePx,
-                                 styleToWeight(fi.styleFlags), (fi.styleFlags & StyleItalic) != 0);
+                                 styleToWeight(fi.styleFlags), (fi.styleFlags & StyleItalic) != 0, fi.faceIndex);
   if (!initOk) {
     LOG_ERR("BFNT", "FtFont::init failed for %s", fi.file);
     delete face;

@@ -55,8 +55,10 @@ The TTF scanner walks the same roots the legacy bitmap registry uses:
 Rules:
 
 - one subfolder per family; nested folders are ignored;
-- `.ttf` / `.otf` accepted; `.cpfont`, `.tmp`, `~` backups, `.json`, and
-  macOS `._*`/hidden files are skipped;
+- `.ttf` / `.otf` accepted; `.ttc` collections are accepted on the FT
+  backend only (§14.4.2 — stb_truetype cannot parse TTC, so the rollback
+  backend skips them explicitly); `.cpfont`, `.tmp`, `~` backups, `.json`,
+  and macOS `._*`/hidden files are skipped;
 - same-named families in `/.fonts` and `/fonts` merge by style, with the
   hidden root winning on conflicting styles;
 - folder name is the family display name (case preserved);
@@ -109,6 +111,21 @@ sequential byte-hash order, so the per-slot path hashes must participate —
 otherwise a stale section cache renders the new role map over the old
 layout. The stb backend (no `FtFont`) keeps the filename-derived roles
 unchanged.
+
+### 14.4.2 TrueType collections (.ttc)
+
+Ported from upstream #3646's registry `.ttc` acceptance. `FtFont` gained
+face-index support (SDK PR, `FaceInfo.faceIndex`/`numFaces`): the
+metadata pass inspects with `faceIndex = -1`, which scans faces
+`0..num_faces-1` and reports the first face with a Unicode cmap; the chosen
+index lands in `FontFaceInfo.faceIndex` and is handed to
+`FtFont::init()`/`initStream()` when the face loads. A whole `.ttc` file is
+one manifest row: filename style inference applies to the container (no
+per-face styles), and `validateSfntBytes()` validates the embedded face's
+directory (container-absolute table offsets, per the TTC spec). The
+fingerprint folds the per-slot face index — two faces of one container share
+its bytes, so only the index distinguishes them. The stb backend skips
+`.ttc` at scan with an explicit debug log.
 
 ## 5. Settings UI
 
@@ -201,6 +218,13 @@ normal render path restores AA plane parity on the final close/reflow.
   face-path hashes fold into the font fingerprint so a role re-assignment
   invalidates FIBP/section caches (FT backend only; stb keeps filename
   inference).
+- 2026-09-23 — `.ttc` collection support ported from upstream #3646 via the
+  SDK face-index PR (`FtFont::init/initStream/inspect*` gain faceIndex;
+  inspect scan mode resolves the first Unicode-cmap face). Registry accepts
+  `.ttc` on the FT backend only; the resolved face index joins the
+  fingerprint role-map tag. FibpPrefetchWorker folds the same role-map tag
+  (path hash + face index) restoring exact fingerprint parity with
+  `computeFingerprint()`.
 
 ## Cross-links
 
