@@ -117,8 +117,15 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
 #if FREEINK_CAP_TOUCH
   // Arm the synthesized press the tick the Confirm verdict DELIVERS (kody
   // 6O2u's one-frame lag): normal dispatches only — pump frames deliver
-  // nothing, and the arm is edge state that dies at the next shift.
-  if (!pumpingDispatch && powerConfirmClickFrame) powerConfirmPressArmed = true;
+  // nothing, and the arm is edge state that dies at the next shift. The
+  // mode gate matches wasPowerConfirmClick()'s release side: tick() raises
+  // confirmEdge for every expiring window (frontlight double-click users
+  // included), but only a PWR_CONFIRM shortcut may synthesize a Confirm
+  // press (kody -1HF).
+  if (!pumpingDispatch && powerConfirmClickFrame &&
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM) {
+    powerConfirmPressArmed = true;
+  }
 #endif
   homeAction = HomeButtonAction::Ignore;
   homeGesture = HomeButtonGesture::None;
