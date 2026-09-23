@@ -22,18 +22,8 @@ void snapFontPointSizeTo(const uint8_t availablePointSize) {
 }
 
 // Built-in UI fonts and their physical point sizes (at 150 DPI, matching the
-// SD-font converter). Each is paired with a same-size SD fallback so UI text
-// in scripts the built-ins lack (CJK, Greek, Cyrillic, ...) matches the
-// surrounding Latin. See SdCardFontSystem::setupUiFallbacks.
-struct UiFontSize {
-  int fontId;
-  uint8_t pointSize;
-};
-constexpr UiFontSize kUiFontSizes[] = {
-    {SMALL_FONT_ID, 8},
-    {UI_10_FONT_ID, 10},
-    {UI_12_FONT_ID, 12},
-};
+// SD-font converter) are shared with the TTF UI fallback via kUiFontSizes in
+// SdCardFontSystem.h.
 
 }  // namespace
 

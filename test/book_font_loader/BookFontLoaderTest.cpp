@@ -14,6 +14,7 @@
 
 #include "BookFontLoader.h"
 #include "TestHeapHooks.h"
+#include "adapters/TtfUiFont.h"
 #include "render/TtfFont.h"
 
 // TtfFont.cpp compiles stb with STBTT_STATIC (internal linkage), so the test
@@ -557,7 +558,20 @@ TEST(BookFontLoaderSelection, AvailabilityRequiresPsramAndFaceGuard) {
 
   testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
   EXPECT_TRUE(loader.isFamilyAvailable(fam));
-  EXPECT_FALSE(loader.isFamilyAvailable(big));  // per-face 2MB gate (§3.3)
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+  // Oversized faces no longer grey the row — they stream (§14.5). Only the
+  // absolute stream cap disqualifies a face.
+  EXPECT_TRUE(loader.isFamilyAvailable(big));
+#else
+  // stb has no streaming: the residency guard still greys oversized rows.
+  EXPECT_FALSE(loader.isFamilyAvailable(big));
+#endif
+  auto& huge = loader.editFamily(2);
+  std::snprintf(huge.name, sizeof(huge.name), "%s", "Huge");
+  huge.faceCount = 1;
+  huge.faces[0].fileSize = loader.kMaxStreamFaceBytes + 1;
+  loader.setFamilyCountForTest(3);
+  EXPECT_FALSE(loader.isFamilyAvailable(huge));
 }
 
 TEST(BookFontLoaderSelection, ClearedSelectionServesFallbackChain) {
@@ -703,6 +717,262 @@ TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
   EXPECT_STREQ(bold->file, "/fonts/Amazon Ember/Amazon_Ember_Bold.ttf");
   EXPECT_STREQ(boldItalic->file, "/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf");
 }
+
+namespace {
+// §14.4.2 helper: wraps one TTF into a 2-face synthetic .ttc container —
+// TTC header whose two offsets both point at the same embedded face, whose
+// table directory is patched to container-absolute offsets (per the TTC
+// spec). Mirrors the SDK's FtFontTtcTest container builder.
+std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& ttf) {
+  if (ttf.size() < 12) {
+    return {};  // truncated header: offsets 4/5 (numTables) would be OOB
+  }
+  const uint32_t faceBase = 20;  // 12-byte TTC header + two offsets
+  std::vector<uint8_t> out(faceBase + ttf.size(), 0);
+  std::memcpy(out.data(), "ttcf", 4);
+  out[10] = 0;
+  out[11] = 2;  // numFonts = 2
+  const auto wr32 = [&](uint8_t* p, uint32_t v) {
+    p[0] = static_cast<uint8_t>(v >> 24);
+    p[1] = static_cast<uint8_t>(v >> 16);
+    p[2] = static_cast<uint8_t>(v >> 8);
+    p[3] = static_cast<uint8_t>(v);
+  };
+  const auto rd32 = [&](const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
+  };
+  wr32(out.data() + 12, faceBase);
+  wr32(out.data() + 16, faceBase);
+  const uint16_t numTables = static_cast<uint16_t>((ttf[4] << 8) | ttf[5]);
+  std::vector<uint8_t> face = ttf;
+  for (size_t i = 0; i < numTables && 12 + 16 * (i + 1) <= face.size(); ++i) {
+    const size_t offField = 12 + 16 * i + 8;
+    wr32(face.data() + offField, rd32(face.data() + offField) + faceBase);
+  }
+  std::memcpy(out.data() + faceBase, face.data(), face.size());
+  return out;
+}
+}  // namespace
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+// §14.4.2: .ttc containers are accepted by the scan (FT backend) and
+// refineStyles resolves the collection face index (first face with a
+// Unicode cmap) into the manifest.
+TEST(RefineStylesTest, TtcContainerAcceptedAndFaceIndexResolved) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  const std::vector<uint8_t> ttfVec(regularBytes.begin(), regularBytes.end());
+  const std::vector<uint8_t> ttcBytes = makeTwoFaceTtc(ttfVec);
+  resetStorage();
+  seedFile("/fonts/Coll/Coll-Regular.ttc", std::string(ttcBytes.begin(), ttcBytes.end()));
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  EXPECT_STREQ(fams[0].name, "Coll");
+  ASSERT_EQ(fams[0].faceCount, 1u);
+  EXPECT_STREQ(fams[0].faces[0].file, "/fonts/Coll/Coll-Regular.ttc");
+  EXPECT_EQ(fams[0].faces[0].styleFlags, freeink::book::StyleNone);
+
+  BookFontLoader::refineStylesForTest(fams, count);
+  ASSERT_EQ(fams[0].faceCount, 1u);
+  // The inspect scan resolved the collection: face index 0 (first face with
+  // a Unicode cmap) stored on the manifest row.
+  EXPECT_EQ(fams[0].faces[0].faceIndex, 0u);
+}
+
+// §14.4.1: refineStyles resolves roles from the faces' REAL OS/2 weights, not
+// the filename tokens. The real Bold bytes live in a file named "Regular" and
+// the real Regular bytes in a file named "Italic" — filename inference tags
+// them Bold/Italic, but the metadata pass must assign regular↔400 (the
+// regular bytes) and bold↔700 (the bold bytes) regardless of the names.
+TEST(RefineStylesTest, MetadataOverridesFilenameRoles) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  const std::string boldBytes = emberBytes("Amazon_Ember_Bold.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  if (!fixtureAvailable(boldBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Bold.ttf";
+  resetStorage();
+  // Real bold bytes under a "Regular" name; real regular bytes under "Italic".
+  seedFile("/fonts/Misnamed/Misnamed-Regular.ttf", boldBytes);
+  seedFile("/fonts/Misnamed/Misnamed-Italic.ttf", regularBytes);
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  // Pre-refine, filename inference tags the real-bold bytes "Regular" →
+  // StyleNone and the real-regular bytes "Italic" → StyleItalic: exactly
+  // backwards relative to the true weights.
+  ASSERT_EQ(fams[0].faceCount, 2u);
+
+  BookFontLoader::refineStylesForTest(fams, count);
+  const auto* regular = findFace(fams[0], freeink::book::StyleNone);
+  const auto* bold = findFace(fams[0], freeink::book::StyleBold);
+  ASSERT_NE(regular, nullptr);
+  ASSERT_NE(bold, nullptr);
+  EXPECT_EQ(fams[0].faceCount, 2u);
+  // Metadata wins: the ACTUALLY-regular bytes take the regular role even
+  // though the filename says "Italic", and vice versa.
+  EXPECT_STREQ(regular->file, "/fonts/Misnamed/Misnamed-Italic.ttf");
+  EXPECT_STREQ(bold->file, "/fonts/Misnamed/Misnamed-Regular.ttf");
+}
+
+// A face that cannot be inspected keeps its filename-derived estimate as the
+// pick input (the filename heuristics remain the fallback per §14.4.1).
+TEST(RefineStylesTest, UninspectableFaceKeepsFilenameEstimate) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  resetStorage();
+  seedFile("/fonts/Broken/Broken-Regular.ttf", "NOTAFONT\0\0garbage");
+  seedFile("/fonts/Broken/Broken-Bold.ttf", "ALSONOTAFONT\0\0");
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  ASSERT_EQ(fams[0].faceCount, 2u);
+
+  BookFontLoader::refineStylesForTest(fams, count);
+  // Unreadable faces fall back to filename-derived estimates: Regular stays
+  // regular, Bold stays bold (deterministic pick over the estimates).
+  ASSERT_EQ(fams[0].faceCount, 2u);
+  EXPECT_STREQ(findFace(fams[0], freeink::book::StyleBold)->file, "/fonts/Broken/Broken-Bold.ttf");
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
+
+#if CROSSPOINT_TTF_UI_FALLBACK
+// TtfUiFont (TASK 4): the EpdFontFamily view over the reader family at one UI
+// size. Faults 1bpp glyphs through the EpdFontData miss seam; coverage via
+// the coverageHandler. Host FT variant only (needs FtFont).
+using freeink::book::computeTtfUiFontId;
+using freeink::book::TtfUiFont;
+
+TEST(TtfUiFontTest, ComputeIdIsDeterministicAndSizeSensitive) {
+  const int a10 = computeTtfUiFontId("Amazon Ember", 8);
+  const int a12 = computeTtfUiFontId("Amazon Ember", 10);
+  const int a12b = computeTtfUiFontId("Amazon Ember", 12);
+  EXPECT_EQ(a12, computeTtfUiFontId("Amazon Ember", 10));
+  EXPECT_NE(a12, a10);
+  EXPECT_NE(a12, a12b);
+  EXPECT_NE(a12, 0);
+}
+
+TEST(TtfUiFontTest, FaultsMonoGlyphsThroughMissSeam) {
+  const std::string bytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(bytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+
+  const void* slotBytes[4] = {bytes.data(), nullptr, nullptr, nullptr};
+  const uint32_t slotSizes[4] = {static_cast<uint32_t>(bytes.size()), 0, 0, 0};
+  const uint8_t slotFaceIdx[4] = {0, 0, 0, 0};
+  freeink::book::TtfUiFont ui;
+  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, slotFaceIdx, 12));
+
+  // Stub data reports coverage through the RAM-resident engine (no interval
+  // table — the coverageHandler answers hasGlyph).
+  EXPECT_TRUE(ui.family().hasCodepoint('A', EpdFontFamily::REGULAR));
+
+  const EpdGlyph* glyph = ui.family().getGlyph('A', EpdFontFamily::REGULAR);
+  ASSERT_NE(glyph, nullptr);
+  EXPECT_GT(glyph->width, 0);
+  EXPECT_GT(glyph->height, 0);
+  EXPECT_GT(glyph->advanceX, 0);
+  // Consume the ring glyph BEFORE the next miss (ring contract).
+  const EpdFontData* data = ui.family().getData(EpdFontFamily::REGULAR);
+  ASSERT_NE(data->bitmap, nullptr);
+  const uint8_t* bits = data->bitmap + glyph->dataOffset;
+  bool hasInk = false;
+  for (uint16_t y = 0; y < glyph->height && !hasInk; ++y) {
+    for (uint16_t x = 0; x < glyph->width && !hasInk; ++x) {
+      if (bits[y * ((glyph->width + 7) / 8) + (x >> 3)] & (0x80u >> (x & 7))) hasInk = true;
+    }
+  }
+  EXPECT_TRUE(hasInk);
+
+  // Ring wrap: more misses than kRingSlots must not crash and must still
+  // serve valid glyphs (eviction contract).
+  for (uint32_t cp = 0x4E00; cp < 0x4E00 + 24; ++cp) {
+    const EpdGlyph* g = ui.family().getGlyph(cp, EpdFontFamily::REGULAR);
+    ASSERT_NE(g, nullptr) << "cp " << cp;
+  }
+  ui.end();
+}
+
+// A zero-box glyph (space) still reports its advance — layout measures it
+// through the same miss seam.
+TEST(TtfUiFontTest, SpaceAdvancesWithoutBitmap) {
+  const std::string bytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(bytes)) GTEST_SKIP() << "fixture unavailable";
+  const void* slotBytes[4] = {bytes.data(), nullptr, nullptr, nullptr};
+  const uint32_t slotSizes[4] = {static_cast<uint32_t>(bytes.size()), 0, 0, 0};
+  const uint8_t slotFaceIdx[4] = {0, 0, 0, 0};
+  freeink::book::TtfUiFont ui;
+  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, slotFaceIdx, 10));
+  const EpdGlyph* g = ui.family().getGlyph(' ', EpdFontFamily::REGULAR);
+  ASSERT_NE(g, nullptr);
+  EXPECT_EQ(g->width, 0);
+  EXPECT_EQ(g->height, 0);
+  EXPECT_GT(g->advanceX, 0);
+  ui.end();
+}
+#endif  // CROSSPOINT_TTF_UI_FALLBACK
+
+#ifndef CROSSPOINT_FONT_BACKEND_FT
+// §14.4.2: stb builds skip .ttc files entirely (stb_truetype cannot parse
+// TTC) rather than offering a family whose faces fail to load.
+TEST(RefineStylesTest, TtcSkippedOnStbBackend) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  const std::vector<uint8_t> ttfVec(regularBytes.begin(), regularBytes.end());
+  const std::vector<uint8_t> ttcBytes = makeTwoFaceTtc(ttfVec);
+  resetStorage();
+  seedFile("/fonts/Coll/Coll-Regular.ttc", std::string(ttcBytes.begin(), ttcBytes.end()));
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  EXPECT_EQ(count, 0u);
+}
+#endif
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+// §14.5: a face beyond the PSRAM residency guard streams from SD through
+// FtFont::initStream — the chain still covers the style and the fingerprint
+// is nonzero (streamed slots fold the SD head-hash identity, not bytes).
+TEST(BookFontLoaderStreaming, OversizedFaceStreamsFromStorage) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  // Pad past the 2MB residency guard with trailing zero bytes: the sfnt
+  // table directory ignores bytes beyond its declared tables, so the face
+  // stays valid while forcing the streaming path.
+  std::string big = regularBytes;
+  big.resize(BookFontLoader::kMaxFaceBytes + 1024, '\0');
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  resetStorage();
+  seedFile("/fonts/Big/Big-Regular.ttf", big);
+  freeink::book::BookFontLoader loader;
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Big");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(big.size());
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Big/Big-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+  loader.selectFamily("Big");
+  loader.markDirty();
+
+  freeink::book::FontChain* chain = loader.getReaderFont();
+  ASSERT_NE(chain, nullptr);
+  EXPECT_NE(chain->styleCoverage(), 0u);  // regular slot streamed in (regular = coverage bit 0x04)
+  EXPECT_NE(loader.fontFingerprint(), 0u);
+  // Deterministic identity: a second load derives the same fingerprint.
+  loader.markDirty();
+  const uint32_t fp1 = loader.fontFingerprint();
+  loader.getReaderFont();
+  EXPECT_EQ(loader.fontFingerprint(), fp1);
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 // Each face scales by its OWN unitsPerEm: the 1000-upem BoldItalic carries
 // ~half the raw hhea units of the 2048 faces, yet the pixel-scaled ascents

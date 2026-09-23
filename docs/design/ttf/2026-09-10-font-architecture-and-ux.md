@@ -55,14 +55,18 @@ The TTF scanner walks the same roots the legacy bitmap registry uses:
 Rules:
 
 - one subfolder per family; nested folders are ignored;
-- `.ttf` / `.otf` accepted; `.cpfont`, `.tmp`, `~` backups, `.json`, and
-  macOS `._*`/hidden files are skipped;
+- `.ttf` / `.otf` accepted; `.ttc` collections are accepted on the FT
+  backend only (§14.4.2 — stb_truetype cannot parse TTC, so the rollback
+  backend skips them explicitly); `.cpfont`, `.tmp`, `~` backups, `.json`,
+  and macOS `._*`/hidden files are skipped;
 - same-named families in `/.fonts` and `/fonts` merge by style, with the
   hidden root winning on conflicting styles;
 - folder name is the family display name (case preserved);
 - up to 4 faces per family, 32-family cap;
-- 2MB per-face PSRAM size guard (`BookFontLoader::kMaxFaceBytes`), CWE-400
-  discipline.
+- 2MB per-face residency threshold (`BookFontLoader::kMaxFaceBytes`): faces
+  beyond it stream from SD (§14.5) instead of staying resident in PSRAM —
+  only the 24MB stream cap (`kMaxStreamFaceBytes`) still disqualifies a
+  face. CWE-400 discipline.
 
 ### 4.1 Style inference
 
@@ -81,6 +85,120 @@ word-boundary so `SemiBold` never matches `Bold`) in this priority order:
 Duplicate style resolution: lexicographically first wins; the rest are
 logged. A family with no Regular candidate promotes its first face.
 
+### 4.1.1 Face-metadata style resolution (FT backend)
+
+Ported from upstream #3646 (`refineVectorStyles`). After the two-root scan,
+`BookFontLoader::refineStyles()` re-derives every family's style roles from
+the faces' REAL OS/2 weight + italic flag via
+`FtFont::inspectStream` (sfnt header tables only — no face retained, SD
+access through the `HalFile` `ReadFn` thunk). Role assignment is
+DETERMINISTIC, never SD enumeration order:
+
+- upright face nearest 400 = regular; nearest 700 = bold (must be genuinely
+  heavier than the regular pick, else synthesized by the engine);
+- same for the italic pair; boldItalic requires a genuinely heavier italic
+  than the italic pick;
+- an all-italic family promotes the italic nearest 400 to regular;
+- ties break to lower weight, then lexicographically smaller path.
+
+Filename inference (§4.1) remains the FALLBACK: an unreadable face keeps its
+filename-derived weight/italic estimate as the pick input. Unselected
+candidates are dropped from the manifest (the chain synthesizes missing
+styles).
+
+**Fingerprint coupling**: `computeFingerprint()`/`computeFingerprintCached()`
+fold each loaded slot's face-path hash into the FNV chain after the byte
+walk. A role re-assignment can move files between slots without changing the
+sequential byte-hash order, so the per-slot path hashes must participate —
+otherwise a stale section cache renders the new role map over the old
+layout. The stb backend (no `FtFont`) keeps the filename-derived roles
+unchanged.
+
+### 14.4.2 TrueType collections (.ttc)
+
+Ported from upstream #3646's registry `.ttc` acceptance. `FtFont` gained
+face-index support (SDK PR, `FaceInfo.faceIndex`/`numFaces`): the
+metadata pass inspects with `faceIndex = -1`, which scans faces
+`0..num_faces-1` and reports the first face with a Unicode cmap; the chosen
+index lands in `FontFaceInfo.faceIndex` and is handed to
+`FtFont::init()`/`initStream()` when the face loads. A whole `.ttc` file is
+one manifest row: filename style inference applies to the container (no
+per-face styles), and `validateSfntBytes()` validates the embedded face's
+directory (container-absolute table offsets, per the TTC spec). The
+fingerprint folds the per-slot face index — two faces of one container share
+its bytes, so only the index distinguishes them. The stb backend skips
+`.ttc` at scan with an explicit debug log.
+
+### 14.5 SD streaming for oversized faces
+
+Ported from upstream #3646's `openTtfSource`/`prefixRead` pattern (owner
+amendment: SD-streaming APPROVED, replacing the old skip behavior). Faces
+beyond the 2MB PSRAM residency guard (`kMaxFaceBytes`) load through
+`FtFont::initStream` over an open `HalFile` (absolute-offset reads, count 0
+= seek probe; ALL access via HalStorage's mutex): the file is never resident.
+A ~1MB PSRAM prefix caches the file head (cmap/loca/hmtx sit before the
+multi-MB glyf table), collapsing each glyph fault's scattered SD seeks into
+one glyf read; when PSRAM cannot fund the prefix (largest-block gate) the
+face falls back to pure streaming. `kMaxStreamFaceBytes` (24MB) is the
+absolute CWE-400 cap.
+
+**Trade-offs (documented)**: streamed faces give up GPOS kerning
+(`setGposByteBudget(0)` — the lazily-copied table would pull scattered
+multi-MB SD reads into the render path; GPOS-only variable fonts lose kern
+correction when streamed). Advances are identical; kern pairs collapse.
+The open `HalFile` is a borrowed source under the same lifetime rules as the
+resident borrowed-bytes contract: released in `releaseResidentCaches()`/
+`ensureLoaded()`'s clear loop (close-before-reopen discipline). The picker
+(`isFamilyAvailable`) no longer greys oversized rows — only the stream cap
+disqualifies. The stb backend has no `initStream` and keeps the skip.
+
+**Fingerprint coupling**: the streamed slot has no resident bytes, so its
+fingerprint folds the SD head hash (FNV-1a over the first 4KB, chunked off
+SD) plus the file size and the SD mtime instead of a full byte walk,
+bypassing the SD fp-cache. The mtime distinguishes a same-sized replacement
+whose header region is identical. `FibpPrefetchWorker` streams oversized
+faces the same way (own HalFile + prefix + `initStream`) and folds the
+identical values in the same order, preserving exact `computeFingerprint()`
+parity.
+
+### 5.1 TTF-backed CJK/script UI fallback (design §14.6)
+
+Ported from upstream #3646's `setupTtfUiFallbacks`, adapted to the fork's
+architecture. On TTF builds, when the ACTIVE reader family covers scripts the
+built-in bitmap UI fonts lack (probes: Han, Hiragana, Katakana, Hangul,
+Greek, Cyrillic, Hebrew, Arabic, Thai, Devanagari — probed against the
+loaded chain), `freeink::book::ttfUiFallback.update()` registers an
+`EpdFontFamily` view of that family (one `TtfUiFont` instance per built-in
+UI size, SMALL/UI_10/UI_12) as the fallback for each UI font id through the
+EXISTING `GfxRenderer::setFallbackFont` / `resolveTextFontId` plumbing — no
+new draw path.
+
+- **Adapter** (`src/adapters/TtfUiFont.*`): stub `EpdFontData` per style with
+  the generic `glyphMissHandler`/`coverageHandler` hooks (the SD-font seam).
+  Glyphs fault on demand: each miss rasterizes the borrowed face at the UI
+  size and thresholds 8-bit coverage into a 1bpp MSB-first ring (16 slots).
+  A new `EpdFontData::missKind` tag (`MISS_CTX_RING`) tells
+  `GfxRenderer::getGlyphBitmap` to take the standard `bitmap[dataOffset]`
+  tail instead of reinterpreting the ctx as an SdCardFont overflow ring.
+- **Bytes DRY**: style faces borrow the loader's resident font bytes
+  (`BookFontLoader::slotFaceBytes`); streamed families (no resident bytes)
+  get no UI fallback. Faces are per-instance so a UI draw can never flip the
+  reader faces' AA/Crisp render mode; the adapter rasterizes monochrome when
+  the module exists, degrading Light→Default→mono-off (a refused
+  `setRenderOptions` leaves the requested options applied — every later
+  rasterize would fail — so the funnel must retry until accepted).
+- **Lazy**: non-regular style faces are created on first use; there is no SD
+  prewarm to pay (the brief's 'fault glyphs on demand' choice).
+- **Heap gate**: skipped when PSRAM largest block < 256KB; per-instance
+  ring/face allocation is nothrow and the instance is skipped on failure.
+- **Lifecycle**: registrations are fingerprint-keyed — a loader reload
+  (family change, release) invalidates them and the next `update()` releases
+  and re-registers. Wiring sites: boot, SettingsActivity refresh, reader
+  entry, TextSettings family apply. Non-TTF builds compile a stateless
+  no-op singleton (same call sites, zero cost).
+- **Fingerprint rule**: UI fallback registration does not alter layout or
+  the font fingerprint (UI chrome only), so no tag is folded.
+
 ## 5. Settings UI
 
 `TextSettingsActivity` keeps the 4-tab structure (`Font | Size | Layout |
@@ -88,8 +206,8 @@ Style`). The TTF additions are:
 
 - **Font tab**: TTF families listed after the built-in and SD-card bitmap
   families. Rows show family name and style availability. The row is
-  greyed/disabled when `BookFontLoader::isFamilyAvailable()` fails (no PSRAM
-  or a face over the size guard).
+  greyed/disabled when `BookFontLoader::isFamilyAvailable()` fails (no
+  PSRAM, or a face over the 24MB stream cap on the FT backend).
 - **Size tab**: continuous size picker for TTF families; discrete list for
   bitmap families.
 - **Layout tab**: unchanged (line spacing, paragraph spacing, alignment,
@@ -165,6 +283,32 @@ normal render path restores AA plane parity on the final close/reflow.
   combinations. The picker virtualizes 8 rows so it can expose the scanner's
   33-entry logical list without growing its touch table.
 - 2026-09-14 — tokenless Regular candidates retained in multi-file families.
+- 2026-09-23 — face-metadata style resolution ported from upstream #3646:
+  roles assigned by real OS/2 weight + italic flag via
+  `FtFont::inspectStream` (deterministic nearest-400/700 pick; filename
+  heuristics demoted to the unreadable-face fallback), and the per-slot
+  face-path hashes fold into the font fingerprint so a role re-assignment
+  invalidates FIBP/section caches (FT backend only; stb keeps filename
+  inference).
+- 2026-09-23 — TTF CJK/script UI fallback ported from upstream #3646:
+  `TtfUiFont` EpdFontFamily adapters at the built-in UI sizes fault glyphs
+  on demand through the `EpdFontData` miss seam (new `missKind` tag keeps
+  the SdCardFont overflow path separated), borrowing the loader's resident
+  bytes — no byte copies, no SD prewarm, PSRAM heap-gated, fingerprint-keyed
+  lifecycle.
+- 2026-09-23 — `.ttc` collection support ported from upstream #3646 via the
+  SDK face-index PR (`FtFont::init/initStream/inspect*` gain faceIndex;
+  inspect scan mode resolves the first Unicode-cmap face). Registry accepts
+  `.ttc` on the FT backend only; the resolved face index joins the
+  fingerprint role-map tag. FibpPrefetchWorker folds the same role-map tag
+  (path hash + face index) restoring exact fingerprint parity with
+  `computeFingerprint()`.
+- 2026-09-23 — SD streaming for oversized faces ported from upstream #3646
+  (owner amendment 2026-09-23: streaming approved over skip): faces beyond
+  the 2MB residency guard load via `FtFont::initStream` over a borrowed
+  open HalFile with a 1MB PSRAM head prefix; GPOS kerning off on streamed
+  faces; fingerprint identity = SD head hash + size; prefetch worker mirrors
+  the streamed path for exact parity.
 
 ## Cross-links
 

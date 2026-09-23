@@ -12,6 +12,7 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "TtfUiFallback.h"
 #include "TxtReaderActivity.h"
 #include "XtcReaderActivity.h"
 
@@ -56,6 +57,9 @@ void ReaderActivity::onEnter() {
   }
 
   sdFontSystem.ensureLoaded(renderer);
+#if CROSSPOINT_TTF_UI_FALLBACK
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   applyInitialOrientation();
 
   if (!loadBook()) {

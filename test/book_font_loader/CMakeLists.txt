@@ -6,15 +6,22 @@ add_font_backend_tests(BookFontLoaderTest
   SOURCES
     BookFontLoaderTest.cpp
     ${REPO_ROOT}/src/BookFontLoader.cpp
+    ${REPO_ROOT}/src/adapters/TtfUiFont.cpp
+    ${REPO_ROOT}/lib/EpdFont/EpdFont.cpp
+    ${REPO_ROOT}/lib/EpdFont/EpdFontFamily.cpp
+    ${REPO_ROOT}/lib/Utf8/Utf8.cpp
     ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/src/TtfFont.cpp
     stubs/Stubs.cpp
   INCLUDES
     # stubs/ first so Arduino.h/HalStorage.h resolve to the host-safe versions
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
     ${REPO_ROOT}/src
+    ${REPO_ROOT}/src/adapters
     ${REPO_ROOT}/lib
+    ${REPO_ROOT}/lib/EpdFont
     ${REPO_ROOT}/lib/Memory
     ${REPO_ROOT}/lib/hal
+    ${REPO_ROOT}/lib/Utf8
     ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/include
     ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/include
     ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb

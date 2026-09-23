@@ -17,6 +17,17 @@
 #include <FtFont.h>
 #endif
 
+// Umbrella gate for the TTF-backed UI fallback (TASK 4): needs the native-TTF
+// reader AND the FreeType backend (1bpp mono target + hasGlyph coverage).
+// HOST_TEST counts as TTF-enabled so the adapter is host-testable (device
+// builds only reach it under CROSSPOINT_TTF_READER).
+#if (defined(CROSSPOINT_TTF_READER) || defined(HOST_TEST)) && defined(CROSSPOINT_FONT_BACKEND_FT) && \
+    CROSSPOINT_FONT_BACKEND_FT
+#define CROSSPOINT_TTF_UI_FALLBACK 1
+#else
+#define CROSSPOINT_TTF_UI_FALLBACK 0
+#endif
+
 namespace freeink {
 namespace book {
 
@@ -39,6 +50,9 @@ struct FontFaceInfo {
   char name[48] = {};        // family display name (manifest or filename stem)
   char file[kFileCap] = {};  // full path under the font root
   uint8_t styleFlags = 0;    // BookFont::StyleFlags this file provides
+  // TrueType collection face index (§14.4.2): resolved by refineStyles'
+  // inspect scan (first face with a Unicode cmap); 0 for plain .ttf/.otf.
+  uint8_t faceIndex = 0;
   uint32_t fileSize = 0;
   uint32_t mtime = 0;  // for fingerprinting
 };
@@ -83,12 +97,23 @@ class BookFontLoader {
   void selectFamily(const char* name);
   // Case-insensitive manifest lookup (§14.4 display name); nullptr when absent.
   const FamilyInfo* findFamily(const char* name) const;
-  // Static picker gates: PSRAM present AND every face within the per-face
-  // size guard. Load failures (corrupt fonts) are runtime — they degrade to
-  // the fallback chain instead of greying the row.
+  // Static picker gates: PSRAM present (any face size — oversized faces
+  // stream from SD, §14.5) AND every face within the absolute stream cap.
+  // Load failures (corrupt fonts) are runtime — they degrade to the fallback
+  // chain instead of greying the row.
   static bool isFamilyAvailable(const FamilyInfo& fam);
-  // Per-face PSRAM size guard (CWE-400); picker rows above it are greyed out.
+  // Per-face PSRAM residency guard (CWE-400): faces up to this size load
+  // fully resident in PSRAM; larger faces STREAM from SD (§14.5) instead of
+  // being skipped.
   static constexpr uint32_t kMaxFaceBytes = 2u * 1024u * 1024u;
+  // Absolute cap for streamed faces — SD fonts beyond this are rejected
+  // outright (a runaway file must not pin an open handle forever).
+  static constexpr uint32_t kMaxStreamFaceBytes = 24u * 1024u * 1024u;
+  // Streamed faces cache this much of the file head in PSRAM: an sfnt's
+  // per-glyph-fault tables (cmap/loca/hmtx) sit before the multi-MB glyf
+  // table, so serving the first MB from RAM collapses each glyph fault's
+  // 4-6 scattered SD seeks into one glyf read.
+  static constexpr uint32_t kStreamPrefixBytes = 1024u * 1024u;
 
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // Initial pixel size for FreeType faces. Per-run sizes (ruby, preview) adapt
@@ -172,6 +197,28 @@ class BookFontLoader {
   // Scrub arenas + unload file bytes when leaving the reader with low heap.
   void releaseResidentCaches();
 
+  // True when a reload is pending (begin()/selectFamily()/markDirty since
+  // the last ensureLoaded). Lets the TTF UI fallback release its borrowed
+  // faces BEFORE ensureLoaded() frees the bytes they borrow.
+  bool isDirty() const { return dirty_.load(std::memory_order_relaxed); }
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Borrowed view of the loaded family's RESIDENT face bytes, by style slot
+  // (0=regular, 1=bold, 2=italic, 3=bold-italic — the §4.1.1 role order).
+  // Null/zero when the slot has no resident bytes: not loaded, or a STREAMED
+  // face (streaming keeps no resident bytes, so it cannot serve a UI
+  // fallback face — the UI stays bitmap for streamed families).
+  // The bytes are owned by the loader and valid until the next ensureLoaded
+  // reload or releaseResidentCaches — consumers must re-validate via
+  // fontFingerprint() and drop borrowed views when it changes.
+  const void* slotFaceBytes(uint8_t slot) const;
+  uint32_t slotFaceByteSize(uint8_t slot) const;
+  // The collection face index actually used for the slot's face (0 for plain
+  // .ttf/.otf). Lets the TtfUiFont adapters init faces against the SAME
+  // embedded face the reader selected — index 0 of a TTC can carry different
+  // coverage than the discovered Unicode-cmap face.
+  uint8_t slotFaceIndex(uint8_t slot) const;
+#endif
+
   // Public fingerprint helper — content-based, never path/mtime.
   uint32_t computeFingerprint() const;
 
@@ -189,7 +236,22 @@ class BookFontLoader {
   static uint32_t fontBytesHash(const uint8_t* data, size_t len, uint32_t seed);
   // sfnt table-directory sanity gate shared by tryLoadFace and the worker's
   // face builder: numTables != 0 and every table's offset/length in-bounds.
-  static bool validateSfntBytes(const uint8_t* data, uint32_t size);
+  // TrueType collections: faceIndex selects which embedded face's directory
+  // is validated (container-absolute table offsets).
+  static bool validateSfntBytes(const uint8_t* data, uint32_t size, int faceIndex = 0);
+
+  // The path hash folded into the fingerprint's role-map tag (§14.4.1);
+  // exposed so FibpPrefetchWorker can replicate computeFingerprint() exactly.
+  static uint32_t facePathHash(const char* file);
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Absolute-offset HalFile read for FtFont ReadFn thunks (count 0 is a
+  // seek probe). Shared by the loader's and the worker's streamed sources.
+  static unsigned long halFileRead(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
+  // Streamed-slot fingerprint identity: FNV-1a over the file's first
+  // kFingerprintHeadBytes read in SD chunks (no full residency). Shared with
+  // the prefetch worker so both sites derive identical streamed-slot tags.
+  static uint32_t streamHeadHash(const char* file, uint32_t fileSize);
+#endif
 
   // Appends the four Atkinson faces to `chain` as its non-selectable tail:
   // a selected TTF family that lacks a glyph or style degrades to the
@@ -214,6 +276,12 @@ class BookFontLoader {
   static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
     scanFonts(rootPath, families, familyCount);
   }
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Drives refineStyles against the stub storage (FT backend only — the
+  // metadata pass needs FtFont::inspectStream; the stb backend keeps the
+  // filename-derived roles).
+  static void refineStylesForTest(FamilyInfo* families, uint8_t familyCount) { refineStyles(families, familyCount); }
+#endif
   // Force the P2 stack-probe outcome for a slot as if the probe had
   // degraded it: flips the effective options to unhinted (the device probe
   // itself is FreeRTOS-only and absent on host). Non-const on purpose.
@@ -276,6 +344,32 @@ class BookFontLoader {
   // face's path hash (cache key) and mtime (rehash trigger beside size).
   uint32_t facePathHash_[4] = {};
   uint32_t faceMtime_[4] = {};
+  // TrueType collection face index actually loaded per slot — fingerprint
+  // identity (§14.4.2): two faces from one container share the file bytes,
+  // so the chosen face index must perturb the hash too.
+  uint8_t faceIndexUsed_[4] = {};
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // §14.5 streamed face source per slot: the open HalFile is borrowed by the
+  // FT face for the face's lifetime (released in releaseResidentCaches()/
+  // ensureLoaded's clear loop); the PSRAM prefix caches the file head.
+  struct StreamSource {
+    HalFile file;
+    PoolBytes prefix;
+    uint32_t prefixLen = 0;
+  };
+  StreamSource streamSources_[4];
+  // Fingerprint identity for streamed slots (no resident bytes to walk):
+  // FNV-1a over the file's first kFingerprintHeadBytes, chunked off SD.
+  uint32_t streamHeadHash_[4] = {};
+  // FtFont::ReadFn over a StreamSource (prefix cache + SD tail). ctx is the
+  // slot's StreamSource (stable address, loader-lifetime).
+  static unsigned long streamReadThunk(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
+  // §14.5 load path for faces beyond kMaxFaceBytes: open HalFile (kept open
+  // for the face's lifetime), PSRAM head-prefix cache, initStream, GPOS off.
+  bool tryLoadStreamedFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain);
+  // Release a slot's streamed source (close-before-reopen discipline).
+  void releaseStreamSource(uint8_t faceIdx);
+#endif
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
   // Size must fit TtfFont's profile-scaled slot tables before any glyph
@@ -313,6 +407,17 @@ class BookFontLoader {
   // `rootPath`, hidden root scanned first so it wins on name collisions.
   // Appends into the caller's manifest (capped at kMaxDiscoveredFamilies).
   static void scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount);
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Face-metadata style resolution (design §14.4.1, ported from upstream
+  // #3646): reads each face's real OS/2 weight + italic flag via
+  // FtFont::inspectStream, then re-assigns the four style roles
+  // deterministically (upright nearest 400 = regular, nearest 700 = bold,
+  // same for the italic pair; all-italic promotion; ties break to lower
+  // weight then lexicographic path — never SD enumeration order). A face
+  // that cannot be inspected keeps its filename-inferred estimate as the
+  // pick input (the filename heuristics remain the fallback).
+  static void refineStyles(FamilyInfo* families, uint8_t familyCount);
+#endif
   static FontChain* builtinFallback();
   // One of the four baked Atkinson fallback faces (§14.3), owned by the
   // builtin singleton; appended to the active chain as its tail.

@@ -30,10 +30,22 @@ class HalFile {
 
   size_t fileSize() { return data ? data->size() : 0; }
   uint64_t fileSize64() { return data ? data->size() : 0; }
+  // Read cursor: seek() sets it, read() consumes from it and advances.
+  // Default 0 keeps the historical read-from-start behavior for callers
+  // that never seek.
+  size_t cursor = 0;
+
+  bool seek(size_t pos) {
+    if (!data || pos > data->size()) return false;
+    cursor = pos;
+    return true;
+  }
   int read(void* buf, size_t count) {
     if (!data) return 0;
-    size_t n = count < data->size() ? count : data->size();
-    for (size_t i = 0; i < n; ++i) static_cast<char*>(buf)[i] = (*data)[i];
+    if (cursor >= data->size()) return 0;
+    size_t n = count < data->size() - cursor ? count : data->size() - cursor;
+    for (size_t i = 0; i < n; ++i) static_cast<char*>(buf)[i] = (*data)[cursor + i];
+    cursor += n;
     return static_cast<int>(n);
   }
   int read() { return -1; }

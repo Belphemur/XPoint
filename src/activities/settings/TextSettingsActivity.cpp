@@ -17,6 +17,7 @@
 #include "ReaderFontSizes.h"
 #include "SdCardFontSystem.h"
 #include "TextSettingsPreview.h"
+#include "TtfUiFallback.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #if defined(CROSSPOINT_TTF_READER)
@@ -144,7 +145,27 @@ void TextSettingsActivity::onEnter() {
   // Sync the loader's render mode with the persisted setting first: a Crisp
   // mode saved in a previous session must apply before any render.
   freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // begin() releases resident face bytes unconditionally (and clears the
+  // dirty flag) — registered UI-fallback faces must end FIRST while the
+  // bytes they borrow are still valid. Re-registered by the update() that
+  // follows the rescan's next ensureLoaded().
+  freeink::book::ttfUiFallback.release(renderer);
+#endif
   freeink::book::fontLoader.begin();  // rescan: pick up fonts added since boot
+  // Apply the persisted family BEFORE registering the UI fallback so
+  // update()'s ensureLoaded() resolves the user's family, not families_[0]
+  // (a later selectFamily would reload and invalidate the freshly borrowed
+  // byte owners — use-after-free on the next UI glyph).
+  if (SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF) {
+    freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+  }
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // Re-register the UI fallback against the rescanned manifest (the release
+  // above unregistered it; ensureLoaded inside update() reloads the active
+  // family against the fresh manifest).
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   fonts_.reserve(1 + static_cast<size_t>(freeink::book::fontLoader.familyCount()));
   fonts_.push_back({I18N.get(StrId::STR_BUILTIN_FONT), true, 0, true});
   for (uint8_t i = 0; i < freeink::book::fontLoader.familyCount(); ++i) {
@@ -440,6 +461,11 @@ void TextSettingsActivity::applyFamily(int listIndex) {
     // Load the selection now: the preview pane's next render calls getReaderFont
     // (ensureLoaded inside), and the reader picks the same family on relayout.
     freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+#if CROSSPOINT_TTF_UI_FALLBACK
+    // Re-sync the UI fallback registrations with the new family (or release
+    // them for the built-in fallback selection — update() handles both).
+    freeink::book::ttfUiFallback.update(renderer);
+#endif
     currentFamilyIndex_ = listIndex;
     rebuildSizeList();
     tabNavs[static_cast<int>(Tab::Size)].selected = 1;

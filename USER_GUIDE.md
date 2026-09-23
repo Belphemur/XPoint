@@ -605,7 +605,16 @@ There are three ways to install fonts:
 
 Once installed, custom fonts appear in **Settings → Reader → Font Family** alongside the built-in fonts.
 
-See [docs/sd-card-fonts.md](./docs/sd-card-fonts.md) for full installation details and SD card folder structure.
+`.cpfont` families are pre-rasterized bitmap fonts (they work on every board). On
+PSRAM boards (X4 Pro, X4 Classic) you can additionally drop plain **`.ttf` /`.otf` /
+`.ttc` files** into `/fonts/<FamilyName>/` — each family folder holds up to four
+styles (regular, bold, italic, bold-italic), and any plain `.ttf` alone becomes the
+family's regular face. XPoint's native TTF engine renders them with real kerning,
+ligatures and anti-aliasing at any size, streams oversized fonts straight from the
+SD card, and can even use your chosen TTF family inside menus when a string needs
+CJK or other glyphs the built-in UI fonts lack.
+
+See [docs/sd-card-fonts.md](./docs/sd-card-fonts.md) for full installation details and SD card folder structure, and [docs/ttf.md](./docs/ttf.md) for how the native TTF engine differs from upstream CrossPoint's implementation.
 
 ---
 

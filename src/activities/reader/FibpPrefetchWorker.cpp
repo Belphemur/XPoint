@@ -11,6 +11,8 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <cstring>
+
 #include "ChapterIndexEngine.h"
 
 namespace freeink {
@@ -36,7 +38,78 @@ bool FibpPrefetchWorker::buildFaces() {
   uint32_t h = 0x811c9dc5;
   for (uint8_t i = 0; i < 4 && i < fam->faceCount; ++i) {
     const FontFaceInfo& fi = fam->faces[i];
-    if (fi.fileSize == 0 || fi.fileSize > BookFontLoader::kMaxFaceBytes) continue;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    // §14.5 parity: oversized faces stream exactly like tryLoadStreamedFace
+    // — own open HalFile + PSRAM prefix, initStream, GPOS off — so the
+    // worker's chain covers the same slots as the reader's.
+    if (fi.fileSize > BookFontLoader::kMaxFaceBytes) {
+      if (fi.fileSize > BookFontLoader::kMaxStreamFaceBytes) continue;
+      StreamSource& src = streamSources_[i];
+      src.file.close();
+      src.prefix.reset();
+      src.prefixLen = 0;
+      if (!Storage.openFileForRead("PREF", fi.file, src.file)) {
+        LOG_ERR("PREF", "Streamed font open failed: %s", fi.file);
+        continue;
+      }
+      if (HalMemory::getPsramHeap().largestBlockBytes > BookFontLoader::kStreamPrefixBytes + 256u * 1024u) {
+        src.prefix = poolMakeBytes(BookFontLoader::kStreamPrefixBytes);
+        if (src.prefix && src.file.seek(0) &&
+            src.file.read(src.prefix.get(), BookFontLoader::kStreamPrefixBytes) == BookFontLoader::kStreamPrefixBytes) {
+          src.prefixLen = BookFontLoader::kStreamPrefixBytes;
+        } else {
+          src.prefixLen = 0;
+          src.prefix.reset();
+        }
+      }
+      auto face = makeUniqueNoThrow<NativeFace>();
+      if (face == nullptr) {
+        LOG_ERR("PREF", "OOM: streamed face for %s", fi.file);
+        src.file.close();
+        src.prefix.reset();
+        src.prefixLen = 0;
+        continue;
+      }
+      if (!face->initStream(&streamReadThunk, &src, fi.fileSize, BookFontLoader::kInitSizePx,
+                            (fi.styleFlags & StyleBold) ? 700 : 400, (fi.styleFlags & StyleItalic) != 0,
+                            fi.faceIndex)) {
+        LOG_ERR("PREF", "Streamed face init failed: %s", fi.file);
+        src.file.close();
+        src.prefix.reset();
+        src.prefixLen = 0;
+        continue;
+      }
+      face->setGposByteBudget(0);  // §14.5 trade-off, mirrors the loader
+      if (!face->setRenderOptions(BookFontLoader::effectiveRenderOptions(i))) {
+        LOG_ERR("PREF", "Render options unsupported for %s — face skipped", fi.file);
+        face.reset();
+        src.file.close();
+        src.prefix.reset();
+        src.prefixLen = 0;
+        continue;
+      }
+      if (!chain_.add(face.get(), fi.styleFlags)) {
+        LOG_ERR("PREF", "Chain add failed: %s", fi.file);
+        face.reset();
+        src.file.close();
+        src.prefix.reset();
+        src.prefixLen = 0;
+        continue;
+      }
+      faceOwners_[i] = std::move(face);
+      const uint32_t headHash = BookFontLoader::streamHeadHash(fi.file, fi.fileSize);
+      h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&headHash), sizeof(uint32_t), h);
+      const uint32_t sz = fi.fileSize;
+      h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&sz), sizeof(uint32_t), h);
+      // Parity with the loader's streamed fold: the mtime distinguishes a
+      // same-sized replacement with an identical header region.
+      const uint32_t mt = fi.mtime;
+      h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&mt), sizeof(uint32_t), h);
+      anyLoaded = true;
+      continue;
+    }
+#endif
+    if (fi.fileSize == 0) continue;
     fontBytes_[i] = poolMakeBytes(fi.fileSize);
     if (!fontBytes_[i]) {
       LOG_ERR("PREF", "PSRAM OOM: %u bytes for %s", static_cast<unsigned>(fi.fileSize), fi.file);
@@ -49,7 +122,7 @@ bool FibpPrefetchWorker::buildFaces() {
       fontBytes_[i].reset();
       continue;
     }
-    if (!BookFontLoader::validateSfntBytes(bytes, fi.fileSize)) {
+    if (!BookFontLoader::validateSfntBytes(bytes, fi.fileSize, fi.faceIndex)) {
       fontBytes_[i].reset();
       continue;
     }
@@ -60,7 +133,7 @@ bool FibpPrefetchWorker::buildFaces() {
       continue;
     }
     if (!face->init(bytes, fi.fileSize, BookFontLoader::kInitSizePx, (fi.styleFlags & StyleBold) ? 700 : 400,
-                    (fi.styleFlags & StyleItalic) != 0)) {
+                    (fi.styleFlags & StyleItalic) != 0, fi.faceIndex)) {
       LOG_ERR("PREF", "Face init failed: %s", fi.file);
       face.reset();
       fontBytes_[i].reset();
@@ -92,6 +165,19 @@ bool FibpPrefetchWorker::buildFaces() {
   }
   if (!anyLoaded) return false;
 
+  // Role-map tag parity (§14.4.1/§14.4.2): after the byte walk, the loader
+  // folds each loaded slot's path hash + collection face index — the worker
+  // must fold the same values in the same order or the derived fingerprint
+  // diverges from computeFingerprint() and every FIBP name misses.
+  for (uint8_t i = 0; i < 4 && i < fam->faceCount; ++i) {
+    if (faceOwners_[i] == nullptr) continue;
+    const FontFaceInfo& fi = fam->faces[i];
+    const uint32_t pathHash = BookFontLoader::facePathHash(fi.file);
+    h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&pathHash), sizeof(uint32_t), h);
+    const uint8_t faceIdx = fi.faceIndex;
+    h = BookFontLoader::fontBytesHash(&faceIdx, sizeof(uint8_t), h);
+  }
+
   // Fingerprint parity: the loader hashes bytes and xors the chain coverage
   // BEFORE appending the fallback tail (computeFingerprint() runs first in
   // ensureLoaded()), so the worker folds coverage at the same point.
@@ -108,10 +194,35 @@ bool FibpPrefetchWorker::buildFaces() {
   return chain_.styleCoverage() != 0;
 }
 
+// §14.5 streamed-source ReadFn (mirror of BookFontLoader's): serve from the
+// PSRAM prefix cache when the range is there, SD for the tail; count 0 is a
+// seek probe. ctx is the slot's StreamSource.
+unsigned long FibpPrefetchWorker::streamReadThunk(void* ctx, unsigned long offset, unsigned char* buffer,
+                                                  unsigned long count) {
+  auto* s = static_cast<StreamSource*>(ctx);
+  if (s == nullptr || !s->file) return 0;
+  const uint32_t cached = s->prefixLen;
+  if (offset < cached) {
+    if (count == 0) return 0;
+    // Subtraction-based: offset + count can wrap in 32-bit unsigned long on
+    // hostile offsets; cached - offset is safe because offset < cached.
+    const unsigned long fromCache = (count <= cached - offset) ? count : cached - offset;
+    std::memcpy(buffer, s->prefix.get() + offset, fromCache);
+    if (fromCache == count) return count;
+    return fromCache + BookFontLoader::halFileRead(&s->file, offset + fromCache, buffer + fromCache, count - fromCache);
+  }
+  return BookFontLoader::halFileRead(&s->file, offset, buffer, count);
+}
+
 void FibpPrefetchWorker::teardownFaces() {
   chain_ = FontChain{};  // drops its non-owning face pointers first
   for (auto& face : faceOwners_) face.reset();
   for (auto& bytes : fontBytes_) bytes.reset();
+  for (auto& src : streamSources_) {
+    src.file.close();
+    src.prefix.reset();
+    src.prefixLen = 0;
+  }
   fingerprint_ = 0;
 }
 
