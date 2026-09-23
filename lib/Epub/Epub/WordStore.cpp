@@ -57,6 +57,11 @@ bool WordStore::append(const char* text, size_t len, StoredWord& out) {
   }
   if (!target) {
     if (!ensureChunkSlot()) return false;
+    // Words larger than a chunk get a dedicated exact-fit chunk so the offset
+    // arithmetic stays uniform; everything else shares 2KB chunks.
+    const size_t cap = need > CHUNK_SIZE ? need : CHUNK_SIZE;
+    PoolBytes data = allocWithReclaim(cap);
+    if (!data) return false;  // fallible alloc BEFORE mutating shared state
     // The previous tail is about to become non-tail: a DRAINED tail must not
     // survive as a non-tail chunk — its stale word bytes would be re-enumerated
     // by the packed advance-table scan as if they belonged to this paragraph.
@@ -64,11 +69,6 @@ bool WordStore::append(const char* text, size_t len, StoredWord& out) {
       Chunk& prev = chunks_[chunkCount_ - 1];
       if (prev.live == 0) prev.data.reset();
     }
-    // Words larger than a chunk get a dedicated exact-fit chunk so the offset
-    // arithmetic stays uniform; everything else shares 2KB chunks.
-    const size_t cap = need > CHUNK_SIZE ? need : CHUNK_SIZE;
-    PoolBytes data = allocWithReclaim(cap);
-    if (!data) return false;
     Chunk& fresh = chunks_[chunkCount_];
     fresh.data = std::move(data);
     fresh.capacity = static_cast<uint16_t>(cap);

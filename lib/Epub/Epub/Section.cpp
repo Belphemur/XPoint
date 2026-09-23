@@ -930,9 +930,13 @@ void Section::abandonBuild(const bool keepPartial) {
   }
   build_.reset();
   buildComplete_ = false;
-  partial_ = false;
-  partialPageCount_ = 0;
-  pageCount = 0;
+  // The kept partial's in-memory watermark must survive keepPartial, or the
+  // same Section treats the section as having zero readable pages.
+  if (!keepPartial) {
+    partial_ = false;
+    partialPageCount_ = 0;
+    pageCount = 0;
+  }
   builtPageCount_ = 0;
 }
 

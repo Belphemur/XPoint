@@ -145,7 +145,20 @@ void TextSettingsActivity::onEnter() {
   // Sync the loader's render mode with the persisted setting first: a Crisp
   // mode saved in a previous session must apply before any render.
   freeink::book::fontLoader.applyRenderMode(SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_CRISP);
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // begin() releases resident face bytes unconditionally (and clears the
+  // dirty flag) — registered UI-fallback faces must end FIRST while the
+  // bytes they borrow are still valid. Re-registered by the update() that
+  // follows the rescan's next ensureLoaded().
+  freeink::book::ttfUiFallback.release(renderer);
+#endif
   freeink::book::fontLoader.begin();  // rescan: pick up fonts added since boot
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // Re-register the UI fallback against the rescanned manifest (the release
+  // above unregistered it; ensureLoaded inside update() reloads the active
+  // family against the fresh manifest).
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   fonts_.reserve(1 + static_cast<size_t>(freeink::book::fontLoader.familyCount()));
   fonts_.push_back({I18N.get(StrId::STR_BUILTIN_FONT), true, 0, true});
   for (uint8_t i = 0; i < freeink::book::fontLoader.familyCount(); ++i) {
