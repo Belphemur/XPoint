@@ -106,6 +106,16 @@ are cached on the SD card keyed to your exact font and settings — so switching
 only re-typesets what actually changed. (Curious about the engine? The design docs
 live in [docs/design/ttf](./docs/design/ttf).)
 
+#### How XPoint's TTF support differs from upstream CrossPoint
+
+Both readers draw `.ttf`/`.otf`/`.ttc` files with the same FreeType engine, but
+XPoint rebuilds the whole book-rendering pipeline around it (fractional metrics,
+kerning, ligatures, anti-aliasing, cached sections) while upstream teaches its
+old bitmap pipeline to draw TTF glyphs. Both now stream oversized fonts from the
+SD card and fall back to your TTF font for CJK text in menus. Practical rule of
+thumb: `.ttf` files work on both readers; `.cpfont` pre-rasterized families are
+XPoint-specific. Details in [docs/ttf.md](./docs/ttf.md).
+
 ### 🏠 Home & library
 
 - **Progress on every home card.** "42% • 2h 30m" right under each book in
