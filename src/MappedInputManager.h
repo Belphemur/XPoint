@@ -3,6 +3,7 @@
 #include <HalGPIO.h>
 
 #include "util/HomeButtonInput.h"
+#include "util/PowerClickWindow.h"
 
 class GfxRenderer;
 namespace freeink {
@@ -45,11 +46,32 @@ class MappedInputManager {
   // Home-key actions so the next main-loop pass can dispatch them, while the
   // current action remains available for immediate Home cancellation.
   void update(bool deferHomeButtonAction = false) const;
-#if FREEINK_CAP_TOUCH
-  // X4 Pro delays a single power click until its frontlight double-click window
-  // expires. The main loop supplies that one-frame event here.
-  void setPowerConfirmClickFrame(const bool clicked) { powerConfirmClickFrame = clicked; }
-#endif
+  // True exactly once when the frontlight double-click window resolved with a
+  // second click (soak-fix7 JFhK): the main loop toggles the frontlight on
+  // this and must not see the swallowed releases.
+  bool consumePowerDoubleClick();
+  // X4 Pro frontlight double-click window owner (update() calls it).
+  // Constants live in util/PowerClickWindow.h (the pure policy this adapts).
+  static constexpr unsigned long kPowerDoubleClickWindowMs = PowerClickWindow::kDoubleClickWindowMs;
+  static constexpr unsigned long kPowerClickMaxHoldMs = PowerClickWindow::kClickMaxHoldMs;
+  // Drops any open frontlight click window and discards its held release —
+  // the screenshot combo's Power release must not resolve as a short-power
+  // click (main.cpp combo handler calls this when the combo ends staggered).
+  void cancelPowerClickWindow() const { powerClickWindowState.open = false; }
+  void resolvePowerDoubleClickWindow(uint8_t newReleasedEdges) const;
+  // Re-serves ONE synthesized Confirm PRESS edge for the PWR_CONFIRM power
+  // click, the tick after its release was served (kody 6O2u): the click is
+  // release-driven, but press-driven Confirm consumers (keyboard-entry
+  // confirmHeld, auto-connect, installer guards) need an activation edge
+  // too. Consumed by the first wasPressed(Confirm) read.
+  bool consumePowerConfirmPress() const;
+  // True while an ambiguous first click is parked in the frontlight
+  // double-click window (main.cpp's sleep-on-release + power-off guards read
+  // this instead of the old file-scope click state).
+  bool isPowerClickWindowPending() const { return powerClickWindowState.open; }
+  // True while a power press in progress is still a double-click candidate
+  // (hold not yet past the click window): suppresses button-down power-off.
+  bool isPowerClickHoldCandidate() const;
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
   // One-shot threshold event while the button is down; consumes its release.
@@ -145,7 +167,15 @@ class MappedInputManager {
 
   Button mapScreenDirection(Button button) const;
   Labels mapFrontLabels(const char* back, const char* confirm, const char* left, const char* right) const;
+  // Resolves `button` to a physical button (0..6) and evaluates `probe`
+  // there; composite logical buttons (Nav*, Screen*) recurse. Returns false
+  // when the logical button is disabled (side buttons off).
+  template <typename Probe>
+  bool mapButtonWith(const Button button, Probe&& probe) const;
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
+  // This tick's edge read for `button`, from the snapshot taken in update()
+  // (soak-fix7: consume-once at the snapshot, multi-read safe).
+  bool edgeSnapshot(const Button button, const bool pressed) const;
   // SDK edge classification (fui::edgeSwipe) + the shared decode/held-time
   // bookkeeping; the wrappers below give each edge its board meaning.
   bool wasEdgeSwipe(freeink::ui::ScreenEdge edge) const;
@@ -169,7 +199,48 @@ class MappedInputManager {
   mutable unsigned long touchHeldOverrideAt = 0;
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
+  // This tick's physical button edges, taken ONCE in update() (soak-fix7:
+  // consume-on-check at the snapshot — each edge consumed exactly once and
+  // served to every activity read this tick). Bit i = physical BTN_i.
+  // REBUILT from scratch every tick — never OR'd across ticks (kody 6Ot2/
+  // 6Oyk): edges that must outlive a blocking transfer live in the
+  // pendingPending/pendingRelease registers below, which compose into
+  // exactly one frame and clear when they do.
+  mutable uint8_t framePressedEdges = 0;
+  mutable uint8_t frameReleasedEdges = 0;
+  // Edges captured on a blocking-transfer pump (update(true)) whose
+  // callbacks did not inspect them (kody 6Ot2/6Oyk): held here — OUT of the
+  // live frame masks — and composed into exactly ONE later dispatch frame
+  // (next normal update() ORs them in once, then both registers clear). A
+  // pump callback CAN read an edge directly (Back/Home); an edge it read
+  // from the live masks was consumed by that pump frame and must NOT ride
+  // the pending registers — the pump subtracts what it consumed.
+  mutable uint8_t pendingPressed = 0;
+  mutable uint8_t pendingReleased = 0;
+  // A physical release withheld from frameReleasedEdges this tick (armed
+  // double-click candidate / carve-out) still counts as user activity —
+  // otherwise the inactivity timer can expire during the 500 ms window
+  // despite a real click (qodo Q2).
+  mutable bool frameHiddenActivity = false;
 #if FREEINK_CAP_TOUCH
-  bool powerConfirmClickFrame = false;
+  mutable bool powerConfirmClickFrame = false;
+  // PWR_CONFIRM synthesized press (kody 6O2u, frame-scoped per kody
+  // 8Y5e/8Y70): ARMED on the dispatch that delivers the Confirm verdict;
+  // the next normal dispatch shifts armed into ACTIVE, which lives exactly
+  // one dispatch frame and is consumed by the first wasPressed(Confirm)
+  // read. Edge state never survives two dispatch boundaries.
+  mutable bool powerConfirmPressActive = false;
+  mutable bool powerConfirmPressArmed = false;
+  // True while a blocking transfer's pump ticks run: verdicts raised
+  // mid-transfer survive to the first post-transfer dispatch (which keeps
+  // them for that frame); the pump-entry transition clears pre-transfer
+  // verdict state (kody 7JYi).
+  mutable bool pumpingDispatch = false;
 #endif
+  // X4 Pro frontlight double-click window (soak-fix7 JFhK): the FIRST short
+  // power release is ambiguous (frontlight toggle vs configured short-power
+  // action) and is held out of the served mask until the window resolves.
+  // Open/closed is explicit — 0 is a legal millis() value (boot, timer wrap).
+  mutable PowerClickWindow::WindowState powerClickWindowState;
+  mutable bool powerDoubleClickFrame = false;
 };

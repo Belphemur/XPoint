@@ -111,6 +111,7 @@ add_subdirectory(page_link)
 add_subdirectory(content_opf_parser)
 add_subdirectory(chapter_position)
 add_subdirectory(home_button)
+add_subdirectory(input_grammar)
 add_subdirectory(quick_page_capture)
 
 add_subdirectory(inflate_stream)

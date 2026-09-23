@@ -71,9 +71,11 @@ class HalGPIO {
 
   // Button input methods
   void update();
-  // Frame boundary for async input: clears the latched drained edges so this
-  // tick's readers see each edge exactly once (no-op on sync builds).
-  void beginInputFrame();
+  // Consume the poll task's touch/home-key one-shots into the per-tick
+  // snapshot (soak-fix7 pop pattern): the touch getters read the snapshot
+  // until the next consume. Button edges are consumed per-read via
+  // wasPressed/wasReleased. No-op on sync builds.
+  void consumeTouchFrame();
   bool isPressed(uint8_t buttonIndex) const;
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;

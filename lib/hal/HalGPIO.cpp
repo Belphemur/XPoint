@@ -154,12 +154,11 @@ void HalGPIO::update() {
   lastUsbConnected = connected;
 }
 
-// Frame boundary for the async input drain: clears the latched edges so the
-// calling tick's readers see every edge queued since the previous tick
-// exactly once. No-op on sync builds.
-void HalGPIO::beginInputFrame() {
+// Consume the poll task's touch/home-key one-shots into the per-tick
+// snapshot (soak-fix7 pop pattern). No-op on sync builds.
+void HalGPIO::consumeTouchFrame() {
 #if CROSSPOINT_EMULATED == 0
-  inputMgr.beginInputFrame();
+  inputMgr.consumeTouchFrame();
 #else
   (void)0;
 #endif
@@ -255,10 +254,10 @@ bool HalGPIO::verifyPowerButtonWakeup() {
   constexpr unsigned long POWER_WAKE_STABILITY_MS = 10;
   const bool heldAtFirstSample = inputMgr.isPowerButtonPhysicallyPressed();
   const unsigned long sampleStart = millis();
-  // Async mode: the poll task keeps the edge state alive at pollMs cadence,
-  // and an update() here would drain queued edges into the frame latch
-  // where this level-only check never reads them — the next
-  // beginInputFrame() would erase them unprocessed.
+  // Async mode: the poll task keeps the edge state alive at pollMs cadence
+  // (and update() is a no-op off the poll task), so this loop needs no
+  // input work at all — popping here would consume edges the real
+  // consumer has not read.
   const bool needsOwnSampling = !inputMgr.asyncActive();
   if (needsOwnSampling) inputMgr.update();
   while (millis() - sampleStart < POWER_WAKE_STABILITY_MS || inputMgr.isDebouncePending()) {
