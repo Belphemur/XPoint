@@ -603,7 +603,9 @@ bool Section::buildSomeMore(const int maxPages) {
     const auto status = build_->parser->parseStep();
     if (status == ChapterHtmlSlimParser::ParseStatus::Error) {
       LOG_ERR("SCT", "Parse error during incremental build");
-      abandonBuild();
+      // Layout OOM is transient: keep the pre-existing partial readable and
+      // let a later attempt rebuild over it; only content errors delete it.
+      abandonBuild(build_->parser->hadLayoutOom());
       return false;
     }
     if (status == ChapterHtmlSlimParser::ParseStatus::Done) {
@@ -794,10 +796,12 @@ bool Section::commitBuildFile(const uint8_t version, const uint32_t bytesConsume
 bool Section::finalizeBuild() {
   // Flush the trailing page (emits the last page via the completePageFn into the LUT).
   // A false return means layout dropped content (OOM); committing would persist a
-  // section cache with holes in the text, so abandon the build instead.
+  // section cache with holes in the text, so abandon the build instead — but KEEP
+  // any pre-existing partial/section: layout OOM is transient, and its in-memory
+  // watermark still matches the kept file.
   if (!build_->parser->finishParse()) {
-    LOG_ERR("SCT", "Parse finalize failed; abandoning section build");
-    abandonBuild();
+    LOG_ERR("SCT", "Parse finalize failed; abandoning section build (partial kept)");
+    abandonBuild(/*keepPartial=*/true);
     return false;
   }
 
@@ -903,7 +907,7 @@ void Section::suspendBuild() {
   builtPageCount_ = 0;
 }
 
-void Section::abandonBuild() {
+void Section::abandonBuild(const bool keepPartial) {
   if (!build_) return;
   if (build_->parser) build_->parser->abortParse();
   if (build_->cssParser) build_->cssParser->clear();
@@ -913,11 +917,15 @@ void Section::abandonBuild() {
     Storage.remove(binTmpPath().c_str());
   }
   // A parse error would recur against the same HTML, so drop any partial too -- resuming
-  // from it would just re-enter the failing build every open.
-  if (Storage.exists(filePath.c_str())) {
+  // from it would just re-enter the failing build every open. Layout OOM is different:
+  // it is transient (heap state, not content), so the pre-existing partial/section
+  // stays readable — its in-memory watermark (partial_/pageCount) still matches the
+  // kept file, since a failed build never promotes the tmp into filePath.
+  if (!keepPartial && Storage.exists(filePath.c_str())) {
     Storage.remove(filePath.c_str());
   }
-  if (!build_->reusedHtml && Storage.exists(build_->tmpHtmlPath.c_str())) {
+  // Same reasoning for the unzipped HTML: keep it for the OOM retry.
+  if (!keepPartial && !build_->reusedHtml && Storage.exists(build_->tmpHtmlPath.c_str())) {
     Storage.remove(build_->tmpHtmlPath.c_str());
   }
   build_.reset();

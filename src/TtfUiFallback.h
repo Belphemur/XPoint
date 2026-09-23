@@ -48,6 +48,12 @@ class TtfUiFallback {
   int primaryIds_[kUiSizeCount] = {};
   uint8_t registeredCount_ = 0;
   uint32_t registeredFingerprint_ = 0;  // loader fingerprint the registrations borrow
+  // Borrowed byte owners per style slot, captured at registration. The
+  // fingerprint does NOT identify buffer addresses: an ensureLoaded() reload
+  // with identical content re-creates the byte owners (possibly at different
+  // pool addresses) while the fingerprint stays equal, so the fast path must
+  // verify the borrowed pointers are still the loader's CURRENT ones.
+  const void* borrowedSnapshot_[4] = {};
 };
 
 // Global instance (one inline variable for every build class — the #else

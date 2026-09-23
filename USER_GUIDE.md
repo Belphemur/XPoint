@@ -605,8 +605,6 @@ There are three ways to install fonts:
 
 Once installed, custom fonts appear in **Settings → Reader → Font Family** alongside the built-in fonts.
 
-Once installed, custom fonts appear in **Settings → Reader → Font Family** alongside the built-in fonts.
-
 `.cpfont` families are pre-rasterized bitmap fonts (they work on every board). On
 PSRAM boards (X4 Pro, X4 Classic) you can additionally drop plain **`.ttf` /`.otf` /
 `.ttc` files** into `/fonts/<FamilyName>/` — each family folder holds up to four

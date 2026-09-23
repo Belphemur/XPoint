@@ -251,6 +251,10 @@ class ChapterHtmlSlimParser {
   ParseStatus parseStep();
   bool finishParse();  // flush the trailing page and tear down; returns true
   void abortParse();   // tear down without flushing (error / abandon)
+  // True when layoutOom latched (transient heap pressure, not bad content).
+  // Lets the section builder keep a readable pre-existing partial instead of
+  // deleting it (a parse error would recur; OOM will not).
+  bool hadLayoutOom() const { return layoutOom; }
 
   void addLineToPage(std::unique_ptr<TextBlock> line, uint32_t visibleOffset);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }

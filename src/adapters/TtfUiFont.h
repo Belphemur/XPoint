@@ -42,7 +42,7 @@ using freeink::font::GlyphBitmap;
 class TtfUiFont {
  public:
   // 1bpp ring capacity: one UI screen's worth of distinct fallback glyphs.
-  // 16 slots × up to a 32×32 box (12pt ≈ 21px tall) ≈ 2.25KB per instance.
+  // 16 slots × up to a 32×32 box (12pt @150DPI ≈ 25px tall) ≈ 2.25KB per instance.
   static constexpr uint8_t kRingSlots = 16;
   static constexpr uint8_t kMaxGlyphBox = 32;
   // Rows of (width+7)/8 bytes, MSB-first — the EpdFont bitmap format.

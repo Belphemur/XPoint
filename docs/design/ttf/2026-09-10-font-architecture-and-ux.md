@@ -63,8 +63,10 @@ Rules:
   hidden root winning on conflicting styles;
 - folder name is the family display name (case preserved);
 - up to 4 faces per family, 32-family cap;
-- 2MB per-face PSRAM size guard (`BookFontLoader::kMaxFaceBytes`), CWE-400
-  discipline.
+- 2MB per-face residency threshold (`BookFontLoader::kMaxFaceBytes`): faces
+  beyond it stream from SD (§14.5) instead of staying resident in PSRAM —
+  only the 24MB stream cap (`kMaxStreamFaceBytes`) still disqualifies a
+  face. CWE-400 discipline.
 
 ### 4.1 Style inference
 
@@ -112,13 +114,6 @@ otherwise a stale section cache renders the new role map over the old
 layout. The stb backend (no `FtFont`) keeps the filename-derived roles
 unchanged.
 
-**Fingerprint coupling**: the streamed slot has no resident bytes, so its
-fingerprint folds the SD head hash (FNV-1a over the first 4KB, chunked off
-SD) plus the file size instead of a full byte walk, bypassing the SD
-fp-cache. `FibpPrefetchWorker` streams oversized faces the same way (own
-HalFile + prefix + `initStream`) and folds the identical values in the same
-order, preserving exact `computeFingerprint()` parity.
-
 ### 14.4.2 TrueType collections (.ttc)
 
 Ported from upstream #3646's registry `.ttc` acceptance. `FtFont` gained
@@ -156,6 +151,15 @@ resident borrowed-bytes contract: released in `releaseResidentCaches()`/
 `ensureLoaded()`'s clear loop (close-before-reopen discipline). The picker
 (`isFamilyAvailable`) no longer greys oversized rows — only the stream cap
 disqualifies. The stb backend has no `initStream` and keeps the skip.
+
+**Fingerprint coupling**: the streamed slot has no resident bytes, so its
+fingerprint folds the SD head hash (FNV-1a over the first 4KB, chunked off
+SD) plus the file size and the SD mtime instead of a full byte walk,
+bypassing the SD fp-cache. The mtime distinguishes a same-sized replacement
+whose header region is identical. `FibpPrefetchWorker` streams oversized
+faces the same way (own HalFile + prefix + `initStream`) and folds the
+identical values in the same order, preserving exact `computeFingerprint()`
+parity.
 
 ### 5.1 TTF-backed CJK/script UI fallback (design §14.6)
 
@@ -202,8 +206,8 @@ Style`). The TTF additions are:
 
 - **Font tab**: TTF families listed after the built-in and SD-card bitmap
   families. Rows show family name and style availability. The row is
-  greyed/disabled when `BookFontLoader::isFamilyAvailable()` fails (no PSRAM
-  or a face over the size guard).
+  greyed/disabled when `BookFontLoader::isFamilyAvailable()` fails (no
+  PSRAM, or a face over the 24MB stream cap on the FT backend).
 - **Size tab**: continuous size picker for TTF families; discrete list for
   bitmap families.
 - **Layout tab**: unchanged (line spacing, paragraph spacing, alignment,

@@ -1366,7 +1366,10 @@ void BookFontLoader::refineStyles(FamilyInfo* families, uint8_t familyCount) {
     const bool regularIsItalic = italics[regular];
     int italic = regularIsItalic ? -1 : pick(true, 400, -1, -1);
     int boldItalic = pick(true, 700, italic >= 0 ? italic : regular, -1);
-    if (boldItalic >= 0 && italic >= 0 && weights[boldItalic] <= weights[italic]) boldItalic = -1;
+    // Genuinely heavier than the italic ANCHOR — in an all-italic family the
+    // regular pick IS that anchor (the italic role stays synthesized).
+    const int italicAnchor = italic >= 0 ? italic : regular;
+    if (boldItalic >= 0 && weights[boldItalic] <= weights[italicAnchor]) boldItalic = -1;
     if (boldItalic >= 0 && !italics[boldItalic]) boldItalic = -1;
 
     // Rewrite the face array in role order [regular, bold, italic,

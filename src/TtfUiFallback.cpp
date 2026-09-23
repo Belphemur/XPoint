@@ -32,6 +32,15 @@ bool familyCoversFallbackScripts(FontChain& chain) {
   return false;
 }
 
+// kUiFontSizes pointSize is a physical POINT size at 150 DPI (the SD-font
+// converter convention the UI font ids share). FtFont sizes are PIXELS, so
+// convert — otherwise the fallback CJK/Greek/Cyrillic glyphs render at about
+// half the height of the surrounding built-in Latin text.
+constexpr uint16_t pointToPx(const uint8_t pointSize) {
+  // pt * 150 DPI / 72, rounded to nearest.
+  return static_cast<uint16_t>((pointSize * 150u + 36u) / 72u);
+}
+
 }  // namespace
 
 void TtfUiFallback::update(GfxRenderer& renderer) {
@@ -48,9 +57,21 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     return;
   }
   if (registeredCount_ > 0 && registeredFingerprint_ == fingerprint) {
-    return;  // fast path: registrations still borrow the same loaded bytes
+    // Buffer-address guard: an ensureLoaded() reload with identical content
+    // keeps the fingerprint but re-creates the byte owners — stale faces
+    // would point at freed memory. Release + re-register on any move.
+    bool borrowed = true;
+    for (uint8_t s = 0; s < 4; ++s) {
+      if (fontLoader.slotFaceBytes(s) != borrowedSnapshot_[s]) {
+        borrowed = false;
+        break;
+      }
+    }
+    if (borrowed) return;
+    release(renderer);
+  } else {
+    release(renderer);
   }
-  release(renderer);
 
   // Heap gate: FreeType faces + glyph rings need PSRAM headroom.
   const HalMemory::HeapStats psram = HalMemory::getPsramHeap();
@@ -89,7 +110,7 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
       LOG_DBG("TTFUI", "Family '%s' has no resident bytes (streamed?) — no UI fallback", SETTINGS.ttfFontFamilyName);
       return;
     }
-    if (!instances_[i].begin(bytes, sizes, faceIndices, ui.pointSize)) {
+    if (!instances_[i].begin(bytes, sizes, faceIndices, pointToPx(ui.pointSize))) {
       LOG_DBG("TTFUI", "UI size %u not available in '%s'", static_cast<unsigned>(ui.pointSize),
               SETTINGS.ttfFontFamilyName);
       continue;
@@ -103,6 +124,7 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
             ttfId);
   }
   registeredFingerprint_ = fingerprint;
+  for (uint8_t s = 0; s < 4; ++s) borrowedSnapshot_[s] = fontLoader.slotFaceBytes(s);
   LOG_INF("TTFUI", "%u TTF UI fallback size(s) registered", static_cast<unsigned>(registeredCount_));
 }
 
@@ -124,6 +146,7 @@ void TtfUiFallback::release(GfxRenderer& renderer) {
   }
   registeredCount_ = 0;
   registeredFingerprint_ = 0;
+  for (auto& snap : borrowedSnapshot_) snap = nullptr;
 }
 
 }  // namespace book
