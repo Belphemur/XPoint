@@ -77,17 +77,19 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     }
     const void* bytes[4] = {};
     uint32_t sizes[4] = {};
+    uint8_t faceIndices[4] = {};
     bool any = false;
     for (uint8_t s = 0; s < 4; ++s) {
       bytes[s] = fontLoader.slotFaceBytes(s);
       sizes[s] = fontLoader.slotFaceByteSize(s);
+      faceIndices[s] = fontLoader.slotFaceIndex(s);
       any = any || bytes[s] != nullptr;
     }
     if (!any) {
       LOG_DBG("TTFUI", "Family '%s' has no resident bytes (streamed?) — no UI fallback", SETTINGS.ttfFontFamilyName);
       return;
     }
-    if (!instances_[i].begin(bytes, sizes, ui.pointSize)) {
+    if (!instances_[i].begin(bytes, sizes, faceIndices, ui.pointSize)) {
       LOG_DBG("TTFUI", "UI size %u not available in '%s'", static_cast<unsigned>(ui.pointSize),
               SETTINGS.ttfFontFamilyName);
       continue;
@@ -110,8 +112,11 @@ void TtfUiFallback::release(GfxRenderer& renderer) {
     renderer.removeFont(registeredIds_[i]);
   }
   // Faces release AFTER the font map entries are gone — no draw path can
-  // reach the borrowed views while they are torn down.
-  for (uint8_t i = 0; i < registeredCount_; ++i) {
+  // reach the borrowed views while they are torn down. End EVERY instance,
+  // not just the first registeredCount_: a size whose begin() failed leaves
+  // no registration, but an instance at a later index may still hold live
+  // faces borrowing loader bytes.
+  for (size_t i = 0; i < kUiSizeCount; ++i) {
     instances_[i].end();
   }
   if (registeredCount_ > 0) {

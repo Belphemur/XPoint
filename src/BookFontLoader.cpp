@@ -658,6 +658,11 @@ uint32_t BookFontLoader::slotFaceByteSize(uint8_t slot) const {
   if (slot >= 4 || faceBytesOwner_[slot] == 0 || faceBytesOwner_[slot] == 3) return 0;
   return fontFileSizes_[slot];
 }
+
+uint8_t BookFontLoader::slotFaceIndex(uint8_t slot) const {
+  if (slot >= 4 || faceBytesOwner_[slot] == 0 || faceBytesOwner_[slot] == 3) return 0;
+  return faceIndexUsed_[slot];
+}
 #endif  // CROSSPOINT_FONT_BACKEND_FT
 
 void BookFontLoader::releaseResidentCaches() {
@@ -763,10 +768,16 @@ bool BookFontLoader::validateSfntBytes(const uint8_t* data, uint32_t size, const
       LOG_ERR("BFNT", "TTC face %u out of range (%u faces)", faceIndex, numFonts);
       return false;
     }
+    // Subtraction-based bounds: the whole 4-byte offset-array entry must fit
+    // before it is read (untrusted numFonts/index must not drive an OOB read).
     const size_t offField = 12 + static_cast<size_t>(faceIndex) * 4;
+    if (offField > size || size - offField < 4) {
+      LOG_ERR("BFNT", "TTC face %u offset entry beyond size %u", faceIndex, size);
+      return false;
+    }
     base = static_cast<uint32_t>(data[offField]) << 24 | static_cast<uint32_t>(data[offField + 1]) << 16 |
            static_cast<uint32_t>(data[offField + 2]) << 8 | static_cast<uint32_t>(data[offField + 3]);
-    if (base + 12 > size) {
+    if (base > size || size - base < 12) {
       LOG_ERR("BFNT", "TTC face %u base %u beyond size %u", faceIndex, base, size);
       return false;
     }
@@ -813,11 +824,14 @@ uint32_t BookFontLoader::computeFingerprint() const {
     anyLoaded = true;
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     if (faceBytesOwner_[i] == 3) {
-      // §14.5 streamed slot: no resident bytes — fold the SD head hash and
-      // the size instead (same values the prefetch worker folds).
+      // §14.5 streamed slot: no resident bytes — fold the SD head hash, the
+      // size and the mtime instead (same values the prefetch worker folds).
+      // The mtime distinguishes a same-sized replacement whose header region
+      // is identical but whose later metrics/outlines differ.
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&streamHeadHash_[i]), sizeof(uint32_t), h);
       const uint32_t sz = fontFileSizes_[i];
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&sz), sizeof(uint32_t), h);
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&faceMtime_[i]), sizeof(uint32_t), h);
       continue;
     }
 #endif
@@ -870,6 +884,7 @@ uint32_t BookFontLoader::computeFingerprintCached() {
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&streamHeadHash_[i]), sizeof(uint32_t), h);
       const uint32_t sz = fontFileSizes_[i];
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&sz), sizeof(uint32_t), h);
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&faceMtime_[i]), sizeof(uint32_t), h);
       continue;
     }
 #endif

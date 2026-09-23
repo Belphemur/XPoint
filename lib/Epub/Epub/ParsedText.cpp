@@ -759,18 +759,27 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
     if (styleMask == 0) styleMask = 0x01;  // defensive: regular only
     // Hand the arena chunks over as packed NUL-separated word runs. Two small
     // pointer tables (~8 B per live chunk) instead of per-word iteration.
-    std::vector<const char*> segments;
-    std::vector<size_t> segmentLens;
-    segments.reserve(wordStore.chunkCount());
-    segmentLens.reserve(wordStore.chunkCount());
-    for (size_t i = 0; i < wordStore.chunkCount(); ++i) {
-      const char* data = wordStore.chunkData(i);
-      if (!data) continue;  // retired chunk
-      segments.push_back(data);
-      segmentLens.push_back(wordStore.chunkUsed(i));
+    // Nothrow arrays: a throwing vector::reserve here would abort under
+    // -fno-exceptions before the WordStore funnel can report a recoverable
+    // failure; skipping the prewarm handoff on OOM is harmless (the advance
+    // table just won't warm for this paragraph).
+    const size_t chunkCount = wordStore.chunkCount();
+    auto segments = makeUniqueNoThrow<const char*[]>(chunkCount);
+    auto segmentLens = makeUniqueNoThrow<size_t[]>(chunkCount);
+    size_t liveChunks = 0;
+    if (segments && segmentLens) {
+      for (size_t i = 0; i < chunkCount; ++i) {
+        const char* data = wordStore.chunkData(i);
+        if (!data) continue;  // retired chunk
+        segments[liveChunks] = data;
+        segmentLens[liveChunks] = wordStore.chunkUsed(i);
+        ++liveChunks;
+      }
+      renderer.ensureSdCardFontReady(fontId, segments.get(), segmentLens.get(), liveChunks, words.size() > 1,
+                                     hyphenationEnabled, styleMask);
+    } else {
+      LOG_DBG("PTX", "OOM: skipping packed advance prewarm (%u chunks)", static_cast<unsigned>(chunkCount));
     }
-    renderer.ensureSdCardFontReady(fontId, segments.data(), segmentLens.data(), segments.size(), words.size() > 1,
-                                   hyphenationEnabled, styleMask);
   }
 
   const int pageWidth = viewportWidth;

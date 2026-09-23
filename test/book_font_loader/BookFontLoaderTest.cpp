@@ -857,8 +857,9 @@ TEST(TtfUiFontTest, FaultsMonoGlyphsThroughMissSeam) {
 
   const void* slotBytes[4] = {bytes.data(), nullptr, nullptr, nullptr};
   const uint32_t slotSizes[4] = {static_cast<uint32_t>(bytes.size()), 0, 0, 0};
+  const uint8_t slotFaceIdx[4] = {0, 0, 0, 0};
   freeink::book::TtfUiFont ui;
-  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, 12));
+  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, slotFaceIdx, 12));
 
   // Stub data reports coverage through the RAM-resident engine (no interval
   // table — the coverageHandler answers hasGlyph).
@@ -897,8 +898,9 @@ TEST(TtfUiFontTest, SpaceAdvancesWithoutBitmap) {
   if (!fixtureAvailable(bytes)) GTEST_SKIP() << "fixture unavailable";
   const void* slotBytes[4] = {bytes.data(), nullptr, nullptr, nullptr};
   const uint32_t slotSizes[4] = {static_cast<uint32_t>(bytes.size()), 0, 0, 0};
+  const uint8_t slotFaceIdx[4] = {0, 0, 0, 0};
   freeink::book::TtfUiFont ui;
-  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, 10));
+  ASSERT_TRUE(ui.begin(slotBytes, slotSizes, slotFaceIdx, 10));
   const EpdGlyph* g = ui.family().getGlyph(' ', EpdFontFamily::REGULAR);
   ASSERT_NE(g, nullptr);
   EXPECT_EQ(g->width, 0);

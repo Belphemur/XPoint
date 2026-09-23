@@ -57,7 +57,14 @@ class TtfUiFont {
   // (bytes[slot] for slots REGULAR/BOLD/ITALIC/BOLD_ITALIC; a null slot
   // resolves to the regular slot on use). `bytes` must outlive this
   // instance — release via end() BEFORE the loader releases its bytes.
-  bool begin(const void* const bytes[4], const uint32_t byteSizes[4], uint16_t sizePx);
+  // Bind to a loaded family: borrows per-style resident font bytes
+  // (bytes[slot] for slots REGULAR/BOLD/ITALIC/BOLD_ITALIC; a null slot
+  // resolves to the regular slot on use). `bytes` must outlive this
+  // instance — release via end() BEFORE the loader releases its bytes.
+  // faceIndices[slot] selects the embedded face for collections (.ttc): the
+  // same index the loader discovered for the reader, since index 0 can carry
+  // different coverage.
+  bool begin(const void* const bytes[4], const uint32_t byteSizes[4], const uint8_t faceIndices[4], uint16_t sizePx);
 
   // Release faces and ring. The EpdFontFamily view goes dead (nullptr data).
   void end();
@@ -73,6 +80,7 @@ class TtfUiFont {
     FtFont* face = nullptr;  // lazy, borrows `bytes`
     const void* bytes = nullptr;
     uint32_t byteSize = 0;
+    uint8_t faceIndex = 0;   // .ttc embedded face (loader-discovered)
     bool faceTried = false;  // failed creation is not retried
     // Back-links for the static handlers (EpdFontData carries one void* ctx).
     TtfUiFont* owner = nullptr;

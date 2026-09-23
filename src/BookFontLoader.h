@@ -207,6 +207,11 @@ class BookFontLoader {
   // fontFingerprint() and drop borrowed views when it changes.
   const void* slotFaceBytes(uint8_t slot) const;
   uint32_t slotFaceByteSize(uint8_t slot) const;
+  // The collection face index actually used for the slot's face (0 for plain
+  // .ttf/.otf). Lets the TtfUiFont adapters init faces against the SAME
+  // embedded face the reader selected — index 0 of a TTC can carry different
+  // coverage than the discovered Unicode-cmap face.
+  uint8_t slotFaceIndex(uint8_t slot) const;
 #endif
 
   // Public fingerprint helper — content-based, never path/mtime.

@@ -101,6 +101,10 @@ bool FibpPrefetchWorker::buildFaces() {
       h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&headHash), sizeof(uint32_t), h);
       const uint32_t sz = fi.fileSize;
       h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&sz), sizeof(uint32_t), h);
+      // Parity with the loader's streamed fold: the mtime distinguishes a
+      // same-sized replacement with an identical header region.
+      const uint32_t mt = fi.mtime;
+      h = BookFontLoader::fontBytesHash(reinterpret_cast<const uint8_t*>(&mt), sizeof(uint32_t), h);
       anyLoaded = true;
       continue;
     }

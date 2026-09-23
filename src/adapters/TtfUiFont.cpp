@@ -32,7 +32,8 @@ void packMono1bpp(const GlyphBitmap& src, uint8_t* dst, size_t dstCap) {
 
 TtfUiFont::~TtfUiFont() { end(); }
 
-bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], uint16_t sizePx) {
+bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], const uint8_t faceIndices[4],
+                      uint16_t sizePx) {
   end();
   if (sizePx == 0) return false;
   sizePx_ = sizePx;
@@ -43,6 +44,7 @@ bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], u
     slot.font = EpdFont(&slot.data);
     slot.bytes = bytes[s];
     slot.byteSize = byteSizes[s];
+    slot.faceIndex = faceIndices[s];
     slot.owner = this;
     slot.styleSlot = s;
     // Prefer the dedicated style face; fall back to the regular slot when the
@@ -50,6 +52,7 @@ bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], u
     if (slot.bytes == nullptr && s != 0) {
       slot.bytes = bytes[0];
       slot.byteSize = byteSizes[0];
+      slot.faceIndex = faceIndices[0];
     }
     if (slot.bytes == nullptr || slot.byteSize == 0) continue;
     any = true;
@@ -84,7 +87,9 @@ bool TtfUiFont::begin(const void* const bytes[4], const uint32_t byteSizes[4], u
   int16_t ascender = sizePx_ * 3 / 4;  // sane fallback if metrics are missing
   if (regular->lineMetrics26_6(static_cast<uint32_t>(sizePx_) * 64, lm)) {
     ascender = static_cast<int16_t>(lm.ascender26_6 / 64);
-    lineHeight = static_cast<int16_t>((lm.ascender26_6 - lm.descender26_6) / 64);
+    // Baseline-to-baseline distance from the SDK's dedicated height field —
+    // it includes the line gap, unlike the ascender-to-descender extent.
+    lineHeight = static_cast<int16_t>(lm.height26_6 / 64);
   }
   if (lineHeight <= 0) lineHeight = sizePx_;
 
@@ -158,7 +163,7 @@ FtFont* TtfUiFont::ensureFace(Slot& slot) {
   // Borrowed bytes: same lifetime rules as the loader's faces — released
   // only through end(), which the owner calls before dropping the loader's
   // bytes (family change / releaseResidentCaches).
-  if (!face->init(static_cast<const uint8_t*>(slot.bytes), slot.byteSize, sizePx_, 400, false)) {
+  if (!face->init(static_cast<const uint8_t*>(slot.bytes), slot.byteSize, sizePx_, 400, false, slot.faceIndex)) {
     LOG_ERR("TTFUI", "UI face init failed (style %u)", static_cast<unsigned>(slot.styleSlot));
     delete face;
     return nullptr;
