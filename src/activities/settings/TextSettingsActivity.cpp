@@ -153,6 +153,13 @@ void TextSettingsActivity::onEnter() {
   freeink::book::ttfUiFallback.release(renderer);
 #endif
   freeink::book::fontLoader.begin();  // rescan: pick up fonts added since boot
+  // Apply the persisted family BEFORE registering the UI fallback so
+  // update()'s ensureLoaded() resolves the user's family, not families_[0]
+  // (a later selectFamily would reload and invalidate the freshly borrowed
+  // byte owners — use-after-free on the next UI glyph).
+  if (SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF) {
+    freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
+  }
 #if CROSSPOINT_TTF_UI_FALLBACK
   // Re-register the UI fallback against the rescanned manifest (the release
   // above unregistered it; ensureLoaded inside update() reloads the active
