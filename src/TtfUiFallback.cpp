@@ -23,8 +23,7 @@ constexpr size_t kMinPsramLargestBlock = 256u * 1024u;
 // One representative codepoint per script the built-in UI fonts may lack
 // (same probe set as the SD-font UI fallbacks): Han, Hiragana, Katakana,
 // Hangul, Greek, Cyrillic, Hebrew, Arabic, Thai, Devanagari.
-constexpr uint32_t kFallbackProbes[] = {0x4E00, 0x3042, 0x30A2, 0xAC00, 0x03B1,
-                                        0x0430, 0x05D0, 0x0627, 0x0E01, 0x0905};
+constexpr uint32_t kFallbackProbes[] = {0x4E00, 0x3042, 0x30A2, 0xAC00, 0x03B1, 0x0430, 0x05D0, 0x0627, 0x0E01, 0x0905};
 
 bool familyCoversFallbackScripts(FontChain& chain) {
   for (const uint32_t cp : kFallbackProbes) {
@@ -98,8 +97,8 @@ void TtfUiFallback::update(GfxRenderer& renderer) {
     registeredIds_[registeredCount_] = ttfId;
     primaryIds_[registeredCount_] = ui.fontId;
     ++registeredCount_;
-    LOG_DBG("TTFUI", "UI fallback %s @%upt -> id %d", SETTINGS.ttfFontFamilyName,
-            static_cast<unsigned>(ui.pointSize), ttfId);
+    LOG_DBG("TTFUI", "UI fallback %s @%upt -> id %d", SETTINGS.ttfFontFamilyName, static_cast<unsigned>(ui.pointSize),
+            ttfId);
   }
   registeredFingerprint_ = fingerprint;
   LOG_INF("TTFUI", "%u TTF UI fallback size(s) registered", static_cast<unsigned>(registeredCount_));

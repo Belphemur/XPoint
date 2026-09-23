@@ -70,10 +70,10 @@ class TtfUiFont {
   struct Slot {
     EpdFontData data = {};
     EpdFont font{nullptr};
-    FtFont* face = nullptr;     // lazy, borrows `bytes`
+    FtFont* face = nullptr;  // lazy, borrows `bytes`
     const void* bytes = nullptr;
     uint32_t byteSize = 0;
-    bool faceTried = false;     // failed creation is not retried
+    bool faceTried = false;  // failed creation is not retried
     // Back-links for the static handlers (EpdFontData carries one void* ctx).
     TtfUiFont* owner = nullptr;
     uint8_t styleSlot = 0;
