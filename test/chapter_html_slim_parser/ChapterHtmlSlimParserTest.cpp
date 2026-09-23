@@ -9,6 +9,7 @@
 
 #define class struct
 #define private public
+#include "Epub/WordStore.h"
 #include "Epub/parsers/ChapterHtmlSlimParser.h"
 #undef private
 #undef class
@@ -183,8 +184,8 @@ TEST_F(ChapterHtmlSlimParserTest, SpanWithHiddenAttributeShouldBeSkipped) {
   ChapterHtmlSlimParser::characterData(&parser, " After ", 7);
 
   ASSERT_EQ(parser.currentTextBlock->size(), 2);
-  ASSERT_EQ(parser.currentTextBlock->words[0], "Before");
-  ASSERT_EQ(parser.currentTextBlock->words[1], "After");
+  ASSERT_EQ(parser.currentTextBlock->wordAt(0), "Before");
+  ASSERT_EQ(parser.currentTextBlock->wordAt(1), "After");
 }
 
 TEST_F(ChapterHtmlSlimParserTest, DivWithHiddenAttributeContentShouldBeSkipped) {
@@ -304,4 +305,56 @@ TEST_F(ChapterHtmlSlimParserTest, ParserAppliesTextSpacingToParagraphs) {
     EXPECT_EQ(block.wordXpos(3) - block.wordXpos(2), 14);  // syllable plus 150% of a 4 px space
   }
   EXPECT_EQ(lines, 1u);
+}
+
+// ── WordStore (TASK 5 arena) ─────────────────────────────────────────────────
+// Chunks retire when their last live word is released; a suffix shares the
+// original's release obligation (release exactly one of the two).
+TEST(WordStoreTest, AppendViewSuffixRelease) {
+  WordStore store;
+  WordStore::StoredWord w1;
+  ASSERT_TRUE(store.append("hello", 5, w1));
+  EXPECT_EQ(store.view(w1), "hello");
+  EXPECT_STREQ(store.cstr(w1), "hello");
+
+  // Suffix shares the bytes: both views read the same arena entry.
+  const WordStore::StoredWord w2 = WordStore::suffix(w1, 2);
+  EXPECT_EQ(store.view(w2), "llo");
+  EXPECT_EQ(store.cstr(w2), store.cstr(w1) + 2);
+
+  // Fill chunk 0's remaining space with a large filler word so the next append
+  // lands in a fresh chunk — chunk 0 becomes non-tail and can retire.
+  const std::string filler(3000, 'z');
+  WordStore::StoredWord w3;
+  ASSERT_TRUE(store.append(filler.data(), filler.size(), w3));
+
+  // The suffix inherits the release obligation: releasing the suffix (not the
+  // original) consumes the pair's single live count. After the release the
+  // chunk is retired (non-tail), so neither view may be read anymore.
+  store.release(w2);
+  EXPECT_EQ(store.chunkData(w1.chunk), nullptr);
+}
+
+// Non-tail chunks retire as their words are released; the tail chunk stays
+// writable even when drained.
+TEST(WordStoreTest, TailChunkSurvivesDrain) {
+  WordStore store;
+  WordStore::StoredWord a;
+  ASSERT_TRUE(store.append("aaa", 3, a));
+  WordStore::StoredWord b;
+  ASSERT_TRUE(store.append("bbbbbbbbbbbbbbbbbbbb", 20, b));  // fills past 2KB? no — same chunk
+  store.release(a);
+  // Tail chunk keeps its data even when drained (accepts more appends).
+  EXPECT_EQ(store.view(b), "bbbbbbbbbbbbbbbbbbbb");
+  EXPECT_NE(store.chunkData(a.chunk), nullptr);
+}
+
+// Words larger than a chunk get a dedicated exact-fit chunk.
+TEST(WordStoreTest, OversizedWordGetsExactFitChunk) {
+  WordStore store;
+  const std::string big(3000, 'x');
+  WordStore::StoredWord w;
+  ASSERT_TRUE(store.append(big.data(), big.size(), w));
+  EXPECT_EQ(store.view(w).size(), big.size());
+  EXPECT_EQ(store.view(w), std::string_view(big));
 }

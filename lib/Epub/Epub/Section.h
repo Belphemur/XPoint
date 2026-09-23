@@ -133,7 +133,7 @@ class Section {
   // estimate (pages so far scaled by totalBytes/bytesConsumed, damped by an EMA) while a giant spine
   // is still building, so "page X of Y" / progress don't read off the small build watermark.
   uint16_t estimatedTotalPages() const;
-  void abandonBuild();
+  void abandonBuild(bool keepPartial = false);
   // Persist an in-progress build as a partial section file (version sentinel + LUTs +
   // watermark trailer) instead of discarding it, so the next open of this spine can show
   // its pages instantly and only rebuild in the background. Called by the destructor, so

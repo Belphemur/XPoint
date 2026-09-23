@@ -62,6 +62,7 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "TtfUiFallback.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -5639,11 +5640,23 @@ void EpubReaderActivity::applyReaderTextSettings() {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     SETTINGS.saveToFile();
+#if CROSSPOINT_TTF_UI_FALLBACK
+    // End the UI fallback faces FIRST, while the old loader bytes they
+    // borrow are still resident — a family change reloads (and frees) those
+    // bytes on the next ensureLoaded(), which must not happen while faces
+    // still borrow them.
+    freeink::book::ttfUiFallback.release(renderer);
+#endif
     RenderLock lock;
     freeink::book::fontLoader.markDirty();
     // Reflow in place: drop the caches; the new generation produces a fresh
     // build and the position restores through the page's char offset.
     ttfInvalidateCaches();
+#if CROSSPOINT_TTF_UI_FALLBACK
+    // ensureLoaded() inside update() reloads the newly selected family and
+    // re-registers the fallback against the fresh resident bytes.
+    freeink::book::ttfUiFallback.update(renderer);
+#endif
     return;
   }
 #endif
@@ -5652,6 +5665,9 @@ void EpubReaderActivity::applyReaderTextSettings() {
   // The reader otherwise only loads SD fonts on book open, so without this an
   // in-reader font change wouldn't take effect until re-opening the book.
   sdFontSystem.ensureLoaded(renderer);
+#if CROSSPOINT_TTF_UI_FALLBACK
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   RenderLock lock;
   if (section) {
     rememberCurrentContentOffset();

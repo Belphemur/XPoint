@@ -4,8 +4,28 @@
 #include <SdCardFontRegistry.h>
 
 #include <atomic>
+#include <cstdint>
+
+#include "fontIds.h"
 
 class GfxRenderer;
+
+/// One built-in UI font paired with the point size of the SD/TTF fallback
+/// that covers scripts the built-in lacks (CJK, Greek, Cyrillic, ...).
+struct UiFontSize {
+  int fontId;
+  uint8_t pointSize;
+};
+
+/// The built-in UI fonts that render UI chrome text. Each is paired with a
+/// same-size script fallback (SD .cpfont via SdCardFontSystem::setupUiFallbacks,
+/// or the active TTF family via TtfUiFallback) so UI text in scripts the
+/// built-ins lack matches the surrounding Latin.
+inline constexpr UiFontSize kUiFontSizes[] = {
+    {SMALL_FONT_ID, 8},
+    {UI_10_FONT_ID, 10},
+    {UI_12_FONT_ID, 12},
+};
 
 /// Facade that owns the SD card font registry, manager, and resolver logic.
 /// Hides implementation details behind a single begin() + ensureLoaded() API.

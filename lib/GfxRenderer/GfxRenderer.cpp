@@ -6,6 +6,7 @@
 #include <FontDecompressor.h>
 #include <HalGPIO.h>
 #include <Logging.h>
+#include <MemoryManager.h>
 #include <SdCardFont.h>
 #include <Utf8.h>
 
@@ -90,13 +91,16 @@ const uint8_t* GfxRenderer::getGlyphBitmap(const EpdFontData* fontData, const Ep
     // must consume it (draw the glyph) before requesting another bitmap.
     return fd->getBitmap(fontData, glyph, glyphIndex);
   }
-  // For SD card fonts, check if the glyph was loaded on demand into the overflow
-  // buffer.  getOverflowBitmap() returns:
+  // Legacy SdCardFont path only (missKind = MISS_CTX_SD_CARD): check if the
+  // glyph was loaded on demand into the overflow buffer.  getOverflowBitmap()
+  // returns:
   //   - bitmap pointer for overflow glyphs with bitmap data
   //   - nullptr for overflow glyphs without bitmap data (e.g. space: width=0, height=0)
   //   - nullptr for non-overflow glyphs (normal prewarmed path)
   // We distinguish overflow-with-no-bitmap from non-overflow by checking isOverflowGlyph().
-  if (fontData->glyphMissCtx) {
+  // Ring-kind fonts (MISS_CTX_RING) store faulted bitmaps at
+  // data->bitmap[glyph->dataOffset] and fall through to the standard tail.
+  if (fontData->glyphMissCtx && fontData->missKind == MISS_CTX_SD_CARD) {
     auto* sdFont = SdCardFont::fromMissCtx(fontData->glyphMissCtx);
     if (sdFont->isOverflowGlyph(glyph)) {
       return sdFont->getOverflowBitmap(glyph);  // may be nullptr for zero-width glyphs
@@ -117,19 +121,30 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_
   }
 }
 
-void GfxRenderer::ensureSdCardFontReady(int fontId, const std::deque<std::string>& words, bool includeHyphen,
-                                        uint8_t styleMask) const {
+void GfxRenderer::ensureSdCardFontReady(const int fontId, const char* const* segments, const size_t* segmentLens,
+                                        const size_t segmentCount, const bool includeSpace, const bool includeHyphen,
+                                        const uint8_t styleMask) const {
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {
     // Augment the persistent advance-only table for layout measurement.
     // The table survives across paragraphs/sections (capped per font), so
     // repeated indexing of the same SD font amortizes glyph-metric SD reads.
     std::string shaped;
-    for (const auto& w : words) {
-      appendShapedRtlTokens(w.c_str(), shaped);
+    for (size_t seg = 0; seg < segmentCount; seg++) {
+      const char* p = segments[seg];
+      const char* const end = p + segmentLens[seg];
+      while (p < end) {
+        // strnlen bounds the scan so a missing terminator cannot read past
+        // the segment (WordStore chunks are NUL-terminated; defense in depth).
+        const size_t remaining = static_cast<size_t>(end - p);
+        const size_t len = strnlen(p, remaining);
+        appendShapedRtlTokens(p, shaped);
+        if (len == remaining) break;
+        p += len + 1;
+      }
     }
-    int missed =
-        it->second->buildAdvanceTable(words, includeHyphen, styleMask, shaped.empty() ? nullptr : shaped.c_str());
+    int missed = it->second->buildAdvanceTablePacked(segments, segmentLens, segmentCount, includeSpace, includeHyphen,
+                                                     styleMask, shaped.empty() ? nullptr : shaped.c_str());
     if (missed > 0) {
       LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
     }
@@ -147,6 +162,34 @@ void GfxRenderer::begin() {
   panelWidthBytes = display.getDisplayWidthBytes();
   frameBufferSize = display.getBufferSize();
   bwBufferChunks.assign((frameBufferSize + BW_BUFFER_CHUNK_SIZE - 1) / BW_BUFFER_CHUNK_SIZE, nullptr);
+
+  // Evictable-cache sinks for the SDK memory manager: layout's OOM choke
+  // points (WordStore/TextBlock) call ensureFree() to flush these and retry
+  // before failing a section build. Both caches rebuild transparently from SD
+  // or flash on the next glyph access. The SD-font persistent advance table is
+  // deliberately NOT a sink: evicting it mid-paragraph would make later
+  // measurements in the same layout pass return 0-width advances.
+  auto& memoryManager = freeink::MemoryManager::instance();
+  memoryManager.registerSink({"gfx.renderGlyphCache", 50, [this](size_t) -> size_t {
+                                if (!fontCacheManager_ || fontCacheManager_->isScanning()) return 0;
+                                const size_t before = freeink::MemoryManager::instance().freeBytes();
+                                fontCacheManager_->clearCache();
+                                const size_t after = freeink::MemoryManager::instance().freeBytes();
+                                return after > before ? after - before : 0;
+                              }});
+  memoryManager.registerSink({"gfx.sdFontMini", 60, [this](size_t) -> size_t {
+                                const size_t before = freeink::MemoryManager::instance().freeBytes();
+                                for (auto& entry : sdCardFonts_) {
+                                  if (entry.second) entry.second->clearCache();
+                                }
+                                const size_t after = freeink::MemoryManager::instance().freeBytes();
+                                return after > before ? after - before : 0;
+                              }});
+  // NOTE (TASK 5 deviation): no native-TTF sink. The loader's
+  // releaseResidentCaches() frees the face BYTES (not just rebuildable
+  // arenas), and TtfUiFont UI-fallback faces borrow those bytes — evicting
+  // them mid-layout would leave dangling FreeType faces. Recorded in the PR
+  // body instead of registered.
 }
 
 void GfxRenderer::releaseFrameBufferForBuild() {

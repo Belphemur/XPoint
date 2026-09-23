@@ -16,7 +16,6 @@ class SdCardFont;
 
 #include <array>
 #include <cstring>
-#include <deque>
 #include <map>
 #include <string>
 #include <vector>
@@ -192,13 +191,19 @@ class GfxRenderer {
   // Register/clear size-matched CJK UI fallbacks (see fallbackFontMap_).
   // setFallbackFont maps a primary UI font id to an SD font id of the same size.
   void setFallbackFont(int primaryFontId, int fallbackFontId) { fallbackFontMap_[primaryFontId] = fallbackFontId; }
+  // Removes ONE fallback pairing — clearFallbackFonts() wipes every pairing
+  // including the SD-font ones, which callers elsewhere must not disturb.
+  void clearFallbackFont(int primaryFontId) { fallbackFontMap_.erase(primaryFontId); }
   void clearFallbackFonts() { fallbackFontMap_.clear(); }
   // Ensure SD card font glyph data is loaded for the given text. Called from layout code
   // (which holds a const GfxRenderer&) before measuring word widths. Safe to call on non-SD fonts (no-op).
   // styleMask: bitmask of styles to prepare (bit 0=regular, 1=bold, 2=italic, 3=bold-italic).
   void ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_t styleMask = 0x0F) const;
-  void ensureSdCardFontReady(int fontId, const std::deque<std::string>& words, bool includeHyphen,
-                             uint8_t styleMask = 0x0F) const;
+  // Packed variant for the paragraph layout path: each segment holds
+  // consecutive NUL-terminated words (WordStore chunks), so a whole paragraph
+  // is scanned without materializing per-word strings.
+  void ensureSdCardFontReady(int fontId, const char* const* segments, const size_t* segmentLens, size_t segmentCount,
+                             bool includeSpace, bool includeHyphen, uint8_t styleMask = 0x0F) const;
 
   // Orientation control (affects logical width/height and coordinate transforms)
   void setOrientation(const Orientation o) { orientation = o; }
