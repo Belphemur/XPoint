@@ -507,6 +507,11 @@ void BookFontLoader::begin() {
   // Hidden root first so it wins on family-name collisions (§14.4).
   scanFonts(kFontsRootHidden, families_.data(), familyCount_);
   scanFonts(kFontsRootVisible, families_.data(), familyCount_);
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Face-metadata style resolution (design §14.4.1): overwrites the
+  // filename-inferred roles with the deterministic weight-based assignment.
+  refineStyles(families_.data(), familyCount_);
+#endif
 #endif
   remainingBudget_ = 0;
   initBudget();
@@ -703,6 +708,16 @@ uint32_t BookFontLoader::computeFingerprint() const {
     }
   }
   if (!anyLoaded) return 0;
+  // Role-map tag: which file plays which style slot. A metadata-driven role
+  // re-assignment (§14.4.1) can swap files between slots without changing
+  // the loaded byte SET's sequential FNV order, so the per-slot path hashes
+  // must participate — otherwise a stale section cache renders the new role
+  // map over the old layout.
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&facePathHash_[i]), sizeof(uint32_t), h);
+    }
+  }
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // D4: backend tag ("FTU1"). FreeType's advances/kerning differ from stb's
@@ -747,6 +762,13 @@ uint32_t BookFontLoader::computeFingerprintCached() {
     }
   }
   if (!anyLoaded) return 0;
+  // Role-map tag: same rationale as computeFingerprint() — a role
+  // re-assignment changes which file plays which slot.
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&facePathHash_[i]), sizeof(uint32_t), h);
+    }
+  }
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   h ^= 0x46545531u;  // backend tag, mirrors computeFingerprint()
@@ -1109,7 +1131,118 @@ void BookFontLoader::scanFonts(const char* rootPath, FamilyInfo* families, uint8
   LOG_INF("BFNT", "Font root %s: %d new families (total %d/%u)", rootPath, familyCount - familiesBefore, familyCount,
           static_cast<unsigned>(kMaxDiscoveredFamilies));
 }
-#endif
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+// FtFont::ReadFn over a HalFile (absolute-offset reads; count 0 is a seek
+// probe). Used only by refineStyles' inspectStream calls.
+static unsigned long halFileInspectRead(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count) {
+  auto* f = static_cast<HalFile*>(ctx);
+  if (f == nullptr || !*f) return 0;
+  if (!f->seek(static_cast<size_t>(offset))) return 0;
+  if (count == 0) return 0;
+  const int n = f->read(buffer, count);
+  return n < 0 ? 0 : static_cast<unsigned long>(n);
+}
+
+void BookFontLoader::refineStyles(FamilyInfo* families, uint8_t familyCount) {
+  using freeink::font::FtFont;
+  for (uint8_t famIdx = 0; famIdx < familyCount; ++famIdx) {
+    FamilyInfo& fam = families[famIdx];
+    if (fam.faceCount == 0) continue;
+
+    // Candidate weight/italic per face: filename-derived estimate, refined
+    // by the face's real OS/2 weight + italic flag (inspectStream reads only
+    // the sfnt header tables — no face is retained). An unreadable face
+    // keeps the estimate, so the filename heuristics stay the fallback.
+    uint16_t weights[kMaxFacesPerFamily];
+    bool italics[kMaxFacesPerFamily];
+    for (uint8_t s = 0; s < fam.faceCount; ++s) {
+      const FontFaceInfo& fi = fam.faces[s];
+      weights[s] = static_cast<uint16_t>(styleToWeight(fi.styleFlags));
+      italics[s] = (fi.styleFlags & StyleItalic) != 0;
+      HalFile f = Storage.open(fi.file);
+      if (f && !f.isDirectory()) {
+        FtFont::FaceInfo info;
+        if (FtFont::inspectStream(&halFileInspectRead, &f, static_cast<unsigned long>(f.fileSize()), info) ==
+            FtFont::InspectResult::Ok) {
+          weights[s] = info.weight;
+          italics[s] = info.italic;
+        }
+      }
+    }
+
+    // Nearest target weight within the upright/italic bucket; ties break to
+    // the lower weight, then the lexicographically smaller path — never SD
+    // enumeration order. `exclude` keeps bold/boldItalic from re-picking an
+    // already-assigned face (up to two exclusions, -1 = none).
+    const auto pick = [&](const bool wantItalic, const int target, const int ex1, const int ex2) -> int {
+      int best = -1;
+      for (uint8_t s = 0; s < fam.faceCount; ++s) {
+        if (italics[s] != wantItalic || s == ex1 || s == ex2) continue;
+        if (best < 0) {
+          best = s;
+          continue;
+        }
+        const int dc = std::abs(static_cast<int>(weights[s]) - target);
+        const int db = std::abs(static_cast<int>(weights[best]) - target);
+        if (dc < db ||
+            (dc == db && (weights[s] < weights[best] ||
+                          (weights[s] == weights[best] && ciCompare(fam.faces[s].file, fam.faces[best].file) < 0)))) {
+          best = s;
+        }
+      }
+      return best;
+    };
+
+    int regular = pick(false, 400, -1, -1);
+    if (regular < 0) {
+      // All faces italic: the italic nearest 400 anchors the family as
+      // regular (the chain synthesizes the other styles from it).
+      regular = pick(true, 400, -1, -1);
+      if (regular >= 0) LOG_DBG("BFNT", "No upright face in %s — promoting", fam.name);
+      if (regular < 0) continue;  // no usable faces at all
+    }
+    // Bold must be genuinely heavier than the regular pick; otherwise the
+    // engine synthesizes it (a same-or-lighter file would look identical).
+    int bold = pick(false, 700, regular, -1);
+    if (bold >= 0 && weights[bold] <= weights[regular]) bold = -1;
+    const bool regularIsItalic = italics[regular];
+    int italic = regularIsItalic ? -1 : pick(true, 400, -1, -1);
+    int boldItalic = pick(true, 700, italic >= 0 ? italic : regular, -1);
+    if (boldItalic >= 0 && italic >= 0 && weights[boldItalic] <= weights[italic]) boldItalic = -1;
+    if (boldItalic >= 0 && !italics[boldItalic]) boldItalic = -1;
+
+    // Rewrite the face array in role order [regular, bold, italic,
+    // boldItalic]; unselected candidates are dropped. The permutation needs
+    // a 4-slot copy (FontFaceInfo is ~220B — over the stack budget), so one
+    // transient scratch allocation, released before the next family.
+    const int8_t roleSrc[4] = {static_cast<int8_t>(regular), static_cast<int8_t>(bold), static_cast<int8_t>(italic),
+                               static_cast<int8_t>(boldItalic)};
+    const uint8_t roleFlags[4] = {StyleNone, StyleBold, StyleItalic, StyleBold | StyleItalic};
+    PoolBytes scratchPool = poolMakeBytes(kMaxFacesPerFamily * sizeof(FontFaceInfo));
+    std::unique_ptr<FontFaceInfo[]> scratchDram;
+    if (!scratchPool) scratchDram = makeUniqueNoThrow<FontFaceInfo[]>(kMaxFacesPerFamily);
+    FontFaceInfo* picked = scratchPool ? new (scratchPool.get()) FontFaceInfo[kMaxFacesPerFamily] : scratchDram.get();
+    if (picked == nullptr) {
+      LOG_ERR("BFNT", "OOM: refine scratch");
+      continue;  // keep the filename-derived roles for this family
+    }
+    uint8_t pickedCount = 0;
+    for (uint8_t r = 0; r < 4; ++r) {
+      if (roleSrc[r] < 0) continue;
+      picked[pickedCount] = fam.faces[roleSrc[r]];
+      picked[pickedCount].styleFlags = roleFlags[r];
+      ++pickedCount;
+    }
+    if (pickedCount > 0) {
+      for (uint8_t s = 0; s < pickedCount; ++s) fam.faces[s] = picked[s];
+      fam.faceCount = pickedCount;
+      LOG_DBG("BFNT", "Family %s: %u faces by metadata weight", fam.name, static_cast<unsigned>(pickedCount));
+    }
+  }
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
+#endif  // CROSSPOINT_TTF_READER || HOST_TEST (scanFonts region)
 
 // ── tryLoadFace — single face into the live chain ────────────────────────────
 // Member of BookFontLoader so it can access private members (faces_,

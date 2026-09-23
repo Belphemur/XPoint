@@ -214,6 +214,12 @@ class BookFontLoader {
   static void scanFontsForTest(const char* rootPath, FamilyInfo* families, uint8_t& familyCount) {
     scanFonts(rootPath, families, familyCount);
   }
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Drives refineStyles against the stub storage (FT backend only — the
+  // metadata pass needs FtFont::inspectStream; the stb backend keeps the
+  // filename-derived roles).
+  static void refineStylesForTest(FamilyInfo* families, uint8_t familyCount) { refineStyles(families, familyCount); }
+#endif
   // Force the P2 stack-probe outcome for a slot as if the probe had
   // degraded it: flips the effective options to unhinted (the device probe
   // itself is FreeRTOS-only and absent on host). Non-const on purpose.
@@ -313,6 +319,17 @@ class BookFontLoader {
   // `rootPath`, hidden root scanned first so it wins on name collisions.
   // Appends into the caller's manifest (capped at kMaxDiscoveredFamilies).
   static void scanFonts(const char* rootPath, FamilyInfo* families, uint8_t& familyCount);
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Face-metadata style resolution (design §14.4.1, ported from upstream
+  // #3646): reads each face's real OS/2 weight + italic flag via
+  // FtFont::inspectStream, then re-assigns the four style roles
+  // deterministically (upright nearest 400 = regular, nearest 700 = bold,
+  // same for the italic pair; all-italic promotion; ties break to lower
+  // weight then lexicographic path — never SD enumeration order). A face
+  // that cannot be inspected keeps its filename-inferred estimate as the
+  // pick input (the filename heuristics remain the fallback).
+  static void refineStyles(FamilyInfo* families, uint8_t familyCount);
+#endif
   static FontChain* builtinFallback();
   // One of the four baked Atkinson fallback faces (§14.3), owned by the
   // builtin singleton; appended to the active chain as its tail.

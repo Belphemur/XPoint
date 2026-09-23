@@ -81,6 +81,35 @@ word-boundary so `SemiBold` never matches `Bold`) in this priority order:
 Duplicate style resolution: lexicographically first wins; the rest are
 logged. A family with no Regular candidate promotes its first face.
 
+### 4.1.1 Face-metadata style resolution (FT backend)
+
+Ported from upstream #3646 (`refineVectorStyles`). After the two-root scan,
+`BookFontLoader::refineStyles()` re-derives every family's style roles from
+the faces' REAL OS/2 weight + italic flag via
+`FtFont::inspectStream` (sfnt header tables only — no face retained, SD
+access through the `HalFile` `ReadFn` thunk). Role assignment is
+DETERMINISTIC, never SD enumeration order:
+
+- upright face nearest 400 = regular; nearest 700 = bold (must be genuinely
+  heavier than the regular pick, else synthesized by the engine);
+- same for the italic pair; boldItalic requires a genuinely heavier italic
+  than the italic pick;
+- an all-italic family promotes the italic nearest 400 to regular;
+- ties break to lower weight, then lexicographically smaller path.
+
+Filename inference (§4.1) remains the FALLBACK: an unreadable face keeps its
+filename-derived weight/italic estimate as the pick input. Unselected
+candidates are dropped from the manifest (the chain synthesizes missing
+styles).
+
+**Fingerprint coupling**: `computeFingerprint()`/`computeFingerprintCached()`
+fold each loaded slot's face-path hash into the FNV chain after the byte
+walk. A role re-assignment can move files between slots without changing the
+sequential byte-hash order, so the per-slot path hashes must participate —
+otherwise a stale section cache renders the new role map over the old
+layout. The stb backend (no `FtFont`) keeps the filename-derived roles
+unchanged.
+
 ## 5. Settings UI
 
 `TextSettingsActivity` keeps the 4-tab structure (`Font | Size | Layout |
@@ -165,6 +194,13 @@ normal render path restores AA plane parity on the final close/reflow.
   combinations. The picker virtualizes 8 rows so it can expose the scanner's
   33-entry logical list without growing its touch table.
 - 2026-09-14 — tokenless Regular candidates retained in multi-file families.
+- 2026-09-23 — face-metadata style resolution ported from upstream #3646:
+  roles assigned by real OS/2 weight + italic flag via
+  `FtFont::inspectStream` (deterministic nearest-400/700 pick; filename
+  heuristics demoted to the unreadable-face fallback), and the per-slot
+  face-path hashes fold into the font fingerprint so a role re-assignment
+  invalidates FIBP/section caches (FT backend only; stb keeps filename
+  inference).
 
 ## Cross-links
 

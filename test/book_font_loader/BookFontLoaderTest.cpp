@@ -704,6 +704,67 @@ TEST(ScanFontsTest, AmazonEmberOneFamilyFromFolderNotNameTables) {
   EXPECT_STREQ(boldItalic->file, "/fonts/Amazon Ember/Amazon_Ember_Bold_Italic.ttf");
 }
 
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+// §14.4.1: refineStyles resolves roles from the faces' REAL OS/2 weights, not
+// the filename tokens. The real Bold bytes live in a file named "Regular" and
+// the real Regular bytes in a file named "Italic" — filename inference tags
+// them Bold/Italic, but the metadata pass must assign regular↔400 (the
+// regular bytes) and bold↔700 (the bold bytes) regardless of the names.
+TEST(RefineStylesTest, MetadataOverridesFilenameRoles) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  const std::string boldBytes = emberBytes("Amazon_Ember_Bold.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  if (!fixtureAvailable(boldBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Bold.ttf";
+  resetStorage();
+  // Real bold bytes under a "Regular" name; real regular bytes under "Italic".
+  seedFile("/fonts/Misnamed/Misnamed-Regular.ttf", boldBytes);
+  seedFile("/fonts/Misnamed/Misnamed-Italic.ttf", regularBytes);
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  // Pre-refine, filename inference tags the real-bold bytes "Regular" →
+  // StyleNone and the real-regular bytes "Italic" → StyleItalic: exactly
+  // backwards relative to the true weights.
+  ASSERT_EQ(fams[0].faceCount, 2u);
+
+  BookFontLoader::refineStylesForTest(fams, count);
+  const auto* regular = findFace(fams[0], freeink::book::StyleNone);
+  const auto* bold = findFace(fams[0], freeink::book::StyleBold);
+  ASSERT_NE(regular, nullptr);
+  ASSERT_NE(bold, nullptr);
+  EXPECT_EQ(fams[0].faceCount, 2u);
+  // Metadata wins: the ACTUALLY-regular bytes take the regular role even
+  // though the filename says "Italic", and vice versa.
+  EXPECT_STREQ(regular->file, "/fonts/Misnamed/Misnamed-Italic.ttf");
+  EXPECT_STREQ(bold->file, "/fonts/Misnamed/Misnamed-Regular.ttf");
+}
+
+// A face that cannot be inspected keeps its filename-derived estimate as the
+// pick input (the filename heuristics remain the fallback per §14.4.1).
+TEST(RefineStylesTest, UninspectableFaceKeepsFilenameEstimate) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  resetStorage();
+  seedFile("/fonts/Broken/Broken-Regular.ttf", "NOTAFONT\0\0garbage");
+  seedFile("/fonts/Broken/Broken-Bold.ttf", "ALSONOTAFONT\0\0");
+
+  static book::FamilyInfo fams[BookFontLoader::kMaxDiscoveredFamilies];
+  uint8_t count = 0;
+  BookFontLoader::scanFontsForTest("/fonts", fams, count);
+  ASSERT_EQ(count, 1u);
+  ASSERT_EQ(fams[0].faceCount, 2u);
+
+  BookFontLoader::refineStylesForTest(fams, count);
+  // Unreadable faces fall back to filename-derived estimates: Regular stays
+  // regular, Bold stays bold (deterministic pick over the estimates).
+  ASSERT_EQ(fams[0].faceCount, 2u);
+  EXPECT_STREQ(findFace(fams[0], freeink::book::StyleNone)->file, "/fonts/Broken/Broken-Regular.ttf");
+  EXPECT_STREQ(findFace(fams[0], freeink::book::StyleBold)->file, "/fonts/Broken/Broken-Bold.ttf");
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
+
 // Each face scales by its OWN unitsPerEm: the 1000-upem BoldItalic carries
 // ~half the raw hhea units of the 2048 faces, yet the pixel-scaled ascents
 // must land in the same neighborhood and match stb's per-face math exactly.
