@@ -40,13 +40,16 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     // THIS dispatch already delivered — clear them at the transition into
     // the pump so they cannot re-fire on the first post-transfer dispatch.
     // The synthesized press arm dies with them: edge state does not cross a
-    // transfer boundary (kody 8Y5e/8Y70 rule 34). Pump ticks AFTER entry do
-    // NOT clear — verdicts raised mid-transfer must survive to the dispatch
-    // that can act on them.
-    powerConfirmClickFrame = false;
-    powerDoubleClickFrame = false;
-    powerConfirmPressActive = false;
-    powerConfirmPressArmed = false;
+    // transfer boundary (kody 8Y5e/8Y70 rule 34). The !pumpingDispatch
+    // guard makes this an entry-only clear: pump ticks after entry do NOT
+    // clear — verdicts raised mid-transfer must survive to the dispatch
+    // that can act on them (coderabbit 97X_ / kody 8-LvT).
+    if (!pumpingDispatch) {
+      powerConfirmClickFrame = false;
+      powerDoubleClickFrame = false;
+      powerConfirmPressActive = false;
+      powerConfirmPressArmed = false;
+    }
     pumpingDispatch = true;
 #endif
     // Blocking-transfer pump (OpdsBookBrowserActivity, FontDownloadActivity,
@@ -58,10 +61,15 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
     // never parked, so no phantom Back re-delivery after the transfer.
     // Every other edge parks in the pending registers for the next
     // main-loop dispatch (qodo T1); the live masks are rebuilt from
-    // scratch on the next tick, so nothing here persists in them.
+    // scratch on the next tick, so nothing here persists in them. Power
+    // releases are excluded here (coderabbit 97YL / kody 8-Lx1): they are
+    // classified by resolvePowerDoubleClickWindow below, and the parked
+    // outcome — serve keeps the bit, hold strips it — is parked AFTER that
+    // classification, so pending never holds a raw Power release.
     constexpr uint8_t kBackEdge = static_cast<uint8_t>(1u << HalGPIO::BTN_BACK);
+    constexpr uint8_t kPowerEdge = static_cast<uint8_t>(1u << HalGPIO::BTN_POWER);
     pendingPressed = static_cast<uint8_t>(pendingPressed | (pressedEdges & ~kBackEdge));
-    pendingReleased = static_cast<uint8_t>(pendingReleased | (releasedEdges & ~kBackEdge));
+    pendingReleased = static_cast<uint8_t>(pendingReleased | (releasedEdges & ~(kBackEdge | kPowerEdge)));
     framePressedEdges = pressedEdges;
     frameReleasedEdges = releasedEdges;
   } else {
