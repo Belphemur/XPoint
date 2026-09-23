@@ -252,6 +252,10 @@ RenderFont* g_builtinFaces[4] = {};
 // SFNT minimum: 12-byte header + numTables * 16-byte entries.
 static constexpr uint32_t kMinSfntLen(uint16_t numTables) { return 12u + static_cast<uint32_t>(numTables) * 16u; }
 
+// HalFile-based absolute-offset read used by the inspect thunk and the
+// §14.5 stream tail reads (defined later, in the scanFonts region).
+static unsigned long halFileInspectRead(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
+
 // FNV-1a hash over font data, mixed with style coverage.
 static uint32_t fontFNV1a(const uint8_t* data, size_t len, uint32_t seed = 0x811c9dc5) {
   uint32_t h = seed;
@@ -542,6 +546,9 @@ void BookFontLoader::ensureLoaded() {
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
     // Fresh load: re-probe hinting from the requested mode.
     resetHintState();
+    // Streamed source: close-before-reopen (a reload reopens this slot's
+    // HalFile member).
+    releaseStreamSource(i);
 #endif
     arenas_[i] = Arena{};
     glyphBacking_[i].reset();
@@ -633,7 +640,9 @@ const FamilyInfo* BookFontLoader::findFamily(const char* name) const {
 bool BookFontLoader::isFamilyAvailable(const FamilyInfo& fam) {
   if (HalMemory::getPsramHeap().totalBytes == 0) return false;
   for (uint8_t i = 0; i < fam.faceCount && i < 4; ++i) {
-    if (fam.faces[i].fileSize > kMaxFaceBytes) return false;
+    // Oversized faces no longer grey the row: they stream from SD (§14.5).
+    // Only the absolute stream cap still disqualifies a face.
+    if (fam.faces[i].fileSize > kMaxStreamFaceBytes) return false;
   }
   return true;
 }
@@ -648,6 +657,10 @@ void BookFontLoader::releaseResidentCaches() {
     fontBytes_[i] = nullptr;
     fontPsramBytes_[i].reset();
     fontDramBytes_[i].reset();
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    // Streamed source: close the borrowed HalFile + free the prefix (§14.5).
+    releaseStreamSource(i);
+#endif
     faceBytesOwner_[i] = 0;
     fontFileSizes_[i] = 0;
     facePathHash_[i] = 0;
@@ -668,6 +681,54 @@ uint32_t BookFontLoader::fontBytesHash(const uint8_t* data, const size_t len, co
 uint32_t BookFontLoader::facePathHash(const char* file) {
   return fontFNV1a(reinterpret_cast<const uint8_t*>(file), strlen(file));
 }
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+unsigned long BookFontLoader::halFileRead(void* ctx, const unsigned long offset, unsigned char* buffer,
+                                          const unsigned long count) {
+  return halFileInspectRead(ctx, offset, buffer, count);
+}
+
+uint32_t BookFontLoader::streamHeadHash(const char* file, const uint32_t fileSize) {
+  // Chunked SD walk over the file head — no full residency, so this works
+  // for multi-MB streamed faces. 512B stack chunks stay in budget.
+  HalFile f;
+  if (!Storage.openFileForRead("BFNT", file, f)) return 0;
+  const size_t headLen = fileSize < kFingerprintHeadBytes ? fileSize : kFingerprintHeadBytes;
+  uint8_t chunk[512];
+  uint32_t h = 0x811c9dc5;
+  size_t got = 0;
+  while (got < headLen) {
+    const size_t want = headLen - got < sizeof(chunk) ? headLen - got : sizeof(chunk);
+    const size_t n = f.read(chunk, want);
+    if (n == 0) break;
+    h = fontFNV1a(chunk, n, h);
+    got += n;
+  }
+  if (got != headLen) {
+    LOG_ERR("BFNT", "Stream head read short for %s (%zu/%zu)", file, got, headLen);
+    return 0;
+  }
+  return h;
+}
+
+// Streamed-source ReadFn: serve from the PSRAM prefix cache when the range
+// is there, hit SD only for the tail (glyf outlines). A read straddling the
+// boundary splits across both; count 0 is a seek probe.
+unsigned long BookFontLoader::streamReadThunk(void* ctx, unsigned long offset, unsigned char* buffer,
+                                              unsigned long count) {
+  auto* s = static_cast<StreamSource*>(ctx);
+  if (s == nullptr || !s->file) return 0;
+  const uint32_t cached = s->prefixLen;
+  if (offset < cached) {
+    if (count == 0) return 0;  // seek probe
+    const unsigned long fromCache = (offset + count <= cached) ? count : cached - offset;
+    std::memcpy(buffer, s->prefix.get() + offset, fromCache);
+    if (fromCache == count) return count;
+    return fromCache + halFileInspectRead(&s->file, offset + fromCache, buffer + fromCache, count - fromCache);
+  }
+  return halFileInspectRead(&s->file, offset, buffer, count);
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 bool BookFontLoader::validateSfntBytes(const uint8_t* data, uint32_t size, const int faceIndex) {
   if (data == nullptr) return false;
@@ -735,10 +796,19 @@ uint32_t BookFontLoader::computeFingerprint() const {
   bool anyLoaded = false;
   uint32_t h = 0x811c9dc5;
   for (uint8_t i = 0; i < 4; ++i) {
-    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
-      h = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]), fontFileSizes_[i], h);
-      anyLoaded = true;
+    if (!fontFileSizes_[i]) continue;
+    anyLoaded = true;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    if (faceBytesOwner_[i] == 3) {
+      // §14.5 streamed slot: no resident bytes — fold the SD head hash and
+      // the size instead (same values the prefetch worker folds).
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&streamHeadHash_[i]), sizeof(uint32_t), h);
+      const uint32_t sz = fontFileSizes_[i];
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&sz), sizeof(uint32_t), h);
+      continue;
     }
+#endif
+    h = fontFNV1a(static_cast<const uint8_t*>(fontBytes_[i]), fontFileSizes_[i], h);
   }
   if (!anyLoaded) return 0;
   // Role-map tag: which file plays which style slot. A metadata-driven role
@@ -748,7 +818,7 @@ uint32_t BookFontLoader::computeFingerprint() const {
   // map over the old layout. The collection face index joins the tag (two
   // faces of one .ttc share the file bytes, §14.4.2).
   for (uint8_t i = 0; i < 4; ++i) {
-    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
+    if (fontFileSizes_[i] > 0 && faceBytesOwner_[i] != 0) {
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&facePathHash_[i]), sizeof(uint32_t), h);
       h = fontFNV1a(&faceIndexUsed_[i], sizeof(uint8_t), h);
     }
@@ -777,31 +847,41 @@ uint32_t BookFontLoader::computeFingerprintCached() {
   bool anyLoaded = false;
   uint32_t h = 0x811c9dc5;
   for (uint8_t i = 0; i < 4; ++i) {
-    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
-      anyLoaded = true;
-      const uint32_t inSeed = h;
-      const auto* bytes = static_cast<const uint8_t*>(fontBytes_[i]);
-      // Head hash: the cheap identity check that runs on every hit (~4 KB,
-      // ~2% of a full walk). FNV-1a folds sequentially, so the miss path
-      // chains the head walk straight into the full hash — no re-walk.
-      const size_t headLen = fontFileSizes_[i] < kFingerprintHeadBytes ? fontFileSizes_[i] : kFingerprintHeadBytes;
-      const uint32_t headHash = fontFNV1a(bytes, headLen, inSeed);
-      uint32_t slotHash = 0;
-      if (!BookFontLoader_readFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, headHash,
-                                               slotHash)) {
-        slotHash = fontFNV1a(bytes + headLen, fontFileSizes_[i] - headLen, headHash);
-        BookFontLoader_writeFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, headHash,
-                                             slotHash);
-      }
-      h = slotHash;
+    if (!fontFileSizes_[i]) continue;
+    anyLoaded = true;
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    if (faceBytesOwner_[i] == 3) {
+      // §14.5 streamed slot: bypass the SD fp-cache (its record would need a
+      // full residency walk) — fold the SD head hash + size directly, same
+      // values as computeFingerprint().
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&streamHeadHash_[i]), sizeof(uint32_t), h);
+      const uint32_t sz = fontFileSizes_[i];
+      h = fontFNV1a(reinterpret_cast<const uint8_t*>(&sz), sizeof(uint32_t), h);
+      continue;
     }
+#endif
+    const uint32_t inSeed = h;
+    const auto* bytes = static_cast<const uint8_t*>(fontBytes_[i]);
+    // Head hash: the cheap identity check that runs on every hit (~4 KB,
+    // ~2% of a full walk). FNV-1a folds sequentially, so the miss path
+    // chains the head walk straight into the full hash — no re-walk.
+    const size_t headLen = fontFileSizes_[i] < kFingerprintHeadBytes ? fontFileSizes_[i] : kFingerprintHeadBytes;
+    const uint32_t headHash = fontFNV1a(bytes, headLen, inSeed);
+    uint32_t slotHash = 0;
+    if (!BookFontLoader_readFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, headHash,
+                                             slotHash)) {
+      slotHash = fontFNV1a(bytes + headLen, fontFileSizes_[i] - headLen, headHash);
+      BookFontLoader_writeFingerprintCache(facePathHash_[i], fontFileSizes_[i], faceMtime_[i], inSeed, headHash,
+                                           slotHash);
+    }
+    h = slotHash;
   }
   if (!anyLoaded) return 0;
   // Role-map tag: same rationale as computeFingerprint() — a role
   // re-assignment changes which file plays which slot; the .ttc face index
   // joins it (§14.4.2).
   for (uint8_t i = 0; i < 4; ++i) {
-    if (fontBytes_[i] && fontFileSizes_[i] > 0) {
+    if (fontFileSizes_[i] > 0 && faceBytesOwner_[i] != 0) {
       h = fontFNV1a(reinterpret_cast<const uint8_t*>(&facePathHash_[i]), sizeof(uint32_t), h);
       h = fontFNV1a(&faceIndexUsed_[i], sizeof(uint8_t), h);
     }
@@ -1319,9 +1399,15 @@ bool BookFontLoader::tryLoadFace(uint8_t faceIdx, const FontFaceInfo& fi, FontCh
       return false;
     }
   } else if (fi.fileSize > kMaxFaceBytes) {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    // §14.5: faces beyond the PSRAM residency guard STREAM from SD instead
+    // of being skipped (owner amendment: SD-streaming approved).
+    return tryLoadStreamedFace(faceIdx, fi, chain);
+#else
     LOG_ERR("BFNT", "Font %s too large for PSRAM tier (%u > %u)", fi.file, fi.fileSize,
             static_cast<unsigned>(kMaxFaceBytes));
     return false;
+#endif
   }
 
   // Allocate a transient buffer for the font file bytes. PSRAM path first on
@@ -1528,6 +1614,89 @@ void BookFontLoader::initBudget() {
     remainingBudget_ = kMaxDramFontBytes;
   }
 }
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+void BookFontLoader::releaseStreamSource(const uint8_t faceIdx) {
+  // Close-before-reopen discipline: a slot reload reopens the same HalFile
+  // member, so the stale handle must be closed first (DESTRUCTOR_CLOSES_FILE
+  // only covers scope-exit, not member reuse).
+  streamSources_[faceIdx].file.close();
+  streamSources_[faceIdx].prefix.reset();
+  streamSources_[faceIdx].prefixLen = 0;
+  streamHeadHash_[faceIdx] = 0;
+}
+
+bool BookFontLoader::tryLoadStreamedFace(const uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain) {
+  if (fi.fileSize > kMaxStreamFaceBytes) {
+    LOG_ERR("BFNT", "Font %s too large to stream (%u > %u)", fi.file, fi.fileSize,
+            static_cast<unsigned>(kMaxStreamFaceBytes));
+    return false;
+  }
+  StreamSource& src = streamSources_[faceIdx];
+  releaseStreamSource(faceIdx);
+  if (!Storage.openFileForRead("BFNT", fi.file, src.file)) {
+    LOG_ERR("BFNT", "Cannot open streamed font %s", fi.file);
+    return false;
+  }
+  // PSRAM prefix cache over the file head: an sfnt's per-glyph-fault tables
+  // (cmap/loca/hmtx) sit before the multi-MB glyf table, so serving the
+  // first MB from RAM collapses each glyph fault's scattered SD seeks into
+  // one glyf read. Gated per source so a small-PSRAM board takes what fits;
+  // a failed head read falls back to pure streaming.
+  if (HalMemory::getPsramHeap().largestBlockBytes > kStreamPrefixBytes + 256u * 1024u) {
+    src.prefix = poolMakeBytes(kStreamPrefixBytes);
+    if (src.prefix) {
+      if (src.file.seek(0) && src.file.read(src.prefix.get(), kStreamPrefixBytes) == kStreamPrefixBytes) {
+        src.prefixLen = kStreamPrefixBytes;
+      } else {
+        LOG_DBG("BFNT", "Prefix read failed for %s — pure streaming", fi.file);
+        src.prefixLen = 0;
+        src.prefix.reset();
+      }
+    }
+  }
+  LOG_INF("BFNT", "Streaming %s (%u KB%s)", fi.file, static_cast<unsigned>(fi.fileSize / 1024),
+          src.prefixLen ? ", 1MB prefix cached" : ", no prefix");
+
+  NativeFace* face = new (std::nothrow) NativeFace();
+  if (face == nullptr) {
+    LOG_ERR("BFNT", "FtFont OOM for %s", fi.file);
+    releaseStreamSource(faceIdx);
+    return false;
+  }
+  // Borrowed source: the open HalFile + prefix outlive the face (released in
+  // releaseResidentCaches()/ensureLoaded's clear loop — same lifetime rules
+  // as the resident borrowed-bytes contract).
+  if (!face->initStream(&streamReadThunk, &src, fi.fileSize, kInitSizePx, styleToWeight(fi.styleFlags),
+                        (fi.styleFlags & StyleItalic) != 0, fi.faceIndex)) {
+    LOG_ERR("BFNT", "FtFont::initStream failed for %s", fi.file);
+    delete face;
+    releaseStreamSource(faceIdx);
+    return false;
+  }
+  // Streamed faces give up GPOS kerning: the lazily-copied table would pull
+  // scattered multi-MB SD reads into the render path. Documented trade-off
+  // (§14.5 / PR body); advances stay identical, kern pairs collapse.
+  face->setGposByteBudget(0);
+  applySlotRenderOptions(face, faceIdx, effectiveRenderOptions(faceIdx), fi.file);
+  if (!chain.add(face, fi.styleFlags)) {
+    LOG_ERR("BFNT", "FontChain::add failed to register %s", fi.file);
+    delete face;
+    releaseStreamSource(faceIdx);
+    return false;
+  }
+  // Slot identity: owner 3 = streamed (no resident byte walk — the
+  // fingerprint folds the SD head hash + size instead).
+  faceBytesOwner_[faceIdx] = 3;
+  fontFileSizes_[faceIdx] = fi.fileSize;
+  facePathHash_[faceIdx] = facePathHash(fi.file);
+  faceMtime_[faceIdx] = fi.mtime;
+  faceIndexUsed_[faceIdx] = fi.faceIndex;
+  streamHeadHash_[faceIdx] = streamHeadHash(fi.file, fi.fileSize);
+  faces_[faceIdx] = face;
+  return true;
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 }  // namespace book
 }  // namespace freeink

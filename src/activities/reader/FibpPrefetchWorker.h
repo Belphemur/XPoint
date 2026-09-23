@@ -186,6 +186,16 @@ class FibpPrefetchWorker {
   std::unique_ptr<NativeFace> faceOwners_[4] = {};
   FontChain chain_;
   PoolBytes fontBytes_[4];
+  // §14.5 parity: streamed faces (beyond the loader's residency guard) get
+  // their own open HalFile + PSRAM head prefix; created/destroyed with the
+  // faces on the main thread.
+  struct StreamSource {
+    HalFile file;
+    PoolBytes prefix;
+    uint32_t prefixLen = 0;
+  };
+  StreamSource streamSources_[4];
+  static unsigned long streamReadThunk(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
   uint32_t fingerprint_ = 0;  // content parity with BookFontLoader::computeFingerprint()
 
   // Session params: pointer fields bound to worker-owned objects at begin;

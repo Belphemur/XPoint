@@ -557,7 +557,15 @@ TEST(BookFontLoaderSelection, AvailabilityRequiresPsramAndFaceGuard) {
 
   testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
   EXPECT_TRUE(loader.isFamilyAvailable(fam));
-  EXPECT_FALSE(loader.isFamilyAvailable(big));  // per-face 2MB gate (§3.3)
+  // Oversized faces no longer grey the row — they stream (§14.5). Only the
+  // absolute stream cap disqualifies a face.
+  EXPECT_TRUE(loader.isFamilyAvailable(big));
+  auto& huge = loader.editFamily(2);
+  std::snprintf(huge.name, sizeof(huge.name), "%s", "Huge");
+  huge.faceCount = 1;
+  huge.faces[0].fileSize = loader.kMaxStreamFaceBytes + 1;
+  loader.setFamilyCountForTest(3);
+  EXPECT_FALSE(loader.isFamilyAvailable(huge));
 }
 
 TEST(BookFontLoaderSelection, ClearedSelectionServesFallbackChain) {
@@ -842,6 +850,45 @@ TEST(RefineStylesTest, TtcSkippedOnStbBackend) {
   EXPECT_EQ(count, 0u);
 }
 #endif
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT)
+// §14.5: a face beyond the PSRAM residency guard streams from SD through
+// FtFont::initStream — the chain still covers the style and the fingerprint
+// is nonzero (streamed slots fold the SD head-hash identity, not bytes).
+TEST(BookFontLoaderStreaming, OversizedFaceStreamsFromStorage) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  // Pad past the 2MB residency guard with trailing zero bytes: the sfnt
+  // table directory ignores bytes beyond its declared tables, so the face
+  // stays valid while forcing the streaming path.
+  std::string big = regularBytes;
+  big.resize(BookFontLoader::kMaxFaceBytes + 1024, '\0');
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  resetStorage();
+  seedFile("/fonts/Big/Big-Regular.ttf", big);
+  freeink::book::BookFontLoader loader;
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Big");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(big.size());
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Big/Big-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+  loader.selectFamily("Big");
+  loader.markDirty();
+
+  freeink::book::FontChain* chain = loader.getReaderFont();
+  ASSERT_NE(chain, nullptr);
+  EXPECT_NE(chain->styleCoverage(), 0u);  // regular slot streamed in (regular = coverage bit 0x04)
+  EXPECT_NE(loader.fontFingerprint(), 0u);
+  // Deterministic identity: a second load derives the same fingerprint.
+  loader.markDirty();
+  const uint32_t fp1 = loader.fontFingerprint();
+  loader.getReaderFont();
+  EXPECT_EQ(loader.fontFingerprint(), fp1);
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT
 
 // Each face scales by its OWN unitsPerEm: the 1000-upem BoldItalic carries
 // ~half the raw hhea units of the 2048 faces, yet the pixel-scaled ascents

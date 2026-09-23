@@ -112,6 +112,13 @@ otherwise a stale section cache renders the new role map over the old
 layout. The stb backend (no `FtFont`) keeps the filename-derived roles
 unchanged.
 
+**Fingerprint coupling**: the streamed slot has no resident bytes, so its
+fingerprint folds the SD head hash (FNV-1a over the first 4KB, chunked off
+SD) plus the file size instead of a full byte walk, bypassing the SD
+fp-cache. `FibpPrefetchWorker` streams oversized faces the same way (own
+HalFile + prefix + `initStream`) and folds the identical values in the same
+order, preserving exact `computeFingerprint()` parity.
+
 ### 14.4.2 TrueType collections (.ttc)
 
 Ported from upstream #3646's registry `.ttc` acceptance. `FtFont` gained
@@ -126,6 +133,29 @@ directory (container-absolute table offsets, per the TTC spec). The
 fingerprint folds the per-slot face index — two faces of one container share
 its bytes, so only the index distinguishes them. The stb backend skips
 `.ttc` at scan with an explicit debug log.
+
+### 14.5 SD streaming for oversized faces
+
+Ported from upstream #3646's `openTtfSource`/`prefixRead` pattern (owner
+amendment: SD-streaming APPROVED, replacing the old skip behavior). Faces
+beyond the 2MB PSRAM residency guard (`kMaxFaceBytes`) load through
+`FtFont::initStream` over an open `HalFile` (absolute-offset reads, count 0
+= seek probe; ALL access via HalStorage's mutex): the file is never resident.
+A ~1MB PSRAM prefix caches the file head (cmap/loca/hmtx sit before the
+multi-MB glyf table), collapsing each glyph fault's scattered SD seeks into
+one glyf read; when PSRAM cannot fund the prefix (largest-block gate) the
+face falls back to pure streaming. `kMaxStreamFaceBytes` (24MB) is the
+absolute CWE-400 cap.
+
+**Trade-offs (documented)**: streamed faces give up GPOS kerning
+(`setGposByteBudget(0)` — the lazily-copied table would pull scattered
+multi-MB SD reads into the render path; GPOS-only variable fonts lose kern
+correction when streamed). Advances are identical; kern pairs collapse.
+The open `HalFile` is a borrowed source under the same lifetime rules as the
+resident borrowed-bytes contract: released in `releaseResidentCaches()`/
+`ensureLoaded()`'s clear loop (close-before-reopen discipline). The picker
+(`isFamilyAvailable`) no longer greys oversized rows — only the stream cap
+disqualifies. The stb backend has no `initStream` and keeps the skip.
 
 ## 5. Settings UI
 
@@ -225,6 +255,12 @@ normal render path restores AA plane parity on the final close/reflow.
   fingerprint role-map tag. FibpPrefetchWorker folds the same role-map tag
   (path hash + face index) restoring exact fingerprint parity with
   `computeFingerprint()`.
+- 2026-09-23 — SD streaming for oversized faces ported from upstream #3646
+  (owner amendment 2026-09-23: streaming approved over skip): faces beyond
+  the 2MB residency guard load via `FtFont::initStream` over a borrowed
+  open HalFile with a 1MB PSRAM head prefix; GPOS kerning off on streamed
+  faces; fingerprint identity = SD head hash + size; prefetch worker mirrors
+  the streamed path for exact parity.
 
 ## Cross-links
 

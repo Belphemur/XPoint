@@ -86,12 +86,23 @@ class BookFontLoader {
   void selectFamily(const char* name);
   // Case-insensitive manifest lookup (§14.4 display name); nullptr when absent.
   const FamilyInfo* findFamily(const char* name) const;
-  // Static picker gates: PSRAM present AND every face within the per-face
-  // size guard. Load failures (corrupt fonts) are runtime — they degrade to
-  // the fallback chain instead of greying the row.
+  // Static picker gates: PSRAM present (any face size — oversized faces
+  // stream from SD, §14.5) AND every face within the absolute stream cap.
+  // Load failures (corrupt fonts) are runtime — they degrade to the fallback
+  // chain instead of greying the row.
   static bool isFamilyAvailable(const FamilyInfo& fam);
-  // Per-face PSRAM size guard (CWE-400); picker rows above it are greyed out.
+  // Per-face PSRAM residency guard (CWE-400): faces up to this size load
+  // fully resident in PSRAM; larger faces STREAM from SD (§14.5) instead of
+  // being skipped.
   static constexpr uint32_t kMaxFaceBytes = 2u * 1024u * 1024u;
+  // Absolute cap for streamed faces — SD fonts beyond this are rejected
+  // outright (a runaway file must not pin an open handle forever).
+  static constexpr uint32_t kMaxStreamFaceBytes = 24u * 1024u * 1024u;
+  // Streamed faces cache this much of the file head in PSRAM: an sfnt's
+  // per-glyph-fault tables (cmap/loca/hmtx) sit before the multi-MB glyf
+  // table, so serving the first MB from RAM collapses each glyph fault's
+  // 4-6 scattered SD seeks into one glyf read.
+  static constexpr uint32_t kStreamPrefixBytes = 1024u * 1024u;
 
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // Initial pixel size for FreeType faces. Per-run sizes (ruby, preview) adapt
@@ -199,6 +210,15 @@ class BookFontLoader {
   // The path hash folded into the fingerprint's role-map tag (§14.4.1);
   // exposed so FibpPrefetchWorker can replicate computeFingerprint() exactly.
   static uint32_t facePathHash(const char* file);
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // Absolute-offset HalFile read for FtFont ReadFn thunks (count 0 is a
+  // seek probe). Shared by the loader's and the worker's streamed sources.
+  static unsigned long halFileRead(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
+  // Streamed-slot fingerprint identity: FNV-1a over the file's first
+  // kFingerprintHeadBytes read in SD chunks (no full residency). Shared with
+  // the prefetch worker so both sites derive identical streamed-slot tags.
+  static uint32_t streamHeadHash(const char* file, uint32_t fileSize);
+#endif
 
   // Appends the four Atkinson faces to `chain` as its non-selectable tail:
   // a selected TTF family that lacks a glyph or style degrades to the
@@ -295,6 +315,28 @@ class BookFontLoader {
   // identity (§14.4.2): two faces from one container share the file bytes,
   // so the chosen face index must perturb the hash too.
   uint8_t faceIndexUsed_[4] = {};
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+  // §14.5 streamed face source per slot: the open HalFile is borrowed by the
+  // FT face for the face's lifetime (released in releaseResidentCaches()/
+  // ensureLoaded's clear loop); the PSRAM prefix caches the file head.
+  struct StreamSource {
+    HalFile file;
+    PoolBytes prefix;
+    uint32_t prefixLen = 0;
+  };
+  StreamSource streamSources_[4];
+  // Fingerprint identity for streamed slots (no resident bytes to walk):
+  // FNV-1a over the file's first kFingerprintHeadBytes, chunked off SD.
+  uint32_t streamHeadHash_[4] = {};
+  // FtFont::ReadFn over a StreamSource (prefix cache + SD tail). ctx is the
+  // slot's StreamSource (stable address, loader-lifetime).
+  static unsigned long streamReadThunk(void* ctx, unsigned long offset, unsigned char* buffer, unsigned long count);
+  // §14.5 load path for faces beyond kMaxFaceBytes: open HalFile (kept open
+  // for the face's lifetime), PSRAM head-prefix cache, initStream, GPOS off.
+  bool tryLoadStreamedFace(uint8_t faceIdx, const FontFaceInfo& fi, FontChain& chain);
+  // Release a slot's streamed source (close-before-reopen discipline).
+  void releaseStreamSource(uint8_t faceIdx);
+#endif
 
   // Per-face glyph arenas — each has its own persistent backing buffer.
   // Size must fit TtfFont's profile-scaled slot tables before any glyph
