@@ -429,6 +429,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   if (!currentTextBlock) {
     LOG_ERR("EHP", "OOM: ParsedText");
     layoutOom = true;  // parseStep() turns this into ParseStatus::Error
+    return;            // no further parser-state mutation after a failed allocation
   }
   wordsExtractedInBlock = 0;
   listItemBulletOnly = false;

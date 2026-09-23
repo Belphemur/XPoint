@@ -724,6 +724,9 @@ namespace {
 // table directory is patched to container-absolute offsets (per the TTC
 // spec). Mirrors the SDK's FtFontTtcTest container builder.
 std::vector<uint8_t> makeTwoFaceTtc(const std::vector<uint8_t>& ttf) {
+  if (ttf.size() < 12) {
+    return {};  // truncated header: offsets 4/5 (numTables) would be OOB
+  }
   const uint32_t faceBase = 20;  // 12-byte TTC header + two offsets
   std::vector<uint8_t> out(faceBase + ttf.size(), 0);
   std::memcpy(out.data(), "ttcf", 4);
