@@ -41,6 +41,7 @@
 #include "ProgressManager.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "SleepFrameHash.h"
 #include "TtfUiFallback.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
@@ -325,25 +326,105 @@ bool handleX4ProFrontlightDoubleClick() {
 }
 
 constexpr char SLEEP_FRAME_FILE[] = "/.crosspoint/sleep_frame.bin";
+constexpr char SLEEP_FRAME_TMP[] = "/.crosspoint/sleep_frame.bin.tmp";
 
 static void saveSleepFrameBuffer() {
+  const uint8_t* fb = renderer.getFrameBuffer();
+  const size_t fbSize = renderer.getBufferSize();
+  const uint32_t newHash = sleepFrameAdler32(fb, fbSize);
+
+  // Skip the rewrite when the on-disk frame is unchanged (SD wear dedup).
+  // A file of any other size (e.g. a pre-trailer file from before an OTA)
+  // falls through to the full rewrite and self-heals.
+  if (Storage.exists(SLEEP_FRAME_FILE)) {
+    HalFile existing;
+    if (Storage.openFileForRead("SLP", SLEEP_FRAME_FILE, existing) && existing.size() == fbSize + sizeof(uint32_t) &&
+        existing.seek(fbSize)) {
+      uint8_t stored[sizeof(uint32_t)];
+      if (existing.read(stored, sizeof(stored)) == static_cast<int>(sizeof(stored))) {
+        uint32_t storedHash;
+        memcpy(&storedHash, stored, sizeof(storedHash));
+        if (storedHash == newHash) {
+          LOG_DBG("SLP", "Sleep frame unchanged, skipping write");
+          return;
+        }
+      }
+    }
+  }
+
+  // Publish atomically (tmp sibling + rename): a failed or partial write
+  // must never leave a torn file at the final path — SdFat rename refuses an
+  // existing destination (O_EXCL), so tmp is fully written, synced, and only
+  // then renamed over the old frame (the rename replaces it in one step).
+  // On any failure the OLD frame is dropped rather than kept: the panel
+  // already shows the new sleep screen, so a restored old frame would no
+  // longer match what was displayed (the quick-resume contract: the file is
+  // the baseline of what is on the panel). A missing frame just restores
+  // no-frame sleep — the safe direction.
+  // Layout: [<framebuffer bytes> | <4-byte Adler-32 of the framebuffer>].
+  if (Storage.exists(SLEEP_FRAME_FILE) && !Storage.remove(SLEEP_FRAME_FILE)) {
+    LOG_ERR("SLP", "Could not drop old sleep frame");
+    Storage.remove(SLEEP_FRAME_TMP);
+    return;
+  }
   HalFile file;
-  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_FILE, file)) return;
-  file.write(renderer.getFrameBuffer(), renderer.getBufferSize());
-  file.close();
+  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_TMP, file)) return;
+  const size_t fbWritten = file.write(fb, fbSize);
+  uint8_t trailer[sizeof(uint32_t)];
+  memcpy(trailer, &newHash, sizeof(trailer));
+  const size_t trailerWritten = file.write(trailer, sizeof(trailer));
+  file.flush();
+  const bool synced = file.sync();
+  const bool closed = file.close();
+  if (fbWritten != fbSize || trailerWritten != sizeof(trailer) || !synced || !closed) {
+    // With the trailer appended, up to 3 missing framebuffer bytes would read
+    // back as trailer bytes; a failed sync/close could leave torn tmp data.
+    // Never install such a file.
+    LOG_ERR("SLP", "Bad sleep-frame tmp write (%u/%u + %u/4, sync=%d close=%d)", (unsigned)fbWritten, (unsigned)fbSize,
+            (unsigned)trailerWritten, synced, closed);
+    Storage.remove(SLEEP_FRAME_TMP);
+    return;
+  }
+  if (!Storage.rename(SLEEP_FRAME_TMP, SLEEP_FRAME_FILE)) {
+    LOG_ERR("SLP", "Could not install sleep frame");
+    Storage.remove(SLEEP_FRAME_TMP);
+    return;
+  }
 }
 
 static bool loadSleepFrameBuffer() {
   HalFile file;
   if (!Storage.openFileForRead("SLP", SLEEP_FRAME_FILE, file)) return false;
   const size_t bufferSize = display.getBufferSize();
-  const size_t bytesRead = file.read(display.getFrameBuffer(), bufferSize);
-  file.close();
-  if (bytesRead != bufferSize) {
+  const size_t fileSize = file.size();
+  const bool hasTrailer = fileSize == bufferSize + sizeof(uint32_t);
+  if (fileSize != bufferSize && !hasTrailer) {
+    // Neither legacy (framebuffer-only) nor trailer format: treat as corrupt.
+    file.close();
     Storage.remove(SLEEP_FRAME_FILE);
     return false;
   }
-  Storage.remove(SLEEP_FRAME_FILE);
+  const size_t bytesRead = file.read(display.getFrameBuffer(), bufferSize);
+  bool valid = bytesRead == bufferSize;
+  if (valid && hasTrailer) {
+    // Validate the trailer so a corrupted payload (bit rot, USB host edit)
+    // is dropped instead of being restored on quick resume.
+    uint8_t stored[sizeof(uint32_t)];
+    valid = file.read(stored, sizeof(stored)) == static_cast<int>(sizeof(stored));
+    if (valid) {
+      uint32_t storedHash;
+      memcpy(&storedHash, stored, sizeof(storedHash));
+      valid = storedHash == sleepFrameAdler32(display.getFrameBuffer(), bufferSize);
+    }
+  }
+  file.close();
+  if (!valid) {
+    Storage.remove(SLEEP_FRAME_FILE);
+    return false;
+  }
+  // The file is kept: the next saveSleepFrameBuffer() compares hashes against
+  // it, and every non-quick-resume path removes it (see the stale-frame kill
+  // sites around this file's other Storage.remove calls).
   return true;
 }
 
