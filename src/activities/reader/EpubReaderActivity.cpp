@@ -1139,8 +1139,10 @@ void EpubReaderActivity::loop() {
 
   // The open overlay owns the touch latch; page-turn tap detection must not
   // consume a tap that FUI will route to the sheet.
-  const auto touch = overlay == Overlay::None ? ReaderUtils::detectTouchPageTurn(renderer, mappedInput)
-                                              : ReaderUtils::TouchPageTurn{false, false, 0};
+  const auto touch =
+      overlay == Overlay::None
+          ? ReaderUtils::detectTouchPageTurn(renderer, mappedInput, ReaderUtils::isRtlBookLanguage(epub->getLanguage()))
+          : ReaderUtils::TouchPageTurn{false, false, 0};
 
   if (showBookmarkMessage && (millis() - bookmarkMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showBookmarkMessage = false;
