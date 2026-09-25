@@ -90,6 +90,18 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 49
+
+Version 49 keeps the version 48 serialized layout unchanged. It was bumped
+because Hangul text no longer has implicit line-break opportunities between
+syllables: Korean words wrap at spaces (like CSS `word-break: keep-all`), and
+with hyphenation enabled a word may also split at the end of a line wherever the
+CJK line-breaking rules allow, without an inserted hyphen. Justification
+stretches only word spaces. Cached line breaks and word positions from version
+48 no longer match. Both parents' v48 builds are invalidated: the fork's v48
+(selection groups + spacing supersession) and upstream's v48 (Korean wrapping,
+bumped from its own v47).
+
 ### Version 48
 
 The section header adds signed `characterSpacing` (pixels) and unsigned
@@ -198,7 +210,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 48
+#define EXPECTED_VERSION 49
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256

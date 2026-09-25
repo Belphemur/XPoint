@@ -62,7 +62,14 @@ namespace {
 //      stores only character spacing. The fork had already consumed its own v47
 //      (selection groups + hyphen flags), so both sides' v47 files are incompatible
 //      with the merged v48 layout and the bump invalidates them.
-constexpr uint8_t SECTION_FILE_VERSION = 48;
+// v48: The supersession bump above — the fork's v47 (selection groups + hyphen flags)
+//      and upstream's v47 (word/character spacing) are structurally incompatible.
+// v49: Hangul words wrap at spaces; with hyphenation on they may also split at a line
+//      end, and justification no longer stretches between syllables. Upstream bumped
+//      its v47 to this same number (its v48) for this same change, so the merged
+//      layout (fork v48 + Korean fixes) is v49 and both parents' v48 caches are
+//      invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 49;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
