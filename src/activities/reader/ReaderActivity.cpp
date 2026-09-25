@@ -13,6 +13,7 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "TtfUiFallback.h"
 #include "TxtReaderActivity.h"
 #include "XtcReaderActivity.h"
 
@@ -50,10 +51,6 @@ void ReaderActivity::disableFastInitialRefresh() { pagesUntilFullRefresh = 0; }
 void ReaderActivity::onEnter() {
   Activity::onEnter();
 
-  // Heap ledger for field crash reports: free vs largest block distinguishes a
-  // leak (free falls) from fragmentation (free stable, largest collapses).
-  LOG_INF("MEM", "reader enter: free=%u max_block=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
-
   if (!Storage.exists(bookPath.c_str())) {
     LOG_ERR("READER", "File does not exist: %s", bookPath.c_str());
     finish();
@@ -61,6 +58,9 @@ void ReaderActivity::onEnter() {
   }
 
   sdFontSystem.ensureLoaded(renderer);
+#if CROSSPOINT_TTF_UI_FALLBACK
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   applyInitialOrientation();
 
   if (!loadBook()) {
@@ -74,6 +74,8 @@ void ReaderActivity::onEnter() {
   requestUpdate();
 }
 
+void ReaderActivity::onGoHomeRequested() { onGoHome(); }
+
 void ReaderActivity::onExit() {
   Activity::onExit();
 
@@ -81,8 +83,6 @@ void ReaderActivity::onExit() {
   if (auto* fontCache = renderer.getFontCacheManager()) {
     fontCache->releaseSdFontCaches();
   }
-
-  LOG_INF("MEM", "reader exit: free=%u max_block=%u", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   APP_STATE.readerActivityLoadCount = 0;
@@ -93,8 +93,9 @@ void ReaderActivity::onExit() {
 }
 
 bool ReaderActivity::handleBackNavigation() {
-  return ReaderUtils::handleBackNavigation(mappedInput, activityManager, bookPath.c_str(),
-                                           {this, [](void* ctx) { static_cast<ReaderActivity*>(ctx)->onGoHome(); }});
+  return ReaderUtils::handleBackNavigation(
+      mappedInput, activityManager, bookPath.c_str(),
+      {this, [](void* ctx) { static_cast<ReaderActivity*>(ctx)->onGoHomeRequested(); }});
 }
 
 void ReaderActivity::clearEndOfBookOptionsIfNeeded() {
@@ -120,7 +121,7 @@ bool ReaderActivity::handleEndOfBookMenu(const bool suppressConfirmRelease) {
       activityManager.goToReader(openPath);
       return true;
     case EndOfBookOptions::Action::GoHome:
-      onGoHome();
+      onGoHomeRequested();
       return true;
     case EndOfBookOptions::Action::LastPage:
       onReturnFromEndOfBook();
@@ -143,7 +144,7 @@ bool ReaderActivity::handleEndOfBookPageTurn(const bool prevTriggered, const boo
     return true;
   }
   if (nextTriggered) {
-    onGoHome();
+    onGoHomeRequested();
   } else if (prevTriggered) {
     onReturnFromEndOfBook();
     requestUpdate();
