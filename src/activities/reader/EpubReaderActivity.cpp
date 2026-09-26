@@ -1053,12 +1053,11 @@ void EpubReaderActivity::loop() {
   const bool inputPriority = mappedInput.rawInputPriority();
 
   constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
-  if (!inputPriority && section && !section->isBuilding() && !RenderLock::peek() && renderer.hasFrameBuffer() &&
-      lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
-      ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
-      (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
-    RenderLock lock;
-    if (section && !section->isBuilding() &&
+  if (!inputPriority) {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock() && section && !section->isBuilding() && renderer.hasFrameBuffer() &&
+        lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
+        ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
         (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
       idlePrewarmSpine = currentSpineIndex;
       idlePrewarmPage = section->currentPage;
@@ -1077,25 +1076,25 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (!inputPriority && section && !section->isBuilding() && section->isPartial() && !RenderLock::peek() &&
-      buildViewportWidth > 0 && !partialRebuildStartFailed &&
-      section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
-    RenderLock lock;
-    const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
-    if (!section->startBuild(buildSpec)) {
-      partialRebuildStartFailed = true;
-      LOG_ERR("ERS", "Failed to start deferred partial extension build");
-    } else {
-      LOG_DBG("ERS", "Reader near partial watermark (%d/%d), resuming extension build", section->currentPage,
-              section->pageCount);
+  if (!inputPriority) {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock() && section && !section->isBuilding() && section->isPartial() && buildViewportWidth > 0 &&
+        !partialRebuildStartFailed &&
+        section->currentPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(section->pageCount)) {
+      const ReaderRenderSpec buildSpec = SETTINGS.readerRenderSpec(buildViewportWidth, buildViewportHeight);
+      if (!section->startBuild(buildSpec)) {
+        partialRebuildStartFailed = true;
+        LOG_ERR("ERS", "Failed to start deferred partial extension build");
+      } else {
+        LOG_DBG("ERS", "Reader near partial watermark (%d/%d), resuming extension build", section->currentPage,
+                section->pageCount);
+      }
     }
   }
 
-  if (!inputPriority && section && section->isBuilding() && !RenderLock::peek() &&
-      (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD) &&
-      buildTickHeapGate()) {
-    RenderLock lock;
-    if (section->isBuilding() && buildTickHeapGate()) {
+  if (!inputPriority) {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock() && backgroundBuildWanted() && buildTickHeapGate()) {
       if (!section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK)) {
         LOG_ERR("ERS", "Background section build failed");
         section.reset();
@@ -1107,9 +1106,9 @@ void EpubReaderActivity::loop() {
   }
 
 #if defined(CROSSPOINT_TTF_READER)
-  if (!inputPriority && ttf_ && !RenderLock::peek() && buildTickHeapGate()) {
-    RenderLock lock;
-    if (ttf_ && buildTickHeapGate()) {
+  if (!inputPriority) {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (lock.ownsLock() && ttf_ && buildTickHeapGate()) {
       ttfBackgroundBuildTick();
     }
   }
@@ -2099,14 +2098,19 @@ bool EpubReaderActivity::preventAutoSleep() {
   return section != nullptr && section->isBuilding();
 }
 
+bool EpubReaderActivity::backgroundBuildWanted() const {
+  return section && section->isBuilding() &&
+         (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
+}
+
 bool EpubReaderActivity::skipLoopDelay() {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     return ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive() && !buildHeapPaused;
   }
 #endif
-  return section && section->isBuilding() && !buildHeapPaused &&
-         (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
+  // The main loop holds the render lock while querying this hint.
+  return !buildHeapPaused && backgroundBuildWanted();
 }
 
 void EpubReaderActivity::renderBook() {
