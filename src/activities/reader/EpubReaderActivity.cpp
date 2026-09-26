@@ -1034,6 +1034,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  rememberBookOnceRendered();
   retryDeferredOverlayPush();
 
   // Someone else turned the screen while this reader was stacked (the control
@@ -2141,6 +2142,8 @@ void EpubReaderActivity::renderBook() {
 
   const auto showBuildError = [this]() {
     renderer.clearScreen();
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     GUI.drawPopup(renderer, tr(STR_INDEX_FAILED));
     automaticPageTurnActive = false;
   };
@@ -2452,6 +2455,7 @@ void EpubReaderActivity::renderBook() {
 #ifdef READING_STATS_ENABLED
     pageShownAtMs = millis();
 #endif
+    markPageRendered();
   }
 
   {

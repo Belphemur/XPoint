@@ -57,6 +57,12 @@ void ReaderActivity::onEnter() {
     return;
   }
 
+  // Clear remembered book after opening it
+  if (!APP_STATE.openEpubPath.empty()) {
+    APP_STATE.openEpubPath.clear();
+    APP_STATE.saveToFile();
+  }
+
   sdFontSystem.ensureLoaded(renderer);
 #if CROSSPOINT_TTF_UI_FALLBACK
   freeink::book::ttfUiFallback.update(renderer);
@@ -68,10 +74,15 @@ void ReaderActivity::onEnter() {
     return;
   }
 
+  requestUpdate();
+}
+
+void ReaderActivity::rememberBookOnceRendered() {
+  if (bookRemembered || !pageRendered.load(std::memory_order_acquire)) return;
+  bookRemembered = true;
   APP_STATE.openEpubPath = bookPath;
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(bookPath, getBookTitle(), getBookAuthor(), getBookThumbBmpPath());
-  requestUpdate();
 }
 
 void ReaderActivity::onGoHomeRequested() { onGoHome(); }
@@ -153,6 +164,7 @@ bool ReaderActivity::handleEndOfBookPageTurn(const bool prevTriggered, const boo
 }
 
 void ReaderActivity::loop() {
+  rememberBookOnceRendered();
   clearEndOfBookOptionsIfNeeded();
   if (handleEndOfBookMenu()) return;
   if (handleFormatInput()) return;
@@ -201,6 +213,7 @@ void ReaderActivity::render(RenderLock&&) {
     }
     renderer.displayBuffer();
     onEndOfBookRendered();
+    markPageRendered();
     return;
   }
 
