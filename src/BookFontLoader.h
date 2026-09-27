@@ -268,6 +268,16 @@ class BookFontLoader {
   FamilyInfo& editFamily(uint8_t idx) { return families_[idx]; }
   void setFamilyCountForTest(uint8_t n) { familyCount_ = n; }
   uint32_t dramBudgetForTest() const { return remainingBudget_; }
+  // True when the streamed-slot handle is currently open (§14.5 lifecycle
+  // assertion: never-opened on a cold loader, open after a streamed load).
+  bool streamSourceOpenForTest(uint8_t slot) const {
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+    return slot < 4 && streamSources_[slot].file.isOpen();
+#else
+    (void)slot;
+    return false;
+#endif
+  }
   // Appends the Atkinson tail to the live chain without a loadable TTF face,
   // so host tests can exercise the tail-append path.
   void forceFallbackTailForTest();

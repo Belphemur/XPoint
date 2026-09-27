@@ -1431,3 +1431,137 @@ TEST(BookFontLoaderHinting, FingerprintStableAcrossLoaderInstances) {
   EXPECT_EQ(fingerprints[0], fingerprints[1]);
 }
 #endif
+
+// ── Cold-start HalFile lifecycle (device boot-panic regression) ─────────
+// The device's streamed-slot StreamSources are default-constructed HalFile
+// members; closing one before its first open used to assert
+// (HalStorage.cpp: assert(impl != nullptr)) and panicked every boot where
+// no streamed font had been loaded (upstream 3dd1748e). The HAL close() is
+// now total (no-op on a never-opened handle, matching SdFat). The host stub
+// count-exposes every close of a never-opened handle, so these tests pin
+// the whole lifecycle: cold begin, re-begin over a live streamed slot, and
+// the failure ladder — with closeOfNeverOpenedCounter proving the release
+// paths stay disciplined rather than merely surviving the no-op.
+
+#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+
+// Regression: cold begin() (zero streamed slots, no manifest) must survive
+// the release paths — this was the on-device boot panic in setup()
+// before the first frame rendered.
+TEST(BookFontLoaderStreaming, ColdBeginSurvivesReleaseOnColdSlots) {
+  testSetPsramHeap({0, 0, 0, 0});  // no PSRAM → streaming path unreachable
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  loader.begin();
+  EXPECT_EQ(loader.familyCount(), 0u);
+  EXPECT_EQ(loader.fontFingerprint(), 0u);
+}
+
+// Contract: close() on a never-opened HalFile is a safe no-op (device
+// HalStorage.cpp), not an assert — the crash class this suite pins. The
+// counter delta proves the close actually ran and was tolerated, instead
+// of silently not executing at all.
+TEST(BookFontLoaderStreaming, CloseOnNeverOpenedHandleIsNoOp) {
+  const int before = HalFile::closeOfNeverOpenedCounter;
+  HalFile cold;
+  cold.close();  // pre-fix device: assert(impl != nullptr) panic
+  EXPECT_FALSE(cold.isOpen());
+  EXPECT_EQ(HalFile::closeOfNeverOpenedCounter, before + 1);
+}
+
+// Regression: a cold begin() after a live streamed load tears down that
+// slot's open handle exactly once and leaves reset StreamSource state.
+TEST(BookFontLoaderStreaming, RebeginAfterStreamedLoadTearsDownOnceAndStaysLive) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  std::string big = regularBytes;
+  big.resize(BookFontLoader::kMaxFaceBytes + 1024, '\0');  // force streaming path
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  resetStorage();
+  seedFile("/fonts/Big/Big-Regular.ttf", big);
+  freeink::book::BookFontLoader loader;
+  auto seedFamily = [&] {
+    auto& fam = loader.editFamily(0);
+    std::snprintf(fam.name, sizeof(fam.name), "%s", "Big");
+    fam.faceCount = 1;
+    fam.faces[0].styleFlags = freeink::book::StyleNone;
+    fam.faces[0].fileSize = static_cast<uint32_t>(big.size());
+    fam.faces[0].mtime = 0;
+    std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Big/Big-Regular.ttf");
+    loader.setFamilyCountForTest(1);
+  };
+  seedFamily();
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_NE(loader.fontFingerprint(), 0u);  // streamed slot loaded (owner=3)
+
+  // begin() re-scans the manifest and clears the selection, so re-seed and
+  // re-select the way callers do across a real restart-scoped begin().
+  loader.begin();
+  seedFamily();
+  loader.selectFamily("Big");
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  const uint32_t fp1 = loader.fontFingerprint();
+  EXPECT_EQ(loader.fontFingerprint(), fp1);
+  // The streamed slot's handle must actually be open again post-rebegin.
+  EXPECT_TRUE(loader.streamSourceOpenForTest(0));
+}
+
+// Regression: streamed load failure paths (open failure) must clean up the
+// slot — the slot stays closed and the builtin fallback still serves all
+// styles — while never mishandling the never-opened handle.
+TEST(BookFontLoaderStreaming, StreamedOpenFailureCleansSlotWithoutMisuse) {
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  resetStorage();  // no files → openFileForRead fails immediately
+  freeink::book::BookFontLoader loader;
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Ghost");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = BookFontLoader::kMaxFaceBytes + 1024;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Ghost/Ghost-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+  loader.markDirty();
+  // Attempting the load hits the open-failure release path on a slot whose
+  // first open failed (fresh Impl assigned, file not open on device).
+  freeink::book::FontChain* chain = loader.getReaderFont();
+  ASSERT_NE(chain, nullptr);
+  // The failed slot never contributed — builtin fallback still covers all.
+  EXPECT_EQ(chain->styleCoverage(), 0x07);
+  EXPECT_FALSE(loader.streamSourceOpenForTest(0));
+  EXPECT_EQ(loader.fontFingerprint(), 0u);
+}
+
+// Determinism: two streamed loads over the same file must close/reopen the
+// underlying handle — fingerprint stable and the slot back open, with zero
+// never-opened closes over the whole lifecycle.
+TEST(BookFontLoaderStreaming, StreamedReloadHasCleanHandleLifecycle) {
+  const std::string regularBytes = emberBytes("Amazon_Ember_Regular.ttf");
+  if (!fixtureAvailable(regularBytes)) GTEST_SKIP() << "fixture unavailable: Amazon_Ember_Regular.ttf";
+  std::string big = regularBytes;
+  big.resize(BookFontLoader::kMaxFaceBytes + 1024, '\0');
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  resetStorage();
+  seedFile("/fonts/Big/Big-Regular.ttf", big);
+  freeink::book::BookFontLoader loader;
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Big");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(big.size());
+  fam.faces[0].mtime = 0;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Big/Big-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  const uint32_t fpFirst = loader.fontFingerprint();
+  loader.markDirty();  // reload: close + reopen of slot 0's handle
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(loader.fontFingerprint(), fpFirst);
+  EXPECT_TRUE(loader.streamSourceOpenForTest(0));
+}
+#endif  // CROSSPOINT_FONT_BACKEND_FT

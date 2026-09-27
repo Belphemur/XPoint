@@ -12,6 +12,8 @@ HalStorage HalStorage::instance;
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {
   (void)moduleName;
+  file = HalFile{};  // device parity: fresh Impl assigned even on failure
+  file.everOpened = true;
   auto it = files.find(path);
   if (it == files.end()) return false;  // missing file = failed open
   file.data = &it->second;
@@ -28,6 +30,7 @@ bool HalStorage::openFileForWrite(const char* moduleName, const char* path, HalF
   file.path = &files.find(path)->first;
   file.writable = true;
   file.storage = this;
+  file.everOpened = true;
   return true;
 }
 
@@ -63,15 +66,20 @@ HalFile HalStorage::open(const char* path) {
     f.dir = true;
     f.path = &*dirs.find(path);
     f.storage = this;
-  } else {
-    auto it = files.find(path);
-    if (it != files.end()) {
-      f.data = &it->second;
-      f.path = &it->first;
-    }
+    f.everOpened = true;
+    return f;
+  }
+  auto it = files.find(path);
+  if (it != files.end()) {
+    f.data = &it->second;
+    f.path = &it->first;
+    f.everOpened = true;  // over-open (no prior close) is the caller's bug
   }
   return f;
 }
+
+// Never-opened-close counter (device semantics: safe no-op, count for tests).
+int HalFile::closeOfNeverOpenedCounter = 0;
 
 namespace {
 std::string lastComponent(const std::string& p) {
@@ -134,10 +142,12 @@ HalFile HalFile::openNextFile() {
     auto it = storage->files.find(*best);
     child.data = &it->second;
     child.path = &it->first;
+    child.everOpened = true;
   } else {
     child.dir = true;
     child.path = &*storage->dirs.find(*best);
     child.storage = storage;
+    child.everOpened = true;
   }
   return child;
 }

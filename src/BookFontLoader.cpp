@@ -1658,7 +1658,8 @@ void BookFontLoader::initBudget() {
 void BookFontLoader::releaseStreamSource(const uint8_t faceIdx) {
   // Close-before-reopen discipline: a slot reload reopens the same HalFile
   // member, so the stale handle must be closed first (DESTRUCTOR_CLOSES_FILE
-  // only covers scope-exit, not member reuse).
+  // only covers scope-exit, not member reuse). Safe on never-opened slots:
+  // HalFile::close() is a no-op when the handle was never assigned an Impl.
   streamSources_[faceIdx].file.close();
   streamSources_[faceIdx].prefix.reset();
   streamSources_[faceIdx].prefixLen = 0;

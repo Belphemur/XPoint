@@ -1,4 +1,9 @@
 // Host-test stub of HalFile — backed by HalStorage's controllable file map.
+// Mirrors the device HAL contract: close() on a never-opened handle is a
+// no-op (the device HalStorage.cpp close() tolerates null impl); every other
+// method on an unopened handle is misuse. closeOfNeverOpenedCounter lets a
+// lifecycle test verify zero misuse without paying for a crash-safety
+// regression through an abort.
 #pragma once
 
 #include <cstddef>
@@ -18,10 +23,18 @@ class HalFile {
   // Set by openFileForWrite(): write() appends into the fake map entry.
   bool writable = false;
   HalStorage* storage = nullptr;
+  // True once this instance went through any HalStorage open call — mirrors
+  // the device's impl != nullptr lifetime (an open call allocates the Impl
+  // even when the open itself fails). close() clears the live state but not
+  // this flag, matching the device: close-on-closed stays a safe no-op.
+  bool everOpened = false;
+  // Counts close() calls on a never-opened handle (0 in well-behaved code).
+  static int closeOfNeverOpenedCounter;
 
   bool isOpen() const { return data != nullptr || dir; }
   operator bool() const { return isOpen(); }
   void close() {
+    if (!everOpened) ++closeOfNeverOpenedCounter;
     data = nullptr;
     dir = false;
     writable = false;

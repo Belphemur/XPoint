@@ -45,6 +45,8 @@ bool FibpPrefetchWorker::buildFaces() {
     if (fi.fileSize > BookFontLoader::kMaxFaceBytes) {
       if (fi.fileSize > BookFontLoader::kMaxStreamFaceBytes) continue;
       StreamSource& src = streamSources_[i];
+      // Close-before-reopen on the reused member; safe on never-opened slots
+      // (HalFile::close() is a no-op with null impl).
       src.file.close();
       src.prefix.reset();
       src.prefixLen = 0;
@@ -219,7 +221,7 @@ void FibpPrefetchWorker::teardownFaces() {
   for (auto& face : faceOwners_) face.reset();
   for (auto& bytes : fontBytes_) bytes.reset();
   for (auto& src : streamSources_) {
-    src.file.close();
+    src.file.close();  // no-op on never-opened slots
     src.prefix.reset();
     src.prefixLen = 0;
   }
