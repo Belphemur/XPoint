@@ -2526,14 +2526,11 @@ uint32_t EpubReaderActivity::ttfEstimatedPageCount() const {
     const uint64_t consumed = ttf_->cacheBuildBytesConsumed();
     const uint64_t total = ttf_->cacheBuildBytesTotal();
     if (consumed > 0 && total > consumed) {
-      // The worker yields the spine's CUMULATIVE available page count
-      // (ChapterIndexEngine passes target.availablePageCount), which already
-      // includes the resumed prefix — adding ttfPageCount would count the
-      // prefix twice while the worker extends the chapter.
       const uint16_t workerPages = workerBuilding ? fibpWorker_->buildingProgressPages() : 0;
-      // Worker progress is the spine's CUMULATIVE available-page count
-      // (ChapterIndexEngine passes target.availablePageCount), so the reader's
-      // prefix is a subset — take the greater of the two, never the sum.
+      // buildingProgressPages() is the spine's CUMULATIVE available-page count
+      // (ChapterIndexEngine passes target.availablePageCount), so it already
+      // includes the resumed prefix — take the greater of the two, never the
+      // sum, or the prefix is counted twice while the worker extends it.
       const uint64_t pages = std::max<uint64_t>(ttfPageCount, workerPages);
       est = pages * total / consumed;
     }
@@ -2721,6 +2718,20 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
       targetOut = 0;  // generation/spine mismatch: chapter-start degrade (§7)
       return true;
     }
+    // Resume from a partial prefix: the saved char anchor (zero or not) cannot
+    // be mapped exactly without the complete index — pageForChar() clamps
+    // beyond the watermark — but the saved PAGE number is layout-identical
+    // under the matching generation checked above and is already built. Serve
+    // it so the reader paints at once and stays usable while the background
+    // build finishes; consume the saved position because a built prefix is a
+    // true prefix of the final index. When the saved page itself is not built
+    // yet the reader waits — its position must not be silently clamped back.
+    if (cacheMatchesGeneration && ttf_->cachePartial() && available > 0 && nextPageNumber >= 0 &&
+        nextPageNumber < available) {
+      ttfHasSavedPosition = false;
+      targetOut = nextPageNumber;
+      return true;
+    }
     // Page-anchored restore: a generation-tagged record with charOffset 0
     // carries its position in the record's page number (the KOReader
     // remote-accept save has no TTF char anchor for the remote position; a
@@ -2753,20 +2764,6 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     if (haveTotal) {
       ttfHasSavedPosition = false;
       targetOut = 0;  // offset absent from the complete chapter text
-      return true;
-    }
-    // Resume from a partial prefix: the char anchor needs the complete index
-    // (pageForChar() would clamp beyond the watermark), but the saved PAGE
-    // number is layout-identical under the matching generation checked above
-    // and is already built. Serve it so the reader paints at once and stays
-    // usable while the background build finishes; consume the saved position
-    // because a built prefix is a true prefix of the final index. When the
-    // saved page itself is not built yet the reader waits — its position must
-    // not be silently clamped back.
-    if (cacheMatchesGeneration && ttf_->cachePartial() && available > 0 && nextPageNumber >= 0 &&
-        nextPageNumber < available) {
-      ttfHasSavedPosition = false;
-      targetOut = nextPageNumber;
       return true;
     }
     needFullBuild = true;
@@ -2995,28 +2992,30 @@ void EpubReaderActivity::renderBookTtf() {
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
   if (fibpResumeClaimedSpine_ == currentSpineIndex) {
-    // Resume-claim lifecycle: once the worker has been seen holding it, its
-    // release means the chapter committed — reopen so the page count and
-    // jump resolution see the complete cache.
+    // Resume-claim lifecycle. The worker builds the claim with priority and
+    // does not clear running_ between spines, so a finished commit may never
+    // be caught by a render observing buildingSpine(). Probe the committed
+    // cache whenever the worker is not on this spine: a complete cache means
+    // the commit landed; a still-partial one keeps the claim while the task
+    // is alive (it may not have reached the claim yet) and releases it once
+    // the task is gone past the grace window.
     const bool workerHolds = fibpWorker_ != nullptr && fibpWorker_->active() &&
                              fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
     if (workerHolds) {
       fibpResumeSeenBuilding_ = true;
-    } else if (fibpResumeSeenBuilding_) {
-      fibpResumeClaimedSpine_ = -1;
-      fibpResumeSeenBuilding_ = false;
-      ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    } else {
+      const freeink::book::BookStatus st = ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
-      LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
-    } else if (!(fibpWorker_ != nullptr && fibpWorker_->active()) &&
-               millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs) {
-      // The worker never claimed and no task is alive (disabled, failed
-      // spawn): stop waiting — the margin fallback owns the extension. Reopen
-      // in case the worker committed just before it exited (a commit without
-      // an observed "seen building" render would otherwise be missed).
-      fibpResumeClaimedSpine_ = -1;
-      ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
-      ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
+      const bool committed = st == freeink::book::BookStatus::Ok && !ttf_->cachePartial();
+      const bool workerAlive = fibpWorker_ != nullptr && fibpWorker_->active();
+      if (committed || fibpResumeSeenBuilding_ ||
+          (!workerAlive && millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
+        fibpResumeClaimedSpine_ = -1;
+        fibpResumeSeenBuilding_ = false;
+        if (committed) {
+          LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
+        }
+      }
     }
   }
 
