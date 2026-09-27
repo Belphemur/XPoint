@@ -136,3 +136,10 @@ add_subdirectory(font_backend)
 add_subdirectory(ui_app_handlers)
 add_subdirectory(activity_result)
 add_subdirectory(glyph_bitmap)
+
+# Performance benchmarks (host, real engine + FreeType). Opt-in so the
+# default CI gate stays fast and timing-free.
+option(CROSSPOINT_BUILD_BENCH "Build host performance benchmarks" OFF)
+if(CROSSPOINT_BUILD_BENCH)
+  add_subdirectory(fibp_bench)
+endif()
