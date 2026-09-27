@@ -2803,6 +2803,16 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 
 void EpubReaderActivity::renderBookTtf() {
   if (!epub || !ttf_) return;
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // makeLayoutParams() below can reload the shared font loader on this render
+  // (first render after boot: the session's first selectFamily() dirties it),
+  // freeing the resident bytes the registered UI-fallback faces borrow.
+  // update() re-validates the fingerprint and borrowed byte addresses and
+  // re-registers the faces BEFORE anything draws through the stale ones —
+  // without it the status bar's FT_Get_Char_Index walks a freed cmap
+  // (LoadProhibited, issue #168). Fast pointer-compare path when clean.
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
   // Runs under the render task's RenderLock; catches every requestUpdate()
   // exit from the overlay while its deferred chrome refresh is still pending.
   settleOverlayRefresh();
