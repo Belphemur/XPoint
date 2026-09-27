@@ -2526,8 +2526,12 @@ uint32_t EpubReaderActivity::ttfEstimatedPageCount() const {
     const uint64_t consumed = ttf_->cacheBuildBytesConsumed();
     const uint64_t total = ttf_->cacheBuildBytesTotal();
     if (consumed > 0 && total > consumed) {
-      uint64_t pages = ttfPageCount;
-      if (workerBuilding) pages += fibpWorker_->buildingProgressPages();
+      const uint16_t workerPages = workerBuilding ? fibpWorker_->buildingProgressPages() : 0;
+      // buildingProgressPages() is the spine's CUMULATIVE available-page count
+      // (ChapterIndexEngine passes target.availablePageCount), so it already
+      // includes the resumed prefix — take the greater of the two, never the
+      // sum, or the prefix is counted twice while the worker extends it.
+      const uint64_t pages = std::max<uint64_t>(ttfPageCount, workerPages);
       est = pages * total / consumed;
     }
   }
@@ -2712,6 +2716,20 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     if (currentSpineIndex != ttfSavedSpine || ttfSavedGeneration != ttfGeneration) {
       ttfHasSavedPosition = false;
       targetOut = 0;  // generation/spine mismatch: chapter-start degrade (§7)
+      return true;
+    }
+    // Resume from a partial prefix: the saved char anchor (zero or not) cannot
+    // be mapped exactly without the complete index — pageForChar() clamps
+    // beyond the watermark — but the saved PAGE number is layout-identical
+    // under the matching generation checked above and is already built. Serve
+    // it so the reader paints at once and stays usable while the background
+    // build finishes; consume the saved position because a built prefix is a
+    // true prefix of the final index. When the saved page itself is not built
+    // yet the reader waits — its position must not be silently clamped back.
+    if (cacheMatchesGeneration && ttf_->cachePartial() && available > 0 && nextPageNumber >= 0 &&
+        nextPageNumber < available) {
+      ttfHasSavedPosition = false;
+      targetOut = nextPageNumber;
       return true;
     }
     // Page-anchored restore: a generation-tagged record with charOffset 0
@@ -2909,12 +2927,17 @@ void EpubReaderActivity::renderBookTtf() {
   // worker releases the claim. The reader never inline-builds while it
   // holds this claim (takeover guards below return the spine to the reader
   // when it actually needs pages the partial lacks).
-  if (ttfSpine == currentSpineIndex && ttf_->cacheReady() && ttf_->cachePartial() && fibpWorker_ != nullptr) {
+  if (ttfSpine == currentSpineIndex && ttf_->cacheReady() && ttf_->cachePartial() && fibpWorker_ != nullptr &&
+      fibpBegun_) {
     if (fibpResumeClaimedSpine_ != currentSpineIndex) {
       fibpResumeClaimedSpine_ = static_cast<int16_t>(currentSpineIndex);
       fibpResumeSeenBuilding_ = false;
       fibpResumeRequestMs_ = millis();
       fibpWorker_->requestResumeClaim(static_cast<uint16_t>(currentSpineIndex));
+      // Start the task with the claim: only a live worker consumes it, and
+      // updateFibpWorker's notifyChapterProgress may not run again until the
+      // next user-driven render (an idle reader produces none).
+      (void)fibpWorker_->ensureTask();
       LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
               static_cast<unsigned>(ttfPageCount));
     }
@@ -2969,23 +2992,40 @@ void EpubReaderActivity::renderBookTtf() {
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
   if (fibpResumeClaimedSpine_ == currentSpineIndex) {
-    // Resume-claim lifecycle: once the worker has been seen holding it, its
-    // release means the chapter committed — reopen so the page count and
-    // jump resolution see the complete cache.
+    // Resume-claim lifecycle. The worker builds the claim with priority and
+    // does not clear running_ between spines, so a finished commit may never
+    // be caught by a render observing buildingSpine(). Probe the committed
+    // cache whenever the worker is not on this spine: a complete cache means
+    // the commit landed; a still-partial one keeps the claim while the task
+    // is alive (it may not have reached the claim yet) and releases it once
+    // the task is gone past the grace window.
     const bool workerHolds = fibpWorker_ != nullptr && fibpWorker_->active() &&
                              fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
     if (workerHolds) {
       fibpResumeSeenBuilding_ = true;
-    } else if (fibpResumeSeenBuilding_) {
-      fibpResumeClaimedSpine_ = -1;
-      fibpResumeSeenBuilding_ = false;
-      ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    } else {
+      const freeink::book::BookStatus st = ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
-      LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
-    } else if (millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs) {
-      // The worker never claimed (disabled, failed spawn, queue busy for the
-      // whole grace): stop waiting — the margin fallback owns the extension.
-      fibpResumeClaimedSpine_ = -1;
+      const bool committed = st == freeink::book::BookStatus::Ok && !ttf_->cachePartial();
+      const bool workerAlive = fibpWorker_ != nullptr && fibpWorker_->active();
+      // The run loop claims the resume BEFORE the queue, so a worker seen on
+      // another spine has already consumed this claim — or was gated off by an
+      // earlier failure and will never build it. With no committed cache that
+      // means the resume failed: release the claim so the margin fallback
+      // resumes the extension instead of parking it for the worker's whole
+      // look-ahead build window.
+      const uint16_t workerBuilding =
+          fibpWorker_ != nullptr ? fibpWorker_->buildingSpine() : freeink::book::fibp::kNoChapter;
+      const bool busyElsewhere = workerBuilding != freeink::book::fibp::kNoChapter &&
+                                 workerBuilding != static_cast<uint16_t>(currentSpineIndex);
+      if (committed || fibpResumeSeenBuilding_ || (workerAlive && busyElsewhere) ||
+          (!workerAlive && millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
+        fibpResumeClaimedSpine_ = -1;
+        fibpResumeSeenBuilding_ = false;
+        if (committed) {
+          LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
+        }
+      }
     }
   }
 
@@ -3765,8 +3805,20 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
-    // Single-writer: if the worker holds the resume claim for this spine,
-    // take it back — the reader needs pages NOW.
+    // Single-writer: yield the extension only while a LIVE worker is actually
+    // building this spine (or the claim is still fresh — the worker may not
+    // have reached it yet). A consumed-but-failed claim (the worker moved on to
+    // the look-ahead spine) or a self-exited worker must not park the margin
+    // extension forever: fall through and take over.
+    const bool workerOnClaimSpine = fibpWorker_ != nullptr && fibpWorker_->active() &&
+                                    fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
+    const bool claimStillFresh = millis() - fibpResumeRequestMs_ <= kFibpResumeClaimGraceMs;
+    if (freeink::book::fibp::readerYieldsExtension(
+            fibpResumeClaimedSpine_ == currentSpineIndex && (workerOnClaimSpine || claimStillFresh),
+            static_cast<uint16_t>(ttfPage < 0 ? 0 : ttfPage), static_cast<uint16_t>(ttfPageCount))) {
+      return;
+    }
+    // The reader needs pages NOW: take the claim back.
     if (fibpResumeClaimedSpine_ == currentSpineIndex) {
       LOG_INF("ERS", "Margin takeover: spine %d", currentSpineIndex);
       stopFibpWorker();
@@ -4739,15 +4791,9 @@ void EpubReaderActivity::renderQuickFontPage() {
   uint32_t pageIndex = 0;
   class QuickSink final : public freeink::book::PageSink {
    public:
-    QuickSink(EpubReaderActivity* owner, const void* font, const uint32_t target, const uint8_t maxPages,
-              bool& foundRef, uint32_t& pageIndexRef, QuickPageCapture& captureRef)
-        : owner_(owner),
-          font_(font),
-          target_(target),
-          maxPages_(maxPages),
-          found_(foundRef),
-          pageIndex_(pageIndexRef),
-          capture_(captureRef) {}
+    QuickSink(const uint32_t target, const uint8_t maxPages, bool& foundRef, uint32_t& pageIndexRef,
+              QuickPageCapture& captureRef)
+        : target_(target), maxPages_(maxPages), found_(foundRef), pageIndex_(pageIndexRef), capture_(captureRef) {}
 
     bool onPage(const freeink::book::Page& page) override {
       if (page.charStart > target_) {
@@ -4757,17 +4803,13 @@ void EpubReaderActivity::renderQuickFontPage() {
         return false;
       }
       // Later pages also match until the first page past the anchor, so only
-      // the last capture matters. Pages are captured (deep-copied out of the
-      // engine's per-page arena) instead of painted here; the target page is
-      // painted once after the scan. A page that does not fit the capture
-      // buffer is painted inline, as the pre-capture path did.
+      // the last capture matters. Pages are deep-copied out of the engine's
+      // per-page arena. A page too large for the buffer is SKIPPED, not
+      // painted inline: an inline speculative frame would be left on screen
+      // while the status bar still reported the old page.
       sawCandidate_ = true;
       pageIndex_ = page.pageIndex;
-      if (!capture_.capture(page)) {
-        owner_->renderer.clearScreen(0xFF);
-        owner_->paintTtfPage(page, const_cast<void*>(font_));
-        capture_.reset();
-      }
+      if (!capture_.capture(page)) capture_.reset();
       if (page.pageIndex + 1 >= maxPages_) {
         budgetStopped_ = true;
         return false;
@@ -4779,8 +4821,6 @@ void EpubReaderActivity::renderQuickFontPage() {
     bool budgetStopped() const { return budgetStopped_; }
 
    private:
-    EpubReaderActivity* owner_;
-    const void* font_;
     uint32_t target_;
     uint8_t maxPages_;
     bool& found_;
@@ -4793,7 +4833,10 @@ void EpubReaderActivity::renderQuickFontPage() {
   // bounds only layout work; a deeper budget keeps more chapters on the fast
   // page-only path instead of the full-reflow fallback.
   constexpr uint8_t kQuickRelayoutPageBudget = 128;
-  QuickSink sink(this, params.font, targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
+  // Drop any capture from a previous step: an early return (active session,
+  // catalog/alloc failure) must not repaint the previous font's page.
+  quickFontPreview.reset();
+  QuickSink sink(targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
 
   {
     RenderLock lock;
@@ -4802,34 +4845,38 @@ void EpubReaderActivity::renderQuickFontPage() {
         ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
     // A page past the anchor confirms the last captured page as the target;
     // a natural end-of-chapter without that confirmation means the anchor
-    // page itself was the last page. Budget exhaustion always falls back.
+    // page itself was the last page.
     if (sink.sawCandidate() && !sink.budgetStopped()) found = true;
-    if (!found) {
-      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s); falling back to full reflow", bookStatusName(st));
-    } else if (quickFontPreview.ready()) {
-      // Paint the captured target page once. Base-only preview by design
-      // (§6): the final close reflow restores the AA gray planes so per-tap
-      // cost stays FAST.
+    if (quickFontPreview.ready()) {
+      // Paint the captured page once. When the anchor was not reached this is
+      // the last page laid out at the new size — an approximate preview,
+      // accepted by the sheet by design. Base-only preview (§6): the final
+      // close reflow restores the AA gray planes so per-tap cost stays FAST.
+      if (!found) {
+        LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — approximate preview", bookStatusName(st));
+      }
       renderer.clearScreen(0xFF);
       paintTtfPage(quickFontPreview.page(), params.font);
+    } else if (!found) {
+      // Anchor out of reach and no capture: keep the current page. A size or
+      // font step is preview-only — invalidating the chapter caches here
+      // (applyReaderTextSettings) re-indexes the whole book per tap; the one
+      // full reflow happens on sheet close instead.
+      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — keeping current page", bookStatusName(st));
     }
-    // With the capture not ready the target page was painted inline by the
-    // sink; the framebuffer already shows it.
   }
 
-  if (!found) {
-    applyReaderTextSettings();
-    requestUpdate();
-    return;
+  // The page cursor only advances when the target page was captured, so an
+  // approximate (or absent) preview never shifts the reading position.
+  if (found && quickFontPreview.ready()) {
+    ttfPage = static_cast<int>(pageIndex);
+    nextPageNumber = ttfPage;
   }
 
-  // The page-only layout succeeded. Mirror the page cursor for the status bar,
-  // snapshot the new clean page for overlay transitions, then draw the sheet.
-  // The sheet preview is intentionally base-only (design §6): the final close
+  // Snapshot the new page for overlay transitions, then draw the sheet. The
+  // sheet preview is intentionally base-only (design §6): the final close
   // reflow restores the AA gray planes so per-tap cost stays FAST.
   LOG_DBG("GRS", "quickFont preview: base-only FAST (AA restored on close)");
-  ttfPage = static_cast<int>(pageIndex);
-  nextPageNumber = ttfPage;
   {
     RenderLock lock;
     renderStatusBar();
