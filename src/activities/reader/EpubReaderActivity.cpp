@@ -6187,6 +6187,7 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
       next = std::clamp(next, 0, 100);
       if (next != static_cast<int>(SETTINGS.frontlightWarmth)) {
         SETTINGS.frontlightWarmth = static_cast<uint8_t>(next);
+        frontlightDrag.changed = true;
         Frontlight.setWarmth(SETTINGS.frontlightWarmth);
       }
     } else {
@@ -6198,14 +6199,17 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
         // value) — mirrors FrontlightPanelActivity::toggleLight, which calls
         // only setOn(false) so the panel slider and swipe both restore to the
         // same brightness when the light is turned back on.
+        if (SETTINGS.frontlightOn) frontlightDrag.changed = true;
         SETTINGS.frontlightOn = 0;
         Frontlight.setOn(false);
       } else {
         int clamped = std::clamp(next, static_cast<int>(FRONTLIGHT_MIN_BRIGHTNESS), 100);
         if (static_cast<int>(SETTINGS.frontlightBrightness) != clamped) {
           SETTINGS.frontlightBrightness = static_cast<uint8_t>(clamped);
+          frontlightDrag.changed = true;
           if (!SETTINGS.frontlightOn) {
             SETTINGS.frontlightOn = 1;
+            frontlightDrag.changed = true;
             Frontlight.setOn(true);
           }
           Frontlight.setBrightness(SETTINGS.frontlightBrightness);
@@ -6215,9 +6219,18 @@ bool EpubReaderActivity::handleSideSwipeFrontlight() {
     return true;  // consumed — prevents page turn on the same frame
   }
 
-  // --- Release: end the drag (no re-render needed; hardware already updated)
+  // --- Release: end the drag -------------------------------------------------
+  // No re-render is needed (hardware already updated), but the drag's setting
+  // changes must survive sleep/power-off: nothing in the sleep path saves
+  // SETTINGS, so the original swipe design's "persisted at the next
+  // settings-save point" never happened. One debounced SD write per gesture,
+  // only when a value actually moved — never per drag frame.
   if (mappedInput.wasScreenTouchReleased()) {
     frontlightDrag.active = false;
+    if (frontlightDrag.changed) {
+      frontlightDrag.changed = false;
+      SETTINGS.saveToFile();
+    }
   }
   return true;
 }

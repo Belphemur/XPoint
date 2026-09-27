@@ -454,6 +454,7 @@ class EpubReaderActivity final : public ReaderActivity {
     bool active = false;
     bool leftSide = false;  // true = warmth edge, false = brightness edge
     int touchStartY = 0;    // logical screen Y where the drag began
+    bool changed = false;   // a drag frame mutated a frontlight setting (persist on release)
   };
   FrontlightDragState frontlightDrag;
 #endif
