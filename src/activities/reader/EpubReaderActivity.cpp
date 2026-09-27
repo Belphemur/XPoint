@@ -3008,7 +3008,17 @@ void EpubReaderActivity::renderBookTtf() {
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
       const bool committed = st == freeink::book::BookStatus::Ok && !ttf_->cachePartial();
       const bool workerAlive = fibpWorker_ != nullptr && fibpWorker_->active();
-      if (committed || fibpResumeSeenBuilding_ ||
+      // The run loop claims the resume BEFORE the queue, so a worker seen on
+      // another spine has already consumed this claim — or was gated off by an
+      // earlier failure and will never build it. With no committed cache that
+      // means the resume failed: release the claim so the margin fallback
+      // resumes the extension instead of parking it for the worker's whole
+      // look-ahead build window.
+      const uint16_t workerBuilding =
+          fibpWorker_ != nullptr ? fibpWorker_->buildingSpine() : freeink::book::fibp::kNoChapter;
+      const bool busyElsewhere = workerBuilding != freeink::book::fibp::kNoChapter &&
+                                 workerBuilding != static_cast<uint16_t>(currentSpineIndex);
+      if (committed || fibpResumeSeenBuilding_ || (workerAlive && busyElsewhere) ||
           (!workerAlive && millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
         fibpResumeClaimedSpine_ = -1;
         fibpResumeSeenBuilding_ = false;
@@ -3788,16 +3798,17 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
-    // Single-writer: while a LIVE worker holds the resume claim and the reader
-    // can still show a built page, leave the extension to the worker — an
-    // inline session here would race it on the same FIBP file (the resume
-    // churn). A consumed-but-failed claim or a self-exited worker must not park
-    // the margin extension forever, so fall through and take over once the task
-    // is gone.
-    const bool workerOwnsClaim =
-        fibpResumeClaimedSpine_ == currentSpineIndex && fibpWorker_ != nullptr && fibpWorker_->active();
-    if (freeink::book::fibp::readerYieldsExtension(workerOwnsClaim, static_cast<uint16_t>(ttfPage < 0 ? 0 : ttfPage),
-                                                   static_cast<uint16_t>(ttfPageCount))) {
+    // Single-writer: yield the extension only while a LIVE worker is actually
+    // building this spine (or the claim is still fresh — the worker may not
+    // have reached it yet). A consumed-but-failed claim (the worker moved on to
+    // the look-ahead spine) or a self-exited worker must not park the margin
+    // extension forever: fall through and take over.
+    const bool workerOnClaimSpine = fibpWorker_ != nullptr && fibpWorker_->active() &&
+                                    fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
+    const bool claimStillFresh = millis() - fibpResumeRequestMs_ <= kFibpResumeClaimGraceMs;
+    if (freeink::book::fibp::readerYieldsExtension(
+            fibpResumeClaimedSpine_ == currentSpineIndex && (workerOnClaimSpine || claimStillFresh),
+            static_cast<uint16_t>(ttfPage < 0 ? 0 : ttfPage), static_cast<uint16_t>(ttfPageCount))) {
       return;
     }
     // The reader needs pages NOW: take the claim back.
