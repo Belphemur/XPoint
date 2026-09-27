@@ -2526,8 +2526,15 @@ uint32_t EpubReaderActivity::ttfEstimatedPageCount() const {
     const uint64_t consumed = ttf_->cacheBuildBytesConsumed();
     const uint64_t total = ttf_->cacheBuildBytesTotal();
     if (consumed > 0 && total > consumed) {
-      uint64_t pages = ttfPageCount;
-      if (workerBuilding) pages += fibpWorker_->buildingProgressPages();
+      // The worker yields the spine's CUMULATIVE available page count
+      // (ChapterIndexEngine passes target.availablePageCount), which already
+      // includes the resumed prefix — adding ttfPageCount would count the
+      // prefix twice while the worker extends the chapter.
+      const uint16_t workerPages = workerBuilding ? fibpWorker_->buildingProgressPages() : 0;
+      // Worker progress is the spine's CUMULATIVE available-page count
+      // (ChapterIndexEngine passes target.availablePageCount), so the reader's
+      // prefix is a subset — take the greater of the two, never the sum.
+      const uint64_t pages = std::max<uint64_t>(ttfPageCount, workerPages);
       est = pages * total / consumed;
     }
   }
@@ -4764,15 +4771,9 @@ void EpubReaderActivity::renderQuickFontPage() {
   uint32_t pageIndex = 0;
   class QuickSink final : public freeink::book::PageSink {
    public:
-    QuickSink(EpubReaderActivity* owner, const void* font, const uint32_t target, const uint8_t maxPages,
-              bool& foundRef, uint32_t& pageIndexRef, QuickPageCapture& captureRef)
-        : owner_(owner),
-          font_(font),
-          target_(target),
-          maxPages_(maxPages),
-          found_(foundRef),
-          pageIndex_(pageIndexRef),
-          capture_(captureRef) {}
+    QuickSink(const uint32_t target, const uint8_t maxPages, bool& foundRef, uint32_t& pageIndexRef,
+              QuickPageCapture& captureRef)
+        : target_(target), maxPages_(maxPages), found_(foundRef), pageIndex_(pageIndexRef), capture_(captureRef) {}
 
     bool onPage(const freeink::book::Page& page) override {
       if (page.charStart > target_) {
@@ -4782,17 +4783,13 @@ void EpubReaderActivity::renderQuickFontPage() {
         return false;
       }
       // Later pages also match until the first page past the anchor, so only
-      // the last capture matters. Pages are captured (deep-copied out of the
-      // engine's per-page arena) instead of painted here; the target page is
-      // painted once after the scan. A page that does not fit the capture
-      // buffer is painted inline, as the pre-capture path did.
+      // the last capture matters. Pages are deep-copied out of the engine's
+      // per-page arena. A page too large for the buffer is SKIPPED, not
+      // painted inline: an inline speculative frame would be left on screen
+      // while the status bar still reported the old page.
       sawCandidate_ = true;
       pageIndex_ = page.pageIndex;
-      if (!capture_.capture(page)) {
-        owner_->renderer.clearScreen(0xFF);
-        owner_->paintTtfPage(page, const_cast<void*>(font_));
-        capture_.reset();
-      }
+      if (!capture_.capture(page)) capture_.reset();
       if (page.pageIndex + 1 >= maxPages_) {
         budgetStopped_ = true;
         return false;
@@ -4804,8 +4801,6 @@ void EpubReaderActivity::renderQuickFontPage() {
     bool budgetStopped() const { return budgetStopped_; }
 
    private:
-    EpubReaderActivity* owner_;
-    const void* font_;
     uint32_t target_;
     uint8_t maxPages_;
     bool& found_;
@@ -4818,7 +4813,10 @@ void EpubReaderActivity::renderQuickFontPage() {
   // bounds only layout work; a deeper budget keeps more chapters on the fast
   // page-only path instead of the full-reflow fallback.
   constexpr uint8_t kQuickRelayoutPageBudget = 128;
-  QuickSink sink(this, params.font, targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
+  // Drop any capture from a previous step: an early return (active session,
+  // catalog/alloc failure) must not repaint the previous font's page.
+  quickFontPreview.reset();
+  QuickSink sink(targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
 
   {
     RenderLock lock;
@@ -4846,13 +4844,11 @@ void EpubReaderActivity::renderQuickFontPage() {
       // full reflow happens on sheet close instead.
       LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — keeping current page", bookStatusName(st));
     }
-    // With the capture not ready the last candidate page was painted inline
-    // by the sink; the framebuffer already shows it.
   }
 
-  // The page cursor only advances when the target page was actually located;
-  // an approximate preview must not shift the reading position.
-  if (found) {
+  // The page cursor only advances when the target page was captured, so an
+  // approximate (or absent) preview never shifts the reading position.
+  if (found && quickFontPreview.ready()) {
     ttfPage = static_cast<int>(pageIndex);
     nextPageNumber = ttfPage;
   }
