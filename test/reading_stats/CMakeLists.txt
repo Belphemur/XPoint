@@ -8,6 +8,7 @@ add_executable(ReadingStatsStoreTest
   ${REPO_ROOT}/src/activities/reader/BookReadingStats.cpp
   ${REPO_ROOT}/src/activities/reader/ReadingStatsUtils.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
+  ${REPO_ROOT}/lib/Utf8/Utf8.cpp
 )
 
 target_include_directories(ReadingStatsStoreTest PRIVATE
@@ -15,6 +16,7 @@ target_include_directories(ReadingStatsStoreTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../minibidi_arabic/stubs
   ${CMAKE_CURRENT_SOURCE_DIR}/../fs_helpers/stubs
   ${REPO_ROOT}/lib/FsHelpers
+  ${REPO_ROOT}/lib/Utf8
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/src/activities/reader
 )
