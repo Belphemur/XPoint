@@ -309,6 +309,12 @@ normal render path restores AA plane parity on the final close/reflow.
   open HalFile with a 1MB PSRAM head prefix; GPOS kerning off on streamed
   faces; fingerprint identity = SD head hash + size; prefetch worker mirrors
   the streamed path for exact parity.
+- 2026-09-27 — The quick sheet is superseded by the full-screen
+  `FontPreviewActivity` (see `docs/design/2026-09-27-quick-font-preview.md`):
+  the size row uses the shared `IntervalSelectionActivity` slider, and the
+  live page preview moves into its own activity with a close contract
+  (no-change → silent return; changed → persist + the standard
+  settings-driven clean reindex, position preserved via the char anchor).
 
 ## Cross-links
 
