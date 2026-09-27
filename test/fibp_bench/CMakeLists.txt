@@ -38,6 +38,7 @@ target_include_directories(FibpLayoutBench PRIVATE
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/pngle
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/stb
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/tjpgd
+  ${REPO_ROOT}/freeink-sdk/libs/font/FreeInkFont/third_party/stb
   ${FONT_FT_TEST_INCLUDES}
 )
 

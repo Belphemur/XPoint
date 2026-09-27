@@ -70,9 +70,12 @@ class FileSource final : public BookSource {
     if (f_ != nullptr) std::fclose(f_);
   }
   int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
-    if (f_ == nullptr) return 0;
-    if (std::fseek(f_, static_cast<long>(offset), SEEK_SET) != 0) return 0;
-    return static_cast<int32_t>(std::fread(dst, 1, len, f_));
+    if (f_ == nullptr) return -1;
+    if (std::fseek(f_, static_cast<long>(offset), SEEK_SET) != 0) return -1;
+    const size_t got = std::fread(dst, 1, len, f_);
+    // BookSource's contract: negative = I/O error, 0 = clean EOF. A host
+    // filesystem failure must not masquerade as end-of-archive.
+    return std::ferror(f_) ? -1 : static_cast<int32_t>(got);
   }
   uint64_t size() const override { return size_; }
 
@@ -88,8 +91,10 @@ class BookFixture {
     if (!source_.size()) return;
     bookArenaBytes_.resize(256 * 1024);
     bookArena_ = Arena(bookArenaBytes_.data(), bookArenaBytes_.size());
-    if (ZipCatalog{}.open(source_, bookArena_) != BookStatus::Ok) return;
-    zip_.open(source_, bookArena_);
+    // Single open: ZipCatalog::open() validates the container AND allocates
+    // its entry table from the arena, so a throwaway probe open would
+    // permanently consume that arena a second time before the real one.
+    if (zip_.open(source_, bookArena_) != BookStatus::Ok) return;
     const auto* container = zip_.find("META-INF/container.xml");
     const char* opfPath = nullptr;
     std::vector<uint8_t> scratchBytes(64 * 1024);
@@ -240,7 +245,10 @@ int main(int argc, char** argv) {
   const std::string fontPath =
       (argc > 2 && argv[2][0]) ? argv[2]
                                : std::string(TESTDATA_DIR) + "/fixtures/fonts/amazon-ember/Amazon_Ember_Regular.ttf";
-  const int iters = argc > 3 ? std::atoi(argv[3]) : 3;
+  // One or more passes; garbage or non-positive input degrades to 1 rather
+  // than dividing the accumulated time by zero.
+  const long parsedIters = argc > 3 ? std::strtol(argv[3], nullptr, 10) : 3;
+  const int iters = parsedIters < 1 ? 1 : static_cast<int>(parsedIters);
 
   BookFixture book(epub);
   if (book.entry() == nullptr) {
