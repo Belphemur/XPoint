@@ -53,6 +53,18 @@ inline uint16_t buildQueue(const uint16_t spineCount, const uint16_t notifiedSpi
   return n;
 }
 
+// Reader-side single-writer rule for a partial-prefix resume. While the
+// worker holds the resume claim for the current spine, the reader leaves the
+// extension to it as long as it can still show a built page; only once the
+// reader has run out of built pages may it take the claim back and extend
+// inline. Without this the reader hands the claim over and immediately takes
+// it back (the resume churn), and both writers race the same FIBP file.
+// `page` is the reader's clamped current page (0 when not yet laid out) and
+// `available` the built prefix length.
+inline bool readerYieldsExtension(const bool workerClaimActive, const uint16_t page, const uint16_t available) {
+  return workerClaimActive && available > 0 && page < available;
+}
+
 // R3 yield-gate between build chunks: the chunk loop stops when the book is
 // closing (cancelled) or the layout generation moved (settings change).
 inline bool shouldStopChunk(const bool cancelled, const uint32_t currentGen, const uint32_t sessionGen) {

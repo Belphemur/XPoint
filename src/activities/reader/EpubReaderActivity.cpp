@@ -2748,6 +2748,20 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
       targetOut = 0;  // offset absent from the complete chapter text
       return true;
     }
+    // Resume from a partial prefix: the char anchor needs the complete index
+    // (pageForChar() would clamp beyond the watermark), but the saved PAGE
+    // number is layout-identical under the matching generation checked above
+    // and is already built. Serve it so the reader paints at once and stays
+    // usable while the background build finishes; consume the saved position
+    // because a built prefix is a true prefix of the final index. When the
+    // saved page itself is not built yet the reader waits — its position must
+    // not be silently clamped back.
+    if (cacheMatchesGeneration && ttf_->cachePartial() && available > 0 && nextPageNumber >= 0 &&
+        nextPageNumber < available) {
+      ttfHasSavedPosition = false;
+      targetOut = nextPageNumber;
+      return true;
+    }
     needFullBuild = true;
     return false;
   }
@@ -2909,12 +2923,17 @@ void EpubReaderActivity::renderBookTtf() {
   // worker releases the claim. The reader never inline-builds while it
   // holds this claim (takeover guards below return the spine to the reader
   // when it actually needs pages the partial lacks).
-  if (ttfSpine == currentSpineIndex && ttf_->cacheReady() && ttf_->cachePartial() && fibpWorker_ != nullptr) {
+  if (ttfSpine == currentSpineIndex && ttf_->cacheReady() && ttf_->cachePartial() && fibpWorker_ != nullptr &&
+      fibpBegun_) {
     if (fibpResumeClaimedSpine_ != currentSpineIndex) {
       fibpResumeClaimedSpine_ = static_cast<int16_t>(currentSpineIndex);
       fibpResumeSeenBuilding_ = false;
       fibpResumeRequestMs_ = millis();
       fibpWorker_->requestResumeClaim(static_cast<uint16_t>(currentSpineIndex));
+      // Start the task with the claim: only a live worker consumes it, and
+      // updateFibpWorker's notifyChapterProgress may not run again until the
+      // next user-driven render (an idle reader produces none).
+      (void)fibpWorker_->ensureTask();
       LOG_INF("ERS", "Resume build handed to worker: spine %d (%u pages cached)", currentSpineIndex,
               static_cast<unsigned>(ttfPageCount));
     }
@@ -2982,10 +3001,15 @@ void EpubReaderActivity::renderBookTtf() {
       ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
       ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
       LOG_INF("ERS", "Worker resume build committed: %u pages", static_cast<unsigned>(ttfPageCount));
-    } else if (millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs) {
-      // The worker never claimed (disabled, failed spawn, queue busy for the
-      // whole grace): stop waiting — the margin fallback owns the extension.
+    } else if (!(fibpWorker_ != nullptr && fibpWorker_->active()) &&
+               millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs) {
+      // The worker never claimed and no task is alive (disabled, failed
+      // spawn): stop waiting — the margin fallback owns the extension. Reopen
+      // in case the worker committed just before it exited (a commit without
+      // an observed "seen building" render would otherwise be missed).
       fibpResumeClaimedSpine_ = -1;
+      ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+      ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
     }
   }
 
@@ -3758,8 +3782,16 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
-    // Single-writer: if the worker holds the resume claim for this spine,
-    // take it back — the reader needs pages NOW.
+    // Single-writer: while the worker holds the resume claim and the reader
+    // can still show a built page, leave the extension to the worker — an
+    // inline session here would race it on the same FIBP file (the resume
+    // churn). Take the claim back only once the reader is out of built pages.
+    if (freeink::book::fibp::readerYieldsExtension(fibpResumeClaimedSpine_ == currentSpineIndex,
+                                                   static_cast<uint16_t>(ttfPage < 0 ? 0 : ttfPage),
+                                                   static_cast<uint16_t>(ttfPageCount))) {
+      return;
+    }
+    // The reader needs pages NOW: take the claim back.
     if (fibpResumeClaimedSpine_ == currentSpineIndex) {
       LOG_INF("ERS", "Margin takeover: spine %d", currentSpineIndex);
       stopFibpWorker();

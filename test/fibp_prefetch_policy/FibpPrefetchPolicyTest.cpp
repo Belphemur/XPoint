@@ -135,3 +135,28 @@ TEST(ShouldPrefetchNextTest, EnterPastThresholdFiresImmediately) {
   EXPECT_TRUE(fibp::shouldPrefetchNext(95, 100));
   EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));
 }
+
+// ── Reader-side single-writer rule (resume-claim churn fix, 2026-09-27) ─────
+
+TEST(ReaderYieldsExtensionTest, NoClaimMeansReaderOwns) {
+  // No worker claim: the reader extends inline (false = do not yield).
+  EXPECT_FALSE(fibp::readerYieldsExtension(false, 0, 0));
+  EXPECT_FALSE(fibp::readerYieldsExtension(false, 1, 2));
+}
+
+TEST(ReaderYieldsExtensionTest, YieldsWhileABuiltPageIsShowable) {
+  // Worker owns the claim and the reader can still show its page: leave the
+  // extension to the worker (this is the guard that stops the resume churn).
+  EXPECT_TRUE(fibp::readerYieldsExtension(true, 0, 1));
+  EXPECT_TRUE(fibp::readerYieldsExtension(true, 1, 2));
+  EXPECT_TRUE(fibp::readerYieldsExtension(true, 0, 57));
+}
+
+TEST(ReaderYieldsExtensionTest, TakesOverWhenOutOfBuiltPages) {
+  // Reader is at/after the built prefix (e.g. a forward turn set
+  // ttfPage = ttfPageCount): it must extend inline now.
+  EXPECT_FALSE(fibp::readerYieldsExtension(true, 2, 2));
+  EXPECT_FALSE(fibp::readerYieldsExtension(true, 5, 2));
+  // Empty prefix: nothing to show, the reader owns the build.
+  EXPECT_FALSE(fibp::readerYieldsExtension(true, 0, 0));
+}
