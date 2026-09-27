@@ -3213,6 +3213,11 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
 #endif
     // Cleanup has restored the framebuffer after the final gray-plane pass.
     ttfFrameRenderComplete.store(true, std::memory_order_release);
+    // The frame is fully committed: allow rememberBookOnceRendered() to set
+    // openEpubPath + recents. Missing here meant sleep-from-reader had no
+    // staged cover path (blank sleep screen) and fresh books never entered
+    // recents until a legacy/XTC/TXT reader session wrote them.
+    markPageRendered();
 #ifdef READING_STATS_ENABLED
     pageShownAtMs = millis();
 #endif
@@ -3256,6 +3261,8 @@ void EpubReaderActivity::ttfCommitFrame(const freeink::book::Page& page, const f
   // The B/W frame and status chrome are fully painted (and any async submit
   // has completed) before overlay opens may paint directly onto this frame.
   ttfFrameRenderComplete.store(true, std::memory_order_release);
+  // Same rememberBookOnceRendered() contract as the gray path above.
+  markPageRendered();
 #ifdef READING_STATS_ENABLED
   pageShownAtMs = millis();
 #endif
