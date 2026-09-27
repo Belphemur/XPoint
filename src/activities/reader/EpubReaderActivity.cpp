@@ -5521,13 +5521,15 @@ void EpubReaderActivity::handleOverlayInput() {
         }
         {
           RenderLock lock;  // the render task shares the framebuffer
-          // The chrome was pushed deferred (pushOverlayRefresh) and this is
-          // the only launch path that never settles: without the drain, the
-          // stats screen's first FAST diffs its clean layout against the
-          // pre-chrome baseline and bakes the panel/page into the glass.
-          // Same full-FB-flush contract as pushOverlayRefresh — a partial
-          // prerender must die before this framebuffer reaches the glass.
+                            // The chrome was pushed deferred (pushOverlayRefresh) and this is
+                            // the only launch path that never settles: without the drain, the
+                            // stats screen's first FAST diffs its clean layout against the
+                            // pre-chrome baseline and bakes the panel/page into the glass.
+                            // Same full-FB-flush contract as pushOverlayRefresh — a partial
+                            // prerender must die before this framebuffer reaches the glass.
+#if defined(CROSSPOINT_TTF_READER)
           ttfInvalidatePreRender("stats launch");
+#endif
           settleOverlayRefresh();
         }
         overlay = Overlay::None;
