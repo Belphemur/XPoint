@@ -10,6 +10,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "EpubReaderActivity.h"
+#include "FrontlightControl.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -98,6 +99,12 @@ void ReaderActivity::onExit() {
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
+
+  // Persist frontlight changes made while reading (side-edge drag, the More
+  // panel's light row). Deferred to this boundary — never at modification time
+  // — so a drag costs no SD writes; covers leaving the book for every reader
+  // type. Sleep/power-off are covered by main.cpp's own flush.
+  frontlight::persistIfDirty();
 
   endOfBookOptions.reset();
   endOfBookOptionsReady.store(false, std::memory_order_release);

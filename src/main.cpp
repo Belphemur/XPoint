@@ -35,6 +35,7 @@
 #include "BoardFeatures.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "FrontlightControl.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
@@ -464,6 +465,10 @@ void enterDeepSleep(bool fromTimeout = false) {
   stageAutoPowerOffCover(true);
 
   APP_STATE.saveToFile();
+  // Frontlight changes are persisted at lifecycle boundaries only (never while
+  // the user drags a slider): this is the sleep boundary, before the panel is
+  // driven down and the SD card is torn down.
+  frontlight::persistIfDirty();
 
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
@@ -531,6 +536,8 @@ void enterPowerOff() {
   // press, and no stale staged cover path in the settings file.
   APP_STATE.showBootScreen = false;
   APP_STATE.saveToFile();
+  // Power-off boundary for the same deferred frontlight persistence as sleep.
+  frontlight::persistIfDirty();
   // A stale Quick Resume frame must not replace the shutdown screen on the
   // next boot.
   Storage.remove(SLEEP_FRAME_FILE);

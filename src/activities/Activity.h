@@ -53,6 +53,9 @@ class Activity {
 
   virtual bool handleHomeGesture() { return false; }
   virtual ScreenshotInfo getScreenshotInfo() const { return {}; }
+  // False when a side-edge frontlight drag would fight this screen's own edge
+  // gestures (the control center's sliders, the reader's chrome/menus).
+  virtual bool allowsFrontlightSwipe() const { return true; }
 
   // Start a new activity without destroying the current one
   // Note: requestUpdate() will be invoked automatically once resultHandler finishes

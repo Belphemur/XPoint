@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "FrontlightControl.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
 #include "util/ScreenshotInfo.h"
@@ -44,6 +45,9 @@ class ActivityManager {
  protected:
   GfxRenderer& renderer;
   MappedInputManager& mappedInput;
+  // Side-edge frontlight drag, live on every screen (the panel and reader
+  // chrome veto it via Activity::allowsFrontlightSwipe).
+  frontlight::SwipeGesture frontlightSwipe;
   std::vector<std::unique_ptr<Activity>> stackActivities;
   std::unique_ptr<Activity> currentActivity;
 

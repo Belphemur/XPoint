@@ -29,6 +29,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
+#include "FrontlightControl.h"
 #include "MemSentinel.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "TtfWordSelect.h"
@@ -1154,19 +1155,8 @@ void EpubReaderActivity::loop() {
     requestUpdate();
   }
 
-#if FREEINK_CAP_FRONTLIGHT
-  // Frontlight side-swipe gestures (left edge: warmth, right edge: brightness).
-  // Runs after detectTouchPageTurn() so the swipe state is available, and before
-  // the overlay + page-turn path so a handled side-swipe consumes the touch
-  // without also turning a page. Independent of SETTINGS.touchReaderControls.
-  // Gated on no overlay/end-of-book menu so the gesture can't fire while those
-  // surfaces own input.
-  if (SETTINGS.frontlightSideGestures && Frontlight.present() && overlay == Overlay::None && !endOfBookMenuActive()) {
-    if (handleSideSwipeFrontlight()) {
-      return;
-    }
-  }
-#endif
+  // The side-edge frontlight drag is dispatched globally by ActivityManager;
+  // allowsFrontlightSwipe() vetoes it while the reader chrome owns input.
 
   // The toolbar reader menu owns all input while shown, ahead of the automatic page turn
   // below: the More panel's rate popup switches automatic turning on and leaves the panel
@@ -5863,10 +5853,7 @@ void EpubReaderActivity::activateMoreRow(int row) {
       requestUpdate();
       return;
     case MA::FRONTLIGHT: {
-      const bool lightOn = !Frontlight.isOn();
-      Frontlight.setOn(lightOn);
-      SETTINGS.frontlightOn = lightOn ? 1 : 0;
-      SETTINGS.saveToFile();
+      frontlight::setOn(!Frontlight.isOn());
       {
         RenderLock lock;  // the render task shares the framebuffer
         renderOverlay();
@@ -6174,111 +6161,3 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   }
   return localPos;
 }
-
-#if FREEINK_CAP_FRONTLIGHT
-bool EpubReaderActivity::handleSideSwipeFrontlight() {
-  // Continuous drag tracking for pixel-precision frontlight control.
-  // The SDK's wasSwipe/decodeSwipe requires 60px minimum travel before it
-  // fires, which maps to ~7.5% on an 800px-wide screen (in landscape) —
-  // too coarse for night-time fine tuning. Instead we track the touch live:
-  // wasScreenTouchDown starts a drag on a side edge, isScreenTouchHeld
-  // reports incremental Y deltas each frame, and wasScreenTouchReleased
-  // ends the drag.
-  //
-  // Sensitivity: PIXELS_PER_PERCENT controls how many pixels of vertical
-  // travel equal 1% frontlight change. At 3px/1%, a full 0-100% range
-  // needs ~300px of drag (~63% of a 480px screen in landscape), giving
-  // enough travel to avoid twitchy accidental max-outs while keeping
-  // 1% precision.
-  static constexpr int PIXELS_PER_PERCENT = 3;
-
-  const int screenW = renderer.getScreenWidth();
-  static constexpr float SIDE_BAND = 0.08f;  // 8% of width from each edge
-  const int leftBand = static_cast<int>(screenW * SIDE_BAND);
-  const int rightBand = screenW - static_cast<int>(screenW * SIDE_BAND);
-
-  // --- Touch-down: start a frontlight drag on a side edge -------------------
-  if (!frontlightDrag.active) {
-    int tx = 0;
-    int ty = 0;
-    if (!mappedInput.wasScreenTouchDown(tx, ty)) return false;
-    if (tx < leftBand) {
-      frontlightDrag.active = true;
-      frontlightDrag.leftSide = true;
-      frontlightDrag.touchStartY = ty;
-    } else if (tx >= rightBand) {
-      frontlightDrag.active = true;
-      frontlightDrag.leftSide = false;
-      frontlightDrag.touchStartY = ty;
-    }
-    return frontlightDrag.active;  // true if we started a drag, false otherwise
-  }
-
-  // --- Drag in progress: apply incremental Y delta ---------------------------
-  int cx = 0;
-  int cy = 0;
-  if (mappedInput.isScreenTouchHeld(cx, cy)) {
-    // Convert pixel delta to percentage: PIXELS_PER_PERCENT=3 means 3px of
-    // vertical travel = 1% change; ~300px for the full 0→100% range.
-    const int deltaY = cy - frontlightDrag.touchStartY;
-    const int up = deltaY < 0;  // dy < 0 = finger moved up
-    const int step = std::abs(deltaY) / PIXELS_PER_PERCENT;
-    frontlightDrag.touchStartY = cy;  // reset baseline for next frame
-
-    if (step == 0) return true;  // no movement this frame
-
-    if (frontlightDrag.leftSide) {
-      // Left edge: color temperature. Up = warmer.
-      if (!Frontlight.hasColorTemperature()) return true;  // consumed, no change
-      int next = static_cast<int>(SETTINGS.frontlightWarmth) + (up ? step : -step);
-      next = std::clamp(next, 0, 100);
-      if (next != static_cast<int>(SETTINGS.frontlightWarmth)) {
-        SETTINGS.frontlightWarmth = static_cast<uint8_t>(next);
-        frontlightDrag.changed = true;
-        Frontlight.setWarmth(SETTINGS.frontlightWarmth);
-      }
-    } else {
-      // Right edge: brightness. Up = brighter, down = dimmer.
-      // Sliding all the way down (to 0) turns the light off.
-      int next = static_cast<int>(SETTINGS.frontlightBrightness) + (up ? step : -step);
-      if (next <= 0) {
-        // Turn the light off. Do NOT reset lastBrightness (keep the pre-off
-        // value) — mirrors FrontlightPanelActivity::toggleLight, which calls
-        // only setOn(false) so the panel slider and swipe both restore to the
-        // same brightness when the light is turned back on.
-        if (SETTINGS.frontlightOn) frontlightDrag.changed = true;
-        SETTINGS.frontlightOn = 0;
-        Frontlight.setOn(false);
-      } else {
-        int clamped = std::clamp(next, static_cast<int>(FRONTLIGHT_MIN_BRIGHTNESS), 100);
-        if (static_cast<int>(SETTINGS.frontlightBrightness) != clamped) {
-          SETTINGS.frontlightBrightness = static_cast<uint8_t>(clamped);
-          frontlightDrag.changed = true;
-          if (!SETTINGS.frontlightOn) {
-            SETTINGS.frontlightOn = 1;
-            frontlightDrag.changed = true;
-            Frontlight.setOn(true);
-          }
-          Frontlight.setBrightness(SETTINGS.frontlightBrightness);
-        }
-      }
-    }
-    return true;  // consumed — prevents page turn on the same frame
-  }
-
-  // --- Release: end the drag -------------------------------------------------
-  // No re-render is needed (hardware already updated), but the drag's setting
-  // changes must survive sleep/power-off: nothing in the sleep path saves
-  // SETTINGS, so the original swipe design's "persisted at the next
-  // settings-save point" never happened. One debounced SD write per gesture,
-  // only when a value actually moved — never per drag frame.
-  if (mappedInput.wasScreenTouchReleased()) {
-    frontlightDrag.active = false;
-    if (frontlightDrag.changed) {
-      frontlightDrag.changed = false;
-      SETTINGS.saveToFile();
-    }
-  }
-  return true;
-}
-#endif

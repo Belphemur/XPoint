@@ -11,6 +11,7 @@
 #include <iterator>
 
 #include "CrossPointSettings.h"
+#include "FrontlightControl.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
@@ -58,16 +59,6 @@ FrontlightPanelActivity::FrontlightPanelActivity(GfxRenderer& renderer, MappedIn
 void FrontlightPanelActivity::onEnter() {
   Activity::onEnter();
 
-  // frontlightOn reflects the on/off state separately from brightness, so the
-  // slider always shows the last non-zero brightness level even when the light
-  // is off (toggle restores that level). FRONTLIGHT_MIN_BRIGHTNESS (1%) is the
-  // floor — dragging the slider below it turns the light off via the toggle,
-  // not by setting an invisible 0% level.
-  brightness = std::max(FRONTLIGHT_MIN_BRIGHTNESS, Frontlight.brightness());
-  warmth = Frontlight.warmth();
-  lightOn = Frontlight.isOn();
-  lightOnChanged = false;
-
   // Seed the touch tile's restore mode from the live setting, so toggling off
   // and back on within this session returns to the mode the user had.
   if (SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF) {
@@ -85,44 +76,18 @@ void FrontlightPanelActivity::onEnter() {
   requestUpdate();
 }
 
-void FrontlightPanelActivity::persistLightSettings() {
-  // brightness/warmth are always restored unconditionally on boot (see
-  // main.cpp), so they never diverge from SETTINGS at onEnter() — comparing
-  // against SETTINGS here only fires on a genuine user change. lightOn has
-  // no such guarantee (see lightOnChanged's declaration), so it's gated on
-  // the user actually having touched it this session instead.
-  const bool changed = SETTINGS.frontlightBrightness != brightness || SETTINGS.frontlightWarmth != warmth ||
-                       (lightOnChanged && SETTINGS.frontlightOn != (lightOn ? 1 : 0));
-  if (changed) {
-    SETTINGS.frontlightBrightness = brightness;
-    SETTINGS.frontlightWarmth = warmth;
-    if (lightOnChanged) SETTINGS.frontlightOn = lightOn ? 1 : 0;
-    SETTINGS.saveToFile();
-  }
-}
-
-void FrontlightPanelActivity::onExit() {
-  persistLightSettings();
-  Activity::onExit();
-}
+void FrontlightPanelActivity::onExit() { Activity::onExit(); }
 
 void FrontlightPanelActivity::onBrightnessEvent(const fui::ActionEvent& event, void* user) {
-  auto* self = static_cast<FrontlightPanelActivity*>(user);
+  (void)user;
   if (event.dragPermille < 0) return;
-  self->brightness = std::max(FRONTLIGHT_MIN_BRIGHTNESS, percentFromPermille(event.dragPermille));
-  Frontlight.setBrightness(self->brightness);
-  if (!self->lightOn) {
-    self->lightOn = true;
-    self->lightOnChanged = true;
-    Frontlight.setOn(true);
-  }
+  frontlight::setBrightness(std::max(FRONTLIGHT_MIN_BRIGHTNESS, percentFromPermille(event.dragPermille)));
 }
 
 void FrontlightPanelActivity::onWarmthEvent(const fui::ActionEvent& event, void* user) {
-  auto* self = static_cast<FrontlightPanelActivity*>(user);
+  (void)user;
   if (event.dragPermille < 0) return;
-  self->warmth = percentFromPermille(event.dragPermille);
-  Frontlight.setWarmth(self->warmth);
+  frontlight::setWarmth(percentFromPermille(event.dragPermille));
 }
 
 void FrontlightPanelActivity::onToggleEvent(const fui::ActionEvent&, void* user) {
@@ -186,34 +151,17 @@ void FrontlightPanelActivity::runTile(const int idx) {
 }
 
 void FrontlightPanelActivity::adjustBrightness(const int delta) {
-  int next = static_cast<int>(brightness) + delta;
-  if (next < FRONTLIGHT_MIN_BRIGHTNESS) next = FRONTLIGHT_MIN_BRIGHTNESS;
-  if (next > 100) next = 100;
-  if (next == brightness) return;
-  brightness = static_cast<uint8_t>(next);
-  Frontlight.setBrightness(brightness);
-  if (!lightOn) {
-    lightOn = true;
-    lightOnChanged = true;
-    Frontlight.setOn(true);
-  }
+  frontlight::adjustBrightness(delta);
   requestUpdate();
 }
 
 void FrontlightPanelActivity::adjustWarmth(const int delta) {
-  int next = static_cast<int>(warmth) + delta;
-  if (next < 0) next = 0;
-  if (next > 100) next = 100;
-  if (next == warmth) return;
-  warmth = static_cast<uint8_t>(next);
-  Frontlight.setWarmth(warmth);
+  frontlight::adjustWarmth(delta);
   requestUpdate();
 }
 
 void FrontlightPanelActivity::toggleLight() {
-  lightOn = !lightOn;
-  lightOnChanged = true;
-  Frontlight.setOn(lightOn);
+  frontlight::setOn(!Frontlight.isOn());
   requestUpdate();
 }
 
@@ -322,7 +270,7 @@ void FrontlightPanelActivity::addSliderRow(UiScreen& screen, const char* label, 
     // Lamp on/off after the +: the sliders set the level, this kills the light
     // outright. Filled glyph = on, outline = off.
     rowProps.toggleAction = ACTION_TOGGLE;
-    rowProps.toggleIcon = fui::bitmapFromIcon(lightOn ? icon_sun_filled_32 : icon_sun_32);
+    rowProps.toggleIcon = fui::bitmapFromIcon(Frontlight.isOn() ? icon_sun_filled_32 : icon_sun_32);
   } else {
     rowProps.toggleAction = fui::NO_ACTION;
     rowProps.toggleIcon = fui::BitmapRef{};
@@ -364,10 +312,11 @@ void FrontlightPanelActivity::buildPanelScreen(UiScreen& screen) {
   }
 
   if (Frontlight.present()) {
-    addSliderRow(screen, tr(STR_BRIGHTNESS), brightness, ACTION_BRIGHTNESS, ACTION_BRIGHTNESS_STEP,
-                 /*showToggle=*/true);
+    addSliderRow(screen, tr(STR_BRIGHTNESS), std::max(FRONTLIGHT_MIN_BRIGHTNESS, SETTINGS.frontlightBrightness),
+                 ACTION_BRIGHTNESS, ACTION_BRIGHTNESS_STEP, /*showToggle=*/true);
     if (Frontlight.hasColorTemperature()) {
-      addSliderRow(screen, tr(STR_WARMTH), warmth, ACTION_WARMTH, ACTION_WARMTH_STEP, /*showToggle=*/false);
+      addSliderRow(screen, tr(STR_WARMTH), SETTINGS.frontlightWarmth, ACTION_WARMTH, ACTION_WARMTH_STEP,
+                   /*showToggle=*/false);
     }
     screen.spacer(theme.spaceSm);
   }

@@ -16,18 +16,6 @@
 class FrontlightPanelActivity final : public Activity, private UiAppHost {
   ButtonNavigator buttonNavigator;
 
-  uint8_t brightness = 60;
-  uint8_t warmth = 50;
-  bool lightOn = false;
-  // lightOn is seeded from the live hardware state (Frontlight.isOn()), which
-  // legitimately diverges from the saved SETTINGS.frontlightOn preference —
-  // e.g. after a wake with frontlightRestoreOnWake off, the light stays off
-  // live while the saved "was on" preference is deliberately kept (see
-  // main.cpp's restoreLightOn). brightness/warmth have no such divergence
-  // (always restored unconditionally on boot), so only lightOn needs a
-  // touched-by-the-user flag: onExit() must not persist a mirror that never
-  // reflected user intent in the first place.
-  bool lightOnChanged = false;
   bool draggingSlider = false;
   // The touch tile toggles SETTINGS.touchReaderControls between off and this
   // remembered mode, so a Swipe or Inverted Tap user gets their mode back
@@ -68,9 +56,6 @@ class FrontlightPanelActivity final : public Activity, private UiAppHost {
   void adjustWarmth(int delta);
   void toggleLight();
   void runTile(int idx);
-  // Copy the panel's live brightness/warmth/lightOn into SETTINGS and save if
-  // anything actually changed. onExit() runs it on every way out.
-  void persistLightSettings();
   void close();
 
   // One-shot: a tile that rewrote the whole frame (night mode) re-drives it
@@ -86,4 +71,6 @@ class FrontlightPanelActivity final : public Activity, private UiAppHost {
   void loop() override;
   void render(RenderLock&&) override;
   bool handleHomeGesture() override;
+  // The panel's own sliders own the edge bands while it is open.
+  bool allowsFrontlightSwipe() const override { return false; }
 };

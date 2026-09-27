@@ -5,6 +5,7 @@
 #include <FsHelpers.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <HalFrontlight.h>
 #include <HalPowerManager.h>
 #include <Memory.h>
 #include <freertos/task.h>
@@ -111,6 +112,14 @@ void ActivityManager::loop() {
     }
     if (currentActivity->name != "FrontlightPanel" && (statusBarTap || mappedInput.wasLightPanelGesture())) {
       pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
+      return;
+    }
+
+    // Side-edge frontlight drag, before the activity's own input so the frames
+    // it consumes never page-turn or tap. The activity's policy vetoes screens
+    // whose edge gestures would conflict (reader chrome, the control center).
+    if (SETTINGS.frontlightSideGestures && Frontlight.present() &&
+        frontlightSwipe.update(mappedInput, renderer, currentActivity->allowsFrontlightSwipe())) {
       return;
     }
 
