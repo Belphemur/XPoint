@@ -161,6 +161,83 @@ TEST(BookFontLoaderBasics, FallbackTailAppendedToSelectedChain) {
   EXPECT_NE(font->fontFor(cpNoOneHas, freeink::book::StyleNone, &faceFlags), nullptr);
 }
 
+std::string readFixtureBytes(const char* path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// Issue #168: the boot-time TTF UI-fallback faces borrow the loader's
+// RESIDENT face bytes. An unselected loader loads families_[0] via
+// ensureLoaded() without recording it, so the reader's first selectFamily()
+// of that SAME family used to spuriously markDirty() → reload → free the
+// borrowed bytes under the live faces — the next status-bar draw walked a
+// freed cmap and panicked (LoadProhibited). Selecting the already-resident
+// family must be a no-op: byte owners stay put, fingerprint (FIBP cache
+// identity) untouched. A genuinely different family must still reload.
+TEST(BookFontLoaderBasics, SelectingResidentFamilyDoesNotReload) {
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024});
+  testSetFreeHeap(320 * 1024, 320 * 1024);
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+
+  // One real, loadable face at families_[0] — what an unselected
+  // ensureLoaded() loads, and what the UI fallback borrows.
+  const std::string face = readFixtureBytes(DEJAVU_FIXTURE);
+  ASSERT_GT(face.size(), 1024u);
+  writeFaceFile("/fonts/Alpha/Alpha-Regular.ttf", face);
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Alpha");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(face.size());
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", "/fonts/Alpha/Alpha-Regular.ttf");
+  loader.setFamilyCountForTest(1);
+
+  // Boot path: unselected ensureLoaded() loads families_[0]. The borrowed
+  // bytes are what the boot-time UI-fallback faces hold; slotFaceBytes only
+  // exists on the FT backend (the borrowed-bytes consumer), so the stb
+  // variant pins the same no-reload semantics via isDirty()/fingerprint.
+  loader.getReaderFont();
+#if CROSSPOINT_FONT_BACKEND_FT
+  ASSERT_NE(loader.slotFaceBytes(0), nullptr);
+  const void* resident = loader.slotFaceBytes(0);
+#endif
+  const uint32_t fingerprint = loader.fontFingerprint();
+  EXPECT_NE(fingerprint, 0u);
+
+  // The reader's first selectFamily() of the session names the SAME family.
+  // Root-cause pin: it must not mark the loader dirty — the dirty flag is
+  // what sent ensureLoaded() into the reload that freed the borrowed bytes.
+  loader.selectFamily("Alpha");
+  EXPECT_FALSE(loader.isDirty());
+  loader.getReaderFont();
+
+#if CROSSPOINT_FONT_BACKEND_FT
+  EXPECT_EQ(loader.slotFaceBytes(0), resident);
+#endif
+  EXPECT_EQ(loader.fontFingerprint(), fingerprint);
+
+  // Negative control: a genuinely different selection MUST dirty the loader
+  // and reload. Same table content plus one trailing byte keeps the face
+  // loadable while changing the content fingerprint, so the reload stays
+  // observable even if the allocator hands back the same block.
+  writeFaceFile("/fonts/Beta/Beta-Regular.ttf", face + std::string("\0", 1));
+  auto& famB = loader.editFamily(1);
+  std::snprintf(famB.name, sizeof(famB.name), "%s", "Beta");
+  famB.faceCount = 1;
+  famB.faces[0].styleFlags = freeink::book::StyleNone;
+  famB.faces[0].fileSize = static_cast<uint32_t>(face.size() + 1);
+  std::snprintf(famB.faces[0].file, sizeof(famB.faces[0].file), "%s", "/fonts/Beta/Beta-Regular.ttf");
+  loader.setFamilyCountForTest(2);
+  loader.selectFamily("Beta");
+  EXPECT_TRUE(loader.isDirty());
+  loader.getReaderFont();
+#if CROSSPOINT_FONT_BACKEND_FT
+  EXPECT_NE(loader.slotFaceBytes(0), nullptr);
+#endif
+  EXPECT_NE(loader.fontFingerprint(), fingerprint);
+}
+
 // The tail is a non-selectable addition: with NO family selected the chain
 // stays empty and the builtin fallback singleton serves the reader.
 TEST(BookFontLoaderBasics, NoFamilyStillUsesFallbackSingleton) {

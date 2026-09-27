@@ -621,6 +621,19 @@ void BookFontLoader::markDirty() { dirty_.store(true, std::memory_order_relaxed)
 void BookFontLoader::selectFamily(const char* name) {
   const char* clean = name != nullptr ? name : "";
   if (familySelected_ && strncmp(selectedFamily_, clean, sizeof(selectedFamily_)) == 0) return;
+  // An unselected loader loads families_[0] (see ensureLoaded's Phase 3
+  // comment) without recording it. Selecting that same family is therefore
+  // not a change: record it WITHOUT dirtying, or the first reader render
+  // after boot spuriously reloads — freeing the resident bytes the
+  // UI-fallback faces borrowed at boot — and the next draw walks a freed
+  // cmap (issue #168).
+  if (!familySelected_ && loaded_ && familyCount_ > 0 &&
+      strncmp(families_[0].name, clean, sizeof(selectedFamily_)) == 0) {
+    strncpy(selectedFamily_, clean, sizeof(selectedFamily_) - 1);
+    selectedFamily_[sizeof(selectedFamily_) - 1] = '\0';
+    familySelected_ = true;
+    return;
+  }
   strncpy(selectedFamily_, clean, sizeof(selectedFamily_) - 1);
   selectedFamily_[sizeof(selectedFamily_) - 1] = '\0';
   familySelected_ = true;
