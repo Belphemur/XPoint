@@ -73,7 +73,9 @@ void FontPreviewActivity::applySize(const uint32_t value) {
   if (clamped == SETTINGS.ttfFontPointSize) return;
   SETTINGS.ttfFontPointSize = clamped;
   // Persist outside RenderLock, mirroring Text settings' Size tab.
-  SETTINGS.saveToFile();
+  if (!SETTINGS.saveToFile()) {
+    LOG_ERR("FPR", "font preview: settings save failed");
+  }
   needsRelayout_ = true;
   requestUpdate();
 }
@@ -127,7 +129,9 @@ void FontPreviewActivity::openFamilyPicker() {
     // bytes; the reader pauses machinery whose faces borrow them first.
     if (host_.onFamilyChanging != nullptr) host_.onFamilyChanging(host_.ctx);
     SETTINGS.readerFontEngine = CrossPointSettings::READER_ENGINE_TTF;
-    SETTINGS.saveToFile();
+    if (!SETTINGS.saveToFile()) {
+      LOG_ERR("FPR", "font preview: settings save failed");
+    }
     needsRelayout_ = true;
   });
   requestUpdate();
