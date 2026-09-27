@@ -49,29 +49,28 @@ Two inconsistencies live in the current reader font quick sheet
 
 ## Component boundary
 
-### Quick-menu sizing unification (task-2)
+### Quick-menu sizing unification (as built)
 
-The quick sheet's size row buttons stop calling `quickFontStep()`. They
-launch the same `IntervalSelectionActivity` ("TtfPointSize") Text settings'
-Size tab uses, from the FontSheet input path:
+The bespoke ±1 pt stepper is gone. The unified sizing mechanism lives inside
+`FontPreviewActivity` (the intermediate step that first hosted it in the
+inline sheet was superseded when the sheet was removed — the mechanism, not
+the sheet, is the deliverable):
 
-- `EpubReaderActivity::openQuickSizeSlider()` builds one
+- `FontPreviewActivity::openSizeSlider()` builds one
   `IntervalSelectionActivity` via `makeUniqueNoThrow` (OOM → LOG_ERR +
-  break/return, no attempt loop) and `startActivityForResult` with these
-  parameters, copied verbatim from `TextSettingsActivity::activateRow`
-  Tab::Size: name `"TtfPointSize"`, title `StrId::STR_FONT_SIZE`, initial
+  return) and `startActivityForResult` with the parameters Text settings'
+  Size tab uses: name `"TtfPointSize"`, title `StrId::STR_FONT_SIZE`, initial
   `SETTINGS.ttfFontPointSize`, min/max `TTF_FONT_POINT_*`, smallStep 1,
   largeStep 2, value format `StrId::STR_FONT_SIZE_VALUE`.
 - The result handler applies the clamped value to `SETTINGS.ttfFontPointSize`
-  and calls `SETTINGS.ttfFontPointSizeChanged()`
-- After it returns, the sheet overlay is still open and paints again in the
-  next reader render pass; the payload carries a `QuickRelayoutDirty` flag:
-  true = the preview page must re-render (renderQuickFontPage()) before the
-  sheet repaints; a cancelled dialog (isCancelled) leaves nothing.
-- If the value did not actually change, the preview page is NOT re-laid-out;
-  the sheet is repainted from the existing stored page snapshot.
-- Bounds clamp with the SAME clamp Text settings does
-  (`std::clamp<uint32_t>` against the same MIN/MAX).
+  and persists it (`SETTINGS.saveToFile()`, outside RenderLock — Text
+  settings' discipline, so a home gesture or sleep mid-preview cannot lose a
+  change).
+- On every applied change the preview re-lays the page around the entry
+  anchor through the shared `quickRelayoutPage()` seam and repaints
+  immediately (`requestUpdate()`); the e-ink FAST refresh is the debounce.
+- Legacy (non-TTF) builds never open the preview: their Text panel rows keep
+  the full-screen Text settings flow with the bitmap size list.
 
 ### Font preview Activity (task-3)
 
@@ -129,12 +128,15 @@ builds) instead of `openFontSheet()`.
 - **Indexing freeze.** While open, the preview performs NO layout work
   beyond the capture/use-in-session relayout pages, per the brief ("while
   inside the preview activity, NO indexing happens"). No cache writes, no
-  FIBP worker churn. The FIBP worker and the reader-suspended background
-  build keep whatever state they had; the ActivityManager stopping the
-  reader's `loop()` when the preview pushed on top is the pause mechanism.
-  (`ActivityManager::pushActivity` keeps the paused activity on the stack
-  and its loop() is no longer scheduled — the pool freeze is inherited from
-  that.)
+  new indexing triggered by the preview. The reader's own background paths
+  (`ttfBackgroundBuildTick`, `ttfPrefetchTick`) only run from the reader's
+  `loop()`, which the ActivityManager suspends while the preview is pushed —
+  that is the pause mechanism. A live inline build session found at preview
+  open is aborted and the current chapter cache reopened, so the preview can
+  re-lay the page at every change (the partial stays resumable). The FIBP
+  worker keeps its own independent schedule (same as during normal reading);
+  its caches are fingerprint-keyed, so the close reindex invalidates stale
+  generations exactly as a Text-settings change does.
 - **Time/unit budget.** Frames are incremental: a size step re-captures the
   page into the SAME backing buffer (attach → scan → paint), so peak memory
   is one capture buffer + the engine's existing layout scratch for a single
@@ -144,36 +146,37 @@ builds) instead of `openFontSheet()`.
 
 ### Close contract
 
-Two exits, distinguished by whether the user changed anything:
+Two exits, decided at close time by comparing the FINAL values with the
+ENTRY snapshots (family string and point size captured in `onEnter()`):
 
-- **No changes** (family and point size are still the entry snapshots):
-  `setResult(QuickFontPreviewResult{.family = "", .pointSize = 0})` — the
-  empty/mono marker documented in `ActivityResult.h` and consumed by
-  `TextSettingsActivity` already for plain confirms. The reader's result
-  handler does nothing (no saveToFile, no invalidation, no reflow). Zero
-  reflow, zero SD writes, camera-capture buffer freed in `onExit()`.
-- **Changed** (family tag or point size differs from entry):
-  - the preview applies the final values with the same mutation set the
-    quick sheet used before this change: `SETTINGS.ttfFontFamilyName` write
-    (or `'\0'` clearing for Built-in), `loader.selectFamily(...)`,
-    `SETTINGS.ttfFontPointSizeChanged()`, clamped writes — all of it
-    sequenced exactly as the inline sheet does today, minus the frame
-    invalidation (this is the delegation point, not a re-implementation);
-  - it saves the settings itself, so the SD write happens OUTSIDE RenderLock,
-    mirroring Text settings' intent comment ("persist immediately … SD write
-    happens outside its RenderLock");
-  - then `setResult(QuickFontPreviewResult{...})` — the reader's result
-    callback runs `applyReaderTextSettings()`, the SAME settings-driven
-    invalidation a Text-settings size change lands today (fingerprint fold +
-    full clean rebuild). Nothing new is invented; there is nothing to
-    bypass.
-- **Position preservation.** Identical to the mechanism the quick sheet and
-  Text settings already use: the page layout run is keyed by the per-page
-  char anchor, and the reader restores positions through the saved char
-  offset when the fresh generation rebuilds — the anchor is taken before the
-  reindex (same `rememberCurrentContentOffset()` family or the sheet's
-  pre-reflow `memoryCurrentContentOffset`); no position bookkeeping is
-  invented inside the preview.
+- **No net change** (values match the entry snapshots — including a bounced
+  change A→B→A): the preview pops CANCELLED. The reader's result handler
+  skips the reindex entirely and restores the Text panel. No further SD
+  writes, no reflow. (The session may already have persisted intermediate
+  values; a bounced change ends at the entry values, so nothing is lost.)
+- **Changed** (family or point size differs from entry): the preview pops
+  `QuickFontPreviewResult{changed=true}`.
+  - During the session each applied change was already persisted
+    (`SETTINGS.saveToFile()` outside RenderLock, Text-settings discipline);
+    family changes reach the loader through the relayout path —
+    `makeLayoutParams()` calls `fontLoader.selectFamily(SETTINGS.ttfFontFamilyName)`
+    and `getReaderFont()` reloads the bytes — there is no separate commit
+    step and no invented API.
+  - The reader's result callback runs `applyReaderTextSettings()`, the SAME
+    settings-driven invalidation a Text-settings font change lands (save +
+    UI-fallback resync + `markDirty()` + cache invalidation → full clean
+    rebuild). Nothing new is invented; there is nothing to bypass.
+  - Both close branches return to the Text panel the preview was opened
+    from.
+- **Position preservation.** The reader's position machinery is untouched
+  while the preview is open; the reflow restores the position through the
+  saved char offset (`ttfCurrentCharStart`) when the fresh generation
+  rebuilds — the same mechanism a Text-settings change uses. No position
+  bookkeeping is invented inside the preview.
+- **Unconfirmed captures.** When the relayout scan cannot confirm the anchor
+  page (anchor beyond the page budget, layout failure), the capture is
+  dropped and the preview keeps the frame it opened over rather than
+  displaying a different page as if it were the current one.
 
 ### Quick-menu / in-book Text panel wiring change
 
@@ -265,6 +268,19 @@ preview reuses `ReaderToolbarUi`'s existing component shapes:
 - 2026-09-27 — Commit tagging: one `[task-N]` conventional commit per brief
   phase, review fixes as `[review]` commits, fused squash tags in the PR
   body (squash merge convention).
+- 2026-09-27 — (review round 1) The close contract compares the FINAL values
+  with the ENTRY snapshots instead of a sticky changed flag, so a bounced
+  change (A→B→A) closes silently with zero reflow.
+- 2026-09-27 — (review round 1) The relayout scan resets the capture up
+  front, and an unconfirmed scan (anchor beyond the budget, layout failure)
+  drops the capture: the preview never displays a different page as if it
+  were the current one. A live inline build session found at open is aborted
+  (partial stays resumable) and the chapter cache reopened so the preview can
+  re-lay at every change.
+- 2026-09-27 — (review round 1) `ttfUiFallback.update()` runs AFTER the
+  relayout (the reader's seam releases the borrowed faces BEFORE the family
+  reload): update-before-reload would re-register faces against bytes the
+  same render then frees (issue #168 ordering).
 
 <!--
 Verify with:

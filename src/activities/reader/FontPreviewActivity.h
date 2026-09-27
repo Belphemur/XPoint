@@ -80,7 +80,6 @@ class FontPreviewActivity final : public Activity {
 
   int cursorRow_ = 0;  // 0 = Size, 1 = Family
   bool needsRelayout_ = false;
-  bool changed_ = false;
   uint8_t entrySize_ = 0;
   char entryFamily_[48] = "";
 };

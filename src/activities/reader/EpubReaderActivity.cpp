@@ -4687,6 +4687,17 @@ void EpubReaderActivity::onPreviewFontChanging() {
 // the reader's settings-driven clean reindex.
 void EpubReaderActivity::openFontPreview() {
   if (!ttf_) return;
+  if (ttf_->sessionActive()) {
+    // A live inline build owns the arenas quickLayoutPage needs. Suspend it
+    // (the partial stays resumable) and reopen the current chapter cache so
+    // the preview can re-lay the page at every change.
+    ttf_->abortSession();
+    ttf_->closeChapterCache();
+    if (ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration) !=
+        freeink::book::BookStatus::Ok) {
+      LOG_DBG("ERS", "font preview: chapter cache reopen failed — preview may keep the current frame");
+    }
+  }
   FontPreviewActivity::Host host;
   host.ctx = this;
   host.onFamilyChanging = [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->onPreviewFontChanging(); };
@@ -4701,13 +4712,14 @@ void EpubReaderActivity::openFontPreview() {
   overlayPopup.dismiss();
   discardOverlayPage();
   startActivityForResult(std::move(preview), [this](const ActivityResult& result) {
-    if (result.isCancelled || !std::holds_alternative<QuickFontPreviewResult>(result.data)) return;
-    // The preview persisted the settings; this is the settings-driven clean
-    // reindex a Text-settings font change lands (full rebuild, position
-    // preserved through the page's char offset).
-    applyReaderTextSettings();
-    pagesUntilFullRefresh = 1;
-    // Return to the Text panel the preview was opened from.
+    if (!result.isCancelled && std::holds_alternative<QuickFontPreviewResult>(result.data)) {
+      // The preview persisted the settings; this is the settings-driven clean
+      // reindex a Text-settings font change lands (full rebuild, position
+      // preserved through the page's char offset).
+      applyReaderTextSettings();
+      pagesUntilFullRefresh = 1;
+    }
+    // Both close branches return to the Text panel the preview opened from.
     overlay = Overlay::Text;
     panelIndex = 0;
     if (toolbarUi) toolbarUi->begin();

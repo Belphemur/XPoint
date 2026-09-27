@@ -61,6 +61,10 @@ void FontPreviewActivity::relayout() {
   if (ttf_ == nullptr) return;
   const auto out = quickRelayoutPage(*ttf_, renderer, spineIndex_, anchorChar_, autoPageTurn_, preview_, previewBuf_);
   relayoutFont_ = out.font;
+  // An unconfirmed capture (anchor beyond the scan budget, layout failure)
+  // must not be displayed as if it were the current page: drop it and let the
+  // render keep the frame the preview opened over until close reflows.
+  if (!out.reachedAnchor) preview_.reset();
 }
 
 void FontPreviewActivity::applySize(const uint32_t value) {
@@ -70,7 +74,6 @@ void FontPreviewActivity::applySize(const uint32_t value) {
   SETTINGS.ttfFontPointSize = clamped;
   // Persist outside RenderLock, mirroring Text settings' Size tab.
   SETTINGS.saveToFile();
-  changed_ = true;
   needsRelayout_ = true;
   requestUpdate();
 }
@@ -125,15 +128,19 @@ void FontPreviewActivity::openFamilyPicker() {
     if (host_.onFamilyChanging != nullptr) host_.onFamilyChanging(host_.ctx);
     SETTINGS.readerFontEngine = CrossPointSettings::READER_ENGINE_TTF;
     SETTINGS.saveToFile();
-    changed_ = true;
     needsRelayout_ = true;
   });
   requestUpdate();
 }
 
 void FontPreviewActivity::close() {
+  // Net-effect close contract (design decision log): compare the final values
+  // with the entry snapshots, so a bounced change (A→B→A) closes silently —
+  // zero reflow, zero further SD writes.
+  const bool changed = SETTINGS.ttfFontPointSize != entrySize_ ||
+                       strncmp(SETTINGS.ttfFontFamilyName, entryFamily_, sizeof(entryFamily_)) != 0;
   ActivityResult result;
-  if (changed_) {
+  if (changed) {
     result = QuickFontPreviewResult{true};
   } else {
     result.isCancelled = true;
@@ -212,25 +219,24 @@ void FontPreviewActivity::loop() {
 }
 
 void FontPreviewActivity::render(RenderLock&&) {
-#if CROSSPOINT_TTF_UI_FALLBACK
-  // The relayout below can reload the shared font loader on this render
-  // (family change), freeing the resident bytes the registered UI-fallback
-  // faces borrow. update() re-validates the fingerprint and borrowed byte
-  // addresses BEFORE anything draws through the stale ones (issue #168).
-  // Fast pointer-compare path when clean.
-  freeink::book::ttfUiFallback.update(renderer);
-#endif
   if (needsRelayout_) {
     relayout();
   }
-
-  if (preview_.ready() && ttf_ != nullptr) {
+#if CROSSPOINT_TTF_UI_FALLBACK
+  // AFTER the relayout: a family change reloads the loader's resident bytes
+  // inside makeLayoutParams(); the reader's seam ended the borrowed fallback
+  // faces before that, and update() re-registers them against the fresh
+  // bytes BEFORE any chrome text draws (issue #168). Fast pointer-compare
+  // path when clean.
+  freeink::book::ttfUiFallback.update(renderer);
+#endif
+  if (preview_.ready() && relayoutFont_ != nullptr) {
     renderer.clearScreen(0xFF);
     paintCapturedPage(preview_.page(), relayoutFont_, renderer, *ttf_);
   } else {
-    // No capture (scan failed / anchor out of reach): keep the frame the
-    // preview opened over rather than clearing to blank.
-    LOG_DBG("FPR", "preview: no capture, keeping previous frame");
+    // No confirmed capture (scan failed / anchor out of reach): keep the
+    // frame the preview opened over rather than showing a wrong page.
+    LOG_DBG("FPR", "preview: no confirmed capture, keeping previous frame");
   }
 
   if (chrome_) {

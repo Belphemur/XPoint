@@ -63,6 +63,10 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
                                       QuickPageCapture& capture, PoolBytes& sessionBuffer, const uint8_t maxPages) {
   QuickRelayoutResult out;
 
+  // A failed layout must not leave the previous settings' capture ready: the
+  // caller would otherwise paint it through a null/stale font chain.
+  capture.reset();
+
   freeink::book::LayoutParams params;
   ttf.makeLayoutParams(renderer, params, autoPageTurn);
   if (params.font == nullptr) {
@@ -87,9 +91,6 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
   const uint32_t targetChar = anchorChar;
   bool found = false;
   uint32_t pageIndex = 0;
-  // Drop any capture from a previous change: an early return (active session,
-  // catalog/alloc failure) must not show the previous settings' page.
-  capture.reset();
   QuickSink sink(targetChar, maxPages, found, pageIndex, capture);
 
   const auto st = ttf.quickLayoutPage(spineIndex, params, sink, maxPages);
