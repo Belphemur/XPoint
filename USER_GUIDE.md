@@ -660,6 +660,12 @@ Words on the current page can be looked up in an offline StarDict dictionary sto
 
 See [docs/dictionary.md](docs/dictionary.md) for supported formats, setup, and where to find dictionaries.
 
+### Font Preview
+
+To try a different typeface without leaving your book, open the Reader Menu, choose **Text**, and tap (or confirm) the **Font** row. The current page opens full-screen: pick a **family** from the list or set an **exact point size** with the slider, and the page re-typesets in place so you can judge the change before committing.
+
+Closing the preview applies your change to the whole book and re-typesets it at the same reading position. Leave the preview without making a change and nothing is re-flowed or saved. The full font settings (with all options) remain available in **Settings → Reader → Font Family / Font Size**.
+
 ### System Navigation
 
 * **Return to Home:** Press the **Back** button to close the book and return to the **[Home](#31-home-screen)** screen.

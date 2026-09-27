@@ -88,10 +88,11 @@ chain-tail fallback (`src/adapters/EpdBookFont.{h,cpp}`).
 
 Changing family, size, line spacing, alignment, margins, or orientation
 changes the generation hash, so the affected FIBP files rebuild and the
-reader restores position via `pageForChar()`. The reader toolbar's quick
-font sheet (`Overlay::FontSheet`) performs a transient page-only relayout
-through `TtfBookRuntime::quickLayoutPage()` and a full reflow on close — see
-`2026-09-10-font-architecture-and-ux.md`.
+reader restores position via `pageForChar()`. The reader's font preview
+activity performs a transient page-only relayout through
+`TtfBookRuntime::quickLayoutPage()` and the close reflows through the
+settings path — see `2026-09-10-font-architecture-and-ux.md` and
+`docs/design/2026-09-27-quick-font-preview.md`.
 
 ### 3.5 Dictionary and footnotes
 
