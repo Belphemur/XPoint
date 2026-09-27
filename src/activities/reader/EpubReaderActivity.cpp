@@ -4827,34 +4827,40 @@ void EpubReaderActivity::renderQuickFontPage() {
         ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
     // A page past the anchor confirms the last captured page as the target;
     // a natural end-of-chapter without that confirmation means the anchor
-    // page itself was the last page. Budget exhaustion always falls back.
+    // page itself was the last page.
     if (sink.sawCandidate() && !sink.budgetStopped()) found = true;
-    if (!found) {
-      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s); falling back to full reflow", bookStatusName(st));
-    } else if (quickFontPreview.ready()) {
-      // Paint the captured target page once. Base-only preview by design
-      // (§6): the final close reflow restores the AA gray planes so per-tap
-      // cost stays FAST.
+    if (quickFontPreview.ready()) {
+      // Paint the captured page once. When the anchor was not reached this is
+      // the last page laid out at the new size — an approximate preview,
+      // accepted by the sheet by design. Base-only preview (§6): the final
+      // close reflow restores the AA gray planes so per-tap cost stays FAST.
+      if (!found) {
+        LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — approximate preview", bookStatusName(st));
+      }
       renderer.clearScreen(0xFF);
       paintTtfPage(quickFontPreview.page(), params.font);
+    } else if (!found) {
+      // Anchor out of reach and no capture: keep the current page. A size or
+      // font step is preview-only — invalidating the chapter caches here
+      // (applyReaderTextSettings) re-indexes the whole book per tap; the one
+      // full reflow happens on sheet close instead.
+      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — keeping current page", bookStatusName(st));
     }
-    // With the capture not ready the target page was painted inline by the
-    // sink; the framebuffer already shows it.
+    // With the capture not ready the last candidate page was painted inline
+    // by the sink; the framebuffer already shows it.
   }
 
-  if (!found) {
-    applyReaderTextSettings();
-    requestUpdate();
-    return;
+  // The page cursor only advances when the target page was actually located;
+  // an approximate preview must not shift the reading position.
+  if (found) {
+    ttfPage = static_cast<int>(pageIndex);
+    nextPageNumber = ttfPage;
   }
 
-  // The page-only layout succeeded. Mirror the page cursor for the status bar,
-  // snapshot the new clean page for overlay transitions, then draw the sheet.
-  // The sheet preview is intentionally base-only (design §6): the final close
+  // Snapshot the new page for overlay transitions, then draw the sheet. The
+  // sheet preview is intentionally base-only (design §6): the final close
   // reflow restores the AA gray planes so per-tap cost stays FAST.
   LOG_DBG("GRS", "quickFont preview: base-only FAST (AA restored on close)");
-  ttfPage = static_cast<int>(pageIndex);
-  nextPageNumber = ttfPage;
   {
     RenderLock lock;
     renderStatusBar();
