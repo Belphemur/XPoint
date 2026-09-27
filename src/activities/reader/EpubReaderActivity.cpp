@@ -3788,12 +3788,15 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
   if (ttf_->cacheReady() && ttf_->cachePartial() && ttfSpine == currentSpineIndex &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) &&
       ttfPage + PARTIAL_REBUILD_START_MARGIN >= static_cast<int>(ttfPageCount)) {
-    // Single-writer: while the worker holds the resume claim and the reader
+    // Single-writer: while a LIVE worker holds the resume claim and the reader
     // can still show a built page, leave the extension to the worker — an
     // inline session here would race it on the same FIBP file (the resume
-    // churn). Take the claim back only once the reader is out of built pages.
-    if (freeink::book::fibp::readerYieldsExtension(fibpResumeClaimedSpine_ == currentSpineIndex,
-                                                   static_cast<uint16_t>(ttfPage < 0 ? 0 : ttfPage),
+    // churn). A consumed-but-failed claim or a self-exited worker must not park
+    // the margin extension forever, so fall through and take over once the task
+    // is gone.
+    const bool workerOwnsClaim =
+        fibpResumeClaimedSpine_ == currentSpineIndex && fibpWorker_ != nullptr && fibpWorker_->active();
+    if (freeink::book::fibp::readerYieldsExtension(workerOwnsClaim, static_cast<uint16_t>(ttfPage < 0 ? 0 : ttfPage),
                                                    static_cast<uint16_t>(ttfPageCount))) {
       return;
     }
