@@ -27,7 +27,7 @@
 #include "activities/reader/ReaderUtils.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "images/Logo120.h"
+#include "images/Logo120Draw.h"
 #include "images/MoonIcon.h"
 
 namespace {
@@ -776,12 +776,11 @@ void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
-  // Transparent blit: bit=1 leaves the framebuffer untouched, bit=0 paints ink.
-  // Logo120 is pre-rotated 90° CCW at build time (see Logo120.h). Opaque drawImage
-  // would re-paint white pixels over the white framebuffer, which is redundant; using
-  // drawImageTransparent keeps the natural polarity of the framebuffer (relevant when
-  // setInverted() / dark sleep clear paths are involved).
-  renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+  // The logo must be XOR-inverted before the transparent blit, or its black
+  // backdrop paints as ink (see drawLogo120Inverted). Keeps the natural
+  // polarity of the framebuffer, relevant when setInverted() / dark sleep
+  // clear paths are involved.
+  drawLogo120Inverted(renderer, (pageWidth - 120) / 2, (pageHeight - 120) / 2);
   renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, tr(STR_CROSSPOINT), true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, tr(STR_SLEEPING));
 
@@ -1048,9 +1047,8 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
 
   if (!haveImage) {
     if (sleepMode != CrossPointSettings::SLEEP_SCREEN_MODE::BLANK) {
-      // Transparent blit: same rationale as renderDefaultSleepScreen — keep the natural
-      // polarity of the framebuffer, only paint ink.
-      renderer.drawImageTransparent(Logo120, (pageWidth - 120) / 2, (pageHeight - 120) / 2, 120, 120);
+      // Same inverted-logo treatment as renderDefaultSleepScreen.
+      drawLogo120Inverted(renderer, (pageWidth - 120) / 2, (pageHeight - 120) / 2);
     }
     // BLANK stays faithful to the setting: blank panel, caption only.
     drawShutdownCaption(
