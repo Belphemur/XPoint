@@ -3018,8 +3018,14 @@ void EpubReaderActivity::renderBookTtf() {
           fibpWorker_ != nullptr ? fibpWorker_->buildingSpine() : freeink::book::fibp::kNoChapter;
       const bool busyElsewhere = workerBuilding != freeink::book::fibp::kNoChapter &&
                                  workerBuilding != static_cast<uint16_t>(currentSpineIndex);
-      if (committed || fibpResumeSeenBuilding_ || (workerAlive && busyElsewhere) ||
-          (!workerAlive && millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
+      // busyElsewhere releases the claim on the same grace clock as the
+      // dead-worker branch: an instant clear while resumeSpine_ is still
+      // armed would let reader and worker build the same spine concurrently
+      // (kody, PR #165). The grace window lets the worker pick the claim up
+      // first; if it never does, the fallback resumes the extension.
+      if (committed || fibpResumeSeenBuilding_ ||
+          ((workerAlive && busyElsewhere || !workerAlive) &&
+           millis() - fibpResumeRequestMs_ > kFibpResumeClaimGraceMs)) {
         fibpResumeClaimedSpine_ = -1;
         fibpResumeSeenBuilding_ = false;
         if (committed) {

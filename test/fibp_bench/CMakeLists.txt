@@ -44,6 +44,7 @@ target_include_directories(FibpLayoutBench PRIVATE
 
 target_compile_definitions(FibpLayoutBench PRIVATE
   TESTDATA_DIR="${REPO_ROOT}/test"
+  CROSSPOINT_FONT_BACKEND_FT=1
 )
 
 target_link_libraries(FibpLayoutBench PRIVATE

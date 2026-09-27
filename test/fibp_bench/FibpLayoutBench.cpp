@@ -51,36 +51,35 @@ using freeink::book::ZipEntry;
 
 class FileSource final : public BookSource {
  public:
-  explicit FileSource(const std::string& path) : f_(std::fopen(path.c_str(), "rb")) {
+  // RAII ownership: fclose via deleter, early-return constructor failures
+  // leave the handle null without manual fclose discipline.
+  static int kFclose(std::FILE* f) { return std::fclose(f); }
+
+  explicit FileSource(const std::string& path) : f_(std::fopen(path.c_str(), "rb"), kFclose) {
     if (f_ == nullptr) return;
-    if (std::fseek(f_, 0, SEEK_END) != 0) {
-      std::fclose(f_);
-      f_ = nullptr;
+    if (std::fseek(f_.get(), 0, SEEK_END) != 0) {
+      f_.reset();
       return;
     }
-    const long end = std::ftell(f_);
-    if (end < 0 || std::fseek(f_, 0, SEEK_SET) != 0) {
-      std::fclose(f_);
-      f_ = nullptr;
+    const long end = std::ftell(f_.get());
+    if (end < 0 || std::fseek(f_.get(), 0, SEEK_SET) != 0) {
+      f_.reset();
       return;
     }
     size_ = static_cast<uint64_t>(end);
   }
-  ~FileSource() override {
-    if (f_ != nullptr) std::fclose(f_);
-  }
   int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
     if (f_ == nullptr) return -1;
-    if (std::fseek(f_, static_cast<long>(offset), SEEK_SET) != 0) return -1;
-    const size_t got = std::fread(dst, 1, len, f_);
+    if (std::fseek(f_.get(), static_cast<long>(offset), SEEK_SET) != 0) return -1;
+    const size_t got = std::fread(dst, 1, len, f_.get());
     // BookSource's contract: negative = I/O error, 0 = clean EOF. A host
     // filesystem failure must not masquerade as end-of-archive.
-    return std::ferror(f_) ? -1 : static_cast<int32_t>(got);
+    return std::ferror(f_.get()) ? -1 : static_cast<int32_t>(got);
   }
   uint64_t size() const override { return size_; }
 
  private:
-  FILE* f_ = nullptr;
+  std::unique_ptr<std::FILE, int (*)(std::FILE*)> f_{nullptr, kFclose};
   uint64_t size_ = 0;
 };
 
@@ -165,7 +164,10 @@ class CachingFont final : public BookFont {
   int16_t ascent(uint16_t sizePx) override { return inner_.ascent(sizePx); }
   uint32_t ligature(uint32_t l, uint32_t r, uint8_t flags) override { return inner_.ligature(l, r, flags); }
   int16_t kerning(uint32_t l, uint32_t r, uint16_t sizePx, uint8_t flags) override {
-    const uint64_t key = (uint64_t(l) << 40) ^ (uint64_t(r) << 16) ^ (uint64_t(sizePx) << 8) ^ flags;
+    // Injective 128-bit key: codepoints in a, size+flags in b. An XOR mix of
+    // these fields collides (overlapping shifts), returning another pair's
+    // kerning for sizePx >= 256 and skewing the speedup comparison.
+    const KernKey key{uint64_t(l) | (uint64_t(r) << 32), uint64_t(sizePx) | (uint64_t(flags) << 16)};
     const auto it = kern_.find(key);
     if (it != kern_.end()) return it->second;
     const int16_t v = inner_.kerning(l, r, sizePx, flags);
@@ -174,10 +176,24 @@ class CachingFont final : public BookFont {
   }
   bool covers(uint32_t cp) override { return inner_.covers(cp); }
 
+  // Injective 128-bit key: codepoints in a, px size + style flags in b.
+  // The previous 64-bit XOR mix had overlapping shifts and collided for
+  // large glyph IDs / sizes, returning another pair's kerning.
+  struct KernKey {
+    uint64_t a;  // l in low 32, r in high 32
+    uint64_t b;  // sizePx in low 16, flags in bits 16-23
+    bool operator==(const KernKey& o) const { return a == o.a && b == o.b; }
+  };
+  struct KernKeyHash {
+    size_t operator()(const KernKey& k) const {
+      return static_cast<size_t>(k.a * 0x9E3779B97F4A7C15ull ^ (k.b * 0xC2B2AE3D27D4EB4Full));
+    }
+  };
+
  private:
   BookFont& inner_;
   std::unordered_map<uint64_t, int16_t> adv_;
-  std::unordered_map<uint64_t, int16_t> kern_;
+  std::unordered_map<KernKey, int16_t, KernKeyHash> kern_;
 };
 
 std::vector<uint8_t> readFile(const char* path) {
