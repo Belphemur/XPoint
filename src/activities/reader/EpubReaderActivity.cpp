@@ -32,6 +32,7 @@
 #include "FrontlightControl.h"
 #include "MemSentinel.h"
 #if defined(CROSSPOINT_TTF_READER)
+#include "QuickPageRelayout.h"
 #include "TtfWordSelect.h"
 #endif
 #include "activities/ActivityResult.h"
@@ -3711,46 +3712,8 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
 }
 
 void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
-  // §11 Q7 construction (a): with text AA engaged the base paints via
-  // PagePaint (the tone-1 boundary of the shared uniform quantizer) and a
-  // dual plane walk supplies the two gray tones through the panel's AA
-  // waveform — the same 4-level pipeline the bitmap reader uses. Images
-  // keep the 1bpp engine path (no plane bits for image pixels).
-  const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
-#else
-  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
-#endif
-  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
-  auto* chain = static_cast<freeink::book::FontChain*>(font);
-  if (grayParity) {
-    freeink::book::PagePaint::paintText(page, *chain, renderer);
-  } else {
-    const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
-    freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr);
-    // Ruby annotations are engine records — the same pass the engine's own
-    // render() runs; no CrossPoint layout involvement.
-    if (page.rubyCount > 0) {
-      freeink::book::PageRenderer::renderRubies(page, *chain, frameTarget);
-    }
-  }
-  freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
-  if (pageHasImages) {
-    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), makeFrameTarget(renderer));
-    if (st != freeink::book::BookStatus::Ok) {
-      LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
-    }
-  } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
-    // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
-    // the engine's reserved geometry as an outline instead of decoding.
-    for (uint16_t m = 0; m < page.imageCount; ++m) {
-      const auto& image = page.images[m];
-      if (image.width <= 0 || image.height <= 0) continue;
-      renderer.drawRect(image.x, image.y, image.width, image.height);
-    }
-  }
+  if (!ttf_) return;
+  paintCapturedPage(page, font, renderer, *ttf_);
 }
 
 void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer) {
@@ -4790,109 +4753,35 @@ void EpubReaderActivity::openQuickSizeSlider() {
 void EpubReaderActivity::renderQuickFontPage() {
   if (!ttf_ || !epub) return;
 
-  freeink::book::LayoutParams params;
-  ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
-  if (params.font == nullptr) {
-    LOG_ERR("ERS", "Quick font reflow: no font chain");
-    return;
-  }
-
-  // One backing buffer per sheet session: allocated on the first relayout,
-  // freed on close, so taps never churn the PSRAM pool. Without it the sink
-  // falls back to painting every scanned page inline.
-  if (!quickFontPreview.attached()) {
-    if (!quickFontPreviewBuf) quickFontPreviewBuf = poolMakeBytes(QuickPageCapture::kBufferBytes);
-    if (quickFontPreviewBuf) {
-      quickFontPreview.attach(quickFontPreviewBuf.get(), QuickPageCapture::kBufferBytes);
-    } else {
-      LOG_ERR("ERS", "OOM: quick font preview buffer");
-    }
-  }
-
-  const uint32_t targetChar = ttfCurrentCharStart;
-  bool found = false;
-  uint32_t pageIndex = 0;
-  class QuickSink final : public freeink::book::PageSink {
-   public:
-    QuickSink(const uint32_t target, const uint8_t maxPages, bool& foundRef, uint32_t& pageIndexRef,
-              QuickPageCapture& captureRef)
-        : target_(target), maxPages_(maxPages), found_(foundRef), pageIndex_(pageIndexRef), capture_(captureRef) {}
-
-    bool onPage(const freeink::book::Page& page) override {
-      if (page.charStart > target_) {
-        // The previous captured page is the target page: it ended before the
-        // first page past the anchor. Stop with a confirmed preview.
-        if (sawCandidate_) found_ = true;
-        return false;
-      }
-      // Later pages also match until the first page past the anchor, so only
-      // the last capture matters. Pages are deep-copied out of the engine's
-      // per-page arena. A page too large for the buffer is SKIPPED, not
-      // painted inline: an inline speculative frame would be left on screen
-      // while the status bar still reported the old page.
-      sawCandidate_ = true;
-      pageIndex_ = page.pageIndex;
-      if (!capture_.capture(page)) capture_.reset();
-      if (page.pageIndex + 1 >= maxPages_) {
-        budgetStopped_ = true;
-        return false;
-      }
-      return true;
-    }
-
-    bool sawCandidate() const { return sawCandidate_; }
-    bool budgetStopped() const { return budgetStopped_; }
-
-   private:
-    uint32_t target_;
-    uint8_t maxPages_;
-    bool& found_;
-    uint32_t& pageIndex_;
-    QuickPageCapture& capture_;
-    bool sawCandidate_ = false;
-    bool budgetStopped_ = false;
-  };
-  // The scan is paint-free (pages are captured, not painted), so the budget
-  // bounds only layout work; a deeper budget keeps more chapters on the fast
-  // page-only path instead of the full-reflow fallback.
-  constexpr uint8_t kQuickRelayoutPageBudget = 128;
-  // Drop any capture from a previous step: an early return (active session,
-  // catalog/alloc failure) must not repaint the previous font's page.
-  quickFontPreview.reset();
-  QuickSink sink(targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
-
+  QuickRelayoutResult relayout;
   {
     RenderLock lock;
     settleOverlayRefresh();  // a deferred chrome refresh may still be running
-    const auto st =
-        ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
-    // A page past the anchor confirms the last captured page as the target;
-    // a natural end-of-chapter without that confirmation means the anchor
-    // page itself was the last page.
-    if (sink.sawCandidate() && !sink.budgetStopped()) found = true;
+    relayout = quickRelayoutPage(*ttf_, renderer, static_cast<uint16_t>(currentSpineIndex), ttfCurrentCharStart,
+                                 automaticPageTurnActive, quickFontPreview, quickFontPreviewBuf);
     if (quickFontPreview.ready()) {
       // Paint the captured page once. When the anchor was not reached this is
-      // the last page laid out at the new size — an approximate preview,
+      // the last page laid out at the new settings — an approximate preview,
       // accepted by the sheet by design. Base-only preview (§6): the final
-      // close reflow restores the AA gray planes so per-tap cost stays FAST.
-      if (!found) {
-        LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — approximate preview", bookStatusName(st));
+      // close reflow restores the AA gray planes so per-change cost stays FAST.
+      if (!relayout.reachedAnchor) {
+        LOG_DBG("ERS", "Quick font reflow did not reach anchor — approximate preview");
       }
       renderer.clearScreen(0xFF);
-      paintTtfPage(quickFontPreview.page(), params.font);
-    } else if (!found) {
+      paintTtfPage(quickFontPreview.page(), relayout.font);
+    } else if (!relayout.reachedAnchor) {
       // Anchor out of reach and no capture: keep the current page. A size or
-      // font step is preview-only — invalidating the chapter caches here
-      // (applyReaderTextSettings) re-indexes the whole book per tap; the one
-      // full reflow happens on sheet close instead.
-      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — keeping current page", bookStatusName(st));
+      // font change is preview-only — invalidating the chapter caches here
+      // (applyReaderTextSettings) re-indexes the whole book per change; the
+      // one full reflow happens on sheet close instead.
+      LOG_DBG("ERS", "Quick font reflow did not reach anchor — keeping current page");
     }
   }
 
   // The page cursor only advances when the target page was captured, so an
   // approximate (or absent) preview never shifts the reading position.
-  if (found && quickFontPreview.ready()) {
-    ttfPage = static_cast<int>(pageIndex);
+  if (relayout.reachedAnchor && quickFontPreview.ready()) {
+    ttfPage = static_cast<int>(relayout.pageIndex);
     nextPageNumber = ttfPage;
   }
 
