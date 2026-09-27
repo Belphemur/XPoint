@@ -4760,14 +4760,31 @@ void EpubReaderActivity::quickFontSelectRow(const int row, const bool refresh) {
   pushOverlayRefresh();
 }
 
-void EpubReaderActivity::quickFontStep(const int direction) {
-  if (!ttf_ || quickFontRow != 0) return;
-  const int next = std::clamp(static_cast<int>(SETTINGS.ttfFontPointSize) + direction,
-                              static_cast<int>(CrossPointSettings::TTF_FONT_POINT_SIZE_MIN),
-                              static_cast<int>(CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
-  if (next == SETTINGS.ttfFontPointSize) return;
-  SETTINGS.ttfFontPointSize = static_cast<uint8_t>(next);
-  renderQuickFontPage();
+// Quick-menu size row: delegates to the SAME IntervalSelectionActivity slider
+// Text settings' Size tab uses (bounds and persistence identical; design doc
+// 2026-09-27). The slider applies on OK; the sheet stays open underneath, and
+// the current-page relayout runs when the result lands.
+void EpubReaderActivity::openQuickSizeSlider() {
+  if (!ttf_) return;
+  auto sizeDialog = makeUniqueNoThrow<IntervalSelectionActivity>(
+      renderer, mappedInput, "TtfPointSize", StrId::STR_FONT_SIZE, SETTINGS.ttfFontPointSize,
+      CrossPointSettings::TTF_FONT_POINT_SIZE_MIN, CrossPointSettings::TTF_FONT_POINT_SIZE_MAX, 1, 2,
+      StrId::STR_FONT_SIZE_VALUE);
+  if (!sizeDialog) {
+    LOG_ERR("ERS", "OOM: quick size slider");
+    return;
+  }
+  startActivityForResult(std::move(sizeDialog), [this](const ActivityResult& result) {
+    if (result.isCancelled || !std::holds_alternative<IntervalResult>(result.data)) return;
+    const auto size = std::get<IntervalResult>(result.data).value;
+    const uint8_t clamped = static_cast<uint8_t>(std::clamp<uint32_t>(size, CrossPointSettings::TTF_FONT_POINT_SIZE_MIN,
+                                                                      CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
+    if (clamped == SETTINGS.ttfFontPointSize) return;
+    SETTINGS.ttfFontPointSize = clamped;
+    // Persist outside RenderLock, mirroring Text settings' Size tab.
+    SETTINGS.saveToFile();
+    renderQuickFontPage();
+  });
 }
 
 void EpubReaderActivity::renderQuickFontPage() {
@@ -5410,10 +5427,10 @@ void EpubReaderActivity::handleOverlayInput() {
         closeFontSheet();
         return;
       case ReaderToolbarUi::Event::FontMinus:
-        if (routed.value == 0) quickFontStep(-1);
+        if (routed.value == 0) openQuickSizeSlider();
         return;
       case ReaderToolbarUi::Event::FontPlus:
-        if (routed.value == 0) quickFontStep(1);
+        if (routed.value == 0) openQuickSizeSlider();
         return;
       case ReaderToolbarUi::Event::FontRow:
         if (routed.value == 1) {
@@ -5441,18 +5458,18 @@ void EpubReaderActivity::handleOverlayInput() {
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      if (quickFontRow == 0) quickFontStep(-1);
+      if (quickFontRow == 0) openQuickSizeSlider();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      if (quickFontRow == 0) quickFontStep(1);
+      if (quickFontRow == 0) openQuickSizeSlider();
       return;
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (quickFontRow == 1) {
         openFontFamilyPicker();
       } else {
-        quickFontStep(1);
+        openQuickSizeSlider();
       }
       return;
     }

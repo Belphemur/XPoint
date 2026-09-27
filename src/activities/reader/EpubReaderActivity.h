@@ -115,9 +115,10 @@ class EpubReaderActivity final : public ReaderActivity {
   // Toggle rows stay one-tap toggles, as in Settings.
   OptionPopup<33, 8> overlayPopup;
 #if defined(CROSSPOINT_TTF_READER)
-  // Quick font sheet focus: 0 = size, 1 = family. Size applies each +/- step
-  // to the displayed page before pushing a FAST refresh; family opens the
-  // modal picker. Caches are invalidated only when the sheet closes (SD write
+  // Quick font sheet focus: 0 = size, 1 = family. The size row delegates to
+  // the IntervalSelectionActivity slider (same mechanism as Text settings,
+  // opens on tap and applies on OK); family opens the modal picker. Caches
+  // are invalidated only when the sheet closes (SD write
   // + full reflow are deliberately not per-tap costs).
   int quickFontRow = 0;
   bool quickFontFamilyPending = false;
@@ -129,7 +130,7 @@ class EpubReaderActivity final : public ReaderActivity {
   PoolBytes quickFontPreviewBuf;
   void openFontSheet();
   void openFontFamilyPicker();
-  void quickFontStep(int direction);
+  void openQuickSizeSlider();
   void quickFontSelectRow(int row, bool refresh = true);
   void renderQuickFontPage();
   void closeFontSheet();
