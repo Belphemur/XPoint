@@ -18,10 +18,13 @@
 
 #include <GfxRenderer.h>
 #include <Memory.h>
-#include <layout/ChapterLayout.h>
 
 #include "QuickPageCapture.h"
 #include "TtfBookRuntime.h"
+
+#if defined(CROSSPOINT_TTF_READER)
+
+#include <layout/ChapterLayout.h>
 
 struct QuickRelayoutResult {
   bool reachedAnchor = false;  // a page past the anchor confirms the last capture
@@ -49,3 +52,5 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
 // and the reader member in lockstep (the member now delegates here).
 void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer& renderer,
                        freeink::book::TtfBookRuntime& ttf);
+
+#endif  // CROSSPOINT_TTF_READER

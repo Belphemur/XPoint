@@ -75,9 +75,18 @@ struct FilePathResult {
 // the reader (owner of the authoritative per-book record) applies the clear.
 struct ClearPaceResult {};
 
-using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, DictionarySearchResult, MenuResult,
-                                   ChapterResult, PercentResult, IntervalResult, PageResult, ProgressChangeResult,
-                                   NetworkModeResult, FootnoteResult, FilePathResult, ClearPaceResult>;
+// Sent by FontPreviewActivity when the user closes it after changing the font
+// family or point size: the reader (owner of the caches and the reading
+// position) runs its settings-driven clean reindex. A close with no changes
+// pops as cancelled (silent return, zero reflow, zero SD writes).
+struct QuickFontPreviewResult {
+  bool changed = false;
+};
+
+using ResultVariant =
+    std::variant<std::monostate, WifiResult, KeyboardResult, DictionarySearchResult, MenuResult, ChapterResult,
+                 PercentResult, IntervalResult, PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult,
+                 FilePathResult, ClearPaceResult, QuickFontPreviewResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

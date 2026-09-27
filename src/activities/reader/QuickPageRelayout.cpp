@@ -1,5 +1,7 @@
 #include "QuickPageRelayout.h"
 
+#if defined(CROSSPOINT_TTF_READER)
+
 #include <BookTypes.h>
 #include <Logging.h>
 
@@ -148,3 +150,5 @@ void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer&
     }
   }
 }
+
+#endif  // CROSSPOINT_TTF_READER
