@@ -5519,6 +5519,17 @@ void EpubReaderActivity::handleOverlayInput() {
           LOG_ERR("ERS", "OOM: reading stats screen");
           return;
         }
+        {
+          RenderLock lock;  // the render task shares the framebuffer
+          // The chrome was pushed deferred (pushOverlayRefresh) and this is
+          // the only launch path that never settles: without the drain, the
+          // stats screen's first FAST diffs its clean layout against the
+          // pre-chrome baseline and bakes the panel/page into the glass.
+          // Same full-FB-flush contract as pushOverlayRefresh — a partial
+          // prerender must die before this framebuffer reaches the glass.
+          ttfInvalidatePreRender("stats launch");
+          settleOverlayRefresh();
+        }
         overlay = Overlay::None;
         overlayPopup.dismiss();
         discardOverlayPage();
