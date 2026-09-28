@@ -54,6 +54,10 @@ class HalPowerManager {
   // no separate timer. 0 touch input is accepted while parked (design
   // trade-off §3); any button press or preventAutoSleep() wakes the chip.
   static constexpr unsigned long GT911_IDLE_SLEEP_MS = 5UL * 60UL * 1000UL;  // 5 min
+  // Minimum spacing between wake attempts when a wake failed (dead bus): each
+  // call blocks on the poll task servicing the command, so an unresponsive
+  // controller must not be retried every loop iteration (kody PR #171).
+  static constexpr unsigned long GT911_WAKE_RETRY_MS = 1000UL;  // 1 s
   // Backoff between park attempts after a failed entry (uncertainty path): a
   // persistent failure costs one ~40 ms blocking attempt per window instead of
   // every idle loop iteration.
