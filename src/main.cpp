@@ -1177,7 +1177,12 @@ void loop() {
     // failed earlier wake attempt, which retries on the next activity edge
     // instead of leaving the chip parked forever. No-op on boards without a
     // GT911 (SDK returns immediately).
-    if (gpio.isTouchAsleep()) {
+    // A FAILED wake keeps retrying here whenever preventAutoSleep() keeps this
+    // branch hot (kody PR #171: rate-limit, 1 s) — each attempt blocks ~200 ms
+    // on the poll-task handshake, so per-iteration retries collapse the loop.
+    static unsigned long lastTouchWakeAttempt = 0;
+    if (gpio.isTouchAsleep() && millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
+      lastTouchWakeAttempt = millis();
       gpio.setTouchSleep(false);
     }
   }
@@ -1372,11 +1377,15 @@ void loop() {
         if (gpio.rawInputActive()) {
           // Button contact during the slice: wake the parked controller before
           // the next update() samples the press, so the poll path is live.
-          if (gpio.isTouchAsleep()) {
-            gpio.setTouchSleep(false);
-          }
+          // Order matters (kody PR #171): break out of the slice on the contact
+          // FIRST so update() can commit the trigger press on its normal poll;
+          // the wake runs after that sample, costing one extra poll of touch
+          // latency but never swallowing the button event that woke it.
           break;
         }
+      }
+      if (gpio.isTouchAsleep()) {
+        gpio.setTouchSleep(false);
       }
     } else {
       // Short delay to prevent tight loop while still being responsive
