@@ -117,6 +117,9 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   }
   doc["clockTzOffsetMin"] = clockTzOffsetMin;
   doc["clockTzIsDst"] = clockTzIsDst;
+  // GT911 idle sleep toggle — not in SettingsList (no menu UI yet), persisted
+  // manually so the owner can flip it without a rebuild.
+  doc["touchIdleSleep"] = touchIdleSleep;
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -230,6 +233,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
   const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
   fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+
+  // GT911 idle sleep toggle — not in SettingsList, load manually (bool-fold:
+  // anything non-zero counts as enabled).
+  touchIdleSleep = doc["touchIdleSleep"] | (uint8_t)1 ? 1 : 0;
 
   // The old fork reused the tap/long-press keys with a different value catalog.
   // When that legacy group is present, discard its bytes and fall back to the

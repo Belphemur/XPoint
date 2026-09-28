@@ -325,6 +325,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   static constexpr uint8_t AUTO_POWER_OFF_STEP_HOURS = 2;
   static constexpr uint8_t AUTO_POWER_OFF_DEFAULT_HOURS = 4;
   uint8_t autoPowerOffHours = AUTO_POWER_OFF_DEFAULT_HOURS;
+  // GT911 touch Sleep mode at sustained idle (design
+  // 2026-09-24-gt911-idle-sleep.md §3 Tier B): park the touch controller after
+  // GT911_IDLE_SLEEP_MS of no input. 0 = disabled, for owners whose module
+  // misbehaves on the best-effort sleep opcode — the poll throttle keeps
+  // running either way. No settings-menu entry yet; JSON-only (owner adds UI).
+  uint8_t touchIdleSleep = 1;
   // E-ink refresh frequency (default 15 pages)
   uint8_t refreshFrequency = REFRESH_15;
   uint8_t hyphenationEnabled = 0;
