@@ -1375,17 +1375,15 @@ void loop() {
       while (millis() - idleStart < 50) {
         delay(10);
         if (gpio.rawInputActive()) {
-          // Button contact during the slice: wake the parked controller before
-          // the next update() samples the press, so the poll path is live.
-          // Order matters (kody PR #171): break out of the slice on the contact
-          // FIRST so update() can commit the trigger press on its normal poll;
-          // the wake runs after that sample, costing one extra poll of touch
-          // latency but never swallowing the button event that woke it.
+          // Button contact during the slice: leave the wake to the
+          // activity-edge branch at the TOP of the next loop iteration — it
+          // runs AFTER mappedInputManager.update() has committed the trigger
+          // press (kody PR #171 round 2), so the press that woke the device is
+          // sampled by the normal path, not blocked behind the ~200 ms wake
+          // handshake. No wake here: an unconditional post-slice wake would
+          // undo the park on every idle slice.
           break;
         }
-      }
-      if (gpio.isTouchAsleep()) {
-        gpio.setTouchSleep(false);
       }
     } else {
       // Short delay to prevent tight loop while still being responsive
