@@ -281,6 +281,24 @@ preview reuses `ReaderToolbarUi`'s existing component shapes:
   relayout (the reader's seam releases the borrowed faces BEFORE the family
   reload): update-before-reload would re-register faces against bytes the
   same render then frees (issue #168 ordering).
+- 2026-09-29 — Known issue (device, X4 Pro, 448f0eea): the quick-menu font
+  row pushed `FontPreviewActivity` without draining the deferred overlay
+  refresh. The panel chrome is pushed async (pushOverlayRefresh), so the
+  panel's differential baseline still holds the pre-chrome page; the
+  preview's first FAST refresh diffed its clean layout against that stale
+  baseline and the screen came up unrefreshed. The preview DID clearScreen
+  and paint (61 ms clearScreen->displayBuffer in the device log), so the
+  framebuffer content was correct — only the baseline was wrong. Fix:
+  `openFontPreview()` (and the non-TTF `showTextRowPopup` fallback, same
+  launch shape) now take the RenderLock + ttfInvalidatePreRender +
+  settleOverlayRefresh() drain before the push, the contract 82798465
+  established for the quick-menu stats rows. The stats fix missed this path
+  because pre-#170 the font row opened an INLINE sheet (no child activity,
+  no framebuffer handover); #170 replaced it with an activity push and the
+  drain was not carried over. Full-refresh promotion was ruled out with
+  evidence: all four stats activities also end on a plain
+  `renderer.displayBuffer()` and are correct, so the drain alone is the
+  established sufficient contract.
 
 <!--
 Verify with:

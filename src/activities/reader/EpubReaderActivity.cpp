@@ -4708,6 +4708,19 @@ void EpubReaderActivity::openFontPreview() {
     LOG_ERR("ERS", "OOM: font preview");
     return;
   }
+  {
+    RenderLock lock;  // the render task shares the framebuffer
+                      // The chrome was pushed deferred (pushOverlayRefresh) and this is a
+                      // quick-menu launch that never settles: without the drain, the preview's
+                      // first FAST diffs its clean full-screen layout against the pre-chrome
+                      // baseline and the panel/page pixels are left baked on the glass. Same
+                      // full-FB-flush contract as pushOverlayRefresh — a partial prerender must
+                      // die before this framebuffer reaches the glass.
+#if defined(CROSSPOINT_TTF_READER)
+    ttfInvalidatePreRender("font preview launch");
+#endif
+    settleOverlayRefresh();
+  }
   overlay = Overlay::None;
   overlayPopup.dismiss();
   discardOverlayPage();
@@ -4746,6 +4759,13 @@ void EpubReaderActivity::showTextRowPopup(const int row) {
       if (!settings) {
         LOG_ERR("ERS", "OOM: text settings activity");
         return;
+      }
+      {
+        RenderLock lock;  // the render task shares the framebuffer
+                          // Non-TTF fallback for the font row: same unsettled
+                          // quick-menu launch as openFontPreview(), so it owes
+                          // the same drain before handing over the framebuffer.
+        settleOverlayRefresh();
       }
       overlay = Overlay::None;
       overlayPopup.dismiss();
