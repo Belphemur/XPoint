@@ -54,6 +54,10 @@ class HalPowerManager {
   // no separate timer. 0 touch input is accepted while parked (design
   // trade-off §3); any button press or preventAutoSleep() wakes the chip.
   static constexpr unsigned long GT911_IDLE_SLEEP_MS = 5UL * 60UL * 1000UL;  // 5 min
+  // Backoff between park attempts after a failed entry (uncertainty path): a
+  // persistent failure costs one ~40 ms blocking attempt per window instead of
+  // every idle loop iteration.
+  static constexpr unsigned long GT911_PARK_RETRY_MS = 30UL * 1000UL;  // 30 s
   // Minimum dwell at full speed after the last normal-speed request before
   // low power may re-engage (see lastNormalMs).
   static constexpr unsigned long NORMAL_POWER_DWELL_MS = 2000;  // ms
