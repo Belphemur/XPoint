@@ -90,6 +90,18 @@ class HalGPIO {
   // hardware (ADC ladder off its idle rail, or the power GPIO asserted), without
   // going through the debounced state. Cheap enough to call every few ms.
   bool rawInputActive();
+  // GT911 Sleep-mode control (docs/design/2026-09-24-gt911-idle-sleep.md §3
+  // Tier B). setTouchSleep(true) parks the controller (no scanning, ~70–120 µA
+  // vs 8 mA active); wakeTouch() wakes it and returns only once the controller
+  // ACKs again. While parked the capacitive home key is unreachable and touch
+  // polling no-ops; physical side buttons are unaffected. No-op on boards
+  // without a GT911 (gt911Addr == 0). Call sites gate on
+  // SETTINGS.touchIdleSleep. Both may block up to ~250 ms — call only from
+  // contexts that may stall (idle window, activity entry).
+  bool setTouchSleep(bool asleep);
+  bool wakeTouch();
+  // True while the GT911 is parked in Sleep mode.
+  bool isTouchAsleep() const;
   // True while a finger is in contact with the touch panel right now.
   bool isTouchContactActive() const;
   bool hasTouch() const;
