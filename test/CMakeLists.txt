@@ -115,6 +115,7 @@ add_subdirectory(chapter_position)
 add_subdirectory(home_button)
 add_subdirectory(input_grammar)
 add_subdirectory(quick_page_capture)
+add_subdirectory(button_press_navigation)
 
 add_subdirectory(inflate_stream)
 add_subdirectory(chunk_coalescer)
