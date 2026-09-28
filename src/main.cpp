@@ -1073,10 +1073,6 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  // True while the GT911 is parked in Sleep mode (touch idle-sleep, design
-  // 2026-09-24-gt911-idle-sleep.md §3 Tier B). Deep-sleep entry cuts the
-  // touch rail and boot re-initializes the controller, so no reset needed.
-  static bool touchParked = false;
   // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
   // consumed by the manager's snapshot — after update() that's always
   // nothing, and the inactivity timer would never reset on buttons.
@@ -1087,11 +1083,12 @@ void loop() {
     // GT911 idle sleep (design 2026-09-24-gt911-idle-sleep.md §3 Tier B): the
     // controller is parked after GT911_IDLE_SLEEP_MS of silence; any activity
     // wakes it. Blocks until the controller ACKs again (≤ ~230 ms once).
-    // isTouchAsleep() covers a failed earlier wake attempt: retry on the next
-    // activity edge instead of leaving the chip parked forever.
-    if (touchParked || gpio.isTouchAsleep()) {
+    // isTouchAsleep() is the SDK's authoritative state — it also covers a
+    // failed earlier wake attempt, which retries on the next activity edge
+    // instead of leaving the chip parked forever. No-op on boards without a
+    // GT911 (SDK returns immediately).
+    if (gpio.isTouchAsleep()) {
       gpio.setTouchSleep(false);
-      touchParked = false;
     }
   }
 
@@ -1266,10 +1263,15 @@ void loop() {
       // third timer). Design §3 Tier B entry window ≈3–5 min; skip while USB
       // is attached (serial-monitor sessions must not fight sleep in the log)
       // and when the user disabled the feature (SETTINGS.touchIdleSleep).
-      if (SETTINGS.touchIdleSleep && !touchParked &&
-          millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && !gpio.isUsbConnected()) {
+      // Parked state comes straight from the SDK (isTouchAsleep), so a failed
+      // entry is retried after the backoff window instead of latched awake
+      // until the next activity edge.
+      static unsigned long lastParkAttempt = 0;
+      if (SETTINGS.touchIdleSleep && !gpio.isTouchAsleep() &&
+          millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && !gpio.isUsbConnected() &&
+          millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
+        lastParkAttempt = millis();
         gpio.setTouchSleep(true);
-        touchParked = true;
       }
       // Sleep in short slices and wake the poll as soon as a button contact closes.
       // InputManager commits a press only when two consecutive polls agree, so a
@@ -1280,9 +1282,8 @@ void loop() {
         if (gpio.rawInputActive()) {
           // Button contact during the slice: wake the parked controller before
           // the next update() samples the press, so the poll path is live.
-          if (touchParked) {
+          if (gpio.isTouchAsleep()) {
             gpio.setTouchSleep(false);
-            touchParked = false;
           }
           break;
         }
