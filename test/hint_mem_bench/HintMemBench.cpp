@@ -52,6 +52,30 @@ constexpr size_t kStackBytes = 8u * 1024 * 1024;
 // harness's own frame is never inside the painted region.
 constexpr size_t kMarginBytes = 1024;
 
+// Owns the painted-stack mapping so every exit path — the early returns below,
+// and the std::exit() paths in measureSequence()/readFileOrDie() — releases it.
+// A raw mmap() released by a single munmap() at the end of main() leaks on all
+// of them.
+class StackMapping {
+ public:
+  StackMapping()
+      : ptr_(static_cast<uint8_t*>(
+            mmap(nullptr, kStackBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))) {
+    if (ptr_ == MAP_FAILED) ptr_ = nullptr;
+  }
+  ~StackMapping() {
+    if (ptr_ != nullptr) munmap(ptr_, kStackBytes);
+  }
+  StackMapping(const StackMapping&) = delete;
+  StackMapping& operator=(const StackMapping&) = delete;
+
+  bool valid() const { return ptr_ != nullptr; }
+  uint8_t* get() const { return ptr_; }
+
+ private:
+  uint8_t* ptr_;
+};
+
 uint8_t* g_stack = nullptr;
 const char* t_frameTop = nullptr;
 size_t g_first = 0;
@@ -321,12 +345,12 @@ void printRow(const Row& r) {
 }  // namespace
 
 int main() {
-  g_stack =
-      static_cast<uint8_t*>(mmap(nullptr, kStackBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-  if (g_stack == MAP_FAILED) {
+  const StackMapping stack;
+  if (!stack.valid()) {
     std::fprintf(stderr, "hint_mem_bench: mmap failed\n");
     return 2;
   }
+  g_stack = stack.get();
   // PSRAM tier like the x4pro (the only tier that carries real faces): 8 MB
   // PSRAM with a large contiguous block, so fixtures load resident instead of
   // tripping the DRAM-tier 128 KB cap.
@@ -393,6 +417,5 @@ int main() {
     }
   }
 
-  munmap(g_stack, kStackBytes);
   return 0;
 }
