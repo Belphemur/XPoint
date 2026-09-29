@@ -41,6 +41,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -132,6 +133,41 @@ class SectionIncrementalTest : public ::testing::Test {
   GfxRenderer renderer_;
   ReaderRenderSpec spec_{};
 };
+
+// THE reproduction: chapter 1 already built + cached on SD, user pages into
+// chapter 2. The second chapter's build must succeed without hitting the
+// STR_INDEX_FAILED path.
+TEST_F(SectionIncrementalTest, TxtCacheInvalidatedWhenSourceMtimeChanges) {
+  // TXT/MD books ride the Epub pipeline. The source fingerprint folds the FAT
+  // mtime so a same-size edit (invisible to the size check and the head/tail
+  // windows) still invalidates; the stub's per-path mtime map drives it.
+  const std::string txtPath = (tmpDir_ / "book.txt").string();
+  {
+    std::ofstream out(txtPath);
+    out << "original content\n";
+  }
+  stubMtimes()[txtPath] = 1000;
+
+  auto txtBook = std::make_shared<Epub>(txtPath, (tmpDir_ / ".crosspoint").string());
+  ASSERT_TRUE(txtBook->load(/*buildIfMissing=*/true, /*skipLoadingCss=*/true)) << "TXT cache build failed";
+  txtBook.reset();
+
+  // Positive control: unchanged mtime keeps the cache valid.
+  auto reopened = std::make_shared<Epub>(txtPath, (tmpDir_ / ".crosspoint").string());
+  EXPECT_TRUE(reopened->load(/*buildIfMissing=*/false, /*skipLoadingCss=*/true));
+  reopened.reset();
+
+  // Same size, same bytes, later FAT mtime -> must invalidate.
+  stubMtimes()[txtPath] = 2000;
+  auto edited = std::make_shared<Epub>(txtPath, (tmpDir_ / ".crosspoint").string());
+  EXPECT_FALSE(edited->load(/*buildIfMissing=*/false, /*skipLoadingCss=*/true))
+      << "same-size source edit (mtime bump) must invalidate the TXT cache";
+  edited.reset();
+
+  // And a load with rebuild permission recovers (buildTxtCache re-fingerprints).
+  auto rebuilt = std::make_shared<Epub>(txtPath, (tmpDir_ / ".crosspoint").string());
+  EXPECT_TRUE(rebuilt->load(/*buildIfMissing=*/true, /*skipLoadingCss=*/true));
+}
 
 // THE reproduction: chapter 1 already built + cached on SD, user pages into
 // chapter 2. The second chapter's build must succeed without hitting the
