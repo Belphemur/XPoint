@@ -91,13 +91,28 @@ freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
 // slot 0's own face never got to observe the refusal (load failure).
 bool monoAcceptable_ = true;
 
-// Additional stack depth a face's hinted render may consume before the
-// probe degrades it. The probe measures on a dedicated task whose stack
-// equals the smallest consumer this gate protects (the 32KB
-// FibpPrefetchWorker; R1: 24KB overflowed on device, its pipeline measured
-// HWM 1792B = a ~22.2KB peak), so a face needing ≤8KB still leaves that
-// task ≥1.8KB of headroom at its absolute peak.
-constexpr uint32_t kHintProbeStackBudgetBytes = 8 * 1024;
+// The smallest stack a hinted render must fit: the Arduino loop task
+// (SET_LOOP_TASK_STACK_SIZE(49152), src/main.cpp), the only consumer that
+// RASTERIZES with these faces. The FibpPrefetchWorker (32KB) only measures
+// metrics — FtFont::advance() reads FT_LOAD_NO_HINTING|FAST_ONLY and the
+// worker never calls rasterize() — so it never pays the hinted depth (bench:
+// test/hint_mem_bench, results in
+// docs/design/2026-09-29-hint-stack-bench-results.md).
+constexpr uint32_t kHintConsumerStackBytes = 48 * 1024;
+
+// Headroom a measured face must keep on that consumer. The stress set below
+// rasterizes from a face's resident bytes, so it never reaches the SD tail a
+// real consumer stacks UNDER a render: streamReadThunk -> halFileInspectRead
+// -> HalFile::read -> the HalStorage mutex -> SdFat, entered from inside the
+// glyph fault. That leg is unreachable from the probe, so it is reserved here
+// rather than measured.
+constexpr uint32_t kHintProbeStackMarginBytes = 8 * 1024;
+
+// Additional stack depth a face's hinted render may consume before the probe
+// degrades it. Derived from the consumer it protects, not picked: the render
+// path's caller frames and the streamed-face SD tail are not visible to the
+// probe (it measures resident bytes), so they are reserved as margin.
+constexpr uint32_t kHintProbeStackBudgetBytes = kHintConsumerStackBytes - kHintProbeStackMarginBytes;
 
 // Stress set for the probe: hinted outlines with distinctive contours, at
 // sizes spanning the reader's runtime range (body, ruby, large) so the
@@ -241,10 +256,19 @@ struct HintProbeRequest {
   SemaphoreHandle_t done;
 };
 
-// The probe task's stack equals the smallest consumer this gate protects —
-// the 32KB FibpPrefetchWorker — so a measured depth maps directly onto the
-// headroom that consumer must keep (kHintProbeStackBudgetBytes below).
-constexpr size_t kHintProbeTaskStackBytes = 32 * 1024;
+// The probe must be able to complete a render DEEPER than any consumer it
+// judges — a measuring device the same size as its subject overflows instead
+// of reporting. At 32KB (what it used to be) a hinted CFF face (~28KB
+// measured on device) left under 4KB of slack, which a real consumer's SD
+// tail (streamReadThunk -> HalStorage -> SdFat, entered from inside the glyph
+// fault) exhausts — the probe task took the LoadProhibited on the way to
+// printing its own verdict. Sized consumer + margin, so a face anywhere up to
+// the full consumer budget is measured and degraded rather than crashing the
+// measurer. The reading itself is unaffected by the stack size (the
+// high-water is measured from the task's own top), so the extra bytes cost
+// accuracy nothing; transiently +16KB over the consumer at book open, one
+// task at a time, reaped before the next.
+constexpr size_t kHintProbeTaskStackBytes = kHintConsumerStackBytes + kHintProbeStackMarginBytes;
 constexpr UBaseType_t kHintProbeTaskPriority = 1;
 // Worker-task convention (FibpPrefetchWorker.h kCore): 0 is valid on both
 // targets; the loop task runs on core 1 where it exists.
@@ -273,10 +297,12 @@ void hintProbeTaskBody(void* param) {
   const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
   req->consumed = before > after ? static_cast<uint32_t>(before - after) : 0;
   LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", req->slot, static_cast<unsigned>(req->consumed));
-  // Park instead of self-deleting: the waiter reaps this task with its
-  // handle right after the take, when nothing below the give can run anymore.
+  // The give is the join point: every write to req-> is above it, and nothing
+  // below it touches the request again. Park here so the waiter can reap this
+  // task deterministically (see the vTaskSuspend/vTaskDelete pair in
+  // probeHintStackSafety).
   xSemaphoreGive(req->done);
-  vTaskSuspend(nullptr);
+  for (;;) vTaskSuspend(nullptr);
 }
 }  // namespace
 
@@ -287,8 +313,8 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasura
   // One FRESH task per face: the high-water is a task-lifetime minimum, so a
   // shared task would only report each later face's excess over the deepest
   // preceding one (a later over-budget CFF face could read ~0 and stay
-  // hinted). A virgin 32KB stack per slot makes each reading the face's own
-  // full depth, directly comparable to kHintProbeStackBudgetBytes.
+  // hinted). A virgin stack per slot makes each reading the face's own full
+  // depth, directly comparable to kHintProbeStackBudgetBytes.
   HintProbeRequest req{};
   req.bodyPx = static_cast<uint16_t>(lroundf(SETTINGS.ttfFontPointSize * 150.0f / 72.0f));
   req.done = xSemaphoreCreateBinary();
@@ -312,25 +338,36 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasura
       unmeasurable = true;
       return;
     }
-    const bool settled = xSemaphoreTake(req.done, kHintProbeSettleTimeoutTicks) == pdTRUE;
-    if (!settled) {
+    bool overBudget = false;
+    if (xSemaphoreTake(req.done, kHintProbeSettleTimeoutTicks) != pdTRUE) {
       // The probe outlived its budget: the readings are void. Keep blocking
-      // until the task parks — req lives on this frame and the task can still
-      // write through it and give, so req/done must not be freed or the frame
-      // abandoned while the task is live (a cross-core vTaskDelete is not
-      // synchronous). The extra wait bounds cleanup, not the verdict: this
-      // slot has already failed closed.
+      // until it gives — req lives on this frame and the task can still write
+      // through it — so the frame is never abandoned while the task is live.
+      // The extra wait bounds cleanup, not the verdict: this slot has already
+      // failed closed.
       LOG_ERR("BFNT", "Hint probe slot %u timed out", i);
       xSemaphoreTake(req.done, portMAX_DELAY);
-      degradedMask |= degradeAllLoadedSlots("stack probe: unmeasurable");
       unmeasurable = true;
-      vTaskDelete(probeTask);
+    } else {
+      overBudget = req.consumed > kHintProbeStackBudgetBytes;
+    }
+    // Strict join, on EVERY path and before any face work: suspend the probe
+    // from here rather than trusting it to have parked itself. Whether it
+    // already suspended or has not reached its own suspend yet, it is parked
+    // by the time this returns, and reaping a suspended task frees its TCB and
+    // stack in THIS context — so the next slot's spawn cannot lose the
+    // allocation to an in-flight reclaim and fail closed the whole family.
+    vTaskSuspend(probeTask);
+    vTaskDelete(probeTask);
+    // Degrades run only after the join: setRenderOptions() is the P1
+    // glyph-cache flush point, so it must not race a live rasterization of
+    // the very face it is reconfiguring.
+    if (unmeasurable) {
+      degradedMask |= degradeAllLoadedSlots("stack probe: unmeasurable");
       vSemaphoreDelete(req.done);
       return;
     }
-    // Parked task: nothing below the give can run anymore — deterministic reap.
-    vTaskDelete(probeTask);
-    if (req.consumed > kHintProbeStackBudgetBytes) {
+    if (overBudget) {
       degradeHint(i, "stack probe: over budget");
       degradedMask |= static_cast<uint8_t>(1u << i);
     }
