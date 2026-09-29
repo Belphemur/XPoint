@@ -13,7 +13,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <string>
+
+// Test control: path -> mtime used by HalFile::modificationTime(). Paths not
+// in the map report the default constant so existing tests stay deterministic.
+inline std::map<std::string, uint32_t>& stubMtimes() {
+  static std::map<std::string, uint32_t> instance;
+  return instance;
+}
 
 class HalFile : public Print {
  public:
@@ -24,6 +32,7 @@ class HalFile : public Print {
 
   bool open(const char* path, const char* mode) {
     close();
+    path_ = path;
     file_ = std::fopen(path, mode);
     return file_ != nullptr;
   }
@@ -44,6 +53,11 @@ class HalFile : public Print {
 
   bool flush() { return file_ && std::fflush(file_) == 0; }
   bool seek(size_t pos) { return file_ && std::fseek(file_, static_cast<long>(pos), SEEK_SET) == 0; }
+  uint32_t modificationTime() {
+    if (!file_) return 0;
+    const auto it = stubMtimes().find(path_);
+    return it != stubMtimes().end() ? it->second : 1700000000u;
+  }
   bool seekSet(size_t pos) { return seek(pos); }
   bool seekCur(int64_t offset) { return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_CUR) == 0; }
   bool close() {
@@ -70,6 +84,7 @@ class HalFile : public Print {
 
  private:
   std::FILE* file_ = nullptr;
+  std::string path_;
 };
 
 class HalStorage {

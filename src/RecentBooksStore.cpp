@@ -123,18 +123,22 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
   // If epub, try to load the metadata for title/author and cover.
   // Use buildIfMissing=false to avoid heavy epub loading on boot; getTitle()/getAuthor() may be
   // blank until the book is opened, and entries with missing title are omitted from recent list.
-  if (FsHelpers::hasEpubExtension(lastBookFileName)) {
+  if (FsHelpers::hasReflowableBookExtension(lastBookFileName)) {
     Epub epub(path, "/.crosspoint");
     epub.load(false, true);
-    return RecentBook{path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath()};
+    std::string title = epub.getTitle();
+    std::string author = epub.getAuthor();
+    if (title.empty()) {
+      // TXT/MD without a cache still resolve a filename title via loadMetadata.
+      epub.loadMetadata(title, author);
+    }
+    return RecentBook{path, title, author, epub.getThumbBmpPath()};
   } else if (FsHelpers::hasXtcExtension(lastBookFileName)) {
     // Handle XTC file
     Xtc xtc(path, "/.crosspoint");
     if (xtc.load()) {
       return RecentBook{path, xtc.getTitle(), xtc.getAuthor(), xtc.getThumbBmpPath()};
     }
-  } else if (FsHelpers::hasTxtExtension(lastBookFileName) || FsHelpers::hasMarkdownExtension(lastBookFileName)) {
-    return RecentBook{path, lastBookFileName, "", ""};
   }
   return RecentBook{path, "", "", ""};
 }

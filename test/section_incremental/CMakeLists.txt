@@ -15,6 +15,8 @@ add_executable(SectionIncrementalTest
   ${REPO_ROOT}/lib/Epub/Epub/converters/ImageDimsProbe.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
+  ${REPO_ROOT}/lib/Txt/TxtToHtml.cpp
+  ${REPO_ROOT}/lib/Txt/Txt.cpp
   ${REPO_ROOT}/lib/Memory/BuildScratch.cpp
   ${REPO_ROOT}/lib/hal/HalMemory.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
@@ -42,6 +44,8 @@ add_executable(SectionIncrementalReproTest
   ${REPO_ROOT}/lib/Epub/Epub/converters/ImageDimsProbe.cpp
   ${REPO_ROOT}/lib/Utf8/Utf8.cpp
   ${REPO_ROOT}/lib/FsHelpers/FsHelpers.cpp
+  ${REPO_ROOT}/lib/Txt/TxtToHtml.cpp
+  ${REPO_ROOT}/lib/Txt/Txt.cpp
   ${REPO_ROOT}/lib/Memory/BuildScratch.cpp
   ${REPO_ROOT}/lib/hal/HalMemory.cpp
   ${REPO_ROOT}/lib/ZipFile/ZipFile.cpp
@@ -65,6 +69,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/MiniBidi
   ${REPO_ROOT}/lib/FsHelpers
+  ${REPO_ROOT}/lib/Txt
   ${REPO_ROOT}/lib/XmlParserUtils
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/ZipFile
@@ -87,6 +92,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/MiniBidi
   ${REPO_ROOT}/lib/FsHelpers
+  ${REPO_ROOT}/lib/Txt
   ${REPO_ROOT}/lib/XmlParserUtils
   ${REPO_ROOT}/lib/Serialization
   ${REPO_ROOT}/lib/ZipFile

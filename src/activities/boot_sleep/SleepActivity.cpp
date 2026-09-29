@@ -12,7 +12,6 @@
 #include <I18n.h>
 #include <Memory.h>
 #include <PNGdec.h>
-#include <Txt.h>
 #include <Xtc.h>
 
 #include <algorithm>
@@ -968,22 +967,8 @@ bool SleepActivity::resolveCoverBmpPath(const GfxRenderer& renderer, const std::
     }
 
     outPath = lastXtc.getCoverBmpPath();
-  } else if (FsHelpers::hasTxtExtension(bookPath)) {
-    // Handle TXT file - looks for cover image in the same folder
-    Txt lastTxt(bookPath, "/.crosspoint");
-    if (!lastTxt.load()) {
-      LOG_ERR("SLP", "Failed to load last TXT");
-      return false;
-    }
-
-    if (!lastTxt.generateCoverBmp()) {
-      LOG_ERR("SLP", "No cover image found for TXT file");
-      return false;
-    }
-
-    outPath = lastTxt.getCoverBmpPath();
-  } else if (FsHelpers::hasEpubExtension(bookPath)) {
-    // Handle EPUB file
+  } else if (FsHelpers::hasReflowableBookExtension(bookPath)) {
+    // Handle EPUB, TXT, or Markdown file
     Epub lastEpub(bookPath, "/.crosspoint");
     // Skip loading css since we only need metadata here
     if (!lastEpub.load(true, true)) {
