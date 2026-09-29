@@ -95,14 +95,7 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     if (_putFile) _putFile.close();
     if (_putOk) {
       String tempPath = _putPath + ".davtmp";
-      if (_putExisted) Storage.remove(_putPath.c_str());
-      HalFile tmp = Storage.open(tempPath.c_str());
-      if (tmp) {
-        _putOk = tmp.rename(_putPath.c_str());
-        tmp.close();
-      } else {
-        _putOk = false;
-      }
+      _putOk = Storage.replaceFile(tempPath.c_str(), _putPath.c_str());
       if (!_putOk) Storage.remove(tempPath.c_str());
     }
     LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", raw.totalSize, _putOk);

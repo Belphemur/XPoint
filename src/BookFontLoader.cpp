@@ -525,13 +525,9 @@ void BookFontLoader_writeFingerprintCache(uint32_t pathHash, uint32_t fileSize, 
     if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
     return;
   }
-  // SdFat rename refuses an existing destination: publish by replace.
-  if (Storage.exists(path) && !Storage.remove(path)) {
-    LOG_ERR("BFNT", "fp-cache: cannot replace %s", path);
-    if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
-    return;
-  }
-  if (!Storage.rename(tmpPath, path)) {
+  // Publish the staged record in one replace (remove + rename under the
+  // storage mutex; SdFat rename refuses an existing destination).
+  if (!Storage.replaceFile(tmpPath, path)) {
     LOG_DBG("BFNT", "fp-cache publish failed for %s", path);
     if (!Storage.remove(tmpPath)) LOG_ERR("BFNT", "fp-cache: stale temp %s", tmpPath);
   }

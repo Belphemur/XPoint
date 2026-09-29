@@ -79,10 +79,16 @@ std::string statsFileNameForVersion(const uint8_t version) {
 // v5 record can still upgrade in one save hop; older formats are not loaded.
 std::vector<std::string> openCandidateNames() {
   // STATS_FILE_VERSION + 1 is recognized on load only as a forward-format
-  // guard; it is never decoded as statistics data.
-  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
-          statsFileNameForVersion(STATS_FILE_VERSION - 2), statsFileNameForVersion(STATS_FILE_VERSION - 3),
-          statsFileNameForVersion(STATS_FILE_VERSION + 1)};
+  // guard; it is never decoded as statistics data, and it is probed FIRST so
+  // a newer firmware's record latches the destructive-save guard before any
+  // other candidate — including the current version's .tmp — can shadow it.
+  // The .tmp of the current version is a verified record that a failed
+  // publish left behind (the destination may already have been removed); it
+  // is the freshest complete copy, so it is consulted right after the final
+  // file.
+  return {statsFileNameForVersion(STATS_FILE_VERSION + 1),      statsFileNameForVersion(STATS_FILE_VERSION),
+          statsFileNameForVersion(STATS_FILE_VERSION) + ".tmp", statsFileNameForVersion(STATS_FILE_VERSION - 1),
+          statsFileNameForVersion(STATS_FILE_VERSION - 2),      statsFileNameForVersion(STATS_FILE_VERSION - 3)};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
@@ -240,13 +246,20 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     f.close();
 
     // A version beyond this build means a forward firmware owns this book's
-    // history. Only the forward-format candidate latches the destructive-save
-    // guard: a corrupt current/legacy record with a garbage version byte is
-    // skipped by the decoders, never fatal.
-    if (name == forwardName && n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
-      LOG_ERR("STATS", "On-disk book stats are from a newer build (v%u, %d bytes); refusing to overwrite", data[0], n);
-      s_blockDestructiveSavePaths.insert(cachePath);
-      return BookReadingStats{};
+    // history. The forward-named file is only ever a guard: it latches the
+    // destructive-save guard and is never decoded as statistics data, so a
+    // stats_vN+1-named file whose payload happens to look like the current
+    // version cannot shadow a valid final record. A corrupt current/legacy
+    // record with a garbage version byte is skipped by the decoders, never
+    // fatal.
+    if (name == forwardName) {
+      if (n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
+        LOG_ERR("STATS", "On-disk book stats are from a newer build (v%u, %d bytes); refusing to overwrite", data[0],
+                n);
+        s_blockDestructiveSavePaths.insert(cachePath);
+        return BookReadingStats{};
+      }
+      continue;
     }
 
     BookReadingStats candidate;
@@ -274,14 +287,53 @@ void BookReadingStats::save(const std::string& cachePath) const {
     return;
   }
   const std::string statsFileName = statsFileNameForVersion(STATS_FILE_VERSION);
+  const std::string statsFilePath = cachePath + "/" + statsFileName;
+  const std::string tmpPath = statsFilePath + ".tmp";
+
+  // A previous publication may have failed after removing the final record,
+  // leaving the verified temp as the only complete copy. Re-publish it before
+  // the staging below truncates the path: without this, a retry that itself
+  // fails would destroy the only record. A temp that does not decode is torn
+  // and has nothing to recover — drop it.
+  if (!Storage.exists(statsFilePath.c_str()) && Storage.exists(tmpPath.c_str())) {
+    HalFile retained;
+    if (Storage.openFileForRead("STATS", tmpPath, retained)) {
+      uint8_t data[STATS_FILE_SIZE] = {};
+      const int n = retained.read(data, STATS_FILE_SIZE);
+      retained.close();
+      BookReadingStats probe;
+      if (n < STATS_FILE_SIZE) {
+        // Short read: transient SD error, not proof the record is torn —
+        // keep the temp and skip this save so the next attempt recovers it.
+        LOG_ERR("STATS", "Short read from retained %s temp; keeping it for the next attempt", statsFileName.c_str());
+        return;
+      }
+      if (decodeV8(data, n, probe)) {
+        if (!Storage.replaceFile(tmpPath.c_str(), statsFilePath.c_str())) {
+          LOG_ERR("STATS", "Could not recover %s from retained temp", statsFileName.c_str());
+          return;
+        }
+        LOG_DBG("STATS", "Recovered retained record into %s", statsFileName.c_str());
+      } else {
+        // Full size but invalid content: a provably torn temp.
+        Storage.remove(tmpPath.c_str());
+      }
+    } else {
+      Storage.remove(tmpPath.c_str());
+    }
+  }
+
   HalFile f;
-  if (!Storage.openFileForWrite("STATS", cachePath + "/" + statsFileName, f)) {
+  if (!Storage.openFileForWrite("STATS", tmpPath, f)) {
     LOG_ERR("STATS", "Could not write %s", statsFileName.c_str());
     return;
   }
-  // Single sequential write of one fixed-size record — the access pattern this
-  // SD stack (SdFat over SDMMC) handles reliably. Torn writes self-heal: the
-  // loader rejects short/garbage records via the (size, version) check.
+  // Single sequential write of one fixed-size record into a temp file, then
+  // one atomic publish (remove + rename under the storage mutex). The record
+  // on disk is therefore always a complete old or complete new record — a
+  // torn or short write can only damage the throwaway temp, never destroy
+  // the previous record (same durability shape as the global stats save;
+  // see docs/design/2026-09-29-atomic-file-writes.md for why no .bak here).
   uint8_t data[STATS_FILE_SIZE];
   memset(data, 0, sizeof(data));
   data[0] = STATS_FILE_VERSION;
@@ -325,18 +377,38 @@ void BookReadingStats::save(const std::string& cachePath) const {
               (completionPromptDismissedAtHundred ? FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED : 0u);
   const size_t written = f.write(data, STATS_FILE_SIZE);
   if (written != STATS_FILE_SIZE) {
-    // Do NOT delete the legacy files — the v8 write didn't land, and the
-    // v5/v6/v7 record is the only copy of the user's history. The next save
-    // will retry; until it succeeds the loader still finds the legacy file
-    // and decodes it. A short write here is a serious condition (SD
-    // error) that the LOG_ERR makes visible; silently destroying the
+    // Do NOT publish and do NOT delete the legacy files — the v8 write didn't
+    // land, and the v5/v6/v7 record is the only copy of the user's history.
+    // The next save will retry; until it succeeds the loader still finds the
+    // legacy file and decodes it. A short write here is a serious condition
+    // (SD error) that the LOG_ERR makes visible; silently destroying the
     // legacy on top of that would be unrecoverable data loss.
     LOG_ERR("STATS", "Short write for %s: %u of %u bytes", statsFileName.c_str(), static_cast<unsigned>(written),
             static_cast<unsigned>(STATS_FILE_SIZE));
     f.close();
+    Storage.remove(tmpPath.c_str());
     return;
   }
-  f.close();
+  f.flush();
+  if (!f.sync()) {
+    LOG_ERR("STATS", "Failed to sync %s temp file", statsFileName.c_str());
+    f.close();
+    Storage.remove(tmpPath.c_str());
+    return;
+  }
+  if (!f.close()) {
+    LOG_ERR("STATS", "Failed to close %s temp file", statsFileName.c_str());
+    Storage.remove(tmpPath.c_str());
+    return;
+  }
+  if (!Storage.replaceFile(tmpPath.c_str(), statsFilePath.c_str())) {
+    // Publication failure: the destination may already be gone, so the
+    // verified temp is deliberately KEPT — the loader consults it on the next
+    // open (it is the freshest complete record) and the next save re-stages
+    // over it. Only a torn temp is ever removed.
+    LOG_ERR("STATS", "Could not publish %s; record stays in %s", statsFileName.c_str(), tmpPath.c_str());
+    return;
+  }
 
   // One-time v8 migration: delete every still-recognized legacy record now
   // that the upgraded data is safely on disk. A v5 record upgrades directly
@@ -358,8 +430,9 @@ bool BookReadingStats::remove(const std::string& cachePath) {
   // loaded and will simply be left in the cache dir until the next manual
   // cleanup.
   const std::string names[] = {
-      statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
-      statsFileNameForVersion(STATS_FILE_VERSION - 2), statsFileNameForVersion(STATS_FILE_VERSION - 3)};
+      statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION) + ".tmp",
+      statsFileNameForVersion(STATS_FILE_VERSION - 1), statsFileNameForVersion(STATS_FILE_VERSION - 2),
+      statsFileNameForVersion(STATS_FILE_VERSION - 3)};
   for (const std::string& name : names) {
     const std::string path = cachePath + "/" + name;
     if (!Storage.exists(path.c_str())) continue;

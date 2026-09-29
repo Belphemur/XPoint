@@ -276,6 +276,97 @@ TEST_F(ReadingStatsBinaryStoreTest, BookTornWriteStartsFresh) {
   EXPECT_FALSE(out.isCompleted);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, BookShortSaveKeepsPreviousRecord) {
+  // First save lands a real record.
+  BookReadingStats b;
+  b.sessionCount = 3;
+  b.totalReadingSeconds = 777;
+  b.save(BOOK_DIR);
+  const auto before = readFileBytes(statsPath(BOOK_DIR, 8));
+  ASSERT_EQ(before.size(), 135u);
+
+  // A torn save (short write into the temp) must never touch the record on
+  // disk: the temp is dropped, the previous record survives byte-identical.
+  Storage.failNextWriteShort();
+  BookReadingStats torn;
+  torn.sessionCount = 9;
+  torn.totalReadingSeconds = 1;
+  torn.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  EXPECT_EQ(readFileBytes(statsPath(BOOK_DIR, 8)), before);
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 3u);
+  EXPECT_EQ(out.totalReadingSeconds, 777u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookFailedPublishKeepsVerifiedTemp) {
+  BookReadingStats b;
+  b.sessionCount = 2;
+  b.save(BOOK_DIR);
+
+  // Publish fails after the previous record was removed (FAT remove + rename
+  // window): the verified temp is deliberately KEPT and the loader consults
+  // it on the next open, so no history is lost (the global path protects the
+  // same window with a .bak; per-book recovery rides the staging temp).
+  Storage.failNextRename(statsPath(BOOK_DIR, 8) + ".tmp", statsPath(BOOK_DIR, 8));
+  BookReadingStats failed;
+  failed.sessionCount = 5;
+  failed.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+  EXPECT_TRUE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 5u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookRetrySaveRecoversRetainedTemp) {
+  // Failed publish → only the retained temp holds the record. The retry save
+  // must recover it to the final path BEFORE staging truncates the temp path,
+  // so a retry that itself fails cannot lose the history.
+  BookReadingStats b;
+  b.sessionCount = 2;
+  b.save(BOOK_DIR);
+  Storage.failNextRename(statsPath(BOOK_DIR, 8) + ".tmp", statsPath(BOOK_DIR, 8));
+  BookReadingStats failed;
+  failed.sessionCount = 5;
+  failed.save(BOOK_DIR);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+
+  // Retry with a failing temp write: the retained record must already be on
+  // the final path when the torn temp is cleaned up.
+  Storage.failNextWriteShort();
+  BookReadingStats retry;
+  retry.sessionCount = 9;
+  retry.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 5u);  // the recovered record, not fresh defaults
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookFailedSyncKeepsPreviousRecord) {
+  BookReadingStats b;
+  b.sessionCount = 4;
+  b.totalReadingSeconds = 500;
+  b.save(BOOK_DIR);
+  const auto before = readFileBytes(statsPath(BOOK_DIR, 8));
+  ASSERT_EQ(before.size(), 135u);
+
+  // A failed sync leaves the temp unverified: it is dropped, the previous
+  // record survives byte-identical.
+  Storage.failNextSync();
+  BookReadingStats torn;
+  torn.sessionCount = 9;
+  torn.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  EXPECT_EQ(readFileBytes(statsPath(BOOK_DIR, 8)), before);
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 4u);
+  EXPECT_EQ(out.totalReadingSeconds, 500u);
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
   // v5 record (73 bytes) in stats_v5.bin: accepted on load, then upgraded
   // in place on the next save — straight to v8, the current version, with
@@ -717,6 +808,42 @@ TEST_F(ReadingStatsBinaryStoreTest, BookNewerFormatBlocksSaves) {
   const auto after = readFileBytes(statsPath(BOOK_DIR, 9));
   ASSERT_EQ(after.size(), 136u);
   EXPECT_EQ(after[0], 9);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookForwardGuardShadowsPublishTemp) {
+  // A failed-publish .tmp must never shadow a newer firmware's record: the
+  // forward-format candidate is probed (and the guard latched) before the
+  // .tmp is consulted, so the next save cannot overwrite the v9 file.
+  (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
+  std::vector<uint8_t> future(136, 0);
+  future[0] = 9;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 9), f));
+    f.write(future.data(), future.size());
+  }
+  {
+    // A verified v8 record left in the temp by a failed publish (complete
+    // 135-byte record, sessionCount 5 at LE16 offset 1): decodable, so the
+    // pre-fix candidate order would return it instead of guarding on v9.
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 8) + ".tmp", f));
+    std::vector<uint8_t> rec(135, 0);
+    rec[0] = 8;
+    rec[1] = 5;  // sessionCount (LE16)
+    f.write(rec.data(), rec.size());
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 0u);  // the v9 file shadows the temp
+  BookReadingStats blocked;
+  blocked.sessionCount = 55;
+  blocked.save(BOOK_DIR);
+
+  // The guard latched from the forward file: the temp is untouched and no
+  // v8 record shadows the newer firmware's file.
+  EXPECT_TRUE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
 }
 

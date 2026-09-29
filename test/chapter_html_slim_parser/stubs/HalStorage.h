@@ -59,7 +59,17 @@ class HalStorage {
     return true;
   }
   bool remove(const std::string& path) { return std::remove(path.c_str()) == 0; }
-  bool rename(const char* from, const char* to) { return std::rename(from, to) == 0; }
+  bool rename(const char* from, const char* to) {
+    // SdFat refuses an existing destination (O_EXCL); POSIX rename replaces.
+    if (exists(to)) return false;
+    return std::rename(from, to) == 0;
+  }
+  // Publish a staged temp over its destination (FAT: destination must not exist).
+  bool replaceFile(const char* tmpPath, const char* path) {
+    if (!exists(tmpPath)) return false;  // never touch the destination without a replacement
+    if (!exists(path)) return rename(tmpPath, path);
+    return remove(path) && rename(tmpPath, path);
+  }
 };
 
 #define Storage HalStorage::getInstance()

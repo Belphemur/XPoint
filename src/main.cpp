@@ -352,23 +352,23 @@ static void saveSleepFrameBuffer() {
     }
   }
 
-  // Publish atomically (tmp sibling + rename): a failed or partial write
-  // must never leave a torn file at the final path — SdFat rename refuses an
-  // existing destination (O_EXCL), so tmp is fully written, synced, and only
-  // then renamed over the old frame (the rename replaces it in one step).
-  // On any failure the OLD frame is dropped rather than kept: the panel
-  // already shows the new sleep screen, so a restored old frame would no
-  // longer match what was displayed (the quick-resume contract: the file is
-  // the baseline of what is on the panel). A missing frame just restores
-  // no-frame sleep — the safe direction.
+  // Stage the full new frame (framebuffer + 4-byte Adler-32 trailer) beside
+  // the current file, synced and closed, BEFORE touching the destination.
+  // The panel already shows the new sleep screen, so the on-disk baseline
+  // must never outlive its match: any detected staging failure (open,
+  // short write, failed sync/close) drops the old frame as well, leaving
+  // no-frame sleep — the safe direction. Publication is one replace
+  // (remove + rename under the storage mutex), so a power cut can only
+  // leave the old frame, the complete new temp, or neither — never a torn
+  // file. A power cut DURING staging (undetectable afterwards) can leave a
+  // stale-but-valid baseline that quick-resume restores; accepted, since
+  // the alternative destroys the old frame before the new one exists.
   // Layout: [<framebuffer bytes> | <4-byte Adler-32 of the framebuffer>].
-  if (Storage.exists(SLEEP_FRAME_FILE) && !Storage.remove(SLEEP_FRAME_FILE)) {
-    LOG_ERR("SLP", "Could not drop old sleep frame");
-    Storage.remove(SLEEP_FRAME_TMP);
+  HalFile file;
+  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_TMP, file)) {
+    Storage.remove(SLEEP_FRAME_FILE);
     return;
   }
-  HalFile file;
-  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_TMP, file)) return;
   const size_t fbWritten = file.write(fb, fbSize);
   uint8_t trailer[sizeof(uint32_t)];
   memcpy(trailer, &newHash, sizeof(trailer));
@@ -383,9 +383,10 @@ static void saveSleepFrameBuffer() {
     LOG_ERR("SLP", "Bad sleep-frame tmp write (%u/%u + %u/4, sync=%d close=%d)", (unsigned)fbWritten, (unsigned)fbSize,
             (unsigned)trailerWritten, synced, closed);
     Storage.remove(SLEEP_FRAME_TMP);
+    Storage.remove(SLEEP_FRAME_FILE);
     return;
   }
-  if (!Storage.rename(SLEEP_FRAME_TMP, SLEEP_FRAME_FILE)) {
+  if (!Storage.replaceFile(SLEEP_FRAME_TMP, SLEEP_FRAME_FILE)) {
     LOG_ERR("SLP", "Could not install sleep frame");
     Storage.remove(SLEEP_FRAME_TMP);
     return;

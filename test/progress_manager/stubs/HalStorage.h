@@ -43,11 +43,27 @@ class HalStorage {
   bool remove(const char* path) { return path != nullptr && files.erase(path) != 0; }
   bool rename(const char* from, const char* to) {
     if (from == nullptr || to == nullptr) return false;
+    // Test control: injected publish failure (rename fails once).
+    if (failReplaceCount > 0) {
+      --failReplaceCount;
+      return false;
+    }
     const auto it = files.find(from);
     if (it == files.end()) return false;
+    // SdFat refuses an existing destination (O_EXCL): callers must remove first.
+    if (files.count(to) != 0) return false;
     files[to] = std::move(it->second);
     files.erase(from);
     return true;
+  }
+  // Publish a fully written temp file over its final path (FAT semantics:
+  // the destination must not exist). Refuses when the temp is missing — the
+  // destination must never be touched without a replacement.
+  bool replaceFile(const char* tmpPath, const char* path) {
+    if (tmpPath == nullptr || path == nullptr) return false;
+    if (!exists(tmpPath)) return false;
+    if (!exists(path) || remove(path)) return rename(tmpPath, path);
+    return false;
   }
   bool saveToPath(const std::string& path, const std::string& bytes) {
     files[path] = bytes;
@@ -58,6 +74,9 @@ class HalStorage {
   std::map<std::string, std::string> files;
   // Open-for-write failure counter (transient SD error simulation).
   int failWriteCount = 0;
+  // Publish (replaceFile) failure counter: makes the final rename fail once
+  // per counter tick, after the destination was already removed.
+  int failReplaceCount = 0;
 
  private:
   HalStorage() = default;

@@ -50,12 +50,13 @@ inline bool writeAtomic(const std::string& cachePath, const uint8_t* data, size_
     // the rename below -- SdFat must not rename a path that still has an open FsFile.
   }
 
-  // SdFat's rename does not overwrite an existing destination, so drop the old
-  // canonical file first. The brief window where neither file exists reads as
-  // "no saved progress" on next launch -- never a corrupt, unclearable file.
-  Storage.remove(finalPath.c_str());
-  if (!Storage.rename(tmpPath.c_str(), finalPath.c_str())) {
-    LOG_ERR("PRG", "Failed to rename temp progress into place: %s", finalPath.c_str());
+  // Publish the staged temp over the canonical file in one call: SdFat's
+  // rename does not overwrite an existing destination, so the replace is
+  // remove + rename under one mutex (Storage.replaceFile). The brief window
+  // where neither file exists reads as "no saved progress" on next launch —
+  // never a corrupt, unclearable file.
+  if (!Storage.replaceFile(tmpPath.c_str(), finalPath.c_str())) {
+    LOG_ERR("PRG", "Failed to publish temp progress into place: %s", finalPath.c_str());
     return false;
   }
   return true;
