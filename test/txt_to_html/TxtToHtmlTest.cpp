@@ -57,4 +57,61 @@ TEST(TxtToHtmlTest, PreservesCacheVersionTagsForBothFormats) {
   EXPECT_NE(convert("text").find(TxtToHtml::cacheVersionTag("test.txt")), std::string::npos);
 }
 
+TEST(TxtToHtmlTest, ValidMultiBytePassesThrough) {
+  EXPECT_EQ(convert("caf\xc3\xa9 \xe2\x98\x95 \xf0\x9f\x92\xa9"),
+            kHeader + "caf\xc3\xa9 \xe2\x98\x95 \xf0\x9f\x92\xa9" + kFooter);
+}
+
+TEST(TxtToHtmlTest, ReplacesInvalidUtf8WithReplacementChar) {
+  const std::string body = convert(
+      "a\xff"
+      "b\xc0\xaf"
+      "c\xe0\x80\x80"
+      "d\xed\xa0\x80"
+      "e\xf5\x90\x80\x80"
+      "f\x80");
+  const std::string replacement = "\xef\xbf\xbd";
+  EXPECT_NE(body.find(replacement), std::string::npos);
+  EXPECT_EQ(body.find('\xff'), std::string::npos);
+  EXPECT_EQ(body.find('\xc0'), std::string::npos);
+  EXPECT_EQ(body.find("\xed\xa0\x80"), std::string::npos);
+  EXPECT_EQ(body.find('\xf5'), std::string::npos);
+  EXPECT_EQ(body.find('\x80'), std::string::npos);
+}
+
+TEST(TxtToHtmlTest, TruncatedMultiByteAtEndBecomesReplacement) {
+  const std::string body = convert("end\xe2\x82");
+  EXPECT_NE(body.find("\xef\xbf\xbd"), std::string::npos);
+  EXPECT_EQ(body.find("\xe2\x82\n"), std::string::npos);
+}
+
+TEST(TxtToHtmlTest, MultiByteAcrossReadChunkBoundary) {
+  // The lead byte lands in the last byte of the first 8192-byte read chunk;
+  // its continuation opens the next chunk.
+  std::string content(8191, 'a');
+  content += "\xc3\xa9";
+  EXPECT_NE(convert(content).find("\xc3\xa9"), std::string::npos);
+}
+
+TEST(TxtToHtmlTest, EarlyStopTreatsShortWriteAsSuccess) {
+  class TruncatingPrint : public StringPrint {
+   public:
+    size_t cap;
+    explicit TruncatingPrint(size_t c) : cap(c) {}
+    size_t write(const uint8_t* buffer, size_t size) override {
+      const size_t n = std::min(size, cap);
+      str.append(reinterpret_cast<const char*>(buffer), n);
+      cap -= n;
+      return n;
+    }
+  };
+
+  TruncatingPrint early(40);
+  EXPECT_TRUE(TxtToHtml::stream("test.txt", "hello world", early, /*allowEarlyStop=*/true));
+  EXPECT_EQ(early.str.size(), 40);
+
+  TruncatingPrint strict(40);
+  EXPECT_FALSE(TxtToHtml::stream("test.txt", "hello world", strict, /*allowEarlyStop=*/false));
+}
+
 }  // namespace

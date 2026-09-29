@@ -49,8 +49,19 @@ bool Txt::convertCoverImageToBmp(const std::string& imagePath, const std::string
   const bool isPng = FsHelpers::hasPngExtension(imagePath);
   if (!isBmp && !isJpg && !isPng) return false;
 
+  if (isBmp && thumbHeight > 0) {
+    // No BMP resampler exists; a verbatim full-size copy mis-renders in the
+    // clipped thumbnail slot. Skip instead (sleep covers keep the verbatim path).
+    LOG_INF("TXT", "BMP companion cannot be resized to a thumbnail; skipping: %s", imagePath.c_str());
+    return false;
+  }
+
+  // Stage to a temp sibling and publish atomically so a failed conversion or
+  // power cut never truncates a previously generated cover at the final path.
+  const std::string tmpPath = destBmpPath + ".tmp";
+
   HalFile src, dst;
-  if (!Storage.openFileForRead("TXT", imagePath, src) || !Storage.openFileForWrite("TXT", destBmpPath, dst)) {
+  if (!Storage.openFileForRead("TXT", imagePath, src) || !Storage.openFileForWrite("TXT", tmpPath.c_str(), dst)) {
     return false;
   }
 
@@ -88,13 +99,20 @@ bool Txt::convertCoverImageToBmp(const std::string& imagePath, const std::string
   dst.close();
 
   if (!success) {
-    Storage.remove(destBmpPath.c_str());
+    Storage.remove(tmpPath.c_str());
+    return false;
   }
 
-  return success;
+  if (!Storage.replaceFile(tmpPath.c_str(), destBmpPath.c_str())) {
+    LOG_ERR("TXT", "Failed to publish cover BMP: %s", destBmpPath.c_str());
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+
+  return true;
 }
 
-bool Txt::streamTxtToHtml(const std::string& filepath, Print& out) {
+bool Txt::streamTxtToHtml(const std::string& filepath, Print& out, bool allowEarlyStop) {
   const uint32_t t0 = millis();
   HalFile src;
   if (!Storage.openFileForRead("TXT", filepath, src)) {
@@ -107,7 +125,7 @@ bool Txt::streamTxtToHtml(const std::string& filepath, Print& out) {
 
   const bool ok = TxtToHtml::stream(
       filepath, &src, [](void* ctx, uint8_t* buf, size_t size) { return static_cast<HalFile*>(ctx)->read(buf, size); },
-      out);
+      out, allowEarlyStop);
 
   LOG_DBG("TXT", "Converted TXT/MD to HTML in %lu ms (%zu bytes in)", millis() - t0, srcSize);
   return ok;
@@ -142,8 +160,9 @@ bool Txt::validateCache(const std::string& filepath, const std::string& cachePat
     }
   }
 
-  // 2. Check if source file size changed
-  if (valid && cachedSize > 0) {
+  // 2. Check if source file size changed (also catches the empty-file →
+  // content case the old cachedSize>0 guard skipped)
+  if (valid) {
     HalFile rawFile;
     if (Storage.openFileForRead("TXT", filepath, rawFile)) {
       if (rawFile.size() != cachedSize) {
@@ -156,6 +175,22 @@ bool Txt::validateCache(const std::string& filepath, const std::string& cachePat
     }
   }
 
+  // 3. Same-size edits: compare a head+tail FNV-1a fingerprint recorded at
+  // build time (source.fp). An 8 KB read per open; no book.bin layout change.
+  if (valid) {
+    uint32_t storedFp = 0;
+    bool haveFp = false;
+    HalFile fpFile;
+    if (Storage.openFileForRead("TXT", cachePath + "/source.fp", fpFile) && fpFile.size() == sizeof(storedFp)) {
+      haveFp = fpFile.read(&storedFp, sizeof(storedFp)) == static_cast<int>(sizeof(storedFp));
+    }
+    uint32_t freshFp = 0;
+    if (!haveFp || !sourceFingerprint(filepath, freshFp) || freshFp != storedFp) {
+      LOG_DBG("TXT", "Source fingerprint missing or changed, invalidating cache: %s", filepath.c_str());
+      valid = false;
+    }
+  }
+
   if (!valid) {
     LOG_DBG("TXT", "Cache invalid for %s, wiping html and sections", filepath.c_str());
     invalidateCache(cachePath);
@@ -164,9 +199,51 @@ bool Txt::validateCache(const std::string& filepath, const std::string& cachePat
   return valid;
 }
 
+bool Txt::sourceFingerprint(const std::string& filepath, uint32_t& outFp) {
+  constexpr size_t WINDOW = 4096;
+  HalFile rawFile;
+  if (!Storage.openFileForRead("TXT", filepath, rawFile)) {
+    return false;
+  }
+  const size_t size = rawFile.size();
+  uint8_t buf[WINDOW];
+  uint32_t fp = 2166136261u;
+  auto fold = [&fp](const uint8_t* data, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+      fp = (fp ^ data[i]) * 16777619u;
+    }
+  };
+  const size_t head = rawFile.read(buf, WINDOW);
+  if (head <= 0) {
+    return false;
+  }
+  fold(buf, static_cast<size_t>(head));
+  if (size > WINDOW) {
+    if (!rawFile.seek(size - WINDOW)) {
+      return false;
+    }
+    const size_t tail = rawFile.read(buf, WINDOW);
+    if (tail != WINDOW) {
+      return false;
+    }
+    fold(buf, tail);
+  }
+  // Fold the size so head/tail collisions across resizes still invalidate.
+  const uint8_t sizeBytes[4] = {static_cast<uint8_t>(size), static_cast<uint8_t>(size >> 8),
+                                static_cast<uint8_t>(size >> 16), static_cast<uint8_t>(size >> 24)};
+  fold(sizeBytes, sizeof(sizeBytes));
+  outFp = fp;
+  return true;
+}
+
 bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePath,
                         std::unique_ptr<BookMetadataCache>& bookMetadataCache) {
   LOG_DBG("TXT", "Building metadata cache for TXT: %s", filepath.c_str());
+
+  if (!bookMetadataCache) {
+    LOG_ERR("TXT", "Null metadata cache passed to buildTxtCache");
+    return false;
+  }
 
   if (!Storage.exists(cachePath.c_str())) {
     Storage.mkdir(cachePath.c_str());
@@ -184,7 +261,7 @@ bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePat
     return false;
   }
 
-  bookMetadataCache->createSpineEntry("content.html");
+  bookMetadataCache->createSpineEntry(CONTENT_HREF);
 
   if (!bookMetadataCache->endContentOpfPass()) {
     LOG_ERR("TXT", "Could not end writing content.opf pass");
@@ -197,7 +274,7 @@ bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePat
   }
 
   std::string title = FsHelpers::getFileNameWithoutExtension(filepath);
-  bookMetadataCache->createTocEntry(title, "content.html", "", 0);
+  bookMetadataCache->createTocEntry(title, CONTENT_HREF, "", 0);
 
   if (!bookMetadataCache->endTocPass()) {
     LOG_ERR("TXT", "Could not end writing toc pass");
@@ -221,6 +298,31 @@ bool Txt::buildTxtCache(const std::string& filepath, const std::string& cachePat
   if (!bookMetadataCache->buildBookBin(filepath, bookMetadata)) {
     LOG_ERR("TXT", "Could not build book.bin for TXT");
     return false;
+  }
+
+  // Record the source fingerprint this cache was built from (validateCache
+  // compares it on every open to catch same-size edits).
+  {
+    uint32_t fp = 0;
+    if (!sourceFingerprint(filepath, fp)) {
+      LOG_ERR("TXT", "Could not fingerprint source for cache");
+      return false;
+    }
+    const std::string fpPath = cachePath + "/source.fp";
+    const std::string fpTmp = fpPath + ".tmp";
+    HalFile fpFile;
+    if (!Storage.openFileForWrite("TXT", fpTmp.c_str(), fpFile) ||
+        fpFile.write(reinterpret_cast<const uint8_t*>(&fp), sizeof(fp)) != sizeof(fp)) {
+      LOG_ERR("TXT", "Could not write source fingerprint");
+      return false;
+    }
+    // Explicit close before publish: DESTRUCTOR_CLOSES_FILE only fires at scope exit.
+    fpFile.close();
+    if (!Storage.replaceFile(fpTmp.c_str(), fpPath.c_str())) {
+      LOG_ERR("TXT", "Could not publish source fingerprint");
+      Storage.remove(fpTmp.c_str());
+      return false;
+    }
   }
 
   bookMetadataCache->cleanupTmpFiles();

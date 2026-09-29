@@ -126,7 +126,13 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
   if (FsHelpers::hasReflowableBookExtension(lastBookFileName)) {
     Epub epub(path, "/.crosspoint");
     epub.load(false, true);
-    return RecentBook{path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath()};
+    std::string title = epub.getTitle();
+    std::string author = epub.getAuthor();
+    if (title.empty()) {
+      // TXT/MD without a cache still resolve a filename title via loadMetadata.
+      epub.loadMetadata(title, author);
+    }
+    return RecentBook{path, title, author, epub.getThumbBmpPath()};
   } else if (FsHelpers::hasXtcExtension(lastBookFileName)) {
     // Handle XTC file
     Xtc xtc(path, "/.crosspoint");

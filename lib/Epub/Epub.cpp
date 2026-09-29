@@ -850,14 +850,25 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
   }
 
   const auto coverImageHref = bookMetadataCache->coreMetadata.coverItemHref;
+
+  // TXT/MD: the companion cover can appear (or vanish) after the cache was
+  // built; re-probe instead of trusting the cached href.
+  if (Txt::isTxtOrMd(filepath)) {
+    std::string companion = coverImageHref;
+    if (companion.empty() || !Storage.exists(companion.c_str())) {
+      companion = Txt::findCompanionCoverImage(filepath);
+    }
+    if (companion.empty()) {
+      LOG_ERR("EBP", "No known cover image");
+      return false;
+    }
+    return Txt::convertCoverImageToBmp(companion, getCoverBmpPath(cropped, originalThresholds), 0, cropped,
+                                       originalThresholds);
+  }
+
   if (coverImageHref.empty()) {
     LOG_ERR("EBP", "No known cover image");
     return false;
-  }
-
-  if (Txt::isTxtOrMd(filepath)) {
-    return Txt::convertCoverImageToBmp(coverImageHref, getCoverBmpPath(cropped, originalThresholds), 0, cropped,
-                                       originalThresholds);
   }
 
 #ifdef BOARD_HAS_PSRAM
@@ -993,7 +1004,15 @@ bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHre
     LOG_DBG("EBP", "No known cover image for thumbnail");
   } else {
     if (Txt::isTxtOrMd(filepath)) {
-      return Txt::convertCoverImageToBmp(coverImageHref, getThumbBmpPath(height), height);
+      // Companion can appear/vanish after the cache was built; re-probe.
+      std::string companion = coverImageHref;
+      if (!Storage.exists(companion.c_str())) {
+        companion = Txt::findCompanionCoverImage(filepath);
+      }
+      if (companion.empty()) {
+        return false;
+      }
+      return Txt::convertCoverImageToBmp(companion, getThumbBmpPath(height), height);
     }
 
 #ifdef BOARD_HAS_PSRAM
@@ -1115,7 +1134,11 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 
   if (Txt::isTxtOrMd(filepath)) {
-    return Txt::streamTxtToHtml(filepath, out);
+    if (FsHelpers::normalisePath(itemHref) != Txt::CONTENT_HREF) {
+      LOG_DBG("EBP", "TXT/MD has no item %s", itemHref.c_str());
+      return false;
+    }
+    return Txt::streamTxtToHtml(filepath, out, allowEarlyStop);
   }
 
   const std::string path = FsHelpers::normalisePath(itemHref);
@@ -1189,6 +1212,10 @@ bool Epub::extractItemToFile(const std::string& itemHref, const std::string& des
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
   if (Txt::isTxtOrMd(filepath)) {
+    // Only the single content spine item exists; other hrefs have no size.
+    if (FsHelpers::normalisePath(itemHref) != Txt::CONTENT_HREF) {
+      return false;
+    }
     HalFile f;
     if (Storage.openFileForRead("EBP", filepath, f)) {
       if (size) *size = f.size();

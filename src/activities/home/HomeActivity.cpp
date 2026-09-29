@@ -195,7 +195,10 @@ void HomeActivity::loadRecentCovers(int coverHeight) {
             popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
           }
           GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / recentBooks.size()));
-          bool success = epub.generateThumbBmp(thumbHeight);
+          // TXT/MD may have no metadata cache yet; FromSource resolves the
+          // companion cover without one (generateThumbBmp needs a loaded cache).
+          const bool isTxtOrMd = FsHelpers::hasTxtExtension(book.path) || FsHelpers::hasMarkdownExtension(book.path);
+          bool success = isTxtOrMd ? epub.generateThumbBmpFromSource(thumbHeight) : epub.generateThumbBmp(thumbHeight);
           if (!success) {
             RECENT_BOOKS.updateBook(book.path, book.title, book.author, "");
             book.coverBmpPath = "";
