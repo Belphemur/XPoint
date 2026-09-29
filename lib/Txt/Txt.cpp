@@ -213,11 +213,15 @@ bool Txt::sourceFingerprint(const std::string& filepath, uint32_t& outFp) {
       fp = (fp ^ data[i]) * 16777619u;
     }
   };
-  const size_t head = rawFile.read(buf, WINDOW);
-  if (head <= 0) {
+  // int: HalFile::read reports errors as negative values; casting to size_t
+  // before the check would underflow past the buffer bounds.
+  const int head = rawFile.read(buf, WINDOW);
+  if (head < 0) {
     return false;
   }
-  fold(buf, static_cast<size_t>(head));
+  if (head > 0) {
+    fold(buf, static_cast<size_t>(head));
+  }
   if (size > WINDOW) {
     if (!rawFile.seek(size - WINDOW)) {
       return false;

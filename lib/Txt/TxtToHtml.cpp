@@ -36,10 +36,12 @@ bool TxtToHtml::stream(std::string_view filename, void* readerCtx, int (*readFn)
     if (allowEarlyStop) {
       // ZipFile semantics: the sink asks us to stop once it has enough.
       sinkSatisfied = true;
-      outPos = 0;
     } else {
       outputOk = false;
     }
+    // Drop the unflushed tail either way so writeByte can never index past
+    // the buffer after a failed/short write.
+    outPos = 0;
   };
   auto stopRequested = [&]() { return sinkSatisfied; };
 
@@ -110,6 +112,10 @@ bool TxtToHtml::stream(std::string_view filename, void* readerCtx, int (*readFn)
 
       if (utf8Expect > 0) {
         if (b >= contMin && b <= contMax) {
+          // Restricted windows (overlong/surrogate/range guards) apply to the
+          // FIRST continuation only; later ones are plain 0x80-0xBF.
+          contMin = 0x80;
+          contMax = 0xBF;
           utf8Pending[utf8Len++] = b;
           utf8Expect--;
           if (utf8Expect == 0) {

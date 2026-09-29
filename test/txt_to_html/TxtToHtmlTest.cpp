@@ -60,6 +60,9 @@ TEST(TxtToHtmlTest, PreservesCacheVersionTagsForBothFormats) {
 TEST(TxtToHtmlTest, ValidMultiBytePassesThrough) {
   EXPECT_EQ(convert("caf\xc3\xa9 \xe2\x98\x95 \xf0\x9f\x92\xa9"),
             kHeader + "caf\xc3\xa9 \xe2\x98\x95 \xf0\x9f\x92\xa9" + kFooter);
+  // Later continuations are plain 0x80-0xBF even when the first one sits in a
+  // restricted window (U+0905 = E0 A4 85, U+1F600 = F0 9F 98 80).
+  EXPECT_EQ(convert("\xe0\xa4\x85 \xf0\x9f\x98\x80"), kHeader + "\xe0\xa4\x85 \xf0\x9f\x98\x80" + kFooter);
 }
 
 TEST(TxtToHtmlTest, ReplacesInvalidUtf8WithReplacementChar) {
