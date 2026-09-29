@@ -302,6 +302,12 @@ void BookReadingStats::save(const std::string& cachePath) const {
       const int n = retained.read(data, STATS_FILE_SIZE);
       retained.close();
       BookReadingStats probe;
+      if (n < STATS_FILE_SIZE) {
+        // Short read: transient SD error, not proof the record is torn —
+        // keep the temp and skip this save so the next attempt recovers it.
+        LOG_ERR("STATS", "Short read from retained %s temp; keeping it for the next attempt", statsFileName.c_str());
+        return;
+      }
       if (decodeV8(data, n, probe)) {
         if (!Storage.replaceFile(tmpPath.c_str(), statsFilePath.c_str())) {
           LOG_ERR("STATS", "Could not recover %s from retained temp", statsFileName.c_str());
@@ -309,6 +315,7 @@ void BookReadingStats::save(const std::string& cachePath) const {
         }
         LOG_DBG("STATS", "Recovered retained record into %s", statsFileName.c_str());
       } else {
+        // Full size but invalid content: a provably torn temp.
         Storage.remove(tmpPath.c_str());
       }
     } else {
