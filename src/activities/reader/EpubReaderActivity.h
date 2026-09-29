@@ -75,7 +75,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
   // Toolbar; its tools open the Contents/Text/More bottom-sheet panels.
-  enum class Overlay { None, Toolbar, Contents, Text, More, Stats, FontSheet };
+  enum class Overlay { None, Toolbar, Contents, Text, More, Stats };
   // Toolbar tool focus. 0=Contents, 1=Text, then the stats tile
   // (READING_STATS_ENABLED only) and More last — kTool* + kToolTileCount are
   // the source of truth, never bare literals.
@@ -115,24 +115,13 @@ class EpubReaderActivity final : public ReaderActivity {
   // Toggle rows stay one-tap toggles, as in Settings.
   OptionPopup<33, 8> overlayPopup;
 #if defined(CROSSPOINT_TTF_READER)
-  // Quick font sheet focus: 0 = size, 1 = family. Size applies each +/- step
-  // to the displayed page before pushing a FAST refresh; family opens the
-  // modal picker. Caches are invalidated only when the sheet closes (SD write
-  // + full reflow are deliberately not per-tap costs).
-  int quickFontRow = 0;
-  bool quickFontFamilyPending = false;
-  // Paint-once preview state: the capture buffer is allocated on the first
-  // quick relayout and lives until the sheet closes, so taps never churn
-  // the PSRAM pool. The capture carries the candidate page out of the
-  // engine's per-page arena for the single post-scan paint.
-  QuickPageCapture quickFontPreview;
-  PoolBytes quickFontPreviewBuf;
-  void openFontSheet();
-  void openFontFamilyPicker();
-  void quickFontStep(int direction);
-  void quickFontSelectRow(int row, bool refresh = true);
-  void renderQuickFontPage();
-  void closeFontSheet();
+  // Full-screen font preview (design 2026-09-27): the Text panel's size and
+  // family rows push FontPreviewActivity; the close contract routes through
+  // applyReaderTextSettings().
+  void openFontPreview();
+  // FontPreviewActivity host seam: runs before the preview's first loader
+  // reload after a family change (borrowed-byte lifetime, issue #168).
+  void onPreviewFontChanging();
 #endif
   // True while a clean-page snapshot (renderer.storeBwBuffer) backs the open
   // overlay, letting panel->toolbar steps restore the page without a full

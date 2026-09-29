@@ -95,8 +95,8 @@ What makes it special:
 - **A real safety net.** A family missing a bold face or an exotic glyph? The reader
   silently falls back to the built-in font for just that piece — you never see
   missing-glyph boxes mid-sentence.
-- **Instant previews.** A quick font sheet in the reader lets you flip families and
-  sizes and see the actual page re-typeset in under a second — try before you commit.
+- **Instant previews.** The reader's font preview shows your current page full-screen;
+  pick a family or set an exact size and the page re-typesets in place — try before you commit.
 - **The whole toolkit keeps working.** Dictionary lookups, footnotes, CJK ruby
   annotations, focus reading, and hyphenation all run on your chosen font.
 - **Up to 32 families** discoverable straight from the SD card, indexed on device.

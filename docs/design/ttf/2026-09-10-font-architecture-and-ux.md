@@ -220,11 +220,17 @@ Style`). The TTF additions are:
   route through `applyTextSettingLive()` → new generation hash → rebuild +
   `pageForChar()` restore.
 
-## 6. Reader quick font sheet
+## 6. Reader font preview
 
-Decision (owner soak feedback, 2026-09-14): size and family quick-adjust is
-a compact bottom sheet, not a full-screen activity. The reader Text panel
-opens `Overlay::FontSheet`.
+> Superseded 2026-09-27 by the full-screen `FontPreviewActivity`
+> (`docs/design/2026-09-27-quick-font-preview.md`): the size row uses the
+> shared `IntervalSelectionActivity` slider, the live page preview moved into
+> its own activity, and `Overlay::FontSheet` was removed. The capture,
+> anchor-budget, and pool-buffer machinery below carries over unchanged.
+
+Historical decision (owner soak feedback, 2026-09-14): size and family
+quick-adjust was a compact bottom sheet, not a full-screen activity. The
+reader Text panel opened `Overlay::FontSheet`.
 
 ### UX contract
 
@@ -309,6 +315,12 @@ normal render path restores AA plane parity on the final close/reflow.
   open HalFile with a 1MB PSRAM head prefix; GPOS kerning off on streamed
   faces; fingerprint identity = SD head hash + size; prefetch worker mirrors
   the streamed path for exact parity.
+- 2026-09-27 — The quick sheet is superseded by the full-screen
+  `FontPreviewActivity` (see `docs/design/2026-09-27-quick-font-preview.md`):
+  the size row uses the shared `IntervalSelectionActivity` slider, and the
+  live page preview moves into its own activity with a close contract
+  (no-change → silent return; changed → persist + the standard
+  settings-driven clean reindex, position preserved via the char anchor).
 
 ## Cross-links
 

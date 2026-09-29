@@ -14,7 +14,7 @@
 // the mark itself becomes the ink and the surround is left untouched. Falls
 // back to the raw blit on allocation failure (better a wrong-polarity logo
 // than none).
-inline void drawLogo120Inverted(GfxRenderer& renderer, const int x, const int y) {
+inline void drawLogo120Inverted(const GfxRenderer& renderer, const int x, const int y) {
   constexpr int kSize = 120;
   constexpr size_t kBytes = static_cast<size_t>(kSize) * kSize / 8;  // 1800
   auto inverted = makeUniqueNoThrow<uint8_t[]>(kBytes);

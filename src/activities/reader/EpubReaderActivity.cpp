@@ -32,6 +32,8 @@
 #include "FrontlightControl.h"
 #include "MemSentinel.h"
 #if defined(CROSSPOINT_TTF_READER)
+#include "FontPreviewActivity.h"
+#include "QuickPageRelayout.h"
 #include "TtfWordSelect.h"
 #endif
 #include "activities/ActivityResult.h"
@@ -3711,46 +3713,8 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
 }
 
 void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
-  // §11 Q7 construction (a): with text AA engaged the base paints via
-  // PagePaint (the tone-1 boundary of the shared uniform quantizer) and a
-  // dual plane walk supplies the two gray tones through the panel's AA
-  // waveform — the same 4-level pipeline the bitmap reader uses. Images
-  // keep the 1bpp engine path (no plane bits for image pixels).
-  const bool pageHasImages = page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY;
-#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-  const bool smoothText = !freeink::book::fontLoader.effectiveMonochrome();
-#else
-  const bool smoothText = SETTINGS.textRenderMode == CrossPointSettings::TEXT_RENDER_SMOOTH;
-#endif
-  const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
-  auto* chain = static_cast<freeink::book::FontChain*>(font);
-  if (grayParity) {
-    freeink::book::PagePaint::paintText(page, *chain, renderer);
-  } else {
-    const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
-    freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr);
-    // Ruby annotations are engine records — the same pass the engine's own
-    // render() runs; no CrossPoint layout involvement.
-    if (page.rubyCount > 0) {
-      freeink::book::PageRenderer::renderRubies(page, *chain, frameTarget);
-    }
-  }
-  freeink::book::PageRenderer::renderRules(page, makeFrameTarget(renderer));
-  if (pageHasImages) {
-    const freeink::book::BookStatus st = freeink::book::PageRenderer::renderImages(
-        page, ttf_->source(), ttf_->catalog().zip(), ttf_->scratch(), makeFrameTarget(renderer));
-    if (st != freeink::book::BookStatus::Ok) {
-      LOG_DBG("ERS", "TTF image render failed: %s", bookStatusName(st));
-    }
-  } else if (SETTINGS.imageRendering == CrossPointSettings::IMAGES_PLACEHOLDER) {
-    // §3.5 item 11: image policy is CrossPoint-side; placeholder mode draws
-    // the engine's reserved geometry as an outline instead of decoding.
-    for (uint16_t m = 0; m < page.imageCount; ++m) {
-      const auto& image = page.images[m];
-      if (image.width <= 0 || image.height <= 0) continue;
-      renderer.drawRect(image.x, image.y, image.width, image.height);
-    }
-  }
+  if (!ttf_) return;
+  paintCapturedPage(page, font, renderer, *ttf_);
 }
 
 void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer) {
@@ -4704,227 +4668,85 @@ void EpubReaderActivity::applyTextSettingLive() {
 // selection applies immediately to the page under the sheet.
 #if defined(CROSSPOINT_TTF_READER)
 
-// The quick sheet relays out only the page around the displayed char anchor.
-// It is a transient ChapterLayout pass (TextSettingsPreview's scratch pattern),
-// never a committed cache rebuild; the full reflow happens once on close.
-void EpubReaderActivity::openFontSheet() {
-  if (!ttf_) return;
-  openOverlay(Overlay::FontSheet);
+// FontPreviewActivity host seam: the preview is about to switch families,
+// whose next makeLayoutParams() reloads the loader's resident bytes. End the
+// UI-fallback faces while the bytes they borrow are still valid (same
+// sequence as applyReaderTextSettings()) and pause the FIBP worker whose own
+// faces borrow the same bytes (issue #168 latent hazard); the next
+// updateFibpWorker() re-begins it on the new family.
+void EpubReaderActivity::onPreviewFontChanging() {
+  if (fibpWorker_ != nullptr && fibpBegun_) stopFibpWorker();
+#if CROSSPOINT_TTF_UI_FALLBACK
+  freeink::book::ttfUiFallback.release(renderer);
+#endif
 }
 
-void EpubReaderActivity::openFontFamilyPicker() {
+// The Text panel's size/family rows push the full-screen FontPreviewActivity
+// (design 2026-09-27): the captured current page fills the screen, every
+// confirmed change re-lays it live, and the close contract routes through
+// the reader's settings-driven clean reindex.
+void EpubReaderActivity::openFontPreview() {
   if (!ttf_) return;
-
-  // Same enum-picker pattern as the Text panel: one modal over the quick
-  // sheet. Built-in is index 0; scanned families follow in loader order.
-  const uint8_t familyCount = freeink::book::fontLoader.familyCount();
-  std::vector<std::string> options;
-  options.reserve(1U + familyCount);
-  options.emplace_back(tr(STR_BUILTIN_FONT));
-  for (uint8_t i = 0; i < familyCount; ++i) {
-    options.emplace_back(freeink::book::fontLoader.families()[i].name);
-  }
-
-  int currentIndex = 0;
-  if (SETTINGS.ttfFontFamilyName[0] != '\0') {
-    const auto* current = freeink::book::fontLoader.findFamily(SETTINGS.ttfFontFamilyName);
-    if (current != nullptr) currentIndex = 1 + (current - freeink::book::fontLoader.families());
-  }
-
-  overlayPopup.show(StrId::STR_FONT_FAMILY, options, currentIndex, [this](const int idx) {
-    if (idx <= 0) {
-      SETTINGS.ttfFontFamilyName[0] = '\0';
-    } else if (idx <= freeink::book::fontLoader.familyCount()) {
-      const auto& family = freeink::book::fontLoader.families()[idx - 1];
-      if (!freeink::book::fontLoader.isFamilyAvailable(family)) return;
-      strncpy(SETTINGS.ttfFontFamilyName, family.name, sizeof(SETTINGS.ttfFontFamilyName) - 1);
-      SETTINGS.ttfFontFamilyName[sizeof(SETTINGS.ttfFontFamilyName) - 1] = '\0';
-    } else {
-      return;
+  if (ttf_->sessionActive()) {
+    // A live inline build owns the arenas quickLayoutPage needs. Suspend it
+    // (the partial stays resumable) and reopen the current chapter cache so
+    // the preview can re-lay the page at every change.
+    ttf_->abortSession();
+    ttf_->closeChapterCache();
+    if (ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), ttfGeneration) !=
+        freeink::book::BookStatus::Ok) {
+      LOG_DBG("ERS", "font preview: chapter cache reopen failed — preview may keep the current frame");
     }
-    SETTINGS.readerFontEngine = CrossPointSettings::READER_ENGINE_TTF;
-    freeink::book::fontLoader.selectFamily(SETTINGS.ttfFontFamilyName);
-    // The popup-dismiss handler performs the page-only relayout once, with the
-    // sheet still open. Avoid a second FAST refresh from inside the callback.
-    quickFontFamilyPending = true;
-  });
-  paintOverlayPopup();
-}
-
-void EpubReaderActivity::quickFontSelectRow(const int row, const bool refresh) {
-  quickFontRow = std::clamp(row, 0, 1);
-  if (!refresh || !toolbarUi) return;
-  RenderLock lock;
-  settleOverlayRefresh();
-  renderOverlay();
-  pushOverlayRefresh();
-}
-
-void EpubReaderActivity::quickFontStep(const int direction) {
-  if (!ttf_ || quickFontRow != 0) return;
-  const int next = std::clamp(static_cast<int>(SETTINGS.ttfFontPointSize) + direction,
-                              static_cast<int>(CrossPointSettings::TTF_FONT_POINT_SIZE_MIN),
-                              static_cast<int>(CrossPointSettings::TTF_FONT_POINT_SIZE_MAX));
-  if (next == SETTINGS.ttfFontPointSize) return;
-  SETTINGS.ttfFontPointSize = static_cast<uint8_t>(next);
-  renderQuickFontPage();
-}
-
-void EpubReaderActivity::renderQuickFontPage() {
-  if (!ttf_ || !epub) return;
-
-  freeink::book::LayoutParams params;
-  ttf_->makeLayoutParams(renderer, params, automaticPageTurnActive);
-  if (params.font == nullptr) {
-    LOG_ERR("ERS", "Quick font reflow: no font chain");
+  }
+  FontPreviewActivity::Host host;
+  host.ctx = this;
+  host.onFamilyChanging = [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->onPreviewFontChanging(); };
+  auto preview = makeUniqueNoThrow<FontPreviewActivity>(renderer, mappedInput, ttf_.get(),
+                                                        static_cast<uint16_t>(currentSpineIndex), ttfCurrentCharStart,
+                                                        automaticPageTurnActive, host);
+  if (!preview) {
+    LOG_ERR("ERS", "OOM: font preview");
     return;
   }
-
-  // One backing buffer per sheet session: allocated on the first relayout,
-  // freed on close, so taps never churn the PSRAM pool. Without it the sink
-  // falls back to painting every scanned page inline.
-  if (!quickFontPreview.attached()) {
-    if (!quickFontPreviewBuf) quickFontPreviewBuf = poolMakeBytes(QuickPageCapture::kBufferBytes);
-    if (quickFontPreviewBuf) {
-      quickFontPreview.attach(quickFontPreviewBuf.get(), QuickPageCapture::kBufferBytes);
-    } else {
-      LOG_ERR("ERS", "OOM: quick font preview buffer");
-    }
-  }
-
-  const uint32_t targetChar = ttfCurrentCharStart;
-  bool found = false;
-  uint32_t pageIndex = 0;
-  class QuickSink final : public freeink::book::PageSink {
-   public:
-    QuickSink(const uint32_t target, const uint8_t maxPages, bool& foundRef, uint32_t& pageIndexRef,
-              QuickPageCapture& captureRef)
-        : target_(target), maxPages_(maxPages), found_(foundRef), pageIndex_(pageIndexRef), capture_(captureRef) {}
-
-    bool onPage(const freeink::book::Page& page) override {
-      if (page.charStart > target_) {
-        // The previous captured page is the target page: it ended before the
-        // first page past the anchor. Stop with a confirmed preview.
-        if (sawCandidate_) found_ = true;
-        return false;
-      }
-      // Later pages also match until the first page past the anchor, so only
-      // the last capture matters. Pages are deep-copied out of the engine's
-      // per-page arena. A page too large for the buffer is SKIPPED, not
-      // painted inline: an inline speculative frame would be left on screen
-      // while the status bar still reported the old page.
-      sawCandidate_ = true;
-      pageIndex_ = page.pageIndex;
-      if (!capture_.capture(page)) capture_.reset();
-      if (page.pageIndex + 1 >= maxPages_) {
-        budgetStopped_ = true;
-        return false;
-      }
-      return true;
-    }
-
-    bool sawCandidate() const { return sawCandidate_; }
-    bool budgetStopped() const { return budgetStopped_; }
-
-   private:
-    uint32_t target_;
-    uint8_t maxPages_;
-    bool& found_;
-    uint32_t& pageIndex_;
-    QuickPageCapture& capture_;
-    bool sawCandidate_ = false;
-    bool budgetStopped_ = false;
-  };
-  // The scan is paint-free (pages are captured, not painted), so the budget
-  // bounds only layout work; a deeper budget keeps more chapters on the fast
-  // page-only path instead of the full-reflow fallback.
-  constexpr uint8_t kQuickRelayoutPageBudget = 128;
-  // Drop any capture from a previous step: an early return (active session,
-  // catalog/alloc failure) must not repaint the previous font's page.
-  quickFontPreview.reset();
-  QuickSink sink(targetChar, kQuickRelayoutPageBudget, found, pageIndex, quickFontPreview);
-
   {
-    RenderLock lock;
-    settleOverlayRefresh();  // a deferred chrome refresh may still be running
-    const auto st =
-        ttf_->quickLayoutPage(static_cast<uint16_t>(currentSpineIndex), params, sink, kQuickRelayoutPageBudget);
-    // A page past the anchor confirms the last captured page as the target;
-    // a natural end-of-chapter without that confirmation means the anchor
-    // page itself was the last page.
-    if (sink.sawCandidate() && !sink.budgetStopped()) found = true;
-    if (quickFontPreview.ready()) {
-      // Paint the captured page once. When the anchor was not reached this is
-      // the last page laid out at the new size — an approximate preview,
-      // accepted by the sheet by design. Base-only preview (§6): the final
-      // close reflow restores the AA gray planes so per-tap cost stays FAST.
-      if (!found) {
-        LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — approximate preview", bookStatusName(st));
-      }
-      renderer.clearScreen(0xFF);
-      paintTtfPage(quickFontPreview.page(), params.font);
-    } else if (!found) {
-      // Anchor out of reach and no capture: keep the current page. A size or
-      // font step is preview-only — invalidating the chapter caches here
-      // (applyReaderTextSettings) re-indexes the whole book per tap; the one
-      // full reflow happens on sheet close instead.
-      LOG_DBG("ERS", "Quick font reflow did not reach anchor (%s) — keeping current page", bookStatusName(st));
-    }
-  }
-
-  // The page cursor only advances when the target page was captured, so an
-  // approximate (or absent) preview never shifts the reading position.
-  if (found && quickFontPreview.ready()) {
-    ttfPage = static_cast<int>(pageIndex);
-    nextPageNumber = ttfPage;
-  }
-
-  // Snapshot the new page for overlay transitions, then draw the sheet. The
-  // sheet preview is intentionally base-only (design §6): the final close
-  // reflow restores the AA gray planes so per-tap cost stays FAST.
-  LOG_DBG("GRS", "quickFont preview: base-only FAST (AA restored on close)");
-  {
-    RenderLock lock;
-    renderStatusBar();
-    if (renderer.hasFrameBuffer()) {
-      if (overlayPageStored) {
-        renderer.discardStoredBwBuffer();
-        overlayPageStored = false;
-      }
-      overlayPageStored = renderer.storeBwBuffer();
-    }
-    renderOverlay();
-    pushOverlayRefresh();
-  }
-}
-
-void EpubReaderActivity::closeFontSheet() {
+    RenderLock lock;  // the render task shares the framebuffer
+                      // The chrome was pushed deferred (pushOverlayRefresh) and this is a
+                      // quick-menu launch that never settles: without the drain, the preview's
+                      // first FAST diffs its clean full-screen layout against the pre-chrome
+                      // baseline and the panel/page pixels are left baked on the glass. Same
+                      // full-FB-flush contract as pushOverlayRefresh — a partial prerender must
+                      // die before this framebuffer reaches the glass.
 #if defined(CROSSPOINT_TTF_READER)
-  // Teardown is unconditional: a FontSheet left in `overlay` keeps
-  // isChromeOpen() true, so every back gesture re-enters this close path and
-  // is swallowed with no visible effect. Only the reflow work needs ttf_.
+    ttfInvalidatePreRender("font preview launch");
+#endif
+    settleOverlayRefresh();
+  }
   overlay = Overlay::None;
   overlayPopup.dismiss();
-  quickFontFamilyPending = false;
-  quickFontPreview.attach(nullptr, 0);  // buffer freed below
-  quickFontPreviewBuf.reset();
   discardOverlayPage();
-  requestUpdate();
-  if (!ttf_) return;
-  applyReaderTextSettings();  // one persisted save + full reflow on close
-  // The sheet hid a full-page relayout; ask the next render for a cleanup
-  // cycle rather than leaving a differential overlay refresh in the cadence.
-  pagesUntilFullRefresh = 1;
-#endif
+  startActivityForResult(std::move(preview), [this](const ActivityResult& result) {
+    if (!result.isCancelled && std::holds_alternative<QuickFontPreviewResult>(result.data)) {
+      // The preview persisted the settings; this is the settings-driven clean
+      // reindex a Text-settings font change lands (full rebuild, position
+      // preserved through the page's char offset).
+      applyReaderTextSettings();
+      pagesUntilFullRefresh = 1;
+    }
+    // Both close branches return to the Text panel the preview opened from.
+    overlay = Overlay::Text;
+    panelIndex = 0;
+    if (toolbarUi) toolbarUi->begin();
+    requestUpdate();
+  });
 }
 #endif
 
 void EpubReaderActivity::showTextRowPopup(const int row) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_ && (row == 0 || row == 1)) {
-    // Size and family live in the compact quick sheet; the full-screen
+    // Size and family live in the full-screen font preview; the full-screen
     // settings activity remains the advanced Settings entry point.
-    openFontSheet();
+    openFontPreview();
     return;
   }
 #endif
@@ -4937,6 +4759,13 @@ void EpubReaderActivity::showTextRowPopup(const int row) {
       if (!settings) {
         LOG_ERR("ERS", "OOM: text settings activity");
         return;
+      }
+      {
+        RenderLock lock;  // the render task shares the framebuffer
+                          // Non-TTF fallback for the font row: same unsettled
+                          // quick-menu launch as openFontPreview(), so it owes
+                          // the same drain before handing over the framebuffer.
+        settleOverlayRefresh();
       }
       overlay = Overlay::None;
       overlayPopup.dismiss();
@@ -5122,11 +4951,6 @@ void EpubReaderActivity::openOverlay(Overlay target) {
       buildMoreActions();
       toolbarUi->nav().reset();
       break;
-#if defined(CROSSPOINT_TTF_READER)
-    case Overlay::FontSheet:
-      quickFontRow = 0;
-      break;
-#endif
     default:
       break;
   }
@@ -5190,14 +5014,6 @@ void EpubReaderActivity::openOverlay(Overlay target) {
 // re-render, no flash; Xteink boards re-render to restore the AA planes.
 void EpubReaderActivity::closeOverlayToPage() {
   mappedInput.resetHomeButtonInput();
-#if defined(CROSSPOINT_TTF_READER)
-  // FontSheet owns its close contract: persist once and force the full reflow.
-  // The generic overlay close cannot handle the page-only preview state.
-  if (overlay == Overlay::FontSheet) {
-    closeFontSheet();
-    return;
-  }
-#endif
   overlay = Overlay::None;
   overlayPopup.dismiss();  // an option picker cannot outlive its panel
   toolbarUi.reset();       // ~1 KB of interaction table + props, only needed while open
@@ -5238,9 +5054,6 @@ void EpubReaderActivity::renderOverlay() {
   model.activeTool = (overlay == Overlay::Toolbar && !panelCursorShown) ? -1 : focusedTool;
   // Strings the model points at live here until render() returns.
   std::string chapterTitle, pageInfo;
-#if defined(CROSSPOINT_TTF_READER)
-  std::string sizeText, familyText;
-#endif
 
   if (overlay == Overlay::Toolbar) {
     chapterTitle = currentChapterTitle();
@@ -5259,26 +5072,6 @@ void EpubReaderActivity::renderOverlay() {
     toolbarUi->render();
     return;
   }
-
-#if defined(CROSSPOINT_TTF_READER)
-  if (overlay == Overlay::FontSheet) {
-    model.quickFont = true;
-    model.panelTitle = tr(STR_FONT);
-    model.quickSelected = quickFontRow;
-    model.bottomReserve = mappedInput.hasTouch() ? 0 : UITheme::getInstance().getMetrics().buttonHintsHeight;
-    sizeText = std::to_string(SETTINGS.ttfFontPointSize) + " pt";
-    familyText = SETTINGS.ttfFontFamilyName[0] != '\0' ? SETTINGS.ttfFontFamilyName : tr(STR_BUILTIN_FONT);
-    model.sizeText = sizeText.c_str();
-    model.familyText = familyText.c_str();
-    toolbarUi->setModel(model);
-    toolbarUi->render();
-    if (!mappedInput.hasTouch()) {
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    }
-    return;
-  }
-#endif
 
   // Panels (Contents / Text / More): a bottom sheet over the page.
   model.panel = true;
@@ -5333,18 +5126,6 @@ void EpubReaderActivity::handleOverlayInput() {
         paintOverlayPopup();  // highlight moved
         return;
       }
-#if defined(CROSSPOINT_TTF_READER)
-      // Family selection was applied in the popup callback; now the sheet is
-      // back on top and the quick page-only relayout paints behind it. Focus
-      // returns to the size row so +/- act on the next tap without the user
-      // having to select that row again (issue #137).
-      if (quickFontFamilyPending) {
-        quickFontFamilyPending = false;
-        quickFontRow = 0;
-        renderQuickFontPage();
-        return;
-      }
-#endif
       // Dismissed or selected: erase the dialog -- clean page back, then the
       // panel over it (the dialog can overhang the sheet onto the page).
       RenderLock lock;
@@ -5400,63 +5181,6 @@ void EpubReaderActivity::handleOverlayInput() {
   if (routed.routed) {
     LOG_DBG("ERS", "overlay=%d uiReady=%d routed event=%d value=%d", static_cast<int>(overlay),
             toolbarUi->routingReady(), static_cast<int>(routed.event), routed.value);
-  }
-#endif
-
-#if defined(CROSSPOINT_TTF_READER)
-  if (overlay == Overlay::FontSheet) {
-    switch (routed.event) {
-      case ReaderToolbarUi::Event::Dismiss:
-        closeFontSheet();
-        return;
-      case ReaderToolbarUi::Event::FontMinus:
-        if (routed.value == 0) quickFontStep(-1);
-        return;
-      case ReaderToolbarUi::Event::FontPlus:
-        if (routed.value == 0) quickFontStep(1);
-        return;
-      case ReaderToolbarUi::Event::FontRow:
-        if (routed.value == 1) {
-          quickFontSelectRow(1, false);
-          openFontFamilyPicker();
-        } else {
-          quickFontSelectRow(0);
-        }
-        return;
-      default:
-        break;
-    }
-    if (routed.routed) return;
-
-    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-      closeFontSheet();
-      return;
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-      quickFontSelectRow(0);
-      return;
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-      quickFontSelectRow(1);
-      return;
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      if (quickFontRow == 0) quickFontStep(-1);
-      return;
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      if (quickFontRow == 0) quickFontStep(1);
-      return;
-    }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      if (quickFontRow == 1) {
-        openFontFamilyPicker();
-      } else {
-        quickFontStep(1);
-      }
-      return;
-    }
-    return;
   }
 #endif
 
@@ -5528,9 +5252,9 @@ void EpubReaderActivity::handleOverlayInput() {
     if (overlay == Overlay::Text) {
       if (panelIndex == 0) {
 #if defined(CROSSPOINT_TTF_READER)
-        // Family and size live in the compact quick sheet; the full picker
-        // remains available from the Settings text screen.
-        openFontSheet();
+        // Family and size live in the full-screen font preview; the full
+        // picker remains available from the Settings text screen.
+        openFontPreview();
 #endif
       } else if (panelIndex == 4) {
         // Focus Reading is a genuine on/off: a tap toggles and applies live.
