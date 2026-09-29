@@ -129,9 +129,11 @@ class BookFontLoader {
   // stack-resident footprint is the one real risk — gated at runtime by
   // probeHintStackSafety(), which degrades an individual face to unhinted
   // when its measured render depth would not fit the smallest consumer
-  // stack (the 24KB FibpPrefetchWorker). Deliberately NOT a user setting:
+  // stack (the 32KB FibpPrefetchWorker). Deliberately NOT a user setting:
   // the mode is render-affecting and must stay in lockstep with the FIBP
-  // cache identity (renderOptionsFingerprintTag).
+  // cache identity (renderOptionsFingerprintTag). The requested mode is not a
+  // promise that hinting is in effect: a fresh load starts here and only a
+  // settled probe verdict (ensureHintProbeSettled) keeps it.
   static constexpr freeink::font::FtFont::RenderOptions kRenderOptions{freeink::font::FtFont::HintingMode::Light};
   // Crisp base for the file-scope effective-options init (C++20 designated
   // init on the aggregate): matches the TEXT_RENDER_CRISP settings default
@@ -193,6 +195,18 @@ class BookFontLoader {
   uint8_t familyCount() const { return familyCount_; }
 
   void markDirty();
+
+  // P2 stack gate, call-site half (no-op on the stb backend, which has no
+  // render options to gate). The measurement is only attributable from a
+  // SHALLOW frame: nested under the settings/preview stack the loop task's
+  // own depth dominates the high-water delta, so every slot fails closed
+  // (a measured footprint then reads the caller's frames as the font's Adobe
+  // cost). Call it from the reader's first TTF render, after the family is
+  // loaded and before any hinted rasterization or FIBP worker start, so no
+  // consumer runs a hinted glyph the verdict has not cleared. One-shot per
+  // load: ensureLoaded() re-arms it and an unchanged face set reuses its
+  // verdict.
+  void ensureHintProbeSettled();
 
   // Scrub arenas + unload file bytes when leaving the reader with low heap.
   void releaseResidentCaches();
@@ -296,7 +310,18 @@ class BookFontLoader {
   // degraded it: flips the effective options to unhinted (the device probe
   // itself is FreeRTOS-only and absent on host). Non-const on purpose.
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-  void degradeHintForTest(uint8_t faceSlot) { degradeHint(faceSlot); }
+  void degradeHintForTest(uint8_t faceSlot) { degradeHint(faceSlot, "test seam"); }
+  // Record a verdict as the shallow probe would (the FreeRTOS measurement
+  // itself is firmware-only), so the reuse and fingerprint re-derivation
+  // paths stay exercisable off-device: the degraded slots are applied, then
+  // the verdict is cached under loadKey. A loadKey of 0 forces a mismatch on
+  // the next load and a fresh probe.
+  void recordHintVerdictForTest(uint32_t loadKey, uint8_t degradedMask) {
+    for (uint8_t slot = 0; slot < 4; ++slot) {
+      if ((degradedMask & static_cast<uint8_t>(1u << slot)) != 0) degradeHint(slot, "test seam");
+    }
+    recordHintVerdict(loadKey, degradedMask);
+  }
   // Restore every slot to the requested mode — degradeHintForTest is sticky
   // (file-scope static state outlives the test) and the tag participates in
   // other tests' fingerprints.
@@ -306,16 +331,19 @@ class BookFontLoader {
 
  private:
   // P2 stack gate: probe each loaded face's hinted render depth on the
-  // calling task (loopTask) and degradeHint() the faces that exceed
-  // kHintProbeStackBudgetBytes. No-op on host.
-  void probeHintStackSafety();
+  // calling task (loopTask) and collect every slot that exceeds
+  // kHintProbeStackBudgetBytes (or measures unmeasurably) into `degradedMask`
+  // (bit i = slot i). No-op off-device.
+  void probeHintStackSafety(uint8_t& degradedMask);
   // Flip a slot's effective options to unhinted through setRenderOptions()
-  // (the P1 glyph-cache flush point) and log it.
-  void degradeHint(uint8_t faceSlot);
+  // (the P1 glyph-cache flush point) and log why.
+  void degradeHint(uint8_t faceSlot, const char* reason);
   // Production reset shared by ensureLoaded's clear loop and the host test
-  // seam: every slot back to the requested mode (fresh load re-probes). No
-  // live-face propagation here by construction — ensureLoaded deletes the
-  // faces before resetting, and the test instance has none.
+  // seam: every slot back to the requested mode. Deliberately NOT paired
+  // with a verdict: an unprobed load simply serves the requested mode, and
+  // the pending probe (or a cached verdict for the same face set) settles
+  // it. No live-face propagation here by construction: ensureLoaded deletes
+  // the faces before resetting, and the test instance has none.
   void resetHintState();
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // THE degrade funnel: apply `requested` to the slot's face, falling back
@@ -325,6 +353,23 @@ class BookFontLoader {
   // directly and continue on false.
   void applySlotRenderOptions(NativeFace* face, uint8_t faceSlot, const freeink::font::FtFont::RenderOptions& requested,
                               const char* label);
+  // Cache the measured verdict for `loadKey` (the content fingerprint the
+  // probe ran under) and re-derive the fingerprint when the verdict moved a
+  // slot, so layout identity always describes what renders.
+  void recordHintVerdict(uint32_t loadKey, uint8_t degradedMask);
+  // Re-apply the cached verdict when it was measured for exactly this face
+  // set; false means the load owes a fresh probe. A verdict can never
+  // outlive the face it describes: the key IS the content identity (bytes +
+  // path hash + collection face index + size + mtime), so a replaced or
+  // re-pointed face misses it.
+  bool reuseHintVerdicts(uint32_t loadKey);
+
+  // P2 probe state. The verdicts survive a reload (that is the reuse cache);
+  // releaseResidentCaches() drops them, and every fresh load re-arms
+  // hintProbePending_.
+  uint32_t hintVerdictKey_ = 0;   // load key the cached mask was measured under; 0 = none
+  uint8_t hintVerdictMask_ = 0;   // bit i: slot i measured too deep for the consumer budget
+  bool hintProbePending_ = true;  // the current face set has no settled verdict
 #endif
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
