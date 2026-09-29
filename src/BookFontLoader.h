@@ -346,8 +346,10 @@ class BookFontLoader {
   // (the P1 glyph-cache flush point) and log why.
   void degradeHint(uint8_t faceSlot, const char* reason);
   // Fail-closed half of the gate: degrade every loaded slot when no
-  // measurement could be made (probe task spawn/settle failure).
-  void degradeAllLoadedSlots(const char* reason);
+  // measurement could be made (probe task spawn/settle failure). Returns the
+  // degrade mask so the caller can fold it into the verdict mask and
+  // re-derive the fingerprint.
+  uint8_t degradeAllLoadedSlots(const char* reason);
   // Production reset shared by ensureLoaded's clear loop and the host test
   // seam: every slot back to the requested mode. Deliberately NOT paired
   // with a verdict: an unprobed load simply serves the requested mode, and

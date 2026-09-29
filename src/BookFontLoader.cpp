@@ -137,11 +137,17 @@ void BookFontLoader::degradeHint(uint8_t faceSlot, const char* reason) {
 
 // Fail-closed half of the gate: an unmeasurable probe (spawn/settle
 // failure) must degrade hinting, never leave the requested mode in effect.
-void BookFontLoader::degradeAllLoadedSlots(const char* reason) {
+// Returns the degrade mask so the caller can fold it into the verdict mask
+// and re-derive the fingerprint — the identity must follow the degrades even
+// when they were forced by a failed measurement.
+uint8_t BookFontLoader::degradeAllLoadedSlots(const char* reason) {
+  uint8_t mask = 0;
   for (uint8_t i = 0; i < 4; ++i) {
     if (faces_[i] == nullptr) continue;
     degradeHint(i, reason);
+    mask |= static_cast<uint8_t>(1u << i);
   }
+  return mask;
 }
 
 void BookFontLoader::applySlotRenderOptions(NativeFace* face, uint8_t faceSlot,
@@ -288,7 +294,7 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasura
   req.done = xSemaphoreCreateBinary();
   if (req.done == nullptr) {
     LOG_ERR("BFNT", "Hint probe semaphore alloc failed");
-    degradeAllLoadedSlots("stack probe: unmeasurable");
+    degradedMask |= degradeAllLoadedSlots("stack probe: unmeasurable");
     unmeasurable = true;
     return;
   }
@@ -302,23 +308,24 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasura
                                 &probeTask, kHintProbeTaskCore) != pdPASS) {
       LOG_ERR("BFNT", "Hint probe task spawn failed");
       vSemaphoreDelete(req.done);
-      degradeAllLoadedSlots("stack probe: unmeasurable");
+      degradedMask |= degradeAllLoadedSlots("stack probe: unmeasurable");
       unmeasurable = true;
       return;
     }
-    if (xSemaphoreTake(req.done, kHintProbeSettleTimeoutTicks) != pdTRUE) {
-      // The probe outlived its budget: its readings describe nothing. Stop
-      // the task BEFORE touching req/done (IDF's cross-core delete ends it
-      // immediately, so it can no longer give or rasterize). Killing it
-      // mid-FT_Render_Glyph can leave the face's Adobe context inconsistent,
-      // which is harmless here: every slot degrades to unhinted below —
-      // unhinted rendering never enters the Adobe engine — and the degrade
-      // flushes the P1 glyph cache through setRenderOptions.
+    const bool settled = xSemaphoreTake(req.done, kHintProbeSettleTimeoutTicks) == pdTRUE;
+    if (!settled) {
+      // The probe outlived its budget: the readings are void. Keep blocking
+      // until the task parks — req lives on this frame and the task can still
+      // write through it and give, so req/done must not be freed or the frame
+      // abandoned while the task is live (a cross-core vTaskDelete is not
+      // synchronous). The extra wait bounds cleanup, not the verdict: this
+      // slot has already failed closed.
       LOG_ERR("BFNT", "Hint probe slot %u timed out", i);
+      xSemaphoreTake(req.done, portMAX_DELAY);
+      degradedMask |= degradeAllLoadedSlots("stack probe: unmeasurable");
+      unmeasurable = true;
       vTaskDelete(probeTask);
       vSemaphoreDelete(req.done);
-      degradeAllLoadedSlots("stack probe: unmeasurable");
-      unmeasurable = true;
       return;
     }
     // Parked task: nothing below the give can run anymore — deterministic reap.
