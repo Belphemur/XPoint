@@ -29,6 +29,16 @@
 #include "fontIds.h"
 #include "util/ClockFormat.h"
 
+freeink::ui::BitmapRef BaseTheme::checkboxIcon(const bool checked) {
+  return freeink::ui::bitmapFromIcon(checked ? icon_checkbox_on_32 : icon_checkbox_off_32);
+}
+
+void BaseTheme::setCheckboxRow(freeink::ui::ListItem& item, const bool checked) {
+  item.value = nullptr;
+  item.toggle = true;
+  item.toggleChecked = checked;
+}
+
 // Internal constants
 namespace {
 constexpr int homeMenuMargin = 20;

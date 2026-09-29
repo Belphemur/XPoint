@@ -52,6 +52,8 @@ class ReaderToolbarUi : public UiAppHost {
     int quickSelected = 0;  // 0 = Size, 1 = Family
     const char* sizeText = nullptr;
     const char* familyText = nullptr;
+    void (*rowCheckbox)(void* ctx, int index, freeink::ui::ListItem& item) = nullptr;
+    void* rowCheckboxContext = nullptr;
     // Tile row: the tool in focus (toolbar) / the open panel (panel). 0..2.
     int activeTool = 0;
     // Pixels kept free along the screen's bottom edge under the quick-font

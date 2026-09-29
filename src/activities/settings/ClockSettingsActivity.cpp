@@ -76,7 +76,7 @@ void ClockSettingsActivity::buildScreen(UiScreen& screen) {
   // Every value is a flash/translation string or a member buffer, so the
   // render pass allocates nothing.
   rowItems_[ITEM_FORMAT].value = SETTINGS.clockFormat == 1 ? tr(STR_CLOCK_FORMAT_12H) : tr(STR_CLOCK_FORMAT_24H);
-  rowItems_[ITEM_HEADER].value = SETTINGS.headerClock ? tr(STR_SHOW) : tr(STR_HIDE);
+  GUI.setCheckboxRow(rowItems_[ITEM_HEADER], SETTINGS.headerClock);
   // Read-only: the zone is auto-detected on sync, so the row has no action.
   // Show e.g. "America/Toronto (UTC-4)" with a DST badge when in effect.
   if (SETTINGS.clockTimeZoneId[0] == '\0') {
