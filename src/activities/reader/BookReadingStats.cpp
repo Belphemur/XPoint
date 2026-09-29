@@ -246,13 +246,20 @@ BookReadingStats BookReadingStats::load(const std::string& cachePath) {
     f.close();
 
     // A version beyond this build means a forward firmware owns this book's
-    // history. Only the forward-format candidate latches the destructive-save
-    // guard: a corrupt current/legacy record with a garbage version byte is
-    // skipped by the decoders, never fatal.
-    if (name == forwardName && n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
-      LOG_ERR("STATS", "On-disk book stats are from a newer build (v%u, %d bytes); refusing to overwrite", data[0], n);
-      s_blockDestructiveSavePaths.insert(cachePath);
-      return BookReadingStats{};
+    // history. The forward-named file is only ever a guard: it latches the
+    // destructive-save guard and is never decoded as statistics data, so a
+    // stats_vN+1-named file whose payload happens to look like the current
+    // version cannot shadow a valid final record. A corrupt current/legacy
+    // record with a garbage version byte is skipped by the decoders, never
+    // fatal.
+    if (name == forwardName) {
+      if (n >= STATS_FILE_SIZE && data[0] > STATS_FILE_VERSION) {
+        LOG_ERR("STATS", "On-disk book stats are from a newer build (v%u, %d bytes); refusing to overwrite", data[0],
+                n);
+        s_blockDestructiveSavePaths.insert(cachePath);
+        return BookReadingStats{};
+      }
+      continue;
     }
 
     BookReadingStats candidate;
@@ -282,6 +289,33 @@ void BookReadingStats::save(const std::string& cachePath) const {
   const std::string statsFileName = statsFileNameForVersion(STATS_FILE_VERSION);
   const std::string statsFilePath = cachePath + "/" + statsFileName;
   const std::string tmpPath = statsFilePath + ".tmp";
+
+  // A previous publication may have failed after removing the final record,
+  // leaving the verified temp as the only complete copy. Re-publish it before
+  // the staging below truncates the path: without this, a retry that itself
+  // fails would destroy the only record. A temp that does not decode is torn
+  // and has nothing to recover — drop it.
+  if (!Storage.exists(statsFilePath.c_str()) && Storage.exists(tmpPath.c_str())) {
+    HalFile retained;
+    if (Storage.openFileForRead("STATS", tmpPath, retained)) {
+      uint8_t data[STATS_FILE_SIZE] = {};
+      const int n = retained.read(data, STATS_FILE_SIZE);
+      retained.close();
+      BookReadingStats probe;
+      if (decodeV8(data, n, probe)) {
+        if (!Storage.replaceFile(tmpPath.c_str(), statsFilePath.c_str())) {
+          LOG_ERR("STATS", "Could not recover %s from retained temp", statsFileName.c_str());
+          return;
+        }
+        LOG_DBG("STATS", "Recovered retained record into %s", statsFileName.c_str());
+      } else {
+        Storage.remove(tmpPath.c_str());
+      }
+    } else {
+      Storage.remove(tmpPath.c_str());
+    }
+  }
+
   HalFile f;
   if (!Storage.openFileForWrite("STATS", tmpPath, f)) {
     LOG_ERR("STATS", "Could not write %s", statsFileName.c_str());

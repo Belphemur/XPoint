@@ -320,6 +320,31 @@ TEST_F(ReadingStatsBinaryStoreTest, BookFailedPublishKeepsVerifiedTemp) {
   EXPECT_EQ(out.sessionCount, 5u);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, BookRetrySaveRecoversRetainedTemp) {
+  // Failed publish → only the retained temp holds the record. The retry save
+  // must recover it to the final path BEFORE staging truncates the temp path,
+  // so a retry that itself fails cannot lose the history.
+  BookReadingStats b;
+  b.sessionCount = 2;
+  b.save(BOOK_DIR);
+  Storage.failNextRename(statsPath(BOOK_DIR, 8) + ".tmp", statsPath(BOOK_DIR, 8));
+  BookReadingStats failed;
+  failed.sessionCount = 5;
+  failed.save(BOOK_DIR);
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+
+  // Retry with a failing temp write: the retained record must already be on
+  // the final path when the torn temp is cleaned up.
+  Storage.failNextWriteShort();
+  BookReadingStats retry;
+  retry.sessionCount = 9;
+  retry.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 5u);  // the recovered record, not fresh defaults
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, BookFailedSyncKeepsPreviousRecord) {
   BookReadingStats b;
   b.sessionCount = 4;
@@ -799,11 +824,15 @@ TEST_F(ReadingStatsBinaryStoreTest, BookForwardGuardShadowsPublishTemp) {
     f.write(future.data(), future.size());
   }
   {
-    // A verified v8 record left in the temp by a failed publish.
+    // A verified v8 record left in the temp by a failed publish (complete
+    // 135-byte record, sessionCount 5 at LE16 offset 1): decodable, so the
+    // pre-fix candidate order would return it instead of guarding on v9.
     HalFile f;
     ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 8) + ".tmp", f));
-    const uint8_t rec[3] = {8, 5, 0};  // version 8, sessionCount 5 (LE)
-    f.write(rec, sizeof(rec));
+    std::vector<uint8_t> rec(135, 0);
+    rec[0] = 8;
+    rec[1] = 5;  // sessionCount (LE16)
+    f.write(rec.data(), rec.size());
   }
 
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
