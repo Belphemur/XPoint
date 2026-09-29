@@ -143,8 +143,14 @@ TEST_F(SectionIncrementalTest, TxtCacheInvalidatedWhenSourceMtimeChanges) {
   // windows) still invalidates; the stub's per-path mtime map drives it.
   const std::string txtPath = (tmpDir_ / "book.txt").string();
   {
-    std::ofstream out(txtPath);
-    out << "original content\n";
+    const std::string tmpFixture = txtPath + ".tmp";
+    {
+      std::ofstream out(tmpFixture, std::ios::binary | std::ios::trunc);
+      out << "original content\n";
+      out.flush();
+      ASSERT_TRUE(out.good()) << "failed to write test fixture " << tmpFixture;
+    }
+    fs::rename(tmpFixture, txtPath);
   }
   stubMtimes()[txtPath] = 1000;
 
