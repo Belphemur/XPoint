@@ -280,10 +280,10 @@ void BookFontLoader::ensureHintProbeSettled() {
   recordHintVerdict(loadKey, degradedMask);
 }
 #else
-  // No members to touch: kept non-static so the call site reads identically
-  // on both backends (and cppcheck's functionStatic can't see that).
-  // cppcheck-suppress functionStatic
-  void BookFontLoader::ensureHintProbeSettled() {}  // stb backend: no render options to gate
+// No members to touch: kept non-static so the call site reads identically
+// on both backends (and cppcheck's functionStatic can't see that).
+// cppcheck-suppress functionStatic
+void BookFontLoader::ensureHintProbeSettled() {}  // stb backend: no render options to gate
 #endif  // CROSSPOINT_FONT_BACKEND_FT
 
 // Hard bounds for the DRAM-tier font file size gate. Design §3.3: the value is
