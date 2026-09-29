@@ -91,10 +91,14 @@ freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
 // slot 0's own face never got to observe the refusal (load failure).
 bool monoAcceptable_ = true;
 
-// The smallest stack a hinted render must fit: the FibpPrefetchWorker
-// (FibpPrefetchWorker.h kStackBytes). The loop task is larger, so the worker
-// is the binding consumer this gate protects.
-constexpr uint32_t kHintConsumerStackBytes = 32 * 1024;
+// The smallest stack a hinted render must fit: the Arduino loop task
+// (SET_LOOP_TASK_STACK_SIZE(49152), src/main.cpp), the only consumer that
+// RASTERIZES with these faces. The FibpPrefetchWorker (32KB) only measures
+// metrics — FtFont::advance() reads FT_LOAD_NO_HINTING|FAST_ONLY and the
+// worker never calls rasterize() — so it never pays the hinted depth (bench:
+// test/hint_mem_bench, results in
+// docs/design/2026-09-29-hint-stack-bench-results.md).
+constexpr uint32_t kHintConsumerStackBytes = 48 * 1024;
 
 // Headroom a measured face must keep on that consumer. The stress set below
 // rasterizes from a face's resident bytes, so it never reaches the SD tail a
@@ -105,11 +109,9 @@ constexpr uint32_t kHintConsumerStackBytes = 32 * 1024;
 constexpr uint32_t kHintProbeStackMarginBytes = 8 * 1024;
 
 // Additional stack depth a face's hinted render may consume before the probe
-// degrades it. Derived from the consumer it protects, not picked: a hinted
-// CFF face measures ~28KB on device and a first hinted TrueType glyph ~16KB,
-// both of which the previous flat 8KB budget called "over budget" and
-// degraded away from hinting everywhere — the degrade cannot even buy its
-// safety, since a CFF face costs the same unhinted as hinted.
+// degrades it. Derived from the consumer it protects, not picked: the render
+// path's caller frames and the streamed-face SD tail are not visible to the
+// probe (it measures resident bytes), so they are reserved as margin.
 constexpr uint32_t kHintProbeStackBudgetBytes = kHintConsumerStackBytes - kHintProbeStackMarginBytes;
 
 // Stress set for the probe: hinted outlines with distinctive contours, at
@@ -254,20 +256,19 @@ struct HintProbeRequest {
   SemaphoreHandle_t done;
 };
 
-// The probe task's stack equals the smallest consumer this gate protects —
-// the 32KB FibpPrefetchWorker — so a measured depth maps directly onto the
-// headroom that consumer must keep (kHintProbeStackBudgetBytes above).
-//
-// Deliberately LARGER than every consumer it judges, and larger than the
-// 32KB it used to be: a measuring device that is the same size as its subject
-// overflows instead of reporting. At 32KB a hinted CFF face (~28KB measured
-// on device) left under 4KB of slack, which a real consumer's SD tail
-// (streamReadThunk -> HalStorage -> SdFat, entered from inside the glyph
+// The probe must be able to complete a render DEEPER than any consumer it
+// judges — a measuring device the same size as its subject overflows instead
+// of reporting. At 32KB (what it used to be) a hinted CFF face (~28KB
+// measured on device) left under 4KB of slack, which a real consumer's SD
+// tail (streamReadThunk -> HalStorage -> SdFat, entered from inside the glyph
 // fault) exhausts — the probe task took the LoadProhibited on the way to
-// printing its own verdict. The reading is unaffected by the stack size (the
-// high-water is measured from the task's own top), so growing the measuring
-// stack costs accuracy nothing.
-constexpr size_t kHintProbeTaskStackBytes = 48 * 1024;
+// printing its own verdict. Sized consumer + margin, so a face anywhere up to
+// the full consumer budget is measured and degraded rather than crashing the
+// measurer. The reading itself is unaffected by the stack size (the
+// high-water is measured from the task's own top), so the extra bytes cost
+// accuracy nothing; transiently +16KB over the consumer at book open, one
+// task at a time, reaped before the next.
+constexpr size_t kHintProbeTaskStackBytes = kHintConsumerStackBytes + kHintProbeStackMarginBytes;
 constexpr UBaseType_t kHintProbeTaskPriority = 1;
 // Worker-task convention (FibpPrefetchWorker.h kCore): 0 is valid on both
 // targets; the loop task runs on core 1 where it exists.
