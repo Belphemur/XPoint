@@ -6,6 +6,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <PngToBmpConverter.h>
+#include <Txt.h>
 #include <Utf8.h>
 #include <ZipFile.h>
 #include <esp_heap_caps.h>
@@ -24,6 +25,10 @@ constexpr size_t kStreamChunkSize = 8192;
 #else
 constexpr size_t kStreamChunkSize = 1024;
 #endif
+
+Epub::Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
+  cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
+}
 
 bool Epub::findContentOpfFile(std::string* contentOpfFile, ZipFile* sharedZip) const {
   const auto containerPath = "META-INF/container.xml";
@@ -490,14 +495,15 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
   // Initialize spine/TOC cache
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
+  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+  // Always create CssParser - needed for inline style parsing even without CSS files
+  cssParser = makeUniqueNoThrow<CssParser>(cachePath);
+  if (!bookMetadataCache || !cssParser) {
+    LOG_ERR("EBP", "OOM: metadata cache or CSS parser");
+    return false;
+  }
 #ifdef BOOK_PROFILE
   uint32_t cache_init_ms = millis();
-#endif
-  // Always create CssParser - needed for inline style parsing even without CSS files
-  cssParser.reset(new CssParser(cachePath));
-#ifdef BOOK_PROFILE
-  LOG_INF("PROF", "phase=loadBook_cssParser core=%d", core);
 #endif
 #ifdef BOARD_HAS_PSRAM
   // Parse the ZIP central directory once and cache entry info in PSRAM.
@@ -516,12 +522,25 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
+    if (Txt::isTxtOrMd(filepath)) {
+      if (!Txt::validateCache(filepath, cachePath, bookMetadataCache->getCumulativeSize(0))) {
+        LOG_DBG("EBP", "TXT/MD cache invalid or outdated: %s", filepath.c_str());
+        if (!buildIfMissing) {
+          return false;
+        }
+        bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+        if (!bookMetadataCache) {
+          LOG_ERR("EBP", "OOM: TXT/MD metadata cache");
+          return false;
+        }
+        return Txt::buildTxtCache(filepath, cachePath, bookMetadataCache);
+      }
+      LOG_DBG("EBP", "Loaded TXT/MD from cache: %s", filepath.c_str());
+      return true;
+    }
 #ifdef BOOK_PROFILE
     uint32_t cache_load_ms = millis() - load_start_ms;
-    uint32_t psram_free_after = ESP.getFreePsram();
-    uint32_t heap_free_after = ESP.getFreeHeap();
-    LOG_INF("PROF", "phase=loadBook_cacheHit core=%d load_dur=%uus psram_free=%uB->%uB heap=%uB->%uB", core,
-            cache_load_ms, psram_free_before, psram_free_after, heap_free_before, heap_free_after);
+    LOG_DBG("EBP", "Loaded existing cache (cache_load_ms=%lu)", (unsigned long)cache_load_ms);
 #endif
     if (!skipLoadingCss) {
       const CssParser::CacheStatus cacheStatus = cssParser->inspectCache();
@@ -551,8 +570,8 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
         if (cssParseResult != CssParser::ParseResult::Error) {
           // Reload book.bin with the rebuilt CSS rules.
           bookMetadataCache.reset();
-          bookMetadataCache.reset(new BookMetadataCache(cachePath));
-          if (!bookMetadataCache->load()) {
+          bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+          if (!bookMetadataCache || !bookMetadataCache->load()) {
             LOG_ERR("EBP", "Failed to reload cache after CSS rebuild");
             return false;
           }
@@ -578,6 +597,10 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // If we didn't load from cache above and we aren't allowed to build, fail now
   if (!buildIfMissing) {
     return false;
+  }
+
+  if (Txt::isTxtOrMd(filepath)) {
+    return Txt::buildTxtCache(filepath, cachePath, bookMetadataCache);
   }
 
   // Cache doesn't exist or is invalid, build it
@@ -670,8 +693,8 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   }
 
   // Reload the cache from disk so it's in the correct state
-  bookMetadataCache.reset(new BookMetadataCache(cachePath));
-  if (!bookMetadataCache->load()) {
+  bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
+  if (!bookMetadataCache || !bookMetadataCache->load()) {
     LOG_ERR("EBP", "Failed to reload cache after writing");
     return false;
   }
@@ -683,6 +706,11 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 bool Epub::loadMetadata(std::string& title, std::string& author) {
   title.clear();
   author.clear();
+
+  if (Txt::isTxtOrMd(filepath)) {
+    title = utf8ComposeNfc(FsHelpers::getFileNameWithoutExtension(filepath));
+    return true;
+  }
 
   auto metadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   if (metadataCache && metadataCache->load()) {
@@ -827,6 +855,11 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
     return false;
   }
 
+  if (Txt::isTxtOrMd(filepath)) {
+    return Txt::convertCoverImageToBmp(coverImageHref, getCoverBmpPath(cropped, originalThresholds), 0, cropped,
+                                       originalThresholds);
+  }
+
 #ifdef BOARD_HAS_PSRAM
   // PSRAM boards decode the cover from a pool buffer: no .cover.jpg/.cover.png
   // temp ever reaches SD. Oversized (>4 MB) or OOM falls back to the SD path.
@@ -932,6 +965,12 @@ bool Epub::generateThumbBmp(int height) const {
 
 bool Epub::generateThumbBmpFromSource(int height) {
   if (Storage.exists(getThumbBmpPath(height).c_str())) return true;
+  if (Txt::isTxtOrMd(filepath)) {
+    std::string companionCover = Txt::findCompanionCoverImage(filepath);
+    if (companionCover.empty()) return false;
+    setupCacheDir();
+    return generateThumbBmpForCover(height, companionCover);
+  }
   // Parser input and metadata outlive parsing but exceed the small task stack budget.
   auto metadata = makeUniqueNoThrow<BookMetadataCache::BookMetadata>();
   auto zip = makeUniqueNoThrow<ZipFile>(filepath);
@@ -953,6 +992,10 @@ bool Epub::generateThumbBmpForCover(int height, const std::string& coverImageHre
   if (coverImageHref.empty()) {
     LOG_DBG("EBP", "No known cover image for thumbnail");
   } else {
+    if (Txt::isTxtOrMd(filepath)) {
+      return Txt::convertCoverImageToBmp(coverImageHref, getThumbBmpPath(height), height);
+    }
+
 #ifdef BOARD_HAS_PSRAM
     // PSRAM boards decode the thumbnail from a pool buffer: no .cover.jpg/
     // .cover.png temp ever reaches SD. Falls back to the SD path below on
@@ -1071,6 +1114,10 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
     return false;
   }
 
+  if (Txt::isTxtOrMd(filepath)) {
+    return Txt::streamTxtToHtml(filepath, out);
+  }
+
   const std::string path = FsHelpers::normalisePath(itemHref);
 #ifdef BOARD_HAS_PSRAM
   // Fast path: use the PSRAM ZIP cache to skip the central-directory scan.
@@ -1141,6 +1188,14 @@ bool Epub::extractItemToFile(const std::string& itemHref, const std::string& des
 }
 
 bool Epub::getItemSize(const std::string& itemHref, size_t* size) const {
+  if (Txt::isTxtOrMd(filepath)) {
+    HalFile f;
+    if (Storage.openFileForRead("EBP", filepath, f)) {
+      if (size) *size = f.size();
+      return true;
+    }
+    return false;
+  }
   const std::string path = FsHelpers::normalisePath(itemHref);
 #ifdef BOARD_HAS_PSRAM
   if (zipCache_) {
