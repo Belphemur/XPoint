@@ -57,11 +57,11 @@ class HalStorage {
     return true;
   }
   // Publish a fully written temp file over its final path (FAT semantics:
-  // the destination must not exist). Callers stage the temp, then call this.
-  // Mirrors HalStorage::replaceFile — the previous file is removed by this
-  // call itself, never by the caller.
+  // the destination must not exist). Refuses when the temp is missing — the
+  // destination must never be touched without a replacement.
   bool replaceFile(const char* tmpPath, const char* path) {
     if (tmpPath == nullptr || path == nullptr) return false;
+    if (!exists(tmpPath)) return false;
     if (!exists(path) || remove(path)) return rename(tmpPath, path);
     return false;
   }

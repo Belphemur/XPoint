@@ -78,6 +78,7 @@ class HalStorage {
   }
   // Publish a staged temp over its destination (FAT: destination must not exist).
   bool replaceFile(const char* tmpPath, const char* path) {
+    if (!exists(tmpPath)) return false;  // never touch the destination without a replacement
     if (!exists(path)) return rename(tmpPath, path);
     return remove(path) && rename(tmpPath, path);
   }

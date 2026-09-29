@@ -79,10 +79,13 @@ std::string statsFileNameForVersion(const uint8_t version) {
 // v5 record can still upgrade in one save hop; older formats are not loaded.
 std::vector<std::string> openCandidateNames() {
   // STATS_FILE_VERSION + 1 is recognized on load only as a forward-format
-  // guard; it is never decoded as statistics data.
-  return {statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
-          statsFileNameForVersion(STATS_FILE_VERSION - 2), statsFileNameForVersion(STATS_FILE_VERSION - 3),
-          statsFileNameForVersion(STATS_FILE_VERSION + 1)};
+  // guard; it is never decoded as statistics data. The .tmp of the current
+  // version is a verified record that a failed publish left behind (the
+  // destination may already have been removed) — it is the freshest complete
+  // copy, so it is consulted right after the final file.
+  return {statsFileNameForVersion(STATS_FILE_VERSION),     statsFileNameForVersion(STATS_FILE_VERSION) + ".tmp",
+          statsFileNameForVersion(STATS_FILE_VERSION - 1), statsFileNameForVersion(STATS_FILE_VERSION - 2),
+          statsFileNameForVersion(STATS_FILE_VERSION - 3), statsFileNameForVersion(STATS_FILE_VERSION + 1)};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
@@ -355,11 +358,11 @@ void BookReadingStats::save(const std::string& cachePath) const {
     return;
   }
   if (!Storage.replaceFile(tmpPath.c_str(), statsFilePath.c_str())) {
-    // The previous record stays untouched whenever the replace fails before
-    // the rename; on a failed rename after removal the temp is dropped and
-    // the loader simply starts fresh — never a torn record.
-    LOG_ERR("STATS", "Could not publish %s", statsFileName.c_str());
-    Storage.remove(tmpPath.c_str());
+    // Publication failure: the destination may already be gone, so the
+    // verified temp is deliberately KEPT — the loader consults it on the next
+    // open (it is the freshest complete record) and the next save re-stages
+    // over it. Only a torn temp is ever removed.
+    LOG_ERR("STATS", "Could not publish %s; record stays in %s", statsFileName.c_str(), tmpPath.c_str());
     return;
   }
 
@@ -383,8 +386,9 @@ bool BookReadingStats::remove(const std::string& cachePath) {
   // loaded and will simply be left in the cache dir until the next manual
   // cleanup.
   const std::string names[] = {
-      statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION - 1),
-      statsFileNameForVersion(STATS_FILE_VERSION - 2), statsFileNameForVersion(STATS_FILE_VERSION - 3)};
+      statsFileNameForVersion(STATS_FILE_VERSION), statsFileNameForVersion(STATS_FILE_VERSION) + ".tmp",
+      statsFileNameForVersion(STATS_FILE_VERSION - 1), statsFileNameForVersion(STATS_FILE_VERSION - 2),
+      statsFileNameForVersion(STATS_FILE_VERSION - 3)};
   for (const std::string& name : names) {
     const std::string path = cachePath + "/" + name;
     if (!Storage.exists(path.c_str())) continue;

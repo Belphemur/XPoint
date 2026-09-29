@@ -236,14 +236,14 @@ TEST_F(ProgressManagerTest, ReplaceFileFatOExclSemantics) {
   EXPECT_EQ(Storage.files.at("/a/record.bin"), "new");
   EXPECT_EQ(Storage.files.count("/a/record.bin.tmp"), 0u);
 
-  // Missing temp: the remove happens first (SDK replaceFile contract), so the
-  // destination is gone and the missing rename fails.
+  // Missing temp: the helper refuses without touching the destination.
   EXPECT_FALSE(Storage.replaceFile("/a/missing.tmp", "/a/record.bin"));
-  EXPECT_EQ(Storage.files.count("/a/record.bin"), 0u);
+  EXPECT_EQ(Storage.files.at("/a/record.bin"), "new");
 
   // Injected rename failure after the destination was removed: the device
   // contract leaves neither file; the temp stays for the caller to clean up.
   Storage.files["/a/record.bin.tmp"] = "again";
+  Storage.files["/a/record.bin"] = "restored";
   Storage.failReplaceCount = 1;
   EXPECT_FALSE(Storage.replaceFile("/a/record.bin.tmp", "/a/record.bin"));
   EXPECT_EQ(Storage.files.count("/a/record.bin"), 0u);

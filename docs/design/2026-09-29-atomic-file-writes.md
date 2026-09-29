@@ -34,11 +34,18 @@ site re-implemented the FAT rename-requires-empty-destination dance by hand
 ### HAL helper (new)
 
 `HalStorage::replaceFile(tmpPath, path)` (`lib/hal/HalStorage.h`,
-`lib/hal/HalStorage.cpp`) delegates to the SDK's public
-`SDCardManager::replaceFile` under `HAL_STORAGE_WRAPPED_CALL`, so the
-`storageMutex` is held for the entire `exists → remove → rename` sequence —
-an unserialized multi-call dance from application code would be the exact
-SdFat race the mutex exists to prevent.
+`lib/hal/HalStorage.cpp`) is a hardened superset of the SDK's public
+`SDCardManager::replaceFile`: under `HAL_STORAGE_WRAPPED_CALL` (storage mutex
+held once) it first refuses when the temp file is missing — a missing temp
+must never cost the caller its previous file — and only then performs the
+SDK's `(!exists(path) || remove(path)) && rename(tmp, path)` sequence. The
+SDK's own `writeFile` keeps its unguarded semantics (not this repo's patch to
+make); application code goes through the HAL helper, so it always gets the
+pre-check. Note the residual publication-failure window that remains in both
+the SDK primitive and this helper: once `remove(path)` has succeeded, a failed
+rename leaves the destination gone and the verified temp in place — callers
+must decide what survives (per-book stats keep the temp; the sleep frame
+drops it).
 
 ## 2. Inventory and migration decisions
 
@@ -50,7 +57,7 @@ adds a stronger guarantee the SDK primitive does not provide.
 |---|------|-----------|-------|----------|
 | 1 | `src/activities/reader/ProgressFile.h:32` `writeAtomic()` — `progress.bin` | tmp → remove(final) → rename. Comment (:21-33) documents "crash-safe, not metadata-atomic". | A | Migrated: tail is now `Storage.replaceFile` |
 | 2 | `src/BookFontLoader.cpp:505` `BookFontLoader_writeFingerprintCache()` — 28-byte fingerprint record | stage `.tmp` → `exists && remove` → `rename`; removes temp on every failure. | A | Migrated: `exists && remove` + `rename` collapsed into `Storage.replaceFile` |
-| 3 | `src/main.cpp:331` `saveSleepFrameBuffer()` — `sleep_frame.bin` | **See Finding 1**: dropped the old frame before writing the temp. | A+ | Reordered (temp written first), publish via `Storage.replaceFile` |
+| 3 | `src/main.cpp:331` `saveSleepFrameBuffer()` — `sleep_frame.bin` | **See Finding 1**: now stages fully before publishing; detected staging failures drop the old baseline too. | A+ | Reordered (temp written first), publish via `Storage.replaceFile` |
 | 4 | `src/activities/reader/GlobalReadingStats.cpp:285` `saveToFile()` — `global_stats.bin` | tmp → size-verify → rotate to `.bak` → remove stale `.bak` → rename; restores `.bak` if final rename fails. | B | Tail publish step switched to `Storage.replaceFile`; rotation + restore untouched |
 | 5 | `src/activities/reader/FinishedBooksIndex.cpp:94` — `finished_books.bin` | tmp → read-back verification → pre-restore corrupt primary from `.bak` → rotate → publish → restore on failure. | B | Tail publish step switched to `Storage.replaceFile`; rotation, verification, and restore untouched |
 | 6 | `src/adapters/SdCardCacheStorage.cpp:92` `beginWrite`/`endWrite` — TTF/FIBP page cache | tmp → `sync()` → rotate final→`.old` → rename → remove `.old`; `.old` recovery in `beginWrite`; `writeFailed_`/`endWriteFailed_` flag ordering is load-bearing for `PageCacheWriter` cleanup. | B (strongest) | **Not migrated.** The rotate-aside (rename, not remove) before publish is required to retain the previous good cache across a crash between the two renames — `replaceFile` removes, not rotates, and would regress that guarantee; see §5.1 |
@@ -80,20 +87,18 @@ refactor.
 
 **Resolution.** The write is reordered so the temp is fully written and
 verified (bytes + trailer + sync + close) **before** the destination is
-touched; publication is a single `Storage.replaceFile(tmp, final)` call. Two
-consequences, both intended:
+touched; publication is a single `Storage.replaceFile(tmp, final)` call,
+whose remove+rename is the documented drop-old-on-publish-failure policy
+point. Two further consequences, both intended:
 
-- The "crash between remove and rename" window can no longer eat both files at
-  the write level: before any destination mutation the temp is complete, so a
-  crash in that window leaves the complete tmp on disk next to the old frame.
-- The documented drop-old-on-publish-failure policy is kept: if the final
-  publish fails, the old frame is NOT restored to the final path. `replaceFile`
-  returns false after `remove(final)` succeeded but `rename` failed — old
-  frame gone, complete `.tmp` left behind — and the code then removes that
-  `.tmp`. A missing frame just restores no-frame sleep, which stays the safe
-  direction (never show a frame that mismatches the panel). What changed is
-  only the front of the sequence: the failure that used to destroy both files
-  (a power cut mid-temp-write) now costs nothing.
+- A **detected staging failure** (temp open, short write, failed sync/close)
+  drops the old frame as well: the panel already shows the new sleep screen,
+  so keeping a stale baseline would make quick-resume repaint a frame that
+  no longer matches the panel. No-frame sleep is the safe direction.
+- A **power cut during staging** (undetectable afterwards) is the one window
+  that can leave a stale-but-valid baseline behind; accepted and documented
+  over the alternative, which destroys the old frame before the new one
+  exists and turns every staging interruption into a lost baseline.
 
 The comment block over the write describes the merged state.
 
@@ -120,27 +125,30 @@ survivability instead of destruction. The one-time legacy migration (deleting
 publish, so legacy files are only dropped once the new record is durably on
 disk — preserving the invariant the short-write path already defended.
 
-**No `.bak` for per-book records, and why that is defensible against
-hard-rule #1.** Hard-rule #1 ("a short write followed by a legacy delete is
-unrecoverable data loss") is satisfied by the reorder itself: the legacy
-deletes now run only after a fully verified atomic publish, so the short-write
-+ legacy-delete unrecoverability scenario cannot occur. The residual
-publish-failure mode is: temp verified, old record removed, rename fails —
-leaving no record. For the global record that justified the `.bak`: global
-history is a single file at a fixed path, accumulated over the life of the
-device, not regenerable from anything. Per-book records are strictly weaker
-data: they live in the EPUB's per-hash cache dir, whose lifecycle is owned by
-the cache (deleting `.crosspoint/epub_<hash>/`, moving or renaming the book, a
-render-settings change that invalidates the layout cache, or a manual cache
-clear) removes them as a *design* consequence and restarts collection at zero
-— per-book history is already non-durable by design, and the reader's own
-opens regenerate entry records. Weighing one extra dir-op pair (≈4 SD wins)
-and a stale-`.bak` recovery branch against protecting data the subsystem
-already treats as cache-lifetime, we chose atomic-publish without `.bak`,
-matching `ProgressFile`'s precedent for the identical volatility class
-(per-dir record, same rename-publish tail) and strictly improving on the old
-truncate-in-place behaviour. If this is ever revisited, the trigger should be
-telemetry showing real-world failed renames, not speculation.
+**No `.bak` rotation for per-book records — recovery rides the staging temp.**
+Hard-rule #1 ("a short write followed by a legacy delete is unrecoverable data
+loss") is satisfied by the reorder itself: the legacy deletes now run only
+after a fully verified atomic publish. The residual publish-failure mode
+(temp verified, old record removed, rename fails) is covered differently from
+the global path: the verified temp is deliberately **kept** on a failed
+publish, and `load()` consults `stats_vN.bin.tmp` as a candidate right after
+the final path — so the freshest complete record is picked up on the next
+open and the next save re-stages over it. That reaches the same
+"publication failure loses no history" guarantee the global path's `.bak`
+rotation provides, without a second on-disk copy on the happy path and
+without a third rotate/restore dance; a torn temp (mid-write power cut) is
+rejected by the loader's `(size, version)` check exactly as before, and
+`BookReadingStats::remove()` cleans the temp alongside the record files.
+This is deliberate asymmetry, not an oversight: the global record is a single
+file at a fixed path accumulated over the life of the device and not
+regenerable from anything; per-book records live in the EPUB's per-hash cache
+dir whose lifecycle is owned by the cache (deleting `.crosspoint/epub_<hash>/`,
+moving or renaming the book, a render-settings change that invalidates the
+layout cache, or a manual cache clear) removes them as a *design* consequence
+and restarts collection at zero — per-book history is already non-durable by
+design, and the reader's own opens regenerate entry records. If this is ever
+revisited, the trigger should be telemetry showing real-world failed
+renames, not speculation.
 
 **No version bump.** The record layout, `STATS_FILE_VERSION` (v8, 135 B), and
 `statsFileNameForVersion` naming are unchanged — this changes durability of
@@ -202,10 +210,17 @@ primitive for them anyway).
 
 ## 7. Tests added
 
-- `test/progress_manager/FatReplaceSemanticsTest` — pins the host-stub
-  `replaceFile`'s FAT O_EXCL behaviour: rename onto an existing destination
-  fails and preserves both inputs; rename onto a missing destination succeeds;
-  failure injection removes the temp and leaves the previous final intact.
-- `test/reading_stats/BookStatsTempFailureTest` — pins per-book durability: a
-  save that fails mid-write (short write / failed sync / failed close) leaves
-  the previous on-disk record byte-identical and loads it back correctly.
+- `ProgressManagerTest.ReplaceFileFatOExclSemantics` — pins the host-stub
+  `replaceFile`'s FAT O_EXCL behaviour: a bare rename onto an existing
+  destination fails and preserves both inputs; `replaceFile` publishes over an
+  existing destination and consumes the temp; a missing temp is refused
+  without touching the destination; an injected rename failure (after the
+  helper's remove) leaves neither final nor a consumed temp.
+- `ReadingStatsBinaryStoreTest.BookShortSaveKeepsPreviousRecord` — a torn save
+  (short write into the temp) leaves the previous record byte-identical and
+  loadable.
+- `ReadingStatsBinaryStoreTest.BookFailedSyncKeepsPreviousRecord` — same
+  guarantee through the failed-sync path.
+- `ReadingStatsBinaryStoreTest.BookFailedPublishKeepsVerifiedTemp` — a failed
+  publication keeps the verified temp, and the loader consults it (no history
+  loss in the remove+rename window).

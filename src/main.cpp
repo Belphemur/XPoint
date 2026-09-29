@@ -353,17 +353,22 @@ static void saveSleepFrameBuffer() {
   }
 
   // Stage the full new frame (framebuffer + 4-byte Adler-32 trailer) beside
-  // the current file, synced and closed, BEFORE touching the destination: a
-  // power cut mid-write then leaves the old frame in place, not a missing
-  // sleep screen. Publication is one replace (remove + rename under the
-  // storage mutex) — on a failed publish the old frame is gone and the tmp is
-  // removed: the panel already shows the new sleep screen, so keeping an old
-  // frame would no longer match what is displayed (the quick-resume contract:
-  // the file is the baseline of what is on the panel). A missing frame just
-  // restores no-frame sleep — the safe direction.
+  // the current file, synced and closed, BEFORE touching the destination.
+  // The panel already shows the new sleep screen, so the on-disk baseline
+  // must never outlive its match: any detected staging failure (open,
+  // short write, failed sync/close) drops the old frame as well, leaving
+  // no-frame sleep — the safe direction. Publication is one replace
+  // (remove + rename under the storage mutex), so a power cut can only
+  // leave the old frame, the complete new temp, or neither — never a torn
+  // file. A power cut DURING staging (undetectable afterwards) can leave a
+  // stale-but-valid baseline that quick-resume restores; accepted, since
+  // the alternative destroys the old frame before the new one exists.
   // Layout: [<framebuffer bytes> | <4-byte Adler-32 of the framebuffer>].
   HalFile file;
-  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_TMP, file)) return;
+  if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_TMP, file)) {
+    Storage.remove(SLEEP_FRAME_FILE);
+    return;
+  }
   const size_t fbWritten = file.write(fb, fbSize);
   uint8_t trailer[sizeof(uint32_t)];
   memcpy(trailer, &newHash, sizeof(trailer));
@@ -378,6 +383,7 @@ static void saveSleepFrameBuffer() {
     LOG_ERR("SLP", "Bad sleep-frame tmp write (%u/%u + %u/4, sync=%d close=%d)", (unsigned)fbWritten, (unsigned)fbSize,
             (unsigned)trailerWritten, synced, closed);
     Storage.remove(SLEEP_FRAME_TMP);
+    Storage.remove(SLEEP_FRAME_FILE);
     return;
   }
   if (!Storage.replaceFile(SLEEP_FRAME_TMP, SLEEP_FRAME_FILE)) {

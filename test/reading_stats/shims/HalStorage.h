@@ -35,7 +35,7 @@ class HalFile {
   size_t write(const void* buf, size_t count) {
     if (!blob_) return 0;
     // Test control: a short write delivers one byte less, like a torn SD write.
-    const size_t delivered = shortWrite ? count - 1 : count;
+    const size_t delivered = (shortWrite && count > 0) ? count - 1 : count;
     if (delivered == 0) return 0;
     if (blob_->pos + delivered > blob_->bytes.size()) {
       blob_->bytes.resize(blob_->pos + delivered);
@@ -55,7 +55,11 @@ class HalFile {
   }
   bool seek(size_t pos) { return seekSet(pos); }
   bool flush() { return true; }
-  bool sync() { return true; }
+  bool sync() {
+    // Test control: injected sync failure (a torn SD write).
+    if (failSync) return false;
+    return true;
+  }
   bool close() { return true; }
   bool isOpen() const { return blob_ != nullptr; }
   operator bool() const { return isOpen(); }
@@ -66,6 +70,8 @@ class HalFile {
  public:
   // Test control: next write() delivers one byte less than requested.
   bool shortWrite = false;
+  // Test control: injected sync() failure.
+  bool failSync = false;
 };
 
 class HalStorage {
@@ -87,6 +93,10 @@ class HalStorage {
     if (failShortWriteCount > 0) {
       --failShortWriteCount;
       file.shortWrite = true;
+    }
+    if (failSyncCount > 0) {
+      --failSyncCount;
+      file.failSync = true;
     }
     return true;
   }
@@ -114,10 +124,10 @@ class HalStorage {
   }
 
   // Publish a fully staged temp file over its final path (FAT semantics):
-  // the destination is removed first, then the rename. A rename failure
-  // after the remove therefore leaves the destination gone and the temp in
-  // place — the caller decides what survives.
+  // refuses when the temp is missing (never touch the destination without a
+  // replacement), removes the destination, then renames.
   bool replaceFile(const std::string& tmpPath, const std::string& path) {
+    if (!exists(tmpPath)) return false;
     return (!exists(path) || remove(path)) && rename(tmpPath, path);
   }
 
@@ -125,6 +135,8 @@ class HalStorage {
   bool lastRemoveTargetWasMissing() const { return lastRemoveMissing_; }
   // Next openFileForWrite delivers a short write (count-1), n times.
   void failNextWriteShort(int n = 1) { failShortWriteCount = n; }
+  // Next openFileForWrite's handle fails sync(), n times.
+  void failNextSync(int n = 1) { failSyncCount = n; }
   void failNextRename(std::string from, std::string to) {
     failRenameFrom_ = std::move(from);
     failRenameTo_ = std::move(to);
@@ -140,6 +152,7 @@ class HalStorage {
   std::map<std::string, HalFile::Blob> files_;
   bool lastRemoveMissing_ = false;
   int failShortWriteCount = 0;
+  int failSyncCount = 0;
   std::string failRenameFrom_;
   std::string failRenameTo_;
 };

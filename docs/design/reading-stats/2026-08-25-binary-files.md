@@ -400,7 +400,9 @@ Pass ran 2026-08-26 against this repo (`feat/reading-stats-binary`) and crossink
    `FatFile::rename()` fails when the destination exists (`O_EXCL`). No per-book fsync needed: the
    save stages to `stats_vN.bin.tmp` and publishes through `Storage.replaceFile`, so a torn or
    short write can never replace the record — the previous record survives every failure, and
-   the loader's `(size, version)` check remains the backstop for pre-existing damage. **Answer to the §8 alignment question:
+   the loader's `(size, version)` check remains the backstop for pre-existing damage. A failed
+   publication keeps the verified temp; `load()` consults it as a fallback candidate, so the
+   remove+rename window loses no history. **Answer to the §8 alignment question:
    no 512-byte padding** — a ≤159 B record already costs exactly one sector program (read-free
    via `CACHE_RESERVE_FOR_WRITE`) and one cluster; padding only breaks crossink's exact-size
    validation. **Answer to the §8 `.bak` question: keep the rotation** — it costs ≈4 extra

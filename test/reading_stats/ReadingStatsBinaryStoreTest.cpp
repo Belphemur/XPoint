@@ -300,24 +300,46 @@ TEST_F(ReadingStatsBinaryStoreTest, BookShortSaveKeepsPreviousRecord) {
   EXPECT_EQ(out.totalReadingSeconds, 777u);
 }
 
-TEST_F(ReadingStatsBinaryStoreTest, BookFailedPublishLeavesNoTornRecord) {
+TEST_F(ReadingStatsBinaryStoreTest, BookFailedPublishKeepsVerifiedTemp) {
   BookReadingStats b;
   b.sessionCount = 2;
   b.save(BOOK_DIR);
 
   // Publish fails after the previous record was removed (FAT remove + rename
-  // window): the loader must see neither a torn record nor a stale temp —
-  // a fresh record, matching the per-book no-backup decision in
-  // docs/design/2026-09-29-atomic-file-writes.md §4.
+  // window): the verified temp is deliberately KEPT and the loader consults
+  // it on the next open, so no history is lost (the global path protects the
+  // same window with a .bak; per-book recovery rides the staging temp).
   Storage.failNextRename(statsPath(BOOK_DIR, 8) + ".tmp", statsPath(BOOK_DIR, 8));
   BookReadingStats failed;
   failed.sessionCount = 5;
   failed.save(BOOK_DIR);
 
-  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+  EXPECT_TRUE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
   const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
-  EXPECT_EQ(out.sessionCount, 0u);
+  EXPECT_EQ(out.sessionCount, 5u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookFailedSyncKeepsPreviousRecord) {
+  BookReadingStats b;
+  b.sessionCount = 4;
+  b.totalReadingSeconds = 500;
+  b.save(BOOK_DIR);
+  const auto before = readFileBytes(statsPath(BOOK_DIR, 8));
+  ASSERT_EQ(before.size(), 135u);
+
+  // A failed sync leaves the temp unverified: it is dropped, the previous
+  // record survives byte-identical.
+  Storage.failNextSync();
+  BookReadingStats torn;
+  torn.sessionCount = 9;
+  torn.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  EXPECT_EQ(readFileBytes(statsPath(BOOK_DIR, 8)), before);
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 4u);
+  EXPECT_EQ(out.totalReadingSeconds, 500u);
 }
 
 TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {

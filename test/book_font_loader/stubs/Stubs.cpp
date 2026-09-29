@@ -48,6 +48,7 @@ bool HalStorage::rename(const char* oldPath, const char* newPath) {
 }
 
 bool HalStorage::replaceFile(const char* tmpPath, const char* path) {
+  if (!exists(tmpPath)) return false;  // never touch the destination without a replacement
   return (!exists(path) || remove(path)) && rename(tmpPath, path);
 }
 
