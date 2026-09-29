@@ -113,6 +113,26 @@ constexpr uint32_t kHintProbeFloorBytes =
 // deepest autohint/Adobe paths are exercised.
 constexpr uint32_t kHintProbeCodepoints[] = {'A', 'g', 'M', '@', 0x00C6u, 0x2019u};
 
+// The body point size the probe measures at, and the SIZE axis of the verdict
+// cache: the Adobe CFF depth is a function of the glyph size the probe
+// rasterized, so a verdict measured at one size must not be reused at another.
+#if defined(HOST_TEST)
+static uint16_t g_hintProbeSizeOverride = 0;  // 0 = unset: the host probe is compiled out
+#endif
+static uint16_t currentHintProbeSizePt() {
+#if defined(HOST_TEST)
+  if (g_hintProbeSizeOverride != 0) return g_hintProbeSizeOverride;
+#endif
+#if defined(ARDUINO)
+  return static_cast<uint16_t>(SETTINGS.ttfFontPointSize);
+#else
+  return 0;
+#endif
+}
+#if defined(HOST_TEST)
+void BookFontLoader::setHintProbeSizeForTest(uint16_t pointSize) { g_hintProbeSizeOverride = pointSize; }
+#endif
+
 void BookFontLoader::degradeHint(uint8_t faceSlot, const char* reason) {
   freeink::font::FtFont::RenderOptions degraded = effectiveRenderOptions_[faceSlot];
   degraded.hinting = freeink::font::FtFont::HintingMode::None;
@@ -199,8 +219,9 @@ uint32_t BookFontLoader::renderOptionsFingerprintTag() {
 }
 
 #if defined(ARDUINO)
-void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask) {
+void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasurable) {
   degradedMask = 0;
+  unmeasurable = false;
   if (kRenderOptions.hinting == freeink::font::FtFont::HintingMode::None) return;
   // Sizes span the reader's REAL runtime range: the configured body size
   // (same pt→px conversion TtfBookRuntime::makeLayoutParams uses — 150 dpi
@@ -220,7 +241,7 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask) {
     const uint32_t consumed = before > after ? before - after : 0;
     LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", i, static_cast<unsigned>(consumed));
     if (consumed > kHintProbeStackBudgetBytes) {
-      degradeHint(i, "stack probe");
+      degradeHint(i, "stack probe: over budget");
       degradedMask |= static_cast<uint8_t>(1u << i);
     } else if (consumed == 0 && after < kHintProbeFloorBytes) {
       // The lifetime high-water never moved during the probe, so the probe
@@ -228,16 +249,18 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask) {
       // than the floor: the before/after delta cannot attribute the Adobe
       // depth to this face. Fail closed (kody FX1u: a merely-deep history
       // with a measurable delta must NOT kill hinting; only an unmeasurable
-      // probe may).
+      // probe may), but flag the reading as unattributable so it is not
+      // cached as if it described the font.
       LOG_INF("BFNT", "Hint probe slot %u unmeasurable (HWM %u B < floor %u B, no delta)", i,
               static_cast<unsigned>(after), static_cast<unsigned>(kHintProbeFloorBytes));
-      degradeHint(i, "stack probe");
+      degradeHint(i, "stack probe: unmeasurable");
       degradedMask |= static_cast<uint8_t>(1u << i);
+      unmeasurable = true;
     }
   }
 }
 #else
-void BookFontLoader::probeHintStackSafety(uint8_t&) {}
+void BookFontLoader::probeHintStackSafety(uint8_t&, bool&) {}
 #endif  // ARDUINO
 
 void BookFontLoader::resetHintState() {
@@ -250,6 +273,7 @@ void BookFontLoader::resetHintState() {
 void BookFontLoader::recordHintVerdict(uint32_t loadKey, const uint8_t degradedMask) {
   hintVerdictKey_ = loadKey;
   hintVerdictMask_ = degradedMask;
+  hintVerdictSizePt_ = currentHintProbeSizePt();
   hintProbePending_ = false;
   // Hinting changes advances, so the tag folded into layout identity must
   // follow the verdict: a fingerprint derived before the degrade would
@@ -261,8 +285,12 @@ bool BookFontLoader::reuseHintVerdicts(const uint32_t loadKey) {
   // Same principle as applyRenderMode's: the Adobe footprint is a property
   // of the face bytes and the interpreter build, not of the raster mode or
   // of when the load happened — so an unchanged face set reuses its
-  // measurement instead of re-probing.
-  if (hintVerdictKey_ == 0 || hintVerdictKey_ != loadKey) return false;
+  // measurement instead of re-probing. The body point size is the exception:
+  // the footprint scales with the glyph size the probe rasterized, so a size
+  // change re-probes rather than inheriting an old-size verdict.
+  if (hintVerdictKey_ == 0 || hintVerdictKey_ != loadKey || hintVerdictSizePt_ != currentHintProbeSizePt()) {
+    return false;
+  }
   for (uint8_t i = 0; i < 4; ++i) {
     if ((hintVerdictMask_ & static_cast<uint8_t>(1u << i)) != 0) degradeHint(i, "cached probe verdict");
   }
@@ -276,7 +304,19 @@ void BookFontLoader::ensureHintProbeSettled() {
   // applied for this face set, or the pending flag would already be clear.
   const uint32_t loadKey = fingerprint_;
   uint8_t degradedMask = 0;
-  probeHintStackSafety(degradedMask);
+  bool unmeasurable = false;
+  probeHintStackSafety(degradedMask, unmeasurable);
+  if (unmeasurable) {
+    // The caller's stack history, not the font, set this reading. Degrade for
+    // the rest of the session (fail closed) but do not cache it: the next
+    // load re-measures instead of freezing a contaminated verdict.
+    hintProbePending_ = false;
+    hintVerdictKey_ = 0;
+    hintVerdictMask_ = 0;
+    hintVerdictSizePt_ = 0;
+    if (degradedMask != 0 && loaded_) fingerprint_ = computeFingerprintCached();
+    return;
+  }
   recordHintVerdict(loadKey, degradedMask);
 }
 #else
@@ -602,6 +642,7 @@ void BookFontLoader::ensureLoaded() {
     glyphBacking_[i].reset();
   }
   chain_ = FontChain{};
+  fingerprintCoverage_ = 0;
   if (familyCount_ == 0) {
     // No manifest: no real fingerprint exists. Zero it so a cache generation
     // derived from the stale value can't collide with a previously loaded
@@ -644,12 +685,13 @@ void BookFontLoader::ensureLoaded() {
       // Face skipped (too large, invalid sfnt, OOM); continue with fewer faces.
     }
   }
-#if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
-#else
-  // stb: identity is computed here, as on develop (see the FT comment below —
-  // the FT path computes it after the fallback tail instead).
+  // Identity is the PRE-fallback-tail one: the tail is a constant both parity
+  // sites register, so folding chain_.styleCoverage() here (after the tail)
+  // would make the fingerprint depend on WHEN it is evaluated and diverge
+  // from the worker's parity hash for any family without all four styles.
+  // Fingerprint both functions from the coverage captured before the tail.
+  fingerprintCoverage_ = chain_.styleCoverage();
   fingerprint_ = computeFingerprintCached();
-#endif
   memSentinelCheck("font ensureLoaded");
   appendFallbackTail(chain_);
   loaded_ = true;
@@ -657,17 +699,10 @@ void BookFontLoader::ensureLoaded() {
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // Load key: the fingerprint under the REQUESTED render options — no verdict
   // has been applied for this face set yet, or the probe would be pending on
-  // an already-settled one — captured AFTER the fallback tail joins the chain
-  // and the short-circuit flag is set, at the same point of the same sequence
-  // on every load. It must equal the key the shallow probe captures
-  // (ensureHintProbeSettled, which reads fingerprint_ after this function
-  // returns) or the cached verdict would never be reused.
-  // P2 stack gate. The MEASUREMENT itself runs from the reader's first TTF
-  // render: nested under the settings/preview stack the loop task's own
-  // frames dominate the high-water delta and every slot fails closed. A
-  // verdict already measured for this exact face set is re-applied here, so
-  // a plain reload of unchanged faces reuses it.
-  fingerprint_ = computeFingerprintCached();
+  // an already-settled one. The shallow probe captures the same value from
+  // fingerprint_ after this function returns. A verdict already measured for
+  // this exact face set (and body size) is re-applied here, so a plain reload
+  // of unchanged faces reuses it.
   const bool reusedVerdict = reuseHintVerdicts(fingerprint_);
   if (reusedVerdict && hintVerdictMask_ != 0) {
     // The re-applied degrade moved the hinting tag: re-derive so the
@@ -784,6 +819,7 @@ void BookFontLoader::releaseResidentCaches() {
   // its own faces instead of trusting a set that is no longer in memory.
   hintVerdictKey_ = 0;
   hintVerdictMask_ = 0;
+  hintVerdictSizePt_ = 0;
   hintProbePending_ = true;
 #endif
 }
@@ -948,7 +984,7 @@ uint32_t BookFontLoader::computeFingerprint() const {
       h = fontFNV1a(&faceIndexUsed_[i], sizeof(uint8_t), h);
     }
   }
-  h ^= static_cast<uint32_t>(chain_.styleCoverage());
+  h ^= static_cast<uint32_t>(fingerprintCoverage_);
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   // D4: backend tag ("FTU1"). FreeType's advances/kerning differ from stb's
   // (different hinting), so a stale stb-layout section cache must invalidate.
@@ -1012,7 +1048,7 @@ uint32_t BookFontLoader::computeFingerprintCached() {
       h = fontFNV1a(&faceIndexUsed_[i], sizeof(uint8_t), h);
     }
   }
-  h ^= static_cast<uint32_t>(chain_.styleCoverage());
+  h ^= static_cast<uint32_t>(fingerprintCoverage_);
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   h ^= 0x46545531u;  // backend tag, mirrors computeFingerprint()
   h ^= renderOptionsFingerprintTag();

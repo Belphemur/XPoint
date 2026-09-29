@@ -74,7 +74,7 @@ statement without a guard. On the stb backend it is defined empty (no render
 options to gate), matching `probeHintStackSafety()`'s own `#else`.
 
 The call site is the reader's first TTF render,
-`EpubReaderActivity::renderBookTtf()` (`EpubReaderActivity.cpp:2873`),
+`EpubReaderActivity::renderBookTtf()` (`EpubReaderActivity.cpp:2875`),
 immediately after `ttf_->makeLayoutParams()` returns a usable chain:
 
 ```cpp
@@ -115,8 +115,13 @@ of when the load happened or of the raster mode — the same argument
 `applyRenderMode()` already makes for re-deriving the fingerprint. The verdict
 is therefore cached, and the cache key is the **content fingerprint captured
 under the requested render options** — `fingerprint_` as `ensureLoaded()`
-computed it, before any verdict was applied. That value folds the face bytes,
-the path hash, the collection face index, the file size and the mtime, so:
+computed it, before any verdict was applied — combined with the **body point
+size the probe measured at**. The fingerprint folds the face bytes, the path
+hash, the collection face index, the file size and the mtime; the size joins
+it because `probeHintStackSafety()` rasterizes at
+`SETTINGS.ttfFontPointSize`-derived sizes and the Adobe charstring depth is a
+function of the glyph size, so a size change must re-probe rather than inherit
+an old-size verdict. The key therefore gives:
 
 - a plain reload of unchanged faces hits the cache and re-applies the
   verdict instead of re-probing (and the reload's fingerprint comes back
@@ -130,7 +135,16 @@ State (FT build only, `BookFontLoader.h`):
 | --- | --- |
 | `hintVerdictKey_` | load key the cached mask was measured under; `0` = none |
 | `hintVerdictMask_` | bit *i* = slot *i* measured too deep |
+| `hintVerdictSizePt_` | body point size the cached mask was measured at |
 | `hintProbePending_` | the current face set has no settled verdict |
+
+A verdict whose reading was **unattributable** is never cached:
+`probeHintStackSafety()` also reports whether any slot hit the fail-closed
+floor with no measurable delta. That reading describes the caller's lifetime
+stack history rather than the font, so the slot still degrades for the rest of
+the session (fail closed), but the cache key is cleared and the next load
+re-measures instead of freezing a contaminated verdict. The fail-closed floor
+itself, the 8 KB budget and the unload path are unchanged.
 
 `ensureLoaded()`'s clear loop already calls `resetHintState()` per slot
 (`BookFontLoader.cpp:591`), so a reload starts from the requested mode and the
@@ -168,6 +182,19 @@ recomputed if the re-application moved a slot. Both fingerprint sites — the
 loader's and the worker's parity hash — therefore fold the same effective
 modes, and the worker never renders unhinted glyphs under a hinted identity.
 
+That parity also fixes *which* coverage is folded. The fallback tail is a
+constant both sites register, so hashing `chain_.styleCoverage()` directly
+would make the identity depend on where the hash is evaluated: the loader now
+computes the fingerprint after the tail joins the chain, while
+`FibpPrefetchWorker::buildFaces()` folds coverage before appending it, and for
+any family that does not already cover all four styles the two values diverge
+and the worker's FIBP indexes are written under a generation the reader never
+looks up. `ensureLoaded()` therefore captures the family coverage into
+`fingerprintCoverage_` **before** the tail is appended, and both fingerprint
+functions fold that stored value, so the identity is the pre-tail one wherever
+it is evaluated — the value the worker's parity hash already produced, and the
+value `computeFingerprint()` returns.
+
 **Consequence, accepted:** a device that first settles a verdict for a book
 regenerates that book's `.fibp` index once. A one-time re-index is the
 correct price for an identity that always describes what renders.
@@ -187,13 +214,16 @@ A deep-path rasterization that happens **before** the reader's first TTF
 render can still run a hinted face: `TextSettingsPreview` rasterizes through
 the reader chain (`TextSettingsPreview.cpp:252`, `:271`). That path is exactly
 the one that produced the bad measurement, so it is now a known exposure: a
-hinted CFF face may be rasterized once, from a deep frame, before any verdict
-exists. It cannot overflow (that is a pool-task property, unchanged) and the
-verdict settles on the reader's first render, so the exposure is bounded to
-the settings preview. Making it structurally impossible means either probing
-from the settings path too — which reintroduces the contamination — or
-servicing the preview with a `QuickSink` that never touches a hinted face.
-Tracked as a follow-up.
+hinted CFF face may be rasterized from a deep frame before any verdict exists.
+The verdict settles on the reader's first render, so the exposure is bounded
+to the settings preview, and the fail-closed floor is what bounds the damage
+if the deep frame has no room (such a probe is now reported unmeasurable and
+not cached, so it cannot permanently disable hinting). Whether the Adobe
+footprint actually fits inside the 14 KB the deepest settings frame leaves on
+the 48 KB loop task is **not** measured here — making it structurally
+impossible means either probing from the settings path too (which reintroduces
+the contamination) or servicing the preview with a `QuickSink` that never
+touches a hinted face. Tracked as a follow-up.
 
 ## 5. Tests
 
@@ -203,12 +233,15 @@ where the FreeRTOS measurement itself is compiled out, through the
 `recordHintVerdictForTest` seam:
 
 1. settling a verdict for a face set moves the tag and re-derives the
-   fingerprint (identity follows the verdict);
+   fingerprint (identity follows the verdict), while `computeFingerprint()`
+   and the loader agree (the identity does not depend on the fallback tail);
 2. a second `ensureHintProbeSettled()` is a no-op (one-shot per load);
 3. a reload of unchanged bytes re-applies the verdict and returns the
    identical fingerprint (reuse, no needless re-index);
 4. changed bytes miss the cache, return the slot to the requested mode, and
-   move the fingerprint (a verdict never outlives its face set).
+   move the fingerprint (a verdict never outlives its face set);
+5. a body-size change misses the cache and returns the slot to the requested
+   mode (the verdict is a function of the size it was measured at).
 
 The negative control is step 3: without `reuseHintVerdicts()` the reload
 would reset the slot and step 3 would fail, and without the re-derivation in

@@ -322,6 +322,10 @@ class BookFontLoader {
     }
     recordHintVerdict(loadKey, degradedMask);
   }
+  // Inject the body point size the probe would have measured at (host builds
+  // compile the FreeRTOS probe out and have no SETTINGS, so the size axis of
+  // the verdict key needs a seam). 0 = "unset", the host default.
+  static void setHintProbeSizeForTest(uint16_t pointSize);
   // Restore every slot to the requested mode — degradeHintForTest is sticky
   // (file-scope static state outlives the test) and the tag participates in
   // other tests' fingerprints.
@@ -331,10 +335,12 @@ class BookFontLoader {
 
  private:
   // P2 stack gate: probe each loaded face's hinted render depth on the
-  // calling task (loopTask) and collect every slot that exceeds
-  // kHintProbeStackBudgetBytes (or measures unmeasurably) into `degradedMask`
-  // (bit i = slot i). No-op off-device.
-  void probeHintStackSafety(uint8_t& degradedMask);
+  // calling task (loopTask). Slots that exceed kHintProbeStackBudgetBytes are
+  // collected into `degradedMask` (bit i = slot i); `unmeasurable` reports
+  // whether any slot's delta could not be attributed to the probe at all
+  // (lifetime high-water already past the floor), which must not be cached.
+  // No-op off-device.
+  void probeHintStackSafety(uint8_t& degradedMask, bool& unmeasurable);
   // Flip a slot's effective options to unhinted through setRenderOptions()
   // (the P1 glyph-cache flush point) and log why.
   void degradeHint(uint8_t faceSlot, const char* reason);
@@ -358,18 +364,21 @@ class BookFontLoader {
   // slot, so layout identity always describes what renders.
   void recordHintVerdict(uint32_t loadKey, uint8_t degradedMask);
   // Re-apply the cached verdict when it was measured for exactly this face
-  // set; false means the load owes a fresh probe. A verdict can never
-  // outlive the face it describes: the key IS the content identity (bytes +
-  // path hash + collection face index + size + mtime), so a replaced or
-  // re-pointed face misses it.
+  // set AND this body point size; false means the load owes a fresh probe. A
+  // verdict can never outlive the face it describes: the key IS the content
+  // identity (bytes + path hash + collection face index + size + mtime), so a
+  // replaced or re-pointed face misses it. The size joins it because the
+  // probe's depth is a function of the glyph size it rasterized, so a size
+  // change must re-probe rather than inherit an old-size verdict.
   bool reuseHintVerdicts(uint32_t loadKey);
 
   // P2 probe state. The verdicts survive a reload (that is the reuse cache);
   // releaseResidentCaches() drops them, and every fresh load re-arms
   // hintProbePending_.
-  uint32_t hintVerdictKey_ = 0;   // load key the cached mask was measured under; 0 = none
-  uint8_t hintVerdictMask_ = 0;   // bit i: slot i measured too deep for the consumer budget
-  bool hintProbePending_ = true;  // the current face set has no settled verdict
+  uint32_t hintVerdictKey_ = 0;     // load key the cached mask was measured under; 0 = none
+  uint8_t hintVerdictMask_ = 0;     // bit i: slot i measured too deep for the consumer budget
+  uint16_t hintVerdictSizePt_ = 0;  // body point size the cached mask was measured at
+  bool hintProbePending_ = true;    // the current face set has no settled verdict
 #endif
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
@@ -381,6 +390,14 @@ class BookFontLoader {
   NativeFace* faces_[4] = {};
   FontChain chain_;
   uint32_t fingerprint_ = 0;
+  // Style coverage of the FAMILY faces, captured before the fallback tail
+  // joins the chain and folded by both fingerprint functions. The tail is a
+  // constant that both parity sites register (the loader here, the prefetch
+  // worker in FibpPrefetchWorker::buildFaces), so hashing chain_.styleCoverage()
+  // directly would make the fingerprint depend on WHERE it is evaluated — a
+  // post-tail identity diverges from the worker's parity hash for any family
+  // that does not already cover all four styles.
+  uint8_t fingerprintCoverage_ = 0;
   bool loaded_ = false;  // a load attempt completed (fingerprint 0 is valid)
   // Requested render mode (task6): Crisp ⇒ FT monochrome target. Synced from
   // the persisted setting by the reader/settings via applyRenderMode(); the

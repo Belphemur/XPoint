@@ -1518,6 +1518,7 @@ TEST(BookFontLoaderHinting, FingerprintStableAcrossLoaderInstances) {
 // fingerprint at its pre-degrade value would let the FIBP worker render
 // unhinted glyphs under a hinted identity.
 TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedBytes) {
+  BookFontLoader::setHintProbeSizeForTest(16);  // a fixed "body size" for the verdict key
   const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
   if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
   ASSERT_GE(dejavu.size(), 16u);
@@ -1542,6 +1543,10 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
   // Load key: the fingerprint as ensureLoaded() left it, with no verdict
   // applied for this face set yet.
   const uint32_t fpRequested = loader.fontFingerprint();
+  // The identity is the PRE-fallback-tail one and must not depend on where it
+  // is evaluated: the pure (uncached, tail-independent) and the loader's own
+  // value agree, which is what the worker's parity hash mirrors.
+  EXPECT_EQ(loader.computeFingerprint(), fpRequested);
   // Settle a verdict as the shallow probe would: slot 3 measured deeper
   // than the consumer budget. (Slot 0 already sits at None on the host FT
   // variant — the funnel drops mono and autohint alike — hence the tag.)
@@ -1580,6 +1585,21 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
   EXPECT_NE(loader.fontFingerprint(), fpDegraded);
+
+  // Body-size change: the probe's depth is a function of the size it
+  // rasterized, so the cached verdict must not be reused at a different
+  // size — the slot returns to the requested mode and the load owes a probe.
+  writeFaceFile(kFacePath, dejavu);  // restore the verdict's face bytes
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
+  BookFontLoader::setHintProbeSizeForTest(24);
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
+  // Restore after the test (the override is file-scope static state).
+  BookFontLoader::setHintProbeSizeForTest(16);
 }
 #endif
 
