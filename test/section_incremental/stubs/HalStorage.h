@@ -44,6 +44,7 @@ class HalFile : public Print {
 
   bool flush() { return file_ && std::fflush(file_) == 0; }
   bool seek(size_t pos) { return file_ && std::fseek(file_, static_cast<long>(pos), SEEK_SET) == 0; }
+  uint32_t modificationTime() { return file_ ? 1700000000u : 0; }
   bool seekSet(size_t pos) { return seek(pos); }
   bool seekCur(int64_t offset) { return file_ && std::fseek(file_, static_cast<long>(offset), SEEK_CUR) == 0; }
   bool close() {

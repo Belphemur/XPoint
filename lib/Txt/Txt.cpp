@@ -236,6 +236,13 @@ bool Txt::sourceFingerprint(const std::string& filepath, uint32_t& outFp) {
   const uint8_t sizeBytes[4] = {static_cast<uint8_t>(size), static_cast<uint8_t>(size >> 8),
                                 static_cast<uint8_t>(size >> 16), static_cast<uint8_t>(size >> 24)};
   fold(sizeBytes, sizeof(sizeBytes));
+  // Fold the FAT modification time (2 s granularity): any real edit via an
+  // editor or file transfer updates it, catching mid-file same-size changes
+  // that the head/tail windows miss. 0 (no RTC / unset) stays consistent.
+  const uint32_t mtime = rawFile.modificationTime();
+  const uint8_t mtimeBytes[4] = {static_cast<uint8_t>(mtime), static_cast<uint8_t>(mtime >> 8),
+                                 static_cast<uint8_t>(mtime >> 16), static_cast<uint8_t>(mtime >> 24)};
+  fold(mtimeBytes, sizeof(mtimeBytes));
   outFp = fp;
   return true;
 }
