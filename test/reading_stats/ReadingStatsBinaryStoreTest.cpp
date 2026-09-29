@@ -786,6 +786,38 @@ TEST_F(ReadingStatsBinaryStoreTest, BookNewerFormatBlocksSaves) {
   EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, BookForwardGuardShadowsPublishTemp) {
+  // A failed-publish .tmp must never shadow a newer firmware's record: the
+  // forward-format candidate is probed (and the guard latched) before the
+  // .tmp is consulted, so the next save cannot overwrite the v9 file.
+  (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
+  std::vector<uint8_t> future(136, 0);
+  future[0] = 9;
+  {
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 9), f));
+    f.write(future.data(), future.size());
+  }
+  {
+    // A verified v8 record left in the temp by a failed publish.
+    HalFile f;
+    ASSERT_TRUE(Storage.openFileForWrite("TEST", statsPath(BOOK_DIR, 8) + ".tmp", f));
+    const uint8_t rec[3] = {8, 5, 0};  // version 8, sessionCount 5 (LE)
+    f.write(rec, sizeof(rec));
+  }
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 0u);  // the v9 file shadows the temp
+  BookReadingStats blocked;
+  blocked.sessionCount = 55;
+  blocked.save(BOOK_DIR);
+
+  // The guard latched from the forward file: the temp is untouched and no
+  // v8 record shadows the newer firmware's file.
+  EXPECT_TRUE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, CorruptCurrentFileDoesNotLatchGuard) {
   (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
   // A corrupt current-version record (garbage version byte) must be skipped,

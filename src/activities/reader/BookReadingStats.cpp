@@ -79,13 +79,16 @@ std::string statsFileNameForVersion(const uint8_t version) {
 // v5 record can still upgrade in one save hop; older formats are not loaded.
 std::vector<std::string> openCandidateNames() {
   // STATS_FILE_VERSION + 1 is recognized on load only as a forward-format
-  // guard; it is never decoded as statistics data. The .tmp of the current
-  // version is a verified record that a failed publish left behind (the
-  // destination may already have been removed) — it is the freshest complete
-  // copy, so it is consulted right after the final file.
-  return {statsFileNameForVersion(STATS_FILE_VERSION),     statsFileNameForVersion(STATS_FILE_VERSION) + ".tmp",
-          statsFileNameForVersion(STATS_FILE_VERSION - 1), statsFileNameForVersion(STATS_FILE_VERSION - 2),
-          statsFileNameForVersion(STATS_FILE_VERSION - 3), statsFileNameForVersion(STATS_FILE_VERSION + 1)};
+  // guard; it is never decoded as statistics data, and it is probed FIRST so
+  // a newer firmware's record latches the destructive-save guard before any
+  // other candidate — including the current version's .tmp — can shadow it.
+  // The .tmp of the current version is a verified record that a failed
+  // publish left behind (the destination may already have been removed); it
+  // is the freshest complete copy, so it is consulted right after the final
+  // file.
+  return {statsFileNameForVersion(STATS_FILE_VERSION + 1),      statsFileNameForVersion(STATS_FILE_VERSION),
+          statsFileNameForVersion(STATS_FILE_VERSION) + ".tmp", statsFileNameForVersion(STATS_FILE_VERSION - 1),
+          statsFileNameForVersion(STATS_FILE_VERSION - 2),      statsFileNameForVersion(STATS_FILE_VERSION - 3)};
 }
 
 uint16_t readLe16(const uint8_t* data, const int offset) {
