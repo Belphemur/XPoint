@@ -52,13 +52,13 @@ The guard itself was right. The measurement context was wrong.
 | Option | Why not |
 | --- | --- |
 | Disable the probe | A hinted CFF face on the 32 KB `FibpPrefetchWorker` blows the stack (the reason the probe exists). Trading a measurement bug for a stack overflow is not a fix. |
-| Loosen the budget / drop the fail-closed floor | The 17.5 KB "cost" is not the font's cost; raising the budget to admit it would admit the caller's depth too. The floor exists precisely so an unattributable delta cannot be read as "safe". |
+| Loosen the budget / drop the fail-closed floor | The 17.5 KB "cost" is not the font's cost; raising the budget to admit it would admit the caller's depth too. Failure to measure still fails closed (task spawn/settle failure), and an unattributable delta can never be read as "safe". |
 | Move the render pool / task stacks to PSRAM | The S3 build already sets `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`; the C3 floor target has no PSRAM at all, and the accesses are unavailable while the flash cache is off during OTA. PSRAM stacks are also ~10× slower, and the probe wants cheap contiguous headroom. |
 | Fix the `ensureLoaded()` unload path | It is correct and untouched here. |
 
 ## 3. The fix
 
-### 3.1 Measure from a shallow frame
+### 3.1 Measure on a dedicated task, triggered from a shallow site
 
 `ensureLoaded()` no longer probes. The measurement moved to a public,
 explicitly-called half of the gate:
@@ -84,10 +84,29 @@ freeink::book::fontLoader.ensureHintProbeSettled();
 const uint32_t generation = layoutGenerationHash(params, fontLoader.fontFingerprint());
 ```
 
-That frame is shallow: `renderBookTtf()` is reached from `loop()` with the
-activity stack and nothing else on it. The reader's own transient depth is
-also the depth the probe's own guard is written against, so the "consumed"
-delta is attributable to the face.
+**The measurement itself runs on a dedicated one-shot task, not the calling
+frame.** The first implementation kept the measurement on the loop task and
+relocated it to the reader's shallow first render — and the owner's X4 Pro
+log disproved that sufficiency: after popping the font preview (settings
+path, ~34 KB deep), the loop task's `uxTaskGetStackHighWaterMark` stayed
+below the fail-closed floor for the rest of the boot, so the reader's
+shallow probe read `consumed == 0, HWM 14004 B < floor 27648 B` on slots 1-3 and
+degraded every face again — lifetime high-water cannot be relocated away,
+only measured around. The probe therefore no longer rasterizes on the
+calling task at all: `probeHintStackSafety()` spawns a one-shot 32 KB task
+(the exact `FibpPrefetchWorker` stack size being protected, DRAM, core 0,
+priority 1 — worker-task `kCore` convention), whose only work is the probe
+rasterizations, and whose entry high-water starts at the full stack size —
+so `consumed = entry HWM - exit HWM` IS the face's whole render depth, with
+no caller frames in it. The loop task blocks on the probe's completion
+semaphore for its whole lifetime, so no second task calls into the FreeType
+faces concurrently (the same main-blocked/worker-rasterizes discipline
+`FibpPrefetchWorker` already runs on device). The probe task is reaped by
+the waiter; on a settle timeout its readings are unattributable, so the
+loader fails closed (degrades every loaded slot) and leaves the verdict
+UNCACHED — and both the still-parked task and its semaphore are logged and
+leaked, the same policy as the prefetch worker's wedged join (deleting a
+task that may be mid-`FT_Render_Glyph` is not safe).
 
 **Ordering is a hard constraint, not an optimization.** The verdict must
 settle before *anything* rasterizes a hinted glyph under it, and before the
@@ -139,12 +158,13 @@ State (FT build only, `BookFontLoader.h`):
 | `hintProbePending_` | the current face set has no settled verdict |
 
 A verdict whose reading was **unattributable** is never cached:
-`probeHintStackSafety()` also reports whether any slot hit the fail-closed
-floor with no measurable delta. That reading describes the caller's lifetime
-stack history rather than the font, so the slot still degrades for the rest of
-the session (fail closed), but the cache key is cleared and the next load
-re-measures instead of freezing a contaminated verdict. The fail-closed floor
-itself, the 8 KB budget and the unload path are unchanged.
+`probeHintStackSafety()` also reports whether NO measurement could be made
+(probe-task spawn failure, semaphore allocation failure, or a settle
+timeout). That outcome describes the loader's environment rather than the
+font, so every loaded slot still degrades for the rest of the session (fail
+closed), but the cache key is cleared and the next load re-measures instead
+of freezing a failed probe as a font property. The 8 KB budget and the
+unload path are unchanged.
 
 `ensureLoaded()`'s clear loop already calls `resetHintState()` per slot
 (`BookFontLoader.cpp:591`), so a reload starts from the requested mode and the
@@ -205,25 +225,24 @@ A verdict is a designed fallback to unhinted rendering, not a fault: the
 glyphs stay correct, only the grid-fit is dropped. The two degrade paths
 therefore log at `LOG_INF` with the slot and the reason, and the per-slot
 `consumed` measurement line stays at `LOG_DBG` — it is the diagnostic that
-distinguishes a real deep face from a contaminated measurement, so it must be
+distinguishes a genuinely deep face from a shallow one, so it must be
 available on a debug build without crying wolf on a release build.
 
 ## 4. Residual risk (documented, not fixed here)
 
 A deep-path rasterization that happens **before** the reader's first TTF
-render can still run a hinted face: `TextSettingsPreview` rasterizes through
-the reader chain (`TextSettingsPreview.cpp:252`, `:271`). That path is exactly
-the one that produced the bad measurement, so it is now a known exposure: a
-hinted CFF face may be rasterized from a deep frame before any verdict exists.
-The verdict settles on the reader's first render, so the exposure is bounded
-to the settings preview, and the fail-closed floor is what bounds the damage
-if the deep frame has no room (such a probe is now reported unmeasurable and
-not cached, so it cannot permanently disable hinting). Whether the Adobe
-footprint actually fits inside the 14 KB the deepest settings frame leaves on
-the 48 KB loop task is **not** measured here — making it structurally
-impossible means either probing from the settings path too (which reintroduces
-the contamination) or servicing the preview with a `QuickSink` that never
-touches a hinted face. Tracked as a follow-up.
+render can still run a hinted face from a deep settings frame:
+`TextSettingsPreview` rasterizes through the reader chain
+(`TextSettingsPreview.cpp:252`, `:271`). The probe redesign covers the
+VERDICT (it can no longer be wrong because of the caller), not the deep
+rasterization itself: the Adobe footprint of a previewed hinted CFF face
+still runs on the 48 KB loop task at the depth the settings activity leaves
+it, with no measurement of whether it fits. Making that structurally safe
+means either servicing the preview with a `QuickSink` that never touches a
+hinted face or probing from the preview path too (on the dedicated task,
+which the loading order would gate) — tracked as a follow-up; the exposure is
+bounded to a settings preview of a hinted face on a device whose hinting
+verdict is not yet settled.
 
 ## 5. Tests
 

@@ -91,22 +91,13 @@ freeink::font::FtFont::RenderOptions effectiveRenderOptions_[4] = {
 // slot 0's own face never got to observe the refusal (load failure).
 bool monoAcceptable_ = true;
 
-// Additional stack depth a face's hinted render may consume before the probe
-// degrades it. The bound protects the smallest consumer stack: the 32KB
-// FibpPrefetchWorker task (R1: 24KB overflowed on device, its pipeline
-// measured HWM 1792B — a ~22.2KB peak), so at most ~9.8KB remain for the
-// Adobe interpreter's frames when it re-renders the same hinted glyphs;
-// 8KB keeps ≥1.8KB of that task's headroom at the absolute peak.
+// Additional stack depth a face's hinted render may consume before the
+// probe degrades it. The probe measures on a dedicated task whose stack
+// equals the smallest consumer this gate protects (the 32KB
+// FibpPrefetchWorker; R1: 24KB overflowed on device, its pipeline measured
+// HWM 1792B = a ~22.2KB peak), so a face needing ≤8KB still leaves that
+// task ≥1.8KB of headroom at its absolute peak.
 constexpr uint32_t kHintProbeStackBudgetBytes = 8 * 1024;
-
-// Fail-closed floor for the probe's lifetime-HWM hole: uxTaskGetStackHigh-
-// WaterMark is a lifetime minimum, so the before/after delta UNDER-reports
-// whenever the calling task had already gone deeper than the probe reaches.
-// If the loopTask's lifetime free stack is below budget + reader-pipeline
-// peak (~13KB) + margin by the time the probe samples, the measurement can
-// no longer be attributed to the probe — degrade instead of trusting it.
-constexpr uint32_t kHintProbeFloorBytes =
-    kHintProbeStackBudgetBytes + 17 * 1024 + 2 * 1024;  // pipeline peak = measured 16.5KB paint depth
 
 // Stress set for the probe: hinted outlines with distinctive contours, at
 // sizes spanning the reader's runtime range (body, ruby, large) so the
@@ -142,6 +133,15 @@ void BookFontLoader::degradeHint(uint8_t faceSlot, const char* reason) {
   // A designed fallback to unhinted rendering, not a fault: the glyphs stay
   // correct, only the grid-fit is dropped.
   LOG_INF("BFNT", "Hinting degraded to None for face slot %u (%s)", faceSlot, reason);
+}
+
+// Fail-closed half of the gate: an unmeasurable probe (spawn/settle
+// failure) must degrade hinting, never leave the requested mode in effect.
+void BookFontLoader::degradeAllLoadedSlots(const char* reason) {
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (faces_[i] == nullptr) continue;
+    degradeHint(i, reason);
+  }
 }
 
 void BookFontLoader::applySlotRenderOptions(NativeFace* face, uint8_t faceSlot,
@@ -218,46 +218,117 @@ uint32_t BookFontLoader::renderOptionsFingerprintTag() {
   return tag;
 }
 
-#if defined(ARDUINO)
+#if defined(ARDUINO) && defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
+namespace {
+// One-shot probe of a hinted render's TRUE depth, run on a dedicated task so
+// the measurement is independent of the calling task's history.
+// uxTaskGetStackHighWaterMark is a LIFETIME minimum: read from the loop task,
+// one deep settings/preview frame lowers it for the rest of the boot and
+// every later probe misattributes that history to the font. The probe task
+// starts virgin at a known stack size, so its single reading IS the face's
+// whole render depth.
+struct HintProbeRequest {
+  NativeFace* face;
+  uint8_t slot;
+  uint16_t bodyPx;
+  uint32_t consumed;
+  SemaphoreHandle_t done;
+};
+
+// The probe task's stack equals the smallest consumer this gate protects —
+// the 32KB FibpPrefetchWorker — so a measured depth maps directly onto the
+// headroom that consumer must keep (kHintProbeStackBudgetBytes below).
+constexpr size_t kHintProbeTaskStackBytes = 32 * 1024;
+constexpr UBaseType_t kHintProbeTaskPriority = 1;
+// Worker-task convention (FibpPrefetchWorker.h kCore): 0 is valid on both
+// targets; the loop task runs on core 1 where it exists.
+constexpr BaseType_t kHintProbeTaskCore = 0;
+// Bounded settle: a probe that takes longer than this is treated as failed.
+constexpr TickType_t kHintProbeSettleTimeoutTicks = pdMS_TO_TICKS(5000);
+
+// Task body for ONE face: rasterize the stress set and record the depth the
+// render reached (fresh task: the high-water starts at the stack size, so
+// consumed = the drop from the entry reading is the face's own peak — no
+// caller frames and no earlier face's depth in it). FT faces are created and
+// closed on the main thread; the prefetch worker already rasterizes
+// main-created FT faces from its own task, and this one-shot probe runs
+// under the same discipline (the main thread blocks on `done` for the
+// probe's whole lifetime). Uses req->face, never the loader's inline state.
+void hintProbeTaskBody(void* param) {
+  auto* req = static_cast<HintProbeRequest*>(param);
+  const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);  // bytes on ESP-IDF
+  const uint16_t probeSizes[3] = {BookFontLoader::kInitSizePx, req->bodyPx,
+                                  static_cast<uint16_t>(req->bodyPx * 2 > 240 ? 240 : req->bodyPx * 2)};
+  for (const uint32_t cp : kHintProbeCodepoints) {
+    for (const uint16_t size : probeSizes) {
+      req->face->rasterize(cp, size);
+    }
+  }
+  const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
+  req->consumed = before > after ? static_cast<uint32_t>(before - after) : 0;
+  LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", req->slot, static_cast<unsigned>(req->consumed));
+  // Park instead of self-deleting: the waiter reaps this task with its
+  // handle right after the take, when nothing below the give can run anymore.
+  xSemaphoreGive(req->done);
+  vTaskSuspend(nullptr);
+}
+}  // namespace
+
 void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasurable) {
   degradedMask = 0;
   unmeasurable = false;
   if (kRenderOptions.hinting == freeink::font::FtFont::HintingMode::None) return;
-  // Sizes span the reader's REAL runtime range: the configured body size
-  // (same pt→px conversion TtfBookRuntime::makeLayoutParams uses — 150 dpi
-  // panel) plus a 2× headroom multiple, not just kInitSizePx multiples.
-  const uint16_t bodyPx = static_cast<uint16_t>(lroundf(SETTINGS.ttfFontPointSize * 150.0f / 72.0f));
-  const uint16_t probeSizes[3] = {kInitSizePx, bodyPx, static_cast<uint16_t>(bodyPx * 2 > 240 ? 240 : bodyPx * 2)};
+  // One FRESH task per face: the high-water is a task-lifetime minimum, so a
+  // shared task would only report each later face's excess over the deepest
+  // preceding one (a later over-budget CFF face could read ~0 and stay
+  // hinted). A virgin 32KB stack per slot makes each reading the face's own
+  // full depth, directly comparable to kHintProbeStackBudgetBytes.
+  HintProbeRequest req{};
+  req.bodyPx = static_cast<uint16_t>(lroundf(SETTINGS.ttfFontPointSize * 150.0f / 72.0f));
+  req.done = xSemaphoreCreateBinary();
+  if (req.done == nullptr) {
+    LOG_ERR("BFNT", "Hint probe semaphore alloc failed");
+    degradeAllLoadedSlots("stack probe: unmeasurable");
+    unmeasurable = true;
+    return;
+  }
   for (uint8_t i = 0; i < 4; ++i) {
-    NativeFace* face = faces_[i];
-    if (face == nullptr) continue;
-    const UBaseType_t before = uxTaskGetStackHighWaterMark(nullptr);  // bytes on ESP-IDF
-    for (const uint32_t cp : kHintProbeCodepoints) {
-      for (const uint16_t size : probeSizes) {
-        face->rasterize(cp, size);
-      }
+    if (faces_[i] == nullptr) continue;
+    req.face = faces_[i];
+    req.slot = i;
+    req.consumed = 0;
+    TaskHandle_t probeTask = nullptr;
+    if (xTaskCreatePinnedToCore(hintProbeTaskBody, "hintprobe", kHintProbeTaskStackBytes, &req, kHintProbeTaskPriority,
+                                &probeTask, kHintProbeTaskCore) != pdPASS) {
+      LOG_ERR("BFNT", "Hint probe task spawn failed");
+      vSemaphoreDelete(req.done);
+      degradeAllLoadedSlots("stack probe: unmeasurable");
+      unmeasurable = true;
+      return;
     }
-    const UBaseType_t after = uxTaskGetStackHighWaterMark(nullptr);
-    const uint32_t consumed = before > after ? before - after : 0;
-    LOG_DBG("BFNT", "Hint probe slot %u consumed %u B", i, static_cast<unsigned>(consumed));
-    if (consumed > kHintProbeStackBudgetBytes) {
+    if (xSemaphoreTake(req.done, kHintProbeSettleTimeoutTicks) != pdTRUE) {
+      // The probe outlived its budget: its readings describe nothing. Stop
+      // the task BEFORE touching req/done (IDF's cross-core delete ends it
+      // immediately, so it can no longer give or rasterize). Killing it
+      // mid-FT_Render_Glyph can leave the face's Adobe context inconsistent,
+      // which is harmless here: every slot degrades to unhinted below —
+      // unhinted rendering never enters the Adobe engine — and the degrade
+      // flushes the P1 glyph cache through setRenderOptions.
+      LOG_ERR("BFNT", "Hint probe slot %u timed out", i);
+      vTaskDelete(probeTask);
+      vSemaphoreDelete(req.done);
+      degradeAllLoadedSlots("stack probe: unmeasurable");
+      unmeasurable = true;
+      return;
+    }
+    // Parked task: nothing below the give can run anymore — deterministic reap.
+    vTaskDelete(probeTask);
+    if (req.consumed > kHintProbeStackBudgetBytes) {
       degradeHint(i, "stack probe: over budget");
       degradedMask |= static_cast<uint8_t>(1u << i);
-    } else if (consumed == 0 && after < kHintProbeFloorBytes) {
-      // The lifetime high-water never moved during the probe, so the probe
-      // contributed nothing NEW — and the task's history already ran deeper
-      // than the floor: the before/after delta cannot attribute the Adobe
-      // depth to this face. Fail closed (kody FX1u: a merely-deep history
-      // with a measurable delta must NOT kill hinting; only an unmeasurable
-      // probe may), but flag the reading as unattributable so it is not
-      // cached as if it described the font.
-      LOG_INF("BFNT", "Hint probe slot %u unmeasurable (HWM %u B < floor %u B, no delta)", i,
-              static_cast<unsigned>(after), static_cast<unsigned>(kHintProbeFloorBytes));
-      degradeHint(i, "stack probe: unmeasurable");
-      degradedMask |= static_cast<uint8_t>(1u << i);
-      unmeasurable = true;
     }
   }
+  vSemaphoreDelete(req.done);
 }
 #else
 void BookFontLoader::probeHintStackSafety(uint8_t&, bool&) {}
@@ -307,9 +378,10 @@ void BookFontLoader::ensureHintProbeSettled() {
   bool unmeasurable = false;
   probeHintStackSafety(degradedMask, unmeasurable);
   if (unmeasurable) {
-    // The caller's stack history, not the font, set this reading. Degrade for
-    // the rest of the session (fail closed) but do not cache it: the next
-    // load re-measures instead of freezing a contaminated verdict.
+    // No measurement could be made (probe task spawn/settle failure): it
+    // describes nothing about the faces. Degrade for the rest of the session
+    // (fail closed) but do not cache it: the next load re-measures instead of
+    // freezing a failed probe as a font property.
     hintProbePending_ = false;
     hintVerdictKey_ = 0;
     hintVerdictMask_ = 0;

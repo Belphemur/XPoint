@@ -197,15 +197,14 @@ class BookFontLoader {
   void markDirty();
 
   // P2 stack gate, call-site half (no-op on the stb backend, which has no
-  // render options to gate). The measurement is only attributable from a
-  // SHALLOW frame: nested under the settings/preview stack the loop task's
-  // own depth dominates the high-water delta, so every slot fails closed
-  // (a measured footprint then reads the caller's frames as the font's Adobe
-  // cost). Call it from the reader's first TTF render, after the family is
-  // loaded and before any hinted rasterization or FIBP worker start, so no
-  // consumer runs a hinted glyph the verdict has not cleared. One-shot per
-  // load: ensureLoaded() re-arms it and an unchanged face set reuses its
-  // verdict.
+  // render options to gate). Measures the loaded faces' hinted render depth
+  // on a dedicated one-shot task (see probeHintStackSafety), so where this is
+  // called from only affects WHEN the one-time measurement happens, not its
+  // attribution. Call it from the reader's first TTF render, after the
+  // family is loaded and before any hinted rasterization or FIBP worker
+  // start, so no consumer runs a hinted glyph the verdict has not cleared.
+  // One-shot per load: ensureLoaded() re-arms it and an unchanged face set at
+  // the same body size reuses its verdict.
   void ensureHintProbeSettled();
 
   // Scrub arenas + unload file bytes when leaving the reader with low heap.
@@ -334,16 +333,21 @@ class BookFontLoader {
 #endif
 
  private:
-  // P2 stack gate: probe each loaded face's hinted render depth on the
-  // calling task (loopTask). Slots that exceed kHintProbeStackBudgetBytes are
-  // collected into `degradedMask` (bit i = slot i); `unmeasurable` reports
-  // whether any slot's delta could not be attributed to the probe at all
-  // (lifetime high-water already past the floor), which must not be cached.
-  // No-op off-device.
+  // P2 stack gate: measure each loaded face's whole hinted render depth on a
+  // dedicated one-shot task (32KB stack — the FibpPrefetchWorker size — so
+  // attribution is independent of the calling task's lifetime high-water,
+  // which any deep settings frame contaminates for the rest of the boot).
+  // Slots exceeding kHintProbeStackBudgetBytes are collected into
+  // `degradedMask` (bit i = slot i); `unmeasurable` reports that NO
+  // measurement could be made (task spawn/settle failure), which degrades
+  // fail-closed and must not be cached. No-op off-device.
   void probeHintStackSafety(uint8_t& degradedMask, bool& unmeasurable);
   // Flip a slot's effective options to unhinted through setRenderOptions()
   // (the P1 glyph-cache flush point) and log why.
   void degradeHint(uint8_t faceSlot, const char* reason);
+  // Fail-closed half of the gate: degrade every loaded slot when no
+  // measurement could be made (probe task spawn/settle failure).
+  void degradeAllLoadedSlots(const char* reason);
   // Production reset shared by ensureLoaded's clear loop and the host test
   // seam: every slot back to the requested mode. Deliberately NOT paired
   // with a verdict: an unprobed load simply serves the requested mode, and
