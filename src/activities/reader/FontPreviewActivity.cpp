@@ -174,15 +174,6 @@ void FontPreviewActivity::loop() {
       case ReaderToolbarUi::Event::Dismiss:
         close();
         return;
-      case ReaderToolbarUi::Event::FontMinus:
-      case ReaderToolbarUi::Event::FontPlus:
-        // The +/- affordances delegate to the size slider (no bespoke
-        // stepping): same mechanism as Text settings.
-        if (routed.value == 0) {
-          cursorRow_ = 0;
-          openSizeSlider();
-        }
-        return;
       case ReaderToolbarUi::Event::FontRow:
         if (routed.value == 1) {
           cursorRow_ = 1;

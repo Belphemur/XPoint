@@ -16,15 +16,13 @@
 namespace fui = freeink::ui;
 
 namespace {
-constexpr fui::ActionId ACTION_DISMISS = 1;     // tap anywhere on the page above the sheet
-constexpr fui::ActionId ACTION_TOOL = 2;        // value = 0 Contents, 1 Text, 2 More
-constexpr fui::ActionId ACTION_PREV = 3;        // scrub row: previous chapter
-constexpr fui::ActionId ACTION_NEXT = 4;        // scrub row: next chapter
-constexpr fui::ActionId ACTION_SCRUB = 5;       // progress track: dragPermille along the book
-constexpr fui::ActionId ACTION_ROW = 6;         // panel list row, value = row index
-constexpr fui::ActionId ACTION_FONT_MINUS = 7;  // quick font row's - control
-constexpr fui::ActionId ACTION_FONT_PLUS = 8;   // quick font row's + control
-constexpr fui::ActionId ACTION_FONT_ROW = 9;    // select a quick-font row
+constexpr fui::ActionId ACTION_DISMISS = 1;   // tap anywhere on the page above the sheet
+constexpr fui::ActionId ACTION_TOOL = 2;      // value = 0 Contents, 1 Text, 2 More
+constexpr fui::ActionId ACTION_PREV = 3;      // scrub row: previous chapter
+constexpr fui::ActionId ACTION_NEXT = 4;      // scrub row: next chapter
+constexpr fui::ActionId ACTION_SCRUB = 5;     // progress track: dragPermille along the book
+constexpr fui::ActionId ACTION_ROW = 6;       // panel list row, value = row index
+constexpr fui::ActionId ACTION_FONT_ROW = 7;  // select a quick-font row
 static_assert(ACTION_FONT_ROW - ACTION_DISMISS + 1 <= UiAppHost::kMaxActionHandlers,
               "ReaderToolbarUi needs a handler slot for every action");
 
@@ -121,57 +119,17 @@ void ReaderToolbarUi::buildQuickFontRow(UiScreen& screen, const fui::Rect& row, 
     screen.target().stroke(row, ink, 2, tokens.controlRadius);
   }
 
-  const int16_t controlW = 44;
-
-  if (rowIndex == 1) {
-    // Family is an enum chooser, not a stepper: the whole row opens the modal
-    // picker; the trailing ellipsis is the affordance.
-    const fui::Rect affordance{static_cast<int16_t>(row.right() - 32),
-                               static_cast<int16_t>(row.y + (row.height - 24) / 2), 24, 24};
-    screen.target().bitmap(affordance, fui::bitmapFromIcon(icon_reader_more_24), fui::BitmapMode::Center);
-    const fui::Rect textRect{static_cast<int16_t>(row.x + tokens.spaceSm), row.y,
-                             static_cast<int16_t>(affordance.x - row.x - tokens.spaceSm), row.height};
-    fui::TextStyle valueStyle = tokens.bodyText;
-    valueStyle.bold = rowIndex == model_.quickSelected;
-    screen.target().text(textRect, label, valueStyle);
-    screen.frame().hit(row, ACTION_FONT_ROW, static_cast<int16_t>(rowIndex), fui::InputTouch);
-    return;
-  }
-
-  const fui::Rect minusRect{row.x, row.y, controlW, row.height};
-  const fui::Rect plusRect{static_cast<int16_t>(row.right() - controlW), row.y, controlW, row.height};
-
-  stepProps_.icon = fui::BitmapRef{};
-  stepProps_.action = ACTION_FONT_MINUS;
-  stepProps_.value = 0;
-  stepProps_.label = "-";
-  stepProps_.inputMask = fui::InputTouch;
-  stepProps_.styles.explicitlySet = true;
-  stepProps_.styles.normal.background = fui::Paint::solid(fui::Color::White);
-  stepProps_.styles.normal.foreground = fui::Paint::solid(fui::Color::Black);
-  stepProps_.styles.normal.border = fui::Paint::solid(fui::Color::Black);
-  stepProps_.styles.normal.borderWidth = 1;
-  stepProps_.styles.normal.radius = tokens.controlRadius;
-  stepProps_.styles.selected = stepProps_.styles.normal;
-  stepProps_.styles.focused = stepProps_.styles.normal;
-  stepProps_.styles.disabled = stepProps_.styles.normal;
-  stepProps_.styles.active = stepProps_.styles.normal;
-  stepProps_.styles.active.background = fui::Paint::solid(fui::Color::Black);
-  stepProps_.styles.active.foreground = fui::Paint::solid(fui::Color::White);
-  screen.button(stepProps_, minusRect);
-
-  stepProps_.action = ACTION_FONT_PLUS;
-  stepProps_.label = "+";
-  stepProps_.icon = fui::BitmapRef{};
-  stepProps_.iconSize = 0;
-  screen.button(stepProps_, plusRect);
-
-  const fui::Rect textRect{static_cast<int16_t>(minusRect.right() + tokens.spaceSm), row.y,
-                           static_cast<int16_t>(plusRect.x - minusRect.right() - 2 * tokens.spaceSm), row.height};
+  // Both rows are whole-row choosers: Size opens the point-size slider,
+  // Family the modal picker. The trailing ellipsis is the affordance.
+  const fui::Rect affordance{static_cast<int16_t>(row.right() - 32),
+                             static_cast<int16_t>(row.y + (row.height - 24) / 2), 24, 24};
+  screen.target().bitmap(affordance, fui::bitmapFromIcon(icon_reader_more_24), fui::BitmapMode::Center);
+  const fui::Rect textRect{static_cast<int16_t>(row.x + tokens.spaceSm), row.y,
+                           static_cast<int16_t>(affordance.x - row.x - tokens.spaceSm), row.height};
   fui::TextStyle valueStyle = tokens.bodyText;
   valueStyle.bold = rowIndex == model_.quickSelected;
   screen.target().text(textRect, label, valueStyle);
-  screen.frame().hit(textRect, ACTION_FONT_ROW, static_cast<int16_t>(rowIndex), fui::InputTouch);
+  screen.frame().hit(row, ACTION_FONT_ROW, static_cast<int16_t>(rowIndex), fui::InputTouch);
 }
 
 void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {

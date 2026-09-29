@@ -4732,10 +4732,10 @@ void EpubReaderActivity::openFontPreview() {
       applyReaderTextSettings();
       pagesUntilFullRefresh = 1;
     }
-    // Both close branches return to the Text panel the preview opened from.
-    overlay = Overlay::Text;
-    panelIndex = 0;
-    if (toolbarUi) toolbarUi->begin();
+    // Both close branches pop straight back to the book page; the chrome
+    // overlay is torn down with the preview, no Text panel reopens.
+    overlay = Overlay::None;
+    discardOverlayPage();
     requestUpdate();
   });
 }

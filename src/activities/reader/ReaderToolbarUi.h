@@ -32,9 +32,7 @@ class ReaderToolbarUi : public UiAppHost {
     NextChapter = 4,
     Scrub = 5,
     Row = 6,
-    FontMinus = 7,
-    FontPlus = 8,
-    FontRow = 9,
+    FontRow = 7,
   };
 
   struct Model {

@@ -166,8 +166,9 @@ ENTRY snapshots (family string and point size captured in `onEnter()`):
     settings-driven invalidation a Text-settings font change lands (save +
     UI-fallback resync + `markDirty()` + cache invalidation → full clean
     rebuild). Nothing new is invented; there is nothing to bypass.
-  - Both close branches return to the Text panel the preview was opened
-    from.
+- **Canceled / changed close both pop straight back to the book page**: the
+  chrome overlay is torn down with the preview and no Text panel reopens
+  (decision 2026-09-29 below).
 - **Position preservation.** The reader's position machinery is untouched
   while the preview is open; the reflow restores the position through the
   saved char offset (`ttfCurrentCharStart`) when the fresh generation
@@ -299,6 +300,15 @@ preview reuses `ReaderToolbarUi`'s existing component shapes:
   evidence: all four stats activities also end on a plain
   `renderer.displayBuffer()` and are correct, so the drain alone is the
   established sufficient contract.
+- 2026-09-29 — The quick font sheet's `-`/`+` buttons are removed: Size and
+  Family are both whole-row choosers (trailing ellipsis affordance); Size
+  opens the same IntervalSelectionActivity slider (this removes
+  ReaderToolbarUi's FontMinus/FontPlus events entirely — the +/- had already
+  been redirected to the slider in 06ec46f2, the buttons were just still
+  drawn). And both preview close branches now pop straight back to the book
+  page: the chrome overlay is torn down with the preview and no Text panel
+  reopens — the original quick-menu launch path no longer needs a trailing
+  panel restore.
 
 <!--
 Verify with:
