@@ -47,6 +47,10 @@ bool HalStorage::rename(const char* oldPath, const char* newPath) {
   return true;
 }
 
+bool HalStorage::replaceFile(const char* tmpPath, const char* path) {
+  return (!exists(path) || remove(path)) && rename(tmpPath, path);
+}
+
 size_t HalFile::write(const void* buf, size_t count) {
   if (!writable || path == nullptr || storage == nullptr) return 0;
   std::string& dst = storage->files[*path];

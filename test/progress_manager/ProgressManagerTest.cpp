@@ -219,3 +219,33 @@ TEST_F(ProgressManagerTest, FlushWritesMirrorAfterIntervalGate) {
   ASSERT_TRUE(progressManager.flushNow());
   EXPECT_EQ(Storage.files.at("/cache/book/progress.bin"), bytes);
 }
+
+// Pins the stub's FAT O_EXCL replaceFile contract that the atomic-publish
+// code (ProgressFile::writeAtomic) leans on.
+TEST_F(ProgressManagerTest, ReplaceFileFatOExclSemantics) {
+  Storage.files["/a/record.bin"] = "old";
+  Storage.files["/a/record.bin.tmp"] = "new";
+
+  // Bare rename onto an existing destination must fail, like SdFat on device.
+  EXPECT_FALSE(Storage.rename("/a/record.bin.tmp", "/a/record.bin"));
+  EXPECT_EQ(Storage.files.at("/a/record.bin"), "old");
+  EXPECT_EQ(Storage.files.at("/a/record.bin.tmp"), "new");
+
+  // Publish (remove + rename) succeeds and consumes the temp.
+  EXPECT_TRUE(Storage.replaceFile("/a/record.bin.tmp", "/a/record.bin"));
+  EXPECT_EQ(Storage.files.at("/a/record.bin"), "new");
+  EXPECT_EQ(Storage.files.count("/a/record.bin.tmp"), 0u);
+
+  // Missing temp: the remove happens first (SDK replaceFile contract), so the
+  // destination is gone and the missing rename fails.
+  EXPECT_FALSE(Storage.replaceFile("/a/missing.tmp", "/a/record.bin"));
+  EXPECT_EQ(Storage.files.count("/a/record.bin"), 0u);
+
+  // Injected rename failure after the destination was removed: the device
+  // contract leaves neither file; the temp stays for the caller to clean up.
+  Storage.files["/a/record.bin.tmp"] = "again";
+  Storage.failReplaceCount = 1;
+  EXPECT_FALSE(Storage.replaceFile("/a/record.bin.tmp", "/a/record.bin"));
+  EXPECT_EQ(Storage.files.count("/a/record.bin"), 0u);
+  EXPECT_EQ(Storage.files.count("/a/record.bin.tmp"), 1u);
+}

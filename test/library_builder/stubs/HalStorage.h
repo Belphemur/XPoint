@@ -215,6 +215,10 @@ class HalStorage {
     fake::files.erase(from);
     return true;
   }
+  // Publish a staged temp over its destination (FAT: destination must not exist).
+  bool replaceFile(const char* tmpPath, const char* path) {
+    return (!exists(path) || remove(path)) && rename(tmpPath, path);
+  }
 };
 
 #define Storage HalStorage::getInstance()

@@ -45,8 +45,9 @@ class HalStorage {
   bool readFileToStream(const char* path, Print& out, size_t chunkSize = 256);
   // Read up to `bufferSize-1` bytes into `buffer`, null-terminating it. Returns bytes read.
   size_t readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes = 0);
-  // Write a string to `path` on the SD card. Overwrites existing file.
-  // Returns true on success.
+  // Write a string to `path` on the SD card, swapping in a fully staged copy
+  // only once the whole payload is written — the previous file survives any
+  // failure. Returns true on success.
   bool writeFile(const char* path, const String& content);
   // Ensure a directory exists, creating it if necessary. Returns true on success.
   bool ensureDirectoryExists(const char* path);
@@ -56,6 +57,10 @@ class HalStorage {
   bool exists(const char* path);
   bool remove(const char* path);
   bool rename(const char* oldPath, const char* newPath);
+  // Publish a fully written temp file over `path`: removes the existing
+  // destination (FAT rename refuses to replace), then renames tmp → path. On
+  // failure the temp file is left in place for the caller to clean up.
+  bool replaceFile(const char* tmpPath, const char* path);
   bool rmdir(const char* path);
 
   bool openFileForRead(const char* moduleName, const char* path, HalFile& file);

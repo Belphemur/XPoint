@@ -27,6 +27,7 @@ class HalStorage {
   bool exists(const char* path);
   bool remove(const char* path);
   bool rename(const char* oldPath, const char* newPath);
+  bool replaceFile(const char* tmpPath, const char* path);
 
   // Test control: populate with path -> bytes. Empty map = all opens fail.
   std::map<std::string, std::string> files;

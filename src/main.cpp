@@ -352,21 +352,16 @@ static void saveSleepFrameBuffer() {
     }
   }
 
-  // Publish atomically (tmp sibling + rename): a failed or partial write
-  // must never leave a torn file at the final path — SdFat rename refuses an
-  // existing destination (O_EXCL), so tmp is fully written, synced, and only
-  // then renamed over the old frame (the rename replaces it in one step).
-  // On any failure the OLD frame is dropped rather than kept: the panel
-  // already shows the new sleep screen, so a restored old frame would no
-  // longer match what was displayed (the quick-resume contract: the file is
-  // the baseline of what is on the panel). A missing frame just restores
-  // no-frame sleep — the safe direction.
+  // Stage the full new frame (framebuffer + 4-byte Adler-32 trailer) beside
+  // the current file, synced and closed, BEFORE touching the destination: a
+  // power cut mid-write then leaves the old frame in place, not a missing
+  // sleep screen. Publication is one replace (remove + rename under the
+  // storage mutex) — on a failed publish the old frame is gone and the tmp is
+  // removed: the panel already shows the new sleep screen, so keeping an old
+  // frame would no longer match what is displayed (the quick-resume contract:
+  // the file is the baseline of what is on the panel). A missing frame just
+  // restores no-frame sleep — the safe direction.
   // Layout: [<framebuffer bytes> | <4-byte Adler-32 of the framebuffer>].
-  if (Storage.exists(SLEEP_FRAME_FILE) && !Storage.remove(SLEEP_FRAME_FILE)) {
-    LOG_ERR("SLP", "Could not drop old sleep frame");
-    Storage.remove(SLEEP_FRAME_TMP);
-    return;
-  }
   HalFile file;
   if (!Storage.openFileForWrite("SLP", SLEEP_FRAME_TMP, file)) return;
   const size_t fbWritten = file.write(fb, fbSize);
@@ -385,7 +380,7 @@ static void saveSleepFrameBuffer() {
     Storage.remove(SLEEP_FRAME_TMP);
     return;
   }
-  if (!Storage.rename(SLEEP_FRAME_TMP, SLEEP_FRAME_FILE)) {
+  if (!Storage.replaceFile(SLEEP_FRAME_TMP, SLEEP_FRAME_FILE)) {
     LOG_ERR("SLP", "Could not install sleep frame");
     Storage.remove(SLEEP_FRAME_TMP);
     return;

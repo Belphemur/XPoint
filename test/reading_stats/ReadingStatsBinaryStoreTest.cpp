@@ -276,6 +276,50 @@ TEST_F(ReadingStatsBinaryStoreTest, BookTornWriteStartsFresh) {
   EXPECT_FALSE(out.isCompleted);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, BookShortSaveKeepsPreviousRecord) {
+  // First save lands a real record.
+  BookReadingStats b;
+  b.sessionCount = 3;
+  b.totalReadingSeconds = 777;
+  b.save(BOOK_DIR);
+  const auto before = readFileBytes(statsPath(BOOK_DIR, 8));
+  ASSERT_EQ(before.size(), 135u);
+
+  // A torn save (short write into the temp) must never touch the record on
+  // disk: the temp is dropped, the previous record survives byte-identical.
+  Storage.failNextWriteShort();
+  BookReadingStats torn;
+  torn.sessionCount = 9;
+  torn.totalReadingSeconds = 1;
+  torn.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  EXPECT_EQ(readFileBytes(statsPath(BOOK_DIR, 8)), before);
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 3u);
+  EXPECT_EQ(out.totalReadingSeconds, 777u);
+}
+
+TEST_F(ReadingStatsBinaryStoreTest, BookFailedPublishLeavesNoTornRecord) {
+  BookReadingStats b;
+  b.sessionCount = 2;
+  b.save(BOOK_DIR);
+
+  // Publish fails after the previous record was removed (FAT remove + rename
+  // window): the loader must see neither a torn record nor a stale temp —
+  // a fresh record, matching the per-book no-backup decision in
+  // docs/design/2026-09-29-atomic-file-writes.md §4.
+  Storage.failNextRename(statsPath(BOOK_DIR, 8) + ".tmp", statsPath(BOOK_DIR, 8));
+  BookReadingStats failed;
+  failed.sessionCount = 5;
+  failed.save(BOOK_DIR);
+
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8) + ".tmp"));
+  EXPECT_FALSE(Storage.exists(statsPath(BOOK_DIR, 8)));
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_EQ(out.sessionCount, 0u);
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, BookLegacyFallbackChain) {
   // v5 record (73 bytes) in stats_v5.bin: accepted on load, then upgraded
   // in place on the next save — straight to v8, the current version, with

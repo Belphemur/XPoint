@@ -182,6 +182,10 @@ bool HalStorage::rename(const char* oldPath, const char* newPath) {
   HAL_STORAGE_WRAPPED_CALL(rename, oldPath, newPath);
 }
 
+bool HalStorage::replaceFile(const char* tmpPath, const char* path) {
+  HAL_STORAGE_WRAPPED_CALL(replaceFile, tmpPath, path);
+}
+
 bool HalStorage::rmdir(const char* path) { HAL_STORAGE_WRAPPED_CALL(rmdir, path); }
 
 bool HalStorage::openFileForRead(const char* moduleName, const char* path, HalFile& file) {

@@ -174,7 +174,7 @@ bool writeIndex(const std::vector<FinishedBookEntry>& entries) {
     Storage.remove(INDEX_TMP_PATH);
     return false;
   }
-  if (!Storage.rename(INDEX_TMP_PATH, INDEX_PATH)) {
+  if (!Storage.replaceFile(INDEX_TMP_PATH, INDEX_PATH)) {
     LOG_ERR("FBI", "Could not install finished-books index");
     if (Storage.exists(INDEX_BACKUP_PATH) && !Storage.exists(INDEX_PATH)) {
       Storage.rename(INDEX_BACKUP_PATH, INDEX_PATH);

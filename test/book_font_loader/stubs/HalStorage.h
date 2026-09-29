@@ -37,6 +37,7 @@ class HalStorage {
   }
   bool remove(const char* path);
   bool rename(const char* oldPath, const char* newPath);
+  bool replaceFile(const char* tmpPath, const char* path);
   bool exists(const char* path) { return files.count(path) != 0; }
   bool ensureDirectoryExists(const char*) { return true; }
 

@@ -320,7 +320,7 @@ bool saveToFile(const GlobalReadingStats& stats, const char* path, const char* b
   }
 
   // FatFile::rename fails when the destination exists (O_EXCL semantics), so
-  // the old files must be removed before each rename.
+  // the stale backup must go before the rotate-rename.
   if (backupPath != nullptr) {
     if (Storage.exists(backupPath) && !Storage.remove(backupPath)) {
       LOG_ERR("GSTATS", "Could not remove old stats backup: %s", backupPath);
@@ -332,13 +332,9 @@ bool saveToFile(const GlobalReadingStats& stats, const char* path, const char* b
       Storage.remove(tmpPath.c_str());
       return false;
     }
-  } else if (Storage.exists(path) && !Storage.remove(path)) {
-    LOG_ERR("GSTATS", "Could not replace stats file: %s", path);
-    Storage.remove(tmpPath.c_str());
-    return false;
   }
 
-  if (!Storage.rename(tmpPath.c_str(), path)) {
+  if (!Storage.replaceFile(tmpPath.c_str(), path)) {
     LOG_ERR("GSTATS", "Could not replace stats file: %s", path);
     if (backupPath != nullptr && Storage.exists(backupPath) && !Storage.exists(path)) {
       Storage.rename(backupPath, path);

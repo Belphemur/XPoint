@@ -212,8 +212,9 @@ per commit — book + global upsert):**
   at alternating offsets — the deterministic `SQLITE_IOERR_SEEK` failure pattern on x4pro.
 
 **Binary scheme:**
-- per-book: `O_TRUNC` free + 1 data sector + dir entry ≈ 3–4 sector programs (73 B payload,
-  cluster reused in place, single sync via `close()`)
+- per-book: tmp create+write+close ≈ 4, publish (`replaceFile`: remove + rename) ≈ 2 dir
+  sectors ≈ 6 (135 B payload; §3.3's atomic tmp+publish replaced the original truncate-in-place
+  write — see the 2026-09-29 durability note)
 - global: tmp create+write+close ≈ 4, remove `.bak` ≈ 2, two renames ≈ 2 dir sectors ≈ 8
   (159 B payload)
 - **≈11–12 sector programs, ≈5 KB total** (FAT32 metadata dominates the payload), all
@@ -396,8 +397,10 @@ Pass ran 2026-08-26 against this repo (`feat/reading-stats-binary`) and crossink
    stale-tmp pre-clean (`openFileForWrite` is `O_TRUNC`, `SDCardManager.cpp:337`); replaced
    crossink's post-close re-open size verify with an in-handle `fileSize()` check before
    `close()`; documented that `remove(.bak)` before rotation is *required* because
-   `FatFile::rename()` fails when the destination exists (`O_EXCL`). No per-book fsync: torn
-   writes self-heal via the `(size, version)` check. **Answer to the §8 alignment question:
+   `FatFile::rename()` fails when the destination exists (`O_EXCL`). No per-book fsync needed: the
+   save stages to `stats_vN.bin.tmp` and publishes through `Storage.replaceFile`, so a torn or
+   short write can never replace the record — the previous record survives every failure, and
+   the loader's `(size, version)` check remains the backstop for pre-existing damage. **Answer to the §8 alignment question:
    no 512-byte padding** — a ≤159 B record already costs exactly one sector program (read-free
    via `CACHE_RESERVE_FOR_WRITE`) and one cluster; padding only breaks crossink's exact-size
    validation. **Answer to the §8 `.bak` question: keep the rotation** — it costs ≈4 extra
@@ -434,7 +437,9 @@ Pass ran 2026-08-26 against this repo (`feat/reading-stats-binary`) and crossink
    `SETTINGS.shouldTrackReadingStats()` opt-out toggle. 7 per-env repeats deleted;
    RAM cost on the C3 (380 KB) accepted by the user as the price of feature parity.
 
-**Deliberately kept intact:** no-temp per-book write; `.bak` rotation for the global record;
-the `NewerFormat` destructive-save guard; legacy fallback chains; ≥10 s / ≥60 s thresholds;
+**Deliberately kept intact:** `.bak` rotation for the global record; the `NewerFormat`
+destructive-save guard; legacy fallback chains; ≥10 s / ≥60 s thresholds;
 `READING_STATS_ENABLED` gating; the cache-dir-coupled lifetime model; `loadAggregated` as a
-later port.
+later port. Changed on 2026-09-29 (`docs/design/2026-09-29-atomic-file-writes.md`): the
+per-book save is now atomic (tmp + `replaceFile` publish, no `.bak` — per-book records are
+cache-lifetime data), closing the durability gap with the global save.

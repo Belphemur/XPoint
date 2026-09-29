@@ -95,7 +95,16 @@ class HalStorage {
   bool remove(const char* path) { return std::remove(path) == 0; }
   bool remove(const std::string& path) { return remove(path.c_str()); }
 
-  bool rename(const char* from, const char* to) { return std::rename(from, to) == 0; }
+  bool rename(const char* from, const char* to) {
+    // SdFat refuses an existing destination (O_EXCL); POSIX rename replaces.
+    if (exists(to)) return false;
+    return std::rename(from, to) == 0;
+  }
+  // Publish a staged temp over its destination (FAT: destination must not exist).
+  bool replaceFile(const char* tmpPath, const char* path) {
+    if (!exists(path)) return rename(tmpPath, path);
+    return remove(path) && rename(tmpPath, path);
+  }
 
   // Device pFlag=true semantics: create intermediate directories, idempotent.
   bool mkdir(const char* path, bool = true) {

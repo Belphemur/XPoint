@@ -274,14 +274,19 @@ void BookReadingStats::save(const std::string& cachePath) const {
     return;
   }
   const std::string statsFileName = statsFileNameForVersion(STATS_FILE_VERSION);
+  const std::string statsFilePath = cachePath + "/" + statsFileName;
+  const std::string tmpPath = statsFilePath + ".tmp";
   HalFile f;
-  if (!Storage.openFileForWrite("STATS", cachePath + "/" + statsFileName, f)) {
+  if (!Storage.openFileForWrite("STATS", tmpPath, f)) {
     LOG_ERR("STATS", "Could not write %s", statsFileName.c_str());
     return;
   }
-  // Single sequential write of one fixed-size record — the access pattern this
-  // SD stack (SdFat over SDMMC) handles reliably. Torn writes self-heal: the
-  // loader rejects short/garbage records via the (size, version) check.
+  // Single sequential write of one fixed-size record into a temp file, then
+  // one atomic publish (remove + rename under the storage mutex). The record
+  // on disk is therefore always a complete old or complete new record — a
+  // torn or short write can only damage the throwaway temp, never destroy
+  // the previous record (same durability shape as the global stats save;
+  // see docs/design/2026-09-29-atomic-file-writes.md for why no .bak here).
   uint8_t data[STATS_FILE_SIZE];
   memset(data, 0, sizeof(data));
   data[0] = STATS_FILE_VERSION;
@@ -325,18 +330,38 @@ void BookReadingStats::save(const std::string& cachePath) const {
               (completionPromptDismissedAtHundred ? FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED : 0u);
   const size_t written = f.write(data, STATS_FILE_SIZE);
   if (written != STATS_FILE_SIZE) {
-    // Do NOT delete the legacy files — the v8 write didn't land, and the
-    // v5/v6/v7 record is the only copy of the user's history. The next save
-    // will retry; until it succeeds the loader still finds the legacy file
-    // and decodes it. A short write here is a serious condition (SD
-    // error) that the LOG_ERR makes visible; silently destroying the
+    // Do NOT publish and do NOT delete the legacy files — the v8 write didn't
+    // land, and the v5/v6/v7 record is the only copy of the user's history.
+    // The next save will retry; until it succeeds the loader still finds the
+    // legacy file and decodes it. A short write here is a serious condition
+    // (SD error) that the LOG_ERR makes visible; silently destroying the
     // legacy on top of that would be unrecoverable data loss.
     LOG_ERR("STATS", "Short write for %s: %u of %u bytes", statsFileName.c_str(), static_cast<unsigned>(written),
             static_cast<unsigned>(STATS_FILE_SIZE));
     f.close();
+    Storage.remove(tmpPath.c_str());
     return;
   }
-  f.close();
+  f.flush();
+  if (!f.sync()) {
+    LOG_ERR("STATS", "Failed to sync %s temp file", statsFileName.c_str());
+    f.close();
+    Storage.remove(tmpPath.c_str());
+    return;
+  }
+  if (!f.close()) {
+    LOG_ERR("STATS", "Failed to close %s temp file", statsFileName.c_str());
+    Storage.remove(tmpPath.c_str());
+    return;
+  }
+  if (!Storage.replaceFile(tmpPath.c_str(), statsFilePath.c_str())) {
+    // The previous record stays untouched whenever the replace fails before
+    // the rename; on a failed rename after removal the temp is dropped and
+    // the loader simply starts fresh — never a torn record.
+    LOG_ERR("STATS", "Could not publish %s", statsFileName.c_str());
+    Storage.remove(tmpPath.c_str());
+    return;
+  }
 
   // One-time v8 migration: delete every still-recognized legacy record now
   // that the upgraded data is safely on disk. A v5 record upgrades directly
