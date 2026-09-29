@@ -1507,6 +1507,100 @@ TEST(BookFontLoaderHinting, FingerprintStableAcrossLoaderInstances) {
   }
   EXPECT_EQ(fingerprints[0], fingerprints[1]);
 }
+
+// The shallow probe's verdict is CACHED, and layout identity must follow it.
+// The measurement is keyed by the content fingerprint captured under the
+// REQUESTED render options, so a verdict re-applies to a plain reload of the
+// same faces (no re-probe, no identity churn) and never transfers to changed
+// bytes (the cache misses and the load owes a fresh probe). The fingerprint
+// re-derivation is the load-bearing half: renderOptionsFingerprintTag folds
+// the effective per-slot hinting, so a reused degrade that left the
+// fingerprint at its pre-degrade value would let the FIBP worker render
+// unhinted glyphs under a hinted identity.
+TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedBytes) {
+  BookFontLoader::setHintProbeSizeForTest(16);  // a fixed "body size" for the verdict key
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_GE(dejavu.size(), 16u);
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  freeink::book::BookFontLoader loader;
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = 0x5F123456u;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+
+  // Load key: the fingerprint as ensureLoaded() left it, with no verdict
+  // applied for this face set yet.
+  const uint32_t fpRequested = loader.fontFingerprint();
+  // The identity is the PRE-fallback-tail one and must not depend on where it
+  // is evaluated: the pure (uncached, tail-independent) and the loader's own
+  // value agree, which is what the worker's parity hash mirrors.
+  EXPECT_EQ(loader.computeFingerprint(), fpRequested);
+  // Settle a verdict as the shallow probe would: slot 3 measured deeper
+  // than the consumer budget. (Slot 0 already sits at None on the host FT
+  // variant — the funnel drops mono and autohint alike — hence the tag.)
+  loader.recordHintVerdictForTest(fpRequested, 0x08);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
+  const uint32_t fpDegraded = loader.fontFingerprint();
+  EXPECT_NE(fpDegraded, fpRequested);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::None}));
+
+  // The verdict is settled, so a second settle from the call site is a no-op
+  // (the host probe measures nothing — only the identity may confirm it).
+  loader.ensureHintProbeSettled();
+  EXPECT_EQ(loader.fontFingerprint(), fpDegraded);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
+
+  // Reload of the SAME face set: the verdict is re-applied, not re-measured,
+  // and the identity comes back byte-identical (a needless FIBP re-index here
+  // would be a regression, not a cost).
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
+  EXPECT_EQ(loader.fontFingerprint(), fpDegraded);
+  loader.ensureHintProbeSettled();
+  EXPECT_EQ(loader.fontFingerprint(), fpDegraded);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::None}));
+
+  // Changed bytes: the content identity moves, so the cached verdict no
+  // longer describes these faces — slot 3 returns to the requested mode and
+  // the new load owes a fresh probe.
+  std::string modified = dejavu;
+  modified[8] = static_cast<char>(modified[8] ^ 0xFF);  // same size, valid sfnt
+  ASSERT_NE(modified, dejavu);
+  writeFaceFile(kFacePath, modified);
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
+  EXPECT_NE(loader.fontFingerprint(), fpDegraded);
+
+  // Body-size change: the probe's depth is a function of the size it
+  // rasterized, so the cached verdict must not be reused at a different
+  // size — the slot returns to the requested mode and the load owes a probe.
+  writeFaceFile(kFacePath, dejavu);  // restore the verdict's face bytes
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
+  BookFontLoader::setHintProbeSizeForTest(24);
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
+  EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
+  // Restore after the test (the override is file-scope static state).
+  BookFontLoader::setHintProbeSizeForTest(16);
+}
 #endif
 
 // ── Cold-start HalFile lifecycle (device boot-panic regression) ─────────

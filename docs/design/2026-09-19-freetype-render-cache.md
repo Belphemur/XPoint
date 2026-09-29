@@ -25,11 +25,14 @@ reader path:
    (up to 2 MB per face) + sfnt validation + `FtFont::init`, and then
    `computeFingerprint()` FNV-1a hashes EVERY byte of EVERY face. Multi-face
    families multiply all of this ×4.
-3. **Hinting is shipped off** (`kRenderOptions.hinting = HintingMode::None`,
-   `kRenderOptions.hinting = HintingMode::None` in `src/BookFontLoader.h`) because hinted CFF enters the Adobe
+3. **Hinting was shipped off at the time of this plan** (`kRenderOptions.hinting = HintingMode::None` in `src/BookFontLoader.h`) because hinted CFF enters the Adobe
    interpreter whose stack footprint overflowed small task stacks. The render
    task now runs with a 48 KB stack (e49d21bd) and the worker with 32 KB —
-   the blocker needs re-measuring, not assuming.
+   the blocker needs re-measuring, not assuming. *(As implemented by P2 below,
+   `kRenderOptions` now requests `HintingMode::Light` and a per-face stack
+   probe run from the reader's first TTF render degrades the faces that do not
+   fit the 32 KB worker; see
+   `docs/design/2026-09-29-hint-probe-measurement.md`.)*
 
 Reference implementation: **EPub-InkPlate** (turgu1), cloned at
 `/tmp/epub-inkplate`. Its FreeType integration does exactly what we lack:

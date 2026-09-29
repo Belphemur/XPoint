@@ -2867,6 +2867,12 @@ void EpubReaderActivity::renderBookTtf() {
     showBuildError();
     return;
   }
+  // Settle the P2 hint-stack verdict from this shallow frame, before the
+  // generation hash and the worker start below consume the fingerprint and
+  // before any hinted rasterization in this pass. Measured deeper down the
+  // settings/preview stack the loop task's own frames dominate the probe's
+  // high-water delta and every face degrades.
+  freeink::book::fontLoader.ensureHintProbeSettled();
   const uint32_t generation = freeink::book::layoutGenerationHash(params, freeink::book::fontLoader.fontFingerprint());
   ttfGeneration = generation;
   ttfGenerationValid = true;

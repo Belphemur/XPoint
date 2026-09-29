@@ -180,9 +180,10 @@ bool FibpPrefetchWorker::buildFaces() {
     h = BookFontLoader::fontBytesHash(&faceIdx, sizeof(uint8_t), h);
   }
 
-  // Fingerprint parity: the loader hashes bytes and xors the chain coverage
-  // BEFORE appending the fallback tail (computeFingerprint() runs first in
-  // ensureLoaded()), so the worker folds coverage at the same point.
+  // Fingerprint parity: the loader folds the chain coverage it captured
+  // BEFORE the fallback tail joined its chain (fingerprintCoverage_) and
+  // answers with that same pre-tail identity wherever the hash is evaluated;
+  // the worker folds the same pre-tail coverage here, at the same point.
   h ^= static_cast<uint32_t>(chain_.styleCoverage());
 #if defined(CROSSPOINT_FONT_BACKEND_FT) && CROSSPOINT_FONT_BACKEND_FT
   h ^= 0x46545531u;                                    // backend tag, mirrors computeFingerprint()
