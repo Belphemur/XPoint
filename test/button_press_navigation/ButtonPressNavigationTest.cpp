@@ -64,6 +64,32 @@ TEST_F(ButtonPressNavigationTest, PressNeverAlsoRepeatsEvenWithOldHeldDuration) 
   EXPECT_EQ(pages, 0);
 }
 
+// One physical press = exactly one step, for every button a navigator covers.
+// Auto-repeat past continuousStartMs is a deliberate hold affordance; a press
+// that has not reached the start threshold must never be answered twice, and
+// neither must the composite Next/Previous button lists answer one press once
+// per physical button they cover.
+TEST_F(ButtonPressNavigationTest, ShortTapOnNextStepsExactlyOnce) {
+  input.frame = {0, NEXT, 0, NEXT};
+  navigate();
+  EXPECT_EQ(selected, 1);
+  // Still held, no further edge, but short of the continuous start threshold.
+  input.frame = {300, 0, 0, NEXT};
+  navigate();
+  EXPECT_EQ(selected, 1);
+  EXPECT_EQ(pages, 0);
+}
+
+TEST_F(ButtonPressNavigationTest, ShortTapOnPreviousStepsExactlyOnce) {
+  input.frame = {0, PREVIOUS, 0, PREVIOUS};
+  navigate();
+  EXPECT_EQ(selected, 9);
+  input.frame = {300, 0, 0, PREVIOUS};
+  navigate();
+  EXPECT_EQ(selected, 9);
+  EXPECT_EQ(pages, 0);
+}
+
 TEST_F(ButtonPressNavigationTest, FastDirectionChangeStartsANewRepeatInterval) {
   input.frame = {501, 0, 0, NEXT};
   navigate();
