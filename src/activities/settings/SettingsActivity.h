@@ -25,6 +25,8 @@ enum class SettingAction {
   SdFirmwareUpdate,
   Language,
   DownloadFonts,
+  Plugins,
+  KeyboardLayouts,
   HomeButton,
   TextSettings,
   About,

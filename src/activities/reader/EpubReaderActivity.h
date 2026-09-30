@@ -157,6 +157,10 @@ class EpubReaderActivity final : public ReaderActivity {
   static constexpr int MAX_FOOTNOTE_DEPTH = 3;
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
+  // The back-stack outlives the reader (sleep, home) in links.bin so Back
+  // still returns to where a followed link was tapped.
+  void saveLinkStack() const;
+  void loadLinkStack();
 
 #ifdef READING_STATS_ENABLED
   BookReadingStats stats;
@@ -424,10 +428,23 @@ class EpubReaderActivity final : public ReaderActivity {
   // to be noticed here rather than assumed away.
   uint8_t appliedOrientation = 0;
 
+  // Modal shown when a protected book refuses to open (loan expired /
+  // date unverified); OK exits, "Sync time" (when offered) verifies the
+  // clock over Wi-Fi and reopens the book.
+  OptionPopup<> loadFailurePopup;
+  // Protection error captured by loadBook() for handleLoadFailure(); the
+  // failed Epub itself does not outlive loadBook().
+  std::string loadProtectionError;
+
   bool loadBook() override;
+  bool handleLoadFailure() override;
+  // Wi-Fi join + SNTP for a loan whose date could not be verified, then a
+  // clean re-open of the book.
+  void beginLoanTimeSync();
   std::string getBookTitle() const override { return epub ? epub->getTitle() : ""; }
   std::string getBookAuthor() const override { return epub ? epub->getAuthor() : ""; }
   std::string getBookThumbBmpPath() const override { return epub ? epub->getThumbBmpPath() : ""; }
+  int getProgressBasisPoints() const override;
   void renderBook() override;
   void onEndOfBookRendered() override;
 
@@ -440,6 +457,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  void render(RenderLock&& lock) override;
 
   bool pageTurn(bool isForward) override;
   bool skipPages(int amount) override;

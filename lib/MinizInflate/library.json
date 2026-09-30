@@ -1,0 +1,17 @@
+{
+  "name": "MinizInflate",
+  "version": "0.1.0",
+  "description": "mz_* wrapper API over the fork's split miniz with ROM-bound tinfl/tdefl cores. Satisfies CONTENT_EXTERNAL_MINIZ consumers (freeink-sdk ContentProtection); the firmware itself otherwise consumes miniz header-only.",
+  "keywords": "miniz, inflate, rom",
+  "authors": [{ "name": "Antoine Aflalo (Belphemur)" }],
+  "license": "MIT",
+  "build": {
+    "flags": [
+      "-DMINIZ_NO_ARCHIVE_APIS=1",
+      "-DMINIZ_NO_STDIO=1",
+      "-DMINIZ_NO_TIME=1",
+      "-Dtdefl_compress_mem_to_output=xpoint_tdefl_compress_mem_to_output",
+      "-Dtdefl_compress_mem_to_heap=xpoint_tdefl_compress_mem_to_heap"
+    ]
+  }
+}

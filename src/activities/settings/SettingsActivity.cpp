@@ -22,6 +22,7 @@
 #include "GlobalStatsActivity.h"
 #include "HomeButtonSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
+#include "KeyboardLayoutsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
@@ -34,6 +35,7 @@
 #include "TextSettingsActivity.h"
 #include "TtfUiFallback.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/plugins/PluginCatalogActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
@@ -111,6 +113,8 @@ void SettingsActivity::rebuildSettingsLists() {
   // asset isn't published yet just report no update available.
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_PLUGINS, SettingAction::Plugins));
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_ABOUT, SettingAction::About));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   readerSettings.insert(readerSettings.begin(),
@@ -434,6 +438,16 @@ void SettingsActivity::toggleCurrentSetting() {
                                  SETTINGS.saveToFile();
                                  rebuildSettingsLists();
                                });
+        break;
+      case SettingAction::Plugins:
+        startActivityForResult(std::make_unique<PluginCatalogActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::KeyboardLayouts:
+        if (auto activity = makeUniqueNoThrow<KeyboardLayoutsActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), nullptr);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: KeyboardLayoutsActivity");
+        }
         break;
       case SettingAction::About:
         if (auto activity = makeUniqueNoThrow<AboutActivity>(renderer, mappedInput)) {

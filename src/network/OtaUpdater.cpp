@@ -8,7 +8,6 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <esp_ota_ops.h>
-#include <esp_wifi.h>
 // clang-format on
 
 #include <algorithm>
@@ -237,9 +236,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     return INTERNAL_UPDATE_ERROR;
   }
 
-  /* For better timing and connectivity, we disable power saving for WiFi */
-  esp_wifi_set_ps(WIFI_PS_NONE);
-
   processedSize = 0;
   int lastReportedPct = -1;
   bool flashOk = true;
@@ -297,9 +293,6 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
     }
     return true;
   });
-
-  /* Return back to default power saving for WiFi in case of failing */
-  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 
   if (wrongChip || tagScanner.mismatch()) {
     LOG_ERR("OTA", "Firmware install aborted: wrong device");

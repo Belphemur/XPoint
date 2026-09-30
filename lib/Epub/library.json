@@ -1,0 +1,9 @@
+{
+  "name": "Epub",
+  "version": "0.1.0",
+  "description": "EPUB engine: container parsing, layout sections, content-protection glue",
+  "keywords": "epub, ebook",
+  "authors": [{ "name": "Antoine Aflalo (Belphemur)" }],
+  "license": "MIT",
+  "dependencies": ["MinizInflate"]
+}

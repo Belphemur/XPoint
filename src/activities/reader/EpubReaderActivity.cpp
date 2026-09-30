@@ -14,6 +14,8 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <SdCardFont.h>
+#include <TrustedTime.h>
+#include <WiFi.h>
 #include <esp_system.h>
 #include <freertos/task.h>
 
@@ -65,7 +67,9 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "SilentRestart.h"
 #include "TtfUiFallback.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -202,6 +206,18 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
     return;
   }
 
+  const std::string rightsSrcPath = srcPath + ".rights";
+  if (Storage.exists(rightsSrcPath.c_str())) {
+    const std::string rightsDstPath = dstPath + ".rights";
+    if (!Storage.rename(rightsSrcPath.c_str(), rightsDstPath.c_str())) {
+      LOG_ERR("ERS", "Failed to move rights file %s -> %s", rightsSrcPath.c_str(), rightsDstPath.c_str());
+      if (!Storage.rename(dstPath.c_str(), srcPath.c_str())) {
+        LOG_ERR("ERS", "Failed to restore epub after rights move failure: %s -> %s", dstPath.c_str(), srcPath.c_str());
+      }
+      return;
+    }
+  }
+
   const std::string newCachePath = "/.crosspoint/epub_" + std::to_string(std::hash<std::string>{}(dstPath));
   if (!oldCachePath.empty() && Storage.exists(oldCachePath.c_str())) {
     // No stats handling needed here: per-book stats live INSIDE the cache dir,
@@ -239,44 +255,11 @@ EpubReaderActivity::~EpubReaderActivity() {
   // background tick can touch reader state.
   progressManager.closeBook();
 
-  if (footnoteDepth > 0 && epub) {
-    const SavedPosition& origin = savedPositions[0];
-#if defined(CROSSPOINT_TTF_READER)
-    if (ttf_) {
-      // Page-anchored TTF record (charOffset 0 + generation): the restore
-      // maps the record's page number (§3.5 item 8). Persist the origin
-      // chapter's page count when a COMPLETE source can answer it, so the
-      // load-side corrupt-page guard applies; 0 keeps the deferred
-      // within-chapter clamp as the bound for unbuilt chapters.
-      const bool sessionComplete =
-          ttf_->sessionFor(origin.spineIndex) && ttf_->sessionDone() && ttf_->sessionMatchesGeneration(ttfGeneration);
-      // Same completeness contract as the restore path (ttfResolveTargetPage):
-      // the cache answers only its own chapter at the current generation, and
-      // never while a session for that spine is mid-build (partial writer
-      // count must not masquerade as the chapter total).
-      const bool cacheComplete = !ttf_->sessionFor(origin.spineIndex) && ttf_->cacheReady() && !ttf_->cachePartial() &&
-                                 ttf_->cacheSpine() == origin.spineIndex && ttf_->cacheGeneration() == ttfGeneration;
-      const uint16_t originPageCount =
-          (sessionComplete || cacheComplete) ? static_cast<uint16_t>(ttf_->availablePageCount(origin.spineIndex)) : 0;
-      if (!progressManager.saveNowTtf(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber,
-                                      originPageCount, 0, ttfGeneration)) {
-        LOG_ERR("ERS", "TTF footnote-origin progress save failed");
-      }
-    } else {
-#endif
-      std::optional<uint32_t> offset;
-      if (section && origin.spineIndex == currentSpineIndex && origin.pageNumber >= 0 &&
-          origin.pageNumber < section->pageCount) {
-        offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(origin.pageNumber));
-      }
-      // Single-writer rule (design §4.7): the footnote-origin save routes
-      // through the saver like every other synchronous save.
-      progressManager.saveNow(epub->getCachePath().c_str(), origin.spineIndex, origin.pageNumber, 0, offset.has_value(),
-                              offset.value_or(0));
-#if defined(CROSSPOINT_TTF_READER)
-    }
-#endif
-  }
+  // Upstream #3764: reopen lands on the page being VIEWED (progress stays on
+  // the current page), and the link stack gives Back a trace back to the
+  // origin — replacing the old footnote-origin re-save that redirected reopen
+  // to the origin page.
+  if (footnoteDepth > 0 && epub) saveLinkStack();
 
   section.reset();
   nextSectionPrefetch.reset();
@@ -648,7 +631,10 @@ bool EpubReaderActivity::loadBook() {
   }
   logMemAt("book_open");
   if (!loaded) {
-    LOG_ERR("ERS", "Failed to load EPUB");
+    // Surfaced by handleLoadFailure() as a dialog; loadedEpub dies with this
+    // scope, so carry the reason out in a member.
+    loadProtectionError = loadedEpub->getProtectionError();
+    LOG_ERR("ERS", "Failed to load EPUB%s%s", loadProtectionError.empty() ? "" : ": ", loadProtectionError.c_str());
     return false;
   }
   epub = std::move(loadedEpub);
@@ -762,6 +748,7 @@ bool EpubReaderActivity::loadBook() {
     }
   }
 
+  loadLinkStack();
   loadCachedBookmarks();
   return true;
 }
@@ -1032,6 +1019,10 @@ void EpubReaderActivity::openFootnoteSelect(const bool reopenMenuOnCancel) {
 }
 
 void EpubReaderActivity::loop() {
+  if (loadFailurePopup.isActive()) {
+    loadFailurePopup.handleInput(mappedInput, [this] { requestUpdate(); });
+    return;
+  }
   if (!epub) {
     finish();
     return;
@@ -1216,7 +1207,8 @@ void EpubReaderActivity::loop() {
     }
 
     if ((millis() - lastPageTurnTime) >= pageTurnDuration) {
-      pageTurn(true);
+      const bool succeeded = pageTurn(true);
+      notePageTurn(true, succeeded);
       requestUpdate();
       return;
     }
@@ -1356,7 +1348,8 @@ void EpubReaderActivity::loop() {
     }
     const bool forward = pendingManualTurn > 0;
     pendingManualTurn = 0;
-    pageTurn(forward);
+    const bool succeeded = pageTurn(forward);
+    notePageTurn(forward, succeeded);
     requestUpdate();
     return;
   }
@@ -1380,7 +1373,8 @@ void EpubReaderActivity::loop() {
   const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
   const bool longPress = !fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
-    skipPages(nextTriggered ? 1 : -1);
+    const bool succeeded = skipPages(nextTriggered ? 1 : -1);
+    notePageTurn(false, succeeded);
     requestUpdate();
     return;
   }
@@ -1409,9 +1403,11 @@ void EpubReaderActivity::loop() {
   }
 
   if (prevTriggered) {
-    pageTurn(false);
+    const bool succeeded = pageTurn(false);
+    notePageTurn(false, succeeded);
   } else {
-    pageTurn(true);
+    const bool succeeded = pageTurn(true);
+    notePageTurn(true, succeeded);
   }
   requestUpdate();
 }
@@ -1821,6 +1817,8 @@ bool EpubReaderActivity::launchKOReaderSync() {
       GfxRenderer::FrameBufferLoan loan(renderer);
       localKoPos = ProgressMapper::toSavedProgress(epub, localPos);
     }
+    // The destructor can no longer save the back-stack once epub is gone.
+    if (footnoteDepth > 0) saveLinkStack();
     epub.reset();
   }
   LOG_DBG("KOSync", "Epub released (heap after: %u)", (unsigned)ESP.getFreeHeap());
@@ -2063,6 +2061,80 @@ bool EpubReaderActivity::skipPages(int amount) {
     }
   }
   return false;
+}
+
+// Failed protected open: show the standard option dialog (wrapped message)
+// instead of silently falling back to the previous screen. Exact error
+// strings are set by openProtectedBook (ContentProtection.cpp).
+bool EpubReaderActivity::handleLoadFailure() {
+  if (loadProtectionError.empty()) return false;
+  const std::string& perr = loadProtectionError;
+  StrId msg = StrId::STR_DRM_PROTECTED_FILE;
+  bool offerSync = false;
+  if (perr == "access expired") {
+    msg = StrId::STR_LOAN_EXPIRED;
+  } else if (perr == "loan date unverified") {
+    msg = StrId::STR_LOAN_TIME_UNVERIFIED;
+    offerSync = true;
+  }
+  const char* options[2] = {I18N.get(offerSync ? StrId::STR_CLOCK_SYNC_NOW : StrId::STR_OK_BUTTON),
+                            I18N.get(StrId::STR_OK_BUTTON)};
+  loadFailurePopup.showMessage("", I18N.get(msg), options, offerSync ? 2 : 1, 0, [this, offerSync](const int index) {
+    if (offerSync && index == 0) {
+      beginLoanTimeSync();
+      return;
+    }
+    finish();
+  });
+  requestUpdate();
+  return true;  // stay alive; the popup's Back dismiss lands in loop()'s !epub finish
+}
+
+void EpubReaderActivity::beginLoanTimeSync() {
+  auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifi) {
+    LOG_ERR("ERS", "OOM: Wi-Fi selection for loan time sync");
+    finish();
+    return;
+  }
+  startActivityForResult(std::move(wifi), [this](const ActivityResult& result) {
+    if (result.isCancelled || WiFi.status() != WL_CONNECTED) {
+      finish();
+      return;
+    }
+    GUI.drawPopup(renderer, tr(STR_SYNCING_TIME));
+    const bool synced = trustedtime::syncNow(5000);
+    WiFi.disconnect(false);
+    delay(30);
+    if (!synced) {
+      // Reopening would hit the same unverified-time refusal: offer a retry.
+      const char* options[2] = {I18N.get(StrId::STR_RETRY), I18N.get(StrId::STR_OK_BUTTON)};
+      loadFailurePopup.showMessage("", I18N.get(StrId::STR_CLOCK_SYNC_FAIL), options, 2, 0, [this](const int index) {
+        if (index == 0) {
+          beginLoanTimeSync();
+          return;
+        }
+        finish();
+      });
+      requestUpdate();
+      return;
+    }
+    APP_STATE.openEpubPath = bookPath;
+    APP_STATE.saveToFile();
+    // Reboot straight back into this book with a clean heap (no-op on touch
+    // boards, which fall through to the in-place relaunch below).
+    silentRestartToReader();
+    activityManager.goToReader(bookPath);
+  });
+}
+
+void EpubReaderActivity::render(RenderLock&& lock) {
+  if (loadFailurePopup.isActive()) {
+    renderer.clearScreen();
+    loadFailurePopup.processRender(renderer, mappedInput);
+    return;
+  }
+  ReaderActivity::render(std::move(lock));
 }
 
 bool EpubReaderActivity::isAtEndOfBook() const { return epub && currentSpineIndex >= epub->getSpineItemsCount(); }
@@ -5644,19 +5716,6 @@ void EpubReaderActivity::activateMoreRow(int row) {
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
   if (!epub) return;
 
-  if (savePosition && footnoteDepth < MAX_FOOTNOTE_DEPTH) {
-#if defined(CROSSPOINT_TTF_READER)
-    // TTF mirror: ttfPage is the chapter-local page the origin save maps
-    // through (page-anchored restore, §3.5 item 8).
-    const int savedPage = ttf_ ? ttfPage : (section ? section->currentPage : 0);
-#else
-    const int savedPage = section ? section->currentPage : 0;
-#endif
-    savedPositions[footnoteDepth] = {currentSpineIndex, savedPage};
-    footnoteDepth++;
-    LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, savedPage);
-  }
-
   std::string anchor;
   const auto hashPos = hrefStr.find('#');
   if (hashPos != std::string::npos && hashPos + 1 < hrefStr.size()) {
@@ -5668,8 +5727,21 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
 
   if (targetSpineIndex < 0) {
     LOG_DBG("ERS", "Could not resolve href: %s", hrefStr.c_str());
-    if (savePosition && footnoteDepth > 0) footnoteDepth--;
     return;
+  }
+
+  if (savePosition) {
+    // Full: drop the oldest entry so Back always returns from the newest jump.
+    if (footnoteDepth == MAX_FOOTNOTE_DEPTH) {
+      std::copy(savedPositions + 1, savedPositions + MAX_FOOTNOTE_DEPTH, savedPositions);
+      footnoteDepth--;
+    }
+    // A child screen (menu, footnote list) may have released the section;
+    // nextPageNumber then holds the page it was on.
+    const int page = section ? section->currentPage : nextPageNumber;
+    savedPositions[footnoteDepth] = {currentSpineIndex, page};
+    footnoteDepth++;
+    LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, page);
   }
 
   {
@@ -5682,6 +5754,52 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   }
   requestUpdate();
   LOG_DBG("ERS", "Navigated to spine %d for href: %s", targetSpineIndex, hrefStr.c_str());
+}
+
+void EpubReaderActivity::saveLinkStack() const {
+  // [depth] then depth x (spine u16 LE, page u16 LE)
+  uint8_t data[1 + MAX_FOOTNOTE_DEPTH * 4];
+  size_t size = 0;
+  data[size++] = static_cast<uint8_t>(footnoteDepth);
+  for (int i = 0; i < footnoteDepth; i++) {
+    const SavedPosition& pos = savedPositions[i];
+    data[size++] = pos.spineIndex & 0xFF;
+    data[size++] = (pos.spineIndex >> 8) & 0xFF;
+    data[size++] = pos.pageNumber & 0xFF;
+    data[size++] = (pos.pageNumber >> 8) & 0xFF;
+  }
+  HalFile f;
+  if (!Storage.openFileForWrite("ERS", epub->getCachePath() + "/links.bin", f)) return;
+  if (f.write(data, size) != size) LOG_ERR("ERS", "Failed to write link stack");
+}
+
+void EpubReaderActivity::loadLinkStack() {
+  const std::string path = epub->getCachePath() + "/links.bin";
+  if (!Storage.exists(path.c_str())) return;
+  {
+    HalFile f;
+    uint8_t data[1 + MAX_FOOTNOTE_DEPTH * 4];
+    if (Storage.openFileForRead("ERS", path, f)) {
+      const int size = f.read(data, sizeof(data));
+      const int depth = size > 0 ? data[0] : 0;
+      if (depth >= 1 && depth <= MAX_FOOTNOTE_DEPTH && size == 1 + depth * 4) {
+        const int spineCount = epub->getSpineItemsCount();
+        bool valid = true;
+        for (int i = 0; i < depth; i++) {
+          const uint8_t* p = data + 1 + i * 4;
+          savedPositions[i] = {p[0] | (p[1] << 8), p[2] | (p[3] << 8)};
+          valid = valid && savedPositions[i].spineIndex < spineCount;
+        }
+        if (valid) {
+          footnoteDepth = depth;
+          LOG_DBG("ERS", "Loaded link stack, depth %d", depth);
+        }
+      }
+    }
+  }
+  // Consumed once: a later exit rewrites it, and an unclean shutdown must not
+  // resurrect a stale stack.
+  Storage.remove(path.c_str());
 }
 
 void EpubReaderActivity::restoreSavedPosition() {
@@ -5881,6 +5999,17 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
     }
   }
   return info;
+}
+
+int EpubReaderActivity::getProgressBasisPoints() const {
+  if (isAtEndOfBook()) return 10000;
+  if (!epub || !section || epub->getBookSize() == 0) return getProgressPercent() * 100;
+  const int totalPages = section->estimatedTotalPages();
+  if (totalPages <= 0) return getProgressPercent() * 100;
+  const float chapterProgress = static_cast<float>(section->currentPage) / static_cast<float>(totalPages);
+  const int basisPoints =
+      static_cast<int>(epub->calculateProgress(currentSpineIndex, chapterProgress) * 10000.0f + 0.5f);
+  return std::clamp(basisPoints, 0, 10000);
 }
 
 CrossPointPosition EpubReaderActivity::getCurrentPosition() const {

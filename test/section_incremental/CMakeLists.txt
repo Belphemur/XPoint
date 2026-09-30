@@ -1,6 +1,7 @@
 add_executable(SectionIncrementalTest
   SectionIncrementalTest.cpp
   ParserLinkStubs.cpp
+  ContentProtectionHostStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
@@ -30,6 +31,7 @@ add_executable(SectionIncrementalTest
 add_executable(SectionIncrementalReproTest
   SectionIncrementalReproTest.cpp
   ParserLinkStubs.cpp
+  ContentProtectionHostStub.cpp
   ${REPO_ROOT}/lib/Epub/Epub.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
@@ -75,6 +77,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${REPO_ROOT}/lib/ZipFile
   ${REPO_ROOT}/lib/inflate/src
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
+  ${REPO_ROOT}/freeink-sdk/libs/book/ContentProtection/include
 )
 
 target_include_directories(SectionIncrementalReproTest PRIVATE
@@ -98,6 +101,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${REPO_ROOT}/lib/ZipFile
   ${REPO_ROOT}/lib/inflate/src
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
+  ${REPO_ROOT}/freeink-sdk/libs/book/ContentProtection/include
 )
 
 target_compile_definitions(SectionIncrementalTest PRIVATE

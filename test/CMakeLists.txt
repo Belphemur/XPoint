@@ -139,6 +139,12 @@ add_subdirectory(ui_app_handlers)
 add_subdirectory(activity_result)
 add_subdirectory(glyph_bitmap)
 
+add_subdirectory(reader_session)
+add_subdirectory(plugin_manifest_classification)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME TrustedTimeTimezone COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_trusted_time.py)
+
 # Performance benchmarks (host, real engine + FreeType). Opt-in so the
 # default CI gate stays fast and timing-free.
 option(CROSSPOINT_BUILD_BENCH "Build host performance benchmarks" OFF)

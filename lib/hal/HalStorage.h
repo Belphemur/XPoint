@@ -45,6 +45,9 @@ class HalStorage {
   bool readFileToStream(const char* path, Print& out, size_t chunkSize = 256);
   // Read up to `bufferSize-1` bytes into `buffer`, null-terminating it. Returns bytes read.
   size_t readFileToBuffer(const char* path, char* buffer, size_t bufferSize, size_t maxBytes = 0);
+  // Read the whole file at `path` into `out`. Fails (without allocating) on
+  // missing, directory, empty, above-`cap`, or short-read files.
+  bool readFileToString(const char* moduleName, const std::string& path, size_t cap, std::string& out);
   // Write a string to `path` on the SD card. A staging failure (short write,
   // failed sync/close) leaves the previous file untouched; a publication
   // failure can still remove it, because the FAT replace is remove + rename.

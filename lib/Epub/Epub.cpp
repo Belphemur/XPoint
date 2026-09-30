@@ -11,6 +11,10 @@
 #include <ZipFile.h>
 #include <esp_heap_caps.h>
 
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
 #include "Epub/ImageStaging.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
@@ -494,6 +498,22 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
 #endif
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
+  // Open the optional encrypted-entry accessor. A null result without an error
+  // means normal ZIP reads should be used. A hard error refuses the open with
+  // a user-presentable reason.
+  {
+    std::string err;
+    decryptor = freeink::content::openProtectedBook(filepath, err);
+    if (!err.empty()) {
+      LOG_ERR("EBP", "protected content unavailable: %s", err.c_str());
+      protectionError = err;
+      return false;
+    }
+    if (decryptor) {
+      LOG_DBG("EBP", "protected content; on-read access path open");
+    }
+  }
+
   // Initialize spine/TOC cache
   bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   // Always create CssParser - needed for inline style parsing even without CSS files
@@ -885,7 +905,6 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
     LOG_DBG("EBP", "Generating BMP from JPG cover image (%s mode%s)", cropped ? "cropped" : "fit",
             originalThresholds ? ", original thresholds" : "");
     const auto coverJpgTempPath = getCachePath() + "/.cover.jpg";
-
     {
       HalFile coverJpg;
       if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
@@ -921,7 +940,6 @@ bool Epub::generateCoverBmp(bool cropped, bool originalThresholds) const {
     LOG_DBG("EBP", "Generating BMP from PNG cover image (%s mode%s)", cropped ? "cropped" : "fit",
             originalThresholds ? ", original thresholds" : "");
     const auto coverPngTempPath = getCachePath() + "/.cover.png";
-
     {
       HalFile coverPng;
       if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
@@ -1117,6 +1135,38 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 
+  // Decode encrypted entries on demand in memory.
+  if (decryptor && decryptor->isEncrypted(path)) {
+    const size_t plainSize = decryptor->decryptedSize(path);
+    if (plainSize > SIZE_MAX - (trailingNullByte ? 1 : 0)) return nullptr;
+    const size_t total = plainSize + (trailingNullByte ? 1 : 0);
+    uint8_t* content = static_cast<uint8_t*>(malloc(total > 0 ? total : 1));
+    if (!content) {
+      LOG_ERR("EBP", "insufficient memory for %s (%u bytes)", path.c_str(), static_cast<unsigned>(total));
+      return nullptr;
+    }
+    struct BufferSink {
+      uint8_t* data;
+      size_t capacity;
+      size_t written;
+    } state{content, plainSize, 0};
+    auto append = [](void* context, const uint8_t* data, size_t size) {
+      auto* target = static_cast<BufferSink*>(context);
+      if (size > target->capacity - target->written) return false;
+      memcpy(target->data + target->written, data, size);
+      target->written += size;
+      return true;
+    };
+    if (!decryptor->decryptToSink(path, append, &state) || state.written != plainSize) {
+      free(content);
+      LOG_ERR("EBP", "content read failed for %s", path.c_str());
+      return nullptr;
+    }
+    if (trailingNullByte) content[plainSize] = 0;
+    if (size) *size = plainSize;
+    return content;
+  }
+
   const auto content = ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
   if (!content) {
     LOG_DBG("EBP", "Failed to read item %s", path.c_str());
@@ -1142,6 +1192,17 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 
   const std::string path = FsHelpers::normalisePath(itemHref);
+  if (decryptor && decryptor->isEncrypted(path)) {
+    auto append = [](void* context, const uint8_t* data, size_t size) {
+      return static_cast<Print*>(context)->write(data, size) == size;
+    };
+    if (!decryptor->decryptToSink(path, append, &out)) {
+      LOG_ERR("EBP", "content read failed for %s", path.c_str());
+      return false;
+    }
+    return true;
+  }
+
 #ifdef BOARD_HAS_PSRAM
   // Fast path: use the PSRAM ZIP cache to skip the central-directory scan.
   // We open the ZIP once, then call the FileStatSlim overload of readFileToStream

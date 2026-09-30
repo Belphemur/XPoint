@@ -22,6 +22,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "activities/plugins/PluginCatalogActivity.h"  // anyPluginInstalled()
 #include "activities/reader/BookReadingStats.h"
 #include "activities/reader/ReadingStatsUtils.h"
 #include "components/UITheme.h"
@@ -35,7 +36,7 @@ int HomeActivity::getMenuItemCount() const {
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
-  if (hasOpdsServers) {
+  if (hasLibrarySlot()) {
     count++;
   }
   return count;
@@ -259,6 +260,7 @@ void HomeActivity::onEnter() {
   Activity::onEnter();
 
   hasOpdsServers = OPDS_STORE.hasServers();
+  hasPlugins = anyPluginInstalled();
 
   const auto& metrics = UITheme::getInstance().getMetrics();
   if (UITheme::getInstance().hasCoverGridHome()) {
@@ -271,11 +273,11 @@ void HomeActivity::onEnter() {
   if (coverGridUi) {
     fillCoverGridFromLibrary();
     resolveGridCoverPaths();
-    coverGridUi->begin(recentBooks, hasOpdsServers, hasContinueReading);
+    coverGridUi->begin(recentBooks, hasLibrarySlot(), hasContinueReading);
   }
 
   const auto base = static_cast<int>(recentBooks.size());
-  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasOpdsServers);
+  selectorIndex = initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, hasLibrarySlot());
 
   // Trigger first update
   requestUpdate();
@@ -348,15 +350,15 @@ void HomeActivity::loop() {
       return;
     }
     const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
-    switch (indexToMenuItem(menuIndex, hasOpdsServers)) {
+    switch (indexToMenuItem(menuIndex, hasLibrarySlot())) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
         break;
       case HomeMenuItem::LIBRARY:
         onLibraryOpen();
         break;
-      case HomeMenuItem::OPDS_BROWSER:
-        onOpdsBrowserOpen();
+      case HomeMenuItem::OPDS_BROWSER:  // the library slot
+        hasPlugins ? onPluginsOpen() : onOpdsBrowserOpen();
         break;
 #ifdef READING_STATS_ENABLED
       case HomeMenuItem::READING_STATS:
@@ -565,9 +567,9 @@ void HomeActivity::render(RenderLock&&) {
 #endif
                                    Transfer, Settings};
 
-  if (hasOpdsServers) {
-    menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Blocks);
+  if (hasLibrarySlot()) {
+    menuItems.insert(menuItems.begin() + 2, hasPlugins ? tr(STR_PLUGINS) : tr(STR_OPDS_BROWSER));
+    menuIcons.insert(menuIcons.begin() + 2, Plugins);
   }
 
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
@@ -620,3 +622,5 @@ void HomeActivity::onReadingStatsOpen() {
   activityManager.goToReadingStats();
 #endif
 }
+
+void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(hasOpdsServers); }
