@@ -281,6 +281,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // the fast, hard-edged baseline; Smooth is the opt-in AA mode).
   enum TEXT_RENDER_MODE { TEXT_RENDER_SMOOTH = 0, TEXT_RENDER_CRISP = 1 };
   uint8_t textRenderMode = TEXT_RENDER_CRISP;
+  // Paragraph first-line indentation for EPUB: Off (0) or 1–5 scaled space
+  // advances (upstream #3727). Overrides missing/zero/positive CSS text-indent;
+  // negative hanging indents are preserved.
+  uint8_t paragraphIndentSpaces = 2;
   // Word spacing: percent of the font's space advance. Character spacing is a
   // signed pixel offset stored 0..4 (= -2..+2 px).
   static constexpr uint8_t WORD_SPACING_MIN = 50;

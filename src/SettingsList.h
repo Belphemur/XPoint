@@ -329,6 +329,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_EXTRA_SPACING, &CrossPointSettings::extraParagraphSpacing,
                             "extraParagraphSpacing", StrId::STR_CAT_READER)
             .withTextSettings(),
+        SettingInfo::Value(StrId::STR_PARAGRAPH_INDENTATION, &CrossPointSettings::paragraphIndentSpaces, {0, 5, 1},
+                           "paragraphIndentSpaces", StrId::STR_CAT_READER)
+            .withTextSettings(),
         SettingInfo::Enum(StrId::STR_TEXT_RENDERING, &CrossPointSettings::textRenderMode,
                           {StrId::STR_SMOOTH, StrId::STR_CRISP}, "textRenderMode", StrId::STR_CAT_READER)
             .withTextSettings(),
