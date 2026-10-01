@@ -202,4 +202,84 @@ TEST(RepeatHoldDiscountTest, OnlyAnOpeningPressEdgeStartsAContact) {
   EXPECT_FALSE(repeathold::startsNewContact(false, true));
 }
 
+// The wiring, not just the predicate: StallDiscountWindow is what
+// MappedInputManager::update() drives (kody round 2), so the frame-by-frame
+// sequence the C3 actually runs is covered here.
+TEST(StallDiscountWindowTest, NormalTicksThenARenderStallDiscountsTheHold) {
+  repeathold::StallDiscountWindow window;
+  // Opening press: nothing was held on the previous frame.
+  window.sampleFrame(1000);
+  window.deliverFrame(/*hasPressEdge=*/true, /*anyHeldThisFrame=*/true);
+  EXPECT_EQ(window.heldMs(0), 0u);
+  // 12 ordinary 10 ms ticks.
+  unsigned long now = 1000;
+  for (int i = 0; i < 12; ++i) {
+    now += 10;
+    window.sampleFrame(now);
+    window.deliverFrame(false, true);
+  }
+  EXPECT_EQ(window.accumulatedStallMs(), 0u);
+  EXPECT_EQ(window.heldMs(120), 120u);  // hold time passes through untouched
+  // The e-ink refresh blocks the loop for 2 s; the button is still down.
+  now += 2000;
+  window.sampleFrame(now);
+  window.deliverFrame(false, true);
+  EXPECT_EQ(window.accumulatedStallMs(), 2000u - repeathold::kStallThresholdMs);
+  // 2120 ms of wall-clock hold minus the 1900 ms stall: the 12 real ticks plus
+  // the stall gap's own kStallThresholdMs, which stays credited as loop time.
+  // Far below the 500 ms repeat threshold, so the press cannot answer twice.
+  EXPECT_EQ(window.heldMs(now - 1000), 120u + repeathold::kStallThresholdMs);
+  EXPECT_LT(window.heldMs(now - 1000), 500u);
+}
+
+TEST(StallDiscountWindowTest, ASecondPressMidHoldKeepsTheDiscount) {
+  repeathold::StallDiscountWindow window;
+  window.sampleFrame(1000);
+  window.deliverFrame(true, true);
+  unsigned long now = 3000;
+  window.sampleFrame(now);
+  window.deliverFrame(false, true);
+  const unsigned long afterStall = window.accumulatedStallMs();
+  ASSERT_GT(afterStall, 0u);
+  // The user taps a second button while the navigation button is still down:
+  // the aggregate SDK hold clock did not restart, so the discount must stay.
+  window.sampleFrame(now += 20);
+  window.deliverFrame(/*hasPressEdge=*/true, /*anyHeldThisFrame=*/true);
+  EXPECT_EQ(window.accumulatedStallMs(), afterStall);
+  EXPECT_EQ(window.heldMs(now - 1000), 20u + repeathold::kStallThresholdMs);
+  EXPECT_LT(window.heldMs(now - 1000), 500u);
+}
+
+TEST(StallDiscountWindowTest, ANewContactAfterFullReleaseStartsClean) {
+  repeathold::StallDiscountWindow window;
+  window.sampleFrame(1000);
+  window.deliverFrame(true, true);
+  unsigned long now = 5000;
+  window.sampleFrame(now);
+  window.deliverFrame(false, true);
+  ASSERT_GT(window.accumulatedStallMs(), 0u);
+  // Release everything, then press again: the SDK restarts its held clock, so
+  // the old contact's stalls must not discount the new one.
+  window.sampleFrame(now += 100);
+  window.deliverFrame(false, false);
+  window.sampleFrame(now += 10);
+  window.deliverFrame(/*hasPressEdge=*/true, /*anyHeldThisFrame=*/true);
+  EXPECT_EQ(window.accumulatedStallMs(), 0u);
+  EXPECT_EQ(window.heldMs(5), 5u);
+}
+
+TEST(StallDiscountWindowTest, MultiSecondBuildStallStillDiscountsTheWholeHold) {
+  repeathold::StallDiscountWindow window;
+  window.sampleFrame(100);
+  window.deliverFrame(true, true);
+  // A cold large-chapter build on the C3: tens of seconds, no dispatch.
+  window.sampleFrame(30100);
+  window.deliverFrame(false, true);
+  EXPECT_GE(window.accumulatedStallMs(), 30000u - repeathold::kStallThresholdMs);
+  // 30 s of wall-clock hold is covered by the 29.9 s of stall; only the gap's
+  // own threshold survives, so no cap ever re-arms the repeat here.
+  EXPECT_EQ(window.heldMs(30000), repeathold::kStallThresholdMs);
+  EXPECT_LT(window.heldMs(30000), 500u);
+}
+
 }  // namespace

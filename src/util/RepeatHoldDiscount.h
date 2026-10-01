@@ -43,4 +43,39 @@ constexpr unsigned long discount(unsigned long heldMs, unsigned long accumulated
 // discount belonging to that still-held contact.
 constexpr bool startsNewContact(bool hasPressEdge, bool anyHeldLastFrame) { return hasPressEdge && !anyHeldLastFrame; }
 
+// The per-dispatch state machine behind that discount, owned by
+// MappedInputManager. Split out (like SleepFrameHash) because update() itself
+// is not host-compilable: this is the part that decides when a gap is a stall
+// and when the discount resets, so it has to be testable on its own.
+class StallDiscountWindow {
+ public:
+  // One dispatch, called at the top of update(): charge the inter-frame gap to
+  // the hold window when it is a render stall rather than a normal tick.
+  void sampleFrame(unsigned long nowMs) {
+    if (lastFrameAtMs_ != 0) {
+      stallAccumMs_ = addSaturated(stallAccumMs_, stallFor(nowMs - lastFrameAtMs_));
+    }
+    lastFrameAtMs_ = nowMs;
+  }
+
+  // End of the same dispatch, once the frame's held state is known. A press
+  // edge that STARTS a contact (nothing was held on the previous dispatch)
+  // opens a clean hold window — the stalls before it belong to older contacts.
+  // A second button pressed while the navigation button is still down keeps the
+  // discount, because the SDK's aggregate held clock did not restart.
+  void deliverFrame(bool hasPressEdge, bool anyHeldThisFrame) {
+    if (startsNewContact(hasPressEdge, anyHeldLastFrame_)) stallAccumMs_ = 0;
+    anyHeldLastFrame_ = anyHeldThisFrame;
+  }
+
+  // Hold time left for the repeat gate once this window's stalls are removed.
+  unsigned long heldMs(unsigned long rawHeldMs) const { return discount(rawHeldMs, stallAccumMs_); }
+  unsigned long accumulatedStallMs() const { return stallAccumMs_; }
+
+ private:
+  unsigned long lastFrameAtMs_ = 0;
+  unsigned long stallAccumMs_ = 0;
+  bool anyHeldLastFrame_ = false;
+};
+
 }  // namespace repeathold

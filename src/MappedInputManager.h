@@ -224,17 +224,10 @@ class MappedInputManager {
   mutable unsigned long touchHeldOverrideMs = 0;
   mutable unsigned long touchHeldOverrideAt = 0;
   // Render-stall accounting for getRepeatHeldTime() (non-PSRAM boards only,
-  // see kRepeatHoldExcludesStalls): the previous dispatch's timestamp and the
-  // total stall time discounted from hold windows so far. Zeroed when a press
-  // edge STARTS a contact — see heldButtonsLastFrame for why a mid-hold press
-  // must not clear it.
-  mutable unsigned long lastFrameAtMs = 0;
-  mutable unsigned long stallAccumMs = 0;
-  // Whether ANY logical button was held on the previous dispatch. The SDK's
-  // held clock is aggregate (it starts at the first button down), so this is
-  // what distinguishes a contact's opening press edge from a second button
-  // pressed while the navigation button is still down.
-  mutable uint8_t heldButtonsLastFrame = 0;
+  // see kRepeatHoldExcludesStalls). The window owns the per-dispatch state
+  // machine — when a gap is a stall, and when a press edge opens a new hold
+  // window — so it stays host-testable outside this class.
+  mutable repeathold::StallDiscountWindow stallWindow;
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
   // This tick's physical button edges, taken ONCE in update() (soak-fix7:
