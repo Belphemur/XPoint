@@ -13,6 +13,11 @@ class ButtonNavigator final {
   const uint16_t continuousStartMs;
   const uint16_t continuousIntervalMs;
   uint32_t lastContinuousNavTime = 0;
+  // True once a repeat has fired for the current contact. onRelease consults
+  // this instead of lastContinuousNavTime == 0: on C3-class boards the
+  // interval floor starts at the edge tick, so "0" no longer means
+  // "no repeat happened yet".
+  bool continuousNavActive = false;
   static const MappedInputManager* mappedInput;
 
   [[nodiscard]] bool shouldNavigateContinuously() const;

@@ -45,11 +45,14 @@ void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback
   });
 
   if (wasReleased) {
-    if (lastContinuousNavTime == 0) {
+    // A repeat already answered this contact's hold; only a release with no
+    // repeat behind it counts as the discrete step.
+    if (!continuousNavActive) {
       callback();
     }
 
     lastContinuousNavTime = 0;
+    continuousNavActive = false;
   }
 }
 
@@ -59,7 +62,12 @@ void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callb
         return mappedInput != nullptr && (mappedInput->wasPressed(button) || mappedInput->wasReleased(button));
       });
   if (wasPressedOrReleased) {
-    lastContinuousNavTime = 0;
+    continuousNavActive = false;
+    // PSRAM boards keep the interval floor at zero (their async poll task
+    // makes the first post-edge tick's held time honest). Elsewhere the floor
+    // starts at the edge tick, so the interval gate cannot pass trivially on
+    // the first tick after a render.
+    lastContinuousNavTime = MappedInputManager::kRepeatHoldExcludesStalls() ? millis() : 0;
     return;  // A press already stepped once; a release must never repeat.
   }
   const bool isPressed = std::any_of(buttons.begin(), buttons.end(), [this](const MappedInputManager::Button button) {
@@ -69,13 +77,14 @@ void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callb
   if (isPressed) {
     callback();
     lastContinuousNavTime = millis();
+    continuousNavActive = true;
   }
 }
 
 bool ButtonNavigator::shouldNavigateContinuously() const {
   if (!mappedInput) return false;
 
-  const bool buttonHeldLongEnough = mappedInput->getHeldTime() > continuousStartMs;
+  const bool buttonHeldLongEnough = mappedInput->getRepeatHeldTime() > continuousStartMs;
   const bool navigationIntervalElapsed = (millis() - lastContinuousNavTime) > continuousIntervalMs;
 
   return buttonHeldLongEnough && navigationIntervalElapsed;

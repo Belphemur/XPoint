@@ -29,6 +29,21 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // served to every activity read this tick (multi-read safe).
   gpio.update();
   gpio.consumeTouchFrame();
+  // Render-stall sampling (X3/X4 double input): on non-PSRAM boards this
+  // update() runs on the loop task, so the gap since the previous dispatch is
+  // everything the loop did in between — a full e-ink refresh, a multi-second
+  // build window. Charging that to hold time makes auto-repeat answer a still
+  // held button a second time, so only the gap in excess of the threshold
+  // accrues, and a press edge later in update() clears the total.
+  if (kRepeatHoldExcludesStalls()) {
+    const unsigned long now = millis();
+    if (lastFrameAtMs != 0 && now - lastFrameAtMs > kFrameStallThresholdMs) {
+      stallAccumMs += (now - lastFrameAtMs) - kFrameStallThresholdMs;
+      if (stallAccumMs > kMaxStallAccumMs) stallAccumMs = kMaxStallAccumMs;
+    }
+    lastFrameAtMs = now;
+  }
+
   uint8_t pressedEdges = 0;
   uint8_t releasedEdges = 0;
   for (uint8_t physical = HalGPIO::BTN_BACK; physical <= HalGPIO::BTN_POWER; ++physical) {
@@ -162,6 +177,9 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
     if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
   }
+  // A fresh press edge starts a clean hold window: the stalls before it
+  // describe a different contact and must not discount this one's hold time.
+  if (kRepeatHoldExcludesStalls() && framePressedEdges != 0) stallAccumMs = 0;
 }
 
 bool MappedInputManager::isNavDirectionSwapped() const {
@@ -622,6 +640,12 @@ unsigned long MappedInputManager::getHeldTime() const {
   }
   touchHeldOverrideValid = false;
   return gpio.getHeldTime();
+}
+
+unsigned long MappedInputManager::getRepeatHeldTime() const {
+  const unsigned long held = getHeldTime();
+  if (!kRepeatHoldExcludesStalls()) return held;
+  return held > stallAccumMs ? held - stallAccumMs : 0;
 }
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,
