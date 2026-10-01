@@ -110,6 +110,14 @@ class EnduranceGovernor {
 
   void setOnUsbPower(bool onUsb);
 
+  // Whether the app currently expects the radio to be UP. The Wi-Fi leak
+  // guard's no-session detector only runs when nothing owns the radio (the home
+  // screen), so a long legitimate transfer can never be cut mid-flight by an
+  // elapsed-time threshold. Set from main.cpp where the activity stack is known.
+  void setUnownedRadioShutdownAllowed(bool allowed) {
+    unownedRadioShutdownAllowed_.store(allowed, std::memory_order_relaxed);
+  }
+
   // Singleton. The instance lives inside HalPowerManager's already-allocated
   // object graph (see HalPowerManager::endurance()) so the port adds no new
   // DRAM static of its own.
@@ -202,6 +210,7 @@ class EnduranceGovernor {
   // Read/written by both tasks; the mutex covers it, but making it atomic keeps
   // the verdict readable from the overlay without taking the lock.
   std::atomic<WakeVerdict> wakeVerdict_{WakeVerdict::Unverified};
+  std::atomic<bool> unownedRadioShutdownAllowed_{false};
 
   friend class HalPowerManager;
 };

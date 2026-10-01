@@ -61,21 +61,34 @@ void WifiLeakGuard::keepAlive(const unsigned long nowMs) {
   }
 }
 
-bool WifiLeakGuard::poll(const unsigned long nowMs) {
+bool WifiLeakGuard::poll(const unsigned long nowMs, const bool allowUnownedShutdown) {
   const bool radioUp = WiFi.getMode() != WIFI_MODE_NULL;
 
   if (!radioUp) {
     s_haveRadioBaseline = true;
     s_radioDownSinceMs.store(nowMs, std::memory_order_relaxed);
-    s_deadlineMs.store(0, std::memory_order_relaxed);
+    // Only disarm the deadline when no session owns the radio; a live session
+    // that put the radio down for a moment must keep its window.
+    if (s_sessions.load(std::memory_order_relaxed) <= 0) {
+      s_deadlineMs.store(0, std::memory_order_relaxed);
+    }
     return false;
   }
 
   if (s_sessions.load(std::memory_order_relaxed) > 0) {
     const unsigned long deadline = s_deadlineMs.load(std::memory_order_relaxed);
+    if (deadline == 0) {
+      // A session is live but the deadline is disarmed — which happens whenever
+      // the radio was observed DOWN while a guard already existed (the
+      // radio-down branch clears it). Zero means "not armed", NOT "expired", so
+      // stopping here would kill a session the moment it brought the radio back
+      // up. Re-arm from now instead.
+      s_deadlineMs.store(nowMs + DEFAULT_LEAK_TIMEOUT_MS, std::memory_order_relaxed);
+      return false;
+    }
     // Still inside the window? A negative signed delta means nowMs < deadline,
     // and the comparison stays correct across the millis() wrap.
-    if (deadline != 0 && static_cast<long>(nowMs - deadline) < 0) {
+    if (static_cast<long>(nowMs - deadline) < 0) {
       return false;
     }
     // Past the deadline. NOTE: the session refcount is deliberately NOT zeroed.
@@ -93,8 +106,16 @@ bool WifiLeakGuard::poll(const unsigned long nowMs) {
     return true;
   }
 
-  // No session owns the radio. Baseline first so a device that boots with the
-  // radio already up is given a full timeout before being judged a leak.
+  // No session owns the radio. Only the caller knows whether the app currently
+  // expects the radio to be up, so the no-session detector runs solely when it
+  // says nothing owns it (the home screen).
+  if (!allowUnownedShutdown) {
+    s_haveRadioBaseline = false;
+    return false;
+  }
+
+  // Baseline first so a device that boots with the radio already up is given a
+  // full timeout before being judged a leak.
   if (!s_haveRadioBaseline) {
     s_haveRadioBaseline = true;
     s_radioDownSinceMs.store(nowMs, std::memory_order_relaxed);

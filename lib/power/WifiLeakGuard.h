@@ -48,7 +48,14 @@ class WifiLeakGuard {
   // Main-loop tick (called from EnduranceGovernor::tick()). Force-stops a
   // leaked radio. Returns true when a leak was detected and shut down on this
   // call.
-  static bool poll(unsigned long nowMs);
+  //
+  // `allowUnownedShutdown` gates the no-session detector only: the caller sets
+  // it when no activity owns the radio right now (the home screen). A long
+  // legitimate transfer — web server, OTA, OPDS, KOReader sync — is never on the
+  // home screen, so a bare elapsed-time threshold cannot cut it mid-flight. An
+  // RAII session past its own deadline is always stopped, because that deadline
+  // is armed by the code that actually owns the radio.
+  static bool poll(unsigned long nowMs, bool allowUnownedShutdown);
 
   // True while at least one RAII session is open.
   static bool sessionActive();

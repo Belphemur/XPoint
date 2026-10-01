@@ -98,6 +98,12 @@ void EnduranceGovernor::begin() {
   if (began_) return;
   began_ = true;
   stateMutex_ = xSemaphoreCreateMutex();
+  if (stateMutex_ == nullptr) {
+    // Without it lockState()/unlockState() degrade to no-ops and the ladder
+    // state would be written concurrently by the main tick, the escalation task
+    // and a web-server profile change. Say so rather than silently racing.
+    LOG_ERR("PWR", "Governor state mutex allocation failed; ladder state is UNPROTECTED");
+  }
   bootClockMHz_ = getCpuFrequencyMhz();
   bootStartMs_ = millis();
 
@@ -113,11 +119,17 @@ void EnduranceGovernor::begin() {
   refreshFromSettings();
   applyStrategy();
 
-  // An abnormal reset is the crash signal the ladder is built around. A plain
-  // power-on and a deep-sleep wake are both NORMAL events and must not strike.
+  // A crash is the signal the ladder is built around. Only genuine FAULT resets
+  // count: ESP_RST_SW is a deliberate `silentRestartTo()` heap-defrag reboot and
+  // ESP_RST_EXT/ESP_RST_POWERON/ESP_RST_DEEPSLEEP are normal events, so treating
+  // "anything not power-on" as a crash would ratchet a healthy device to the
+  // stock clock on every routine restart.
   const auto resetReason = esp_reset_reason();
-  if (resetReason != ESP_RST_POWERON && resetReason != ESP_RST_DEEPSLEEP) {
-    LOG_ERR("PWR", "Abnormal reset (%d) after boot — recording an endurance strike", static_cast<int>(resetReason));
+  const bool faultReset = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_TASK_WDT ||
+                          resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_WDT ||
+                          resetReason == ESP_RST_BROWNOUT;
+  if (faultReset) {
+    LOG_ERR("PWR", "Fault reset (%d) after boot - recording an endurance strike", static_cast<int>(resetReason));
     reportInstability(InstabilityReason::Crash);
   }
 
@@ -341,11 +353,18 @@ void EnduranceGovernor::tick() {
   // task, so the ladder is only re-resolved under the state mutex.
   const uint32_t requestedProfile = pendingProfile_.exchange(0, std::memory_order_acquire);
   if (requestedProfile != 0) {
+    const endurance::Profile wanted = endurance::clampProfile(static_cast<uint8_t>(requestedProfile - 1u));
+    // main.cpp pushes the persisted profile every loop pass, so this path runs
+    // constantly. Re-resolving and re-applying an unchanged profile would take
+    // two mutex round-trips and re-log the ladder line on every pass.
     lockState();
-    profile_ = endurance::clampProfile(static_cast<uint8_t>(requestedProfile - 1u));
+    const bool changed = wanted != profile_;
+    if (changed) profile_ = wanted;
     unlockState();
-    refreshFromSettings();
-    applyStrategy();
+    if (changed) {
+      refreshFromSettings();
+      applyStrategy();
+    }
   }
 
   // Idle vs nap accounting for the Full overlay. Which bucket a tick lands in is
@@ -358,7 +377,7 @@ void EnduranceGovernor::tick() {
     }
   }
 
-  WifiLeakGuard::poll(now);
+  WifiLeakGuard::poll(now, unownedRadioShutdownAllowed_.load(std::memory_order_relaxed));
 
   // Touch-INT verification, cached after the first verdict.
   if (wakeVerdict() == WakeVerdict::Unverified && BoardConfig::hasTouch()) {

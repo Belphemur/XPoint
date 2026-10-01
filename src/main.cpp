@@ -1074,6 +1074,11 @@ void loop() {
   // Push the persisted profile (one atomic store); the governor adopts it on
   // this task, under its state mutex, only when it actually differs.
   powerManager.endurance().setProfile(static_cast<endurance::Profile>(SETTINGS.powerProfile));
+  // The Wi-Fi leak guard's no-session detector only runs when no activity owns
+  // the radio. A long legitimate transfer (web server, OTA, OPDS, sync) is never
+  // on the home screen, so an elapsed-time threshold can never cut one short,
+  // while a radio genuinely left on after an activity exits still gets caught.
+  powerManager.endurance().setUnownedRadioShutdownAllowed(activityManager.isOnHomeScreen());
   powerManager.endurance().tick();
 
   if (activityManager.requiresExclusiveStorageLoop()) {
