@@ -26,11 +26,9 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_POWER_STATS,    // endurance-governor telemetry overlay: Off / Compact / Full
-  ITEM_POWER_PROFILE,  // endurance governor ladder floor: Endurance / Balanced / Performance
-  ITEM_CLOCK,          // every device, but only visible when _sdkRtc.begin() succeeds (onEnter() truncates
-                       // visibleItemCount to BASE_MENU_ITEMS otherwise; zone/format/sync rows moved to
-                       // ClockSettingsActivity)
+  ITEM_CLOCK,  // every device, but only visible when _sdkRtc.begin() succeeds (onEnter() truncates
+               // visibleItemCount to BASE_MENU_ITEMS otherwise; zone/format/sync rows moved to
+               // ClockSettingsActivity)
   ITEM_COUNT
 };
 
@@ -48,8 +46,6 @@ const StrId menuNames[FULL_MENU_ITEMS] = {
     StrId::STR_TITLE,
     StrId::STR_BATTERY,
     StrId::STR_XTC_STATUS_BAR,
-    StrId::STR_POWER_STATS,
-    StrId::STR_POWER_PROFILE,
     StrId::STR_CLOCK,
 };
 
@@ -72,14 +68,6 @@ const StrId statusBarClockNames[STATUS_BAR_CLOCK_ITEMS] = {StrId::STR_HIDE, StrI
 constexpr int CHAPTER_TIME_LEFT_ITEMS = CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT;
 const StrId chapterTimeLeftNames[CHAPTER_TIME_LEFT_ITEMS] = {StrId::STR_HIDE, StrId::STR_DIR_RIGHT,
                                                              StrId::STR_DIR_LEFT};
-
-constexpr int POWER_PROFILE_ITEMS = 3;
-const StrId powerProfileNames[POWER_PROFILE_ITEMS] = {StrId::STR_PROFILE_ENDURANCE, StrId::STR_PROFILE_BALANCED,
-                                                      StrId::STR_PROFILE_PERFORMANCE};
-
-constexpr int POWER_STATS_ITEMS = CrossPointSettings::POWER_STATS_MODE_COUNT;
-const StrId powerStatsNames[POWER_STATS_ITEMS] = {StrId::STR_STATE_OFF, StrId::STR_POWER_STATS_COMPACT,
-                                                  StrId::STR_POWER_STATS_FULL};
 
 const int verticalPreviewTextPadding = 40;
 }  // namespace
@@ -116,16 +104,6 @@ void StatusBarSettingsActivity::onEnter() {
   if (SETTINGS.statusBarChapterTimeLeftMode >= CHAPTER_TIME_LEFT_ITEMS) {
     SETTINGS.statusBarChapterTimeLeftMode =
         CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE::STATUS_BAR_CHAPTER_TIME_LEFT_RIGHT;
-  }
-
-  // Corrupt/migrated byte: clamp so the popup and the overlay agree on a mode
-  // that exists.
-  if (SETTINGS.powerStatsMode >= POWER_STATS_ITEMS) {
-    SETTINGS.powerStatsMode = CrossPointSettings::POWER_STATS_MODE::POWER_STATS_OFF;
-  }
-
-  if (SETTINGS.powerProfile >= POWER_PROFILE_ITEMS) {
-    SETTINGS.powerProfile = 0;  // Endurance
   }
 
   // Labels never change (unlike the values, which track live SETTINGS
@@ -198,22 +176,6 @@ void StatusBarSettingsActivity::handleSelection() {
     case ITEM_CLOCK:
       SETTINGS.statusBarClock = (SETTINGS.statusBarClock + 1) % STATUS_BAR_CLOCK_ITEMS;
       break;
-    case ITEM_POWER_STATS:
-      optionPopup.show(StrId::STR_POWER_STATS, powerStatsNames, POWER_STATS_ITEMS, SETTINGS.powerStatsMode,
-                       [this](int idx) {
-                         SETTINGS.powerStatsMode = idx;
-                         SETTINGS.saveToFile();
-                         requestUpdate();
-                       });
-      return;
-    case ITEM_POWER_PROFILE:
-      optionPopup.show(StrId::STR_POWER_PROFILE, powerProfileNames, POWER_PROFILE_ITEMS, SETTINGS.powerProfile,
-                       [this](int idx) {
-                         SETTINGS.powerProfile = idx;
-                         SETTINGS.saveToFile();
-                         requestUpdate();
-                       });
-      return;
     default:
       return;
   }
@@ -236,12 +198,6 @@ std::string StatusBarSettingsActivity::rowValueText(const int index) {
       return I18N.get(xtcStatusBarNames[SETTINGS.xtcStatusBarMode]);
     case ITEM_CLOCK:
       return I18N.get(statusBarClockNames[SETTINGS.statusBarClock]);
-    case ITEM_POWER_STATS:
-      // Clamped at the read site, not only in onEnter(): a web API write can
-      // land after onEnter() and would otherwise index past the labels array.
-      return I18N.get(powerStatsNames[SETTINGS.powerStatsMode < POWER_STATS_ITEMS ? SETTINGS.powerStatsMode : 0]);
-    case ITEM_POWER_PROFILE:
-      return I18N.get(powerProfileNames[SETTINGS.powerProfile < POWER_PROFILE_ITEMS ? SETTINGS.powerProfile : 0]);
     default:
       return "";
   }
