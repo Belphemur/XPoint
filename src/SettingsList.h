@@ -238,6 +238,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
     statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
 
+    std::vector<StrId> powerStatsValues(CrossPointSettings::POWER_STATS_MODE_COUNT);
+    powerStatsValues[CrossPointSettings::POWER_STATS_OFF] = StrId::STR_STATE_OFF;
+    powerStatsValues[CrossPointSettings::POWER_STATS_COMPACT] = StrId::STR_POWER_STATS_COMPACT;
+    powerStatsValues[CrossPointSettings::POWER_STATS_FULL] = StrId::STR_POWER_STATS_FULL;
+
 #ifdef READING_STATS_ENABLED
     std::vector<StrId> statusBarChapterTimeLeftValues(CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT);
     statusBarChapterTimeLeftValues[CrossPointSettings::STATUS_BAR_CHAPTER_TIME_LEFT_HIDE] = StrId::STR_HIDE;
@@ -522,6 +527,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_XTC_STATUS_BAR, &CrossPointSettings::xtcStatusBarMode,
                           {StrId::STR_HIDE, StrId::STR_BOTTOM, StrId::STR_TOP}, "xtcStatusBarMode",
                           StrId::STR_CUSTOMISE_STATUS_BAR),
+        // Endurance-governor telemetry overlay. Web-visible here; the device row
+        // lives in StatusBarSettingsActivity, which is the one place the reader's
+        // status-bar chrome is edited on X4 hardware.
+        SettingInfo::Enum(StrId::STR_POWER_STATS, &CrossPointSettings::powerStatsMode, std::move(powerStatsValues),
+                          "powerStatsMode", StrId::STR_CUSTOMISE_STATUS_BAR),
         // Clock entries (web settings only; device UI shows the auto-detected zone).
         SettingInfo::Enum(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock, std::move(statusBarClockValues),
                           "statusBarClock", StrId::STR_CUSTOMISE_STATUS_BAR),

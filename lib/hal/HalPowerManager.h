@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cassert>
 
+#include "EnduranceGovernor.h"
 #include "HalGPIO.h"
 
 class HalPowerManager;
@@ -36,6 +37,15 @@ class HalPowerManager {
   // ordering against the dwell decision.
   std::atomic<unsigned long> lastNormalMs{0};
 
+  // Endurance governor state. The governor owns the idle clock *target* but
+  // still moves the clock only through setPowerSaving() below, so it lives here
+  // rather than as a second global. governorLowFreqMhz_ == 0 means "no
+  // override": the pre-governor behaviour (LOW_POWER_FREQ) is unchanged until a
+  // governor is constructed and installs a target.
+  EnduranceGovernor endurance_{};
+  int governorLowFreqMhz_ = 0;
+  bool governorIdlePollSlices_ = true;
+
  public:
 #if BOARD_HAS_PSRAM
   static constexpr int LOW_POWER_FREQ = 80;  // MHz
@@ -52,6 +62,20 @@ class HalPowerManager {
 
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
+
+  // Endurance governor hooks (see EnduranceGovernor.h). governorLowFreqMhz_ = 0
+  // restores the stock LOW_POWER_FREQ floor.
+  void setLowPowerFrequency(int mhz) { governorLowFreqMhz_ = mhz > 0 ? mhz : 0; }
+  int lowPowerFrequency() const { return governorLowFreqMhz_ > 0 ? governorLowFreqMhz_ : LOW_POWER_FREQ; }
+  // Whether the idle loop may sleep in poll slices. The governor demotes this
+  // when the touch-INT wake source fails verification.
+  void setIdlePollSlicesEnabled(bool enabled) { governorIdlePollSlices_ = enabled; }
+  bool idlePollSlicesEnabled() const { return governorIdlePollSlices_; }
+  // True while the clock is at the idle target — the escalation task uses it to
+  // know a heavy job got throttled underneath itself.
+  bool isLowPowerActive() const { return isLowPower; }
+
+  EnduranceGovernor& endurance() { return endurance_; }
 
   // Refresh the full-speed dwell without holding the (single) NormalSpeed
   // lock: background build ticks call this per page so the governor cannot

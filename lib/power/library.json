@@ -1,0 +1,17 @@
+{
+  "name": "power",
+  "description": "Endurance governor, drain monitor, Wi-Fi leak guard and power stats overlay",
+  "dependencies": [
+    "hal",
+    "Logging",
+    "GfxRenderer",
+    "EpdFont",
+    "EInkDisplay",
+    "I18n",
+    "BatteryMonitor",
+    "InputManager",
+    "SDCardManager",
+    "BoardConfig"
+  ],
+  "build": {}
+}

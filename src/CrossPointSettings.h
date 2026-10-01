@@ -80,6 +80,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT
   };
 
+  // Power-stats overlay visibility. COMPACT is the single status-bar line,
+  // FULL the telemetry block; OFF is the default so the feature costs nothing
+  // until the user opts in. Append-only: the persisted byte is this enum's value.
+  enum POWER_STATS_MODE { POWER_STATS_OFF = 0, POWER_STATS_COMPACT = 1, POWER_STATS_FULL = 2, POWER_STATS_MODE_COUNT };
+
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
     LANDSCAPE_CW = 1,   // 800x480 logical coordinates, rotated 180° (swap top/bottom)
@@ -253,6 +258,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
   // Clock display in status bar (X3 only, requires DS3231 RTC)
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
+  // Endurance-governor telemetry overlay (design doc 2026-10-01 §3.3).
+  uint8_t powerStatsMode = POWER_STATS_OFF;  // POWER_STATS_MODE
   // Auto-detected IANA time zone id, e.g. "America/Toronto". Empty = not detected (show UTC).
   char clockTimeZoneId[40] = "";
   // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4.

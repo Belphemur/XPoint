@@ -771,6 +771,7 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+  powerManager.endurance().begin();
   progressManager.begin();
 
   // Determine the wake cause BEFORE consuming the shutdown marker: if the
@@ -1067,6 +1068,7 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   mappedInputManager.update();
+  powerManager.endurance().tick();
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,

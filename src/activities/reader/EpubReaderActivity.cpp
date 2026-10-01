@@ -13,6 +13,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <PowerStatsOverlay.h>
 #include <SdCardFont.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
@@ -4667,6 +4668,21 @@ void EpubReaderActivity::renderStatusBar() const {
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
                     section ? section->isBuilding() : false, chapterTimeLeft);
+
+  // Power-stats overlay. Drawn here rather than on a timer: renderStatusBar()
+  // already runs on every page turn and data refresh, which are the only moments
+  // the panel is being redrawn anyway. A periodic repaint would both wear the
+  // e-ink and undo the idle clock the governor just dropped.
+  const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
+  if (powerStatsMode != PowerStatsOverlay::Mode::Off) {
+    // Same baseline the theme just used for the status bar, so the compact line
+    // sits on the bar instead of on a second, independently-derived row.
+    int marginTop, marginRight, marginBottom, marginLeft;
+    renderer.getOrientedViewableTRBL(&marginTop, &marginRight, &marginBottom, &marginLeft);
+    const int statusBarTextY =
+        renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() - marginBottom - 4;
+    PowerStatsOverlay::draw(renderer, powerStatsMode, statusBarTextY, powerManager.endurance());
+  }
 }
 
 // ---------------------------------------------------------------------------
