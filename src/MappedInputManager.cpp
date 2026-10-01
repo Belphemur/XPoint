@@ -34,7 +34,9 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // everything the loop did in between — a full e-ink refresh, a multi-second
   // build window. Charging that to hold time makes auto-repeat answer a still
   // held button a second time, so only the gap in excess of the threshold
-  // accrues, and a press edge later in update() clears the total.
+  // accrues. An OPENING-CONTACT press edge — and only that — clears the total
+  // later in update(); a second button pressed while the navigation button is
+  // still down keeps its discount (the SDK's held clock is aggregate).
   if (kRepeatHoldExcludesStalls()) {
     stallWindow.sampleFrame(millis());
   }

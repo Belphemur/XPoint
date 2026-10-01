@@ -78,13 +78,18 @@ hold-repeat on boards that already behave correctly must not slow down.
    `getHeldTime()` and the edge tick keeps `lastContinuousNavTime = 0`.
 
 ## Test plan
-`src/util/RepeatHoldDiscount.h` holds the pure constexpr policy
-(`stallFor`, `addSaturated`, `discount`, `startsNewContact`) so the arithmetic
-is host-testable while `MappedInputManager` owns the state. The host stub
-`MappedInputManager` calls the same `repeathold::discount`, so the navigator
-tests cannot pass against a weakened discount.
+`src/util/RepeatHoldDiscount.h` holds the discount policy as pure constexpr
+helpers (`stallFor`, `addSaturated`, `discount`, `startsNewContact`) plus
+`StallDiscountWindow`, the per-dispatch state machine that
+`MappedInputManager::update()` actually drives (`sampleFrame` at the top of the
+dispatch, `deliverFrame` at the end, `heldMs` for the gated repeat check). The
+split exists because `update()` is not host-compilable: with the wiring inline
+in the class, only the pure predicate was covered and the real frame sequence
+was untested (kody round 2). `MappedInputManager` owns one window and calls it.
+The host stub `MappedInputManager` calls the same `repeathold::discount`, so
+the navigator tests cannot pass against a weakened discount.
 
-- `test/button_press_navigation` (host gtest):
+- `test/button_press_navigation` (host gtest, 19 tests):
   - `RenderStallWhileStillHeldDoesNotRepeatThePress` — REGRESSION: press edge,
     2 s stall, still held -> `pages == 0`. Fails on the pre-fix navigator
     (verified by rebuilding against `develop`'s ButtonNavigator).
@@ -97,8 +102,14 @@ tests cannot pass against a weakened discount.
   - `RepeatHoldDiscountTest.*` — normal ticks accrue nothing; only the excess
     over the threshold is a stall; accumulation saturates instead of capping;
     discount saturates at zero; only an opening press edge starts a contact.
-- Both defect shapes are mutation-checked: re-introducing the 10 s cap and the
-  unconditional press-edge reset each fail the suite.
+  - `StallDiscountWindowTest.*` — the frame-by-frame wiring the C3 runs: 12
+    ordinary ticks then a 2 s render stall (hold collapses to the real 120 ms
+    of ticks plus the gap's own 100 ms threshold, far under the 500 ms repeat
+    gate), a second press mid-hold keeping the discount, a new contact after a
+    full release starting clean, and a 30 s build stall covering a 30 s hold.
+- All three defect shapes are mutation-checked: the 10 s cap, the unconditional
+  press-edge reset in `MappedInputManager::update()`, and an unconditional reset
+  inside `StallDiscountWindow::deliverFrame` each fail the suite.
 - Full host `ctest` suite; `pio run -e default` (C3) and `pio run -e x4pro`
   (S3); `pio check` (cppcheck); `clang-format` via the wrapper.
 
