@@ -368,6 +368,18 @@ void XtcReaderActivity::renderPage() {
       }
     }
 
+    // Full-mode telemetry on the 2-bit path. This path never reaches
+    // renderStatusBarOverlay, and it commits to the panel twice below (the
+    // grayscale base pass and displayGrayBuffer) before rebuilding the base
+    // framebuffer, so the block has to be drawn in TWO places:
+    //   1. here, so the base pass actually carries it to the glass, and
+    //   2. again after the base rebuild, so the RAM baseline that
+    //      cleanupGrayscaleWithFrameBuffer() reseeds matches what the panel
+    //      shows and the next page's differential does not ghost it.
+    // Drawing it only once is wrong either way: before the clears it never
+    // reaches the panel, after them it is never displayed.
+    renderPowerStatsOverlay(renderer);
+
     if (pagesUntilFullRefresh <= 1) {
       // Periodic ghost cleanup: scrub via the normal path, then run the
       // settle flavor of the grayscale base pass (DTM planes are equal after
@@ -418,11 +430,8 @@ void XtcReaderActivity::renderPage() {
       }
     }
 
-    // The 2-bit path never reaches renderStatusBarOverlay, so Full is painted
-    // here — but only now. Every earlier draw was wiped by the clearScreen()
-    // calls that build the LSB/MSB planes and rebuild the base, so the overlay
-    // has to go into the final framebuffer that
-    // cleanupGrayscaleWithFrameBuffer() restores.
+    // Second of the two draws — see the note above the base pass. Without this
+    // the rebuilt base omits the overlay the panel is currently showing.
     renderPowerStatsOverlay(renderer);
 
     renderer.cleanupGrayscaleWithFrameBuffer();
