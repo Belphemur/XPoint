@@ -1,5 +1,7 @@
 #pragma once
 
+#include <PowerDrainMonitor.h>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -28,6 +30,19 @@ class PowerStatsOverlay {
   static constexpr int MAX_ROWS = 20;
   static_assert(ROW_BYTES >= 32, "a full row plus its NUL must fit the decompiled row budget");
 
+  // The Compact line needs its own capacity: ROW_BYTES is the *Full block's*
+  // per-row budget, and the compact format (clock + nap% + battery% + mA + page
+  // time) exceeds 47 characters once the numbers are multi-digit, so reusing it
+  // truncated the trailing `pg` field.
+  //
+  // Worst case for `rest %dMHz nap %lu%% | batt %u%% | ~%smA | pg %lums`, with
+  // every field at its widest representable value:
+  //   "rest 240MHz nap 100% | batt 100% | ~1100.0mA | pg 4294967295ms" = 59 chars
+  // plus the NUL. Locales with longer unit/label text have headroom, and
+  // snprintf still truncates safely rather than overrunning.
+  static constexpr int COMPACT_BYTES = 96;
+  static_assert(COMPACT_BYTES > 60, "compact line must fit its widest field set");
+
   // Compact line, built into a caller-supplied buffer. It is NOT drawn here:
   // BaseTheme::drawStatusBar() has already painted its clusters on the same
   // baseline, so a second draw at a guessed x would overprint them. Instead the
@@ -42,6 +57,13 @@ class PowerStatsOverlay {
   // Dispatch on mode. Full is drawn by the overlay; Compact is only formatted
   // here — the caller passes the result into the theme's status bar.
   static void draw(GfxRenderer& renderer, Mode mode, const EnduranceGovernor& governor);
+
+  // Verdict text for the overlay rows, translated. The governor's own
+  // wakeVerdictText() stays English because it is only used in log lines.
+  static const char* verdictText(const EnduranceGovernor& governor);
+
+  // Duration labels for PowerDrainMonitor::formatDuration(), translated.
+  static PowerDrainMonitor::DurationLabels durationLabels();
 
   // Clamp a stored settings byte. A corrupt/migrated value must never select a
   // mode outside the enum.

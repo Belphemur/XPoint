@@ -164,6 +164,8 @@ class EnduranceGovernor {
   EnduranceGovernor();
 
   void loadAndMigrateStrikes();
+  // Write the persisted ladder floor so an in-session promotion survives reboot.
+  void persistFloor(uint8_t floorIndex);
   void refreshFromSettings();
   void applyStrategy();
 

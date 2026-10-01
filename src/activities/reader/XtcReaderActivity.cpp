@@ -6,6 +6,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <PageTurnTimer.h>
 #include <PowerStatsOverlay.h>
 
 #include <algorithm>
@@ -285,7 +286,7 @@ void XtcReaderActivity::renderStatusBarOverlay(GfxRenderer& renderer, const Stat
   // Same power-stats surface the EPUB reader gets: the setting is global, so a
   // reader that skipped it would make the option silently dead for XTC books.
   const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
-  char compactBuf[PowerStatsOverlay::ROW_BYTES];
+  char compactBuf[PowerStatsOverlay::COMPACT_BYTES];
   const char* powerStatsLine = nullptr;
   if (powerStatsMode == PowerStatsOverlay::Mode::Compact) {
     powerStatsLine = PowerStatsOverlay::buildCompact(compactBuf, sizeof(compactBuf));
@@ -294,6 +295,13 @@ void XtcReaderActivity::renderStatusBarOverlay(GfxRenderer& renderer, const Stat
   }
   GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom, 0,
                     true, false, false, nullptr, powerStatsLine);
+}
+
+void XtcReaderActivity::renderPowerStatsOverlay(GfxRenderer& renderer) const {
+  const auto mode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
+  if (mode == PowerStatsOverlay::Mode::Full) {
+    PowerStatsOverlay::draw(renderer, mode, powerManager.endurance());
+  }
 }
 
 void XtcReaderActivity::renderPage() {
@@ -316,6 +324,10 @@ void XtcReaderActivity::renderPage() {
     renderer.displayBuffer();
     return;
   }
+
+  // One sample per rendered XTC page. Without this the Compact `pg` and the Full
+  // page row showed 0 on an XTC-only session (or stale EPUB samples).
+  const PageTurnTimer pageTurnTimer;
 
   size_t bytesRead = xtc->loadPage(currentPage, pageBuffer, pageBufferSize);
   if (bytesRead == 0) {
@@ -355,6 +367,11 @@ void XtcReaderActivity::renderPage() {
         }
       }
     }
+
+    // The 2-bit path commits its own frame below and never reaches
+    // renderStatusBarOverlay, so the Full block has to be painted here or the
+    // setting is silently dead for two-bit XTC pages.
+    renderPowerStatsOverlay(renderer);
 
     if (pagesUntilFullRefresh <= 1) {
       // Periodic ghost cleanup: scrub via the normal path, then run the
@@ -438,6 +455,8 @@ void XtcReaderActivity::renderPage() {
   } else {
     renderStatusBarOverlay(renderer, StatusBarOverlayPosition::Bottom);
   }
+
+  renderPowerStatsOverlay(renderer);
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 

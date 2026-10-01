@@ -13,6 +13,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <PageTurnTimer.h>
 #include <PowerStatsOverlay.h>
 #include <SdCardFont.h>
 #include <TrustedTime.h>
@@ -2185,30 +2186,19 @@ bool EpubReaderActivity::skipLoopDelay() {
   return !buildHeapPaused && backgroundBuildWanted();
 }
 
-namespace {
-// Reports one completed page render to the endurance governor. RAII so every
-// early return in the render path (empty chapter, out-of-bounds page, failed SD
-// read) still closes the measurement instead of leaving a timer running.
-class PageTurnTimer {
- public:
-  PageTurnTimer() : startMs_(millis()) {}
-  ~PageTurnTimer() { powerManager.endurance().notePageTurn(millis() - startMs_); }
-
- private:
-  unsigned long startMs_;
-};
-}  // namespace
-
 void EpubReaderActivity::renderBook() {
-  const PageTurnTimer pageTurnTimer;
 #if defined(CROSSPOINT_TTF_READER)
   // Native-TTF page source (design §3.5): a fully separate render path so the
-  // legacy Section pipeline below stays untouched.
+  // legacy Section pipeline below stays untouched. It installs its OWN timer in
+  // renderBookTtf(); starting one here as well made every TTF render report two
+  // samples and double the accumulated page time.
   if (ttf_) {
     renderBookTtf();
     return;
   }
 #endif
+  // Legacy (Section) path only.
+  const PageTurnTimer pageTurnTimer;
 #ifdef BOOK_PROFILE
   uint32_t render_book_start_ms = millis();
   uint8_t core = xPortGetCoreID();
@@ -4691,7 +4681,7 @@ void EpubReaderActivity::renderStatusBar() const {
   //             element, because it owns that baseline and the clusters already
   //             painted on it.
   const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
-  char compactBuf[PowerStatsOverlay::ROW_BYTES];
+  char compactBuf[PowerStatsOverlay::COMPACT_BYTES];
   const char* powerStatsLine = nullptr;
   if (powerStatsMode == PowerStatsOverlay::Mode::Compact) {
     powerStatsLine = PowerStatsOverlay::buildCompact(compactBuf, sizeof(compactBuf));

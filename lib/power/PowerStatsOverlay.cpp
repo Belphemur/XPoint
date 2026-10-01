@@ -46,6 +46,10 @@ void formatMilli(char* out, size_t outLen, uint32_t milli, int decimals) {
 // Profile names go through tr() like every other user-facing string: the
 // overlay header is rendered on-screen, so a hard-coded English name would leave
 // this row untranslated in every other locale.
+// Translated duration labels for the drain monitor's pure formatter.
+PowerDrainMonitor::DurationLabels kDurationLabels{tr(STR_PWR_DUR_LT_MIN), tr(STR_PWR_DUR_MIN), tr(STR_PWR_DUR_HM),
+                                                  tr(STR_PWR_DUR_DH)};
+
 const char* profileName(const endurance::Profile profile) {
   switch (profile) {
     case endurance::Profile::Balanced:
@@ -70,10 +74,15 @@ const char* PowerStatsOverlay::buildCompact(char* out, const size_t outLen) {
   char current[16] = "--";
   if (estimate.measured) formatMilli(current, sizeof(current), estimate.milliAmp, 1);
 
+  // pageTurnMs() is a cumulative total across every render, so printing it raw
+  // made `pg` grow on each page turn instead of reporting a duration. The
+  // average is what the label means (Full mode already divides the same way).
+  const unsigned long renders = governor.pageRenders();
+  const unsigned long avgPageMs = renders == 0 ? 0 : governor.pageTurnMs() / renders;
+
   std::snprintf(out, outLen, tr(STR_PWR_COMPACT_LINE), governor.idleClockMHz(),
                 static_cast<unsigned long>(tenthsPercent(governor.napMs(), governor.bootMs()) / 10),
-                static_cast<unsigned>(powerManager.getBatteryPercentage()), current,
-                static_cast<unsigned long>(governor.pageTurnMs()));
+                static_cast<unsigned>(powerManager.getBatteryPercentage()), current, avgPageMs);
   return out;
 }
 
@@ -111,7 +120,7 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
                   governor.heavyJobActive() ? tr(STR_YES) : tr(STR_NO));
     emit(row);
 
-    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_REST), governor.idleClockMHz(), governor.wakeVerdictText());
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_REST), governor.idleClockMHz(), verdictText(governor));
     emit(row);
 
     std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_CLOCKS), governor.idleClockMHz(), governor.bootClockMHz(),
@@ -153,7 +162,8 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
         char left[32];
         PowerDrainMonitor::formatDuration(
             left, sizeof(left),
-            PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(), estimate.milliAmp));
+            PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(), estimate.milliAmp),
+            durationLabels());
         std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_EST), milliamps, left);
         emit(row);
       }
@@ -163,7 +173,7 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
       char duration[32];
       char dropped[20];
       char perHour[20];
-      PowerDrainMonitor::formatDuration(duration, sizeof(duration), sleep.durationMs / 60000UL);
+      PowerDrainMonitor::formatDuration(duration, sizeof(duration), sleep.durationMs / 60000UL, durationLabels());
       formatMilli(dropped, sizeof(dropped), (static_cast<uint32_t>(sleep.startPct) - sleep.endPct) * 1000UL, 2);
       if (sleep.rateable) {
         formatMilli(perHour, sizeof(perHour), sleep.milliPctPerHour, 3);
@@ -175,9 +185,12 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
       emit(row);
     }
 
-    std::snprintf(
-        row, sizeof(row), tr(STR_PWR_FULL_PAGE),
-        static_cast<unsigned long>(governor.pageTurnMs() / (governor.pageRenders() ? governor.pageRenders() : 1u)));
+    // Two conversions in the format string, so two arguments: the average page
+    // turn and the sample count it was averaged over. Supplying only the average
+    // made snprintf read a nonexistent variadic argument.
+    const unsigned long pageRenders = governor.pageRenders();
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_PAGE),
+                  static_cast<unsigned long>(governor.pageTurnMs() / (pageRenders ? pageRenders : 1u)), pageRenders);
     emit(row);
 
     std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_RADIO), WifiLeakGuard::sessionActive() ? tr(STR_YES) : tr(STR_NO),
@@ -199,6 +212,15 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
 
   build(true);
 }
+
+const char* PowerStatsOverlay::verdictText(const EnduranceGovernor& governor) {
+  return I18N.get(governor.wakeVerdict() == EnduranceGovernor::WakeVerdict::Verified ? StrId::STR_PWR_VERDICT_VERIFIED
+                  : governor.wakeVerdict() == EnduranceGovernor::WakeVerdict::DemotedToPoll
+                      ? StrId::STR_PWR_VERDICT_POLL
+                      : StrId::STR_PWR_VERDICT_UNVERIFIED);
+}
+
+PowerDrainMonitor::DurationLabels PowerStatsOverlay::durationLabels() { return kDurationLabels; }
 
 void PowerStatsOverlay::draw(GfxRenderer& renderer, const Mode mode, const EnduranceGovernor& governor) {
   switch (mode) {

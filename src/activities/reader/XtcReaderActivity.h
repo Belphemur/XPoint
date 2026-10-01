@@ -26,6 +26,11 @@ class XtcReaderActivity final : public ReaderActivity {
   void renderPage();
   void openChapterSelection();
   void renderStatusBarOverlay(GfxRenderer& renderer, StatusBarOverlayPosition position) const;
+  // Full-mode power statistics. Compact mode rides in the status-bar layout
+  // instead (renderStatusBarOverlay), so this only paints the Full block — and
+  // it must be called on BOTH render paths, because the 2-bit grayscale path
+  // commits its frame without ever reaching renderStatusBarOverlay.
+  void renderPowerStatsOverlay(GfxRenderer& renderer) const;
   StatusBarInfo getStatusBarInfo() const;
   void saveProgress() const;
   void loadProgress();

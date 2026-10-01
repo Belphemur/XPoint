@@ -112,9 +112,20 @@ class PowerDrainMonitor {
   // Returns 0 when there is no usable rate (unknown or zero drain).
   static unsigned long runtimeLeftMinutes(uint8_t remainingPct, uint32_t milliAmpMilli);
 
-  // Humanised duration into a caller buffer: "3d 4h", "12h 30m", "45m", "<1m".
-  // Never overflows; always NUL-terminates. Returns the buffer for chaining.
-  static const char* formatDuration(char* out, size_t outLen, unsigned long minutes);
+  // Unit labels for formatDuration(). Injecting them keeps this class free of
+  // the i18n layer (so it stays host-testable) while letting the overlay pass
+  // tr() strings — hard-coding "m"/"h"/"d" here would leave every non-English
+  // locale with English units in the overlay.
+  struct DurationLabels {
+    const char* lessThanMinute;  // "<1m"
+    const char* minutes;         // "%lum"
+    const char* hoursMinutes;    // "%luh %lum"
+    const char* daysHours;       // "%lud %luh"
+  };
+
+  // Humanised duration into a caller buffer using the supplied labels. Never
+  // overflows; always NUL-terminates. Returns the buffer for chaining.
+  static const char* formatDuration(char* out, size_t outLen, unsigned long minutes, const DurationLabels& labels);
 
  private:
   void refreshEstimate(unsigned long nowMs);

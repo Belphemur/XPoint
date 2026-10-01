@@ -35,18 +35,19 @@ unsigned long PowerDrainMonitor::runtimeLeftMinutes(const uint8_t remainingPct, 
   return static_cast<unsigned long>(numerator / milliAmpMilli);
 }
 
-const char* PowerDrainMonitor::formatDuration(char* out, const size_t outLen, const unsigned long minutes) {
+const char* PowerDrainMonitor::formatDuration(char* out, const size_t outLen, const unsigned long minutes,
+                                              const DurationLabels& labels) {
   if (out == nullptr || outLen == 0) return out;
   if (minutes == 0) {
-    std::snprintf(out, outLen, "<1m");
+    std::snprintf(out, outLen, "%s", labels.lessThanMinute);
     return out;
   }
   if (minutes < 60) {
-    std::snprintf(out, outLen, "%lum", minutes);
+    std::snprintf(out, outLen, labels.minutes, minutes);
   } else if (minutes < 24UL * 60UL) {
-    std::snprintf(out, outLen, "%luh %lum", minutes / 60, minutes % 60);
+    std::snprintf(out, outLen, labels.hoursMinutes, minutes / 60, minutes % 60);
   } else {
-    std::snprintf(out, outLen, "%lud %luh", minutes / (24 * 60), (minutes / 60) % 24);
+    std::snprintf(out, outLen, labels.daysHours, minutes / (24 * 60), (minutes / 60) % 24);
   }
   return out;
 }

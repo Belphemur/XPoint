@@ -200,19 +200,25 @@ TEST(PowerDrain, AssumedCapacityIsTheDocumentedCrossfireConstant) {
   EXPECT_EQ(1100u, PowerDrainMonitor::ASSUMED_CAPACITY_MAH);
 }
 
+namespace {
+// The monitor stays free of the i18n layer, so the unit labels are injected. The
+// overlay passes tr() strings; the test pins the shape with literals.
+constexpr PowerDrainMonitor::DurationLabels kLabels{"<1m", "%lum", "%luh %lum", "%lud %luh"};
+}  // namespace
+
 TEST(PowerDrain, FormatDurationIsHumanised) {
   char buf[32];
-  EXPECT_STREQ("<1m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 0));
-  EXPECT_STREQ("45m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 45));
-  EXPECT_STREQ("1h 5m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 65));
-  EXPECT_STREQ("2h 0m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 120));
-  EXPECT_STREQ("3d 4h", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 3 * 24 * 60 + 4 * 60));
+  EXPECT_STREQ("<1m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 0, kLabels));
+  EXPECT_STREQ("45m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 45, kLabels));
+  EXPECT_STREQ("1h 5m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 65, kLabels));
+  EXPECT_STREQ("2h 0m", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 120, kLabels));
+  EXPECT_STREQ("3d 4h", PowerDrainMonitor::formatDuration(buf, sizeof(buf), 3 * 24 * 60 + 4 * 60, kLabels));
 }
 
 TEST(PowerDrain, FormatDurationAlwaysTerminatesInAFixedBuffer) {
   char tiny[5];
   std::memset(tiny, 'X', sizeof(tiny));
-  PowerDrainMonitor::formatDuration(tiny, sizeof(tiny), 123456);
+  PowerDrainMonitor::formatDuration(tiny, sizeof(tiny), 123456, kLabels);
   EXPECT_EQ('\0', tiny[sizeof(tiny) - 1]) << "must not write past the caller's buffer";
   EXPECT_LE(std::strlen(tiny), sizeof(tiny) - 1);
 }

@@ -120,7 +120,13 @@ void EnduranceGovernor::begin() {
     naps_ = _persistedNaps < 0xFFFFFFFFU ? _persistedNaps + 1 : _persistedNaps;
     _persistedNaps = naps_;
 
-    const uint8_t wakePct = static_cast<uint8_t>(powerManager.getBatteryPercentage());
+    // A gauge board reports 0% for "unknown" until its first successful read.
+    // Recording that as the wake percentage would show a near-100% drop over the
+    // sleep and fabricate a drain rate in the overlay's sleep history.
+    const bool wakePctKnown = !powerManager.isBatteryHealthStale() &&
+                              powerManager.getBatteryHealthState() != HalPowerManager::BatteryHealthState::STALE;
+    const uint8_t wakePct =
+        wakePctKnown ? static_cast<uint8_t>(powerManager.getBatteryPercentage()) : PowerDrainMonitor::kInvalid;
     const int64_t wakeEpoch = trustedtime::trustedNow();
     unsigned long sleptMs = 0;
     bool haveDuration = false;
@@ -133,7 +139,7 @@ void EnduranceGovernor::begin() {
         haveDuration = true;
       }
     }
-    if (haveDuration) {
+    if (haveDuration && wakePct != PowerDrainMonitor::kInvalid) {
       drain_.beginSleep(_preSleepPct, 0, false);
       drain_.endSleep(wakePct, sleptMs, false);
       LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% after %lus (nap #%lu)", static_cast<unsigned>(_preSleepPct),
@@ -157,9 +163,9 @@ void EnduranceGovernor::begin() {
   // "anything not power-on" as a crash would ratchet a healthy device to the
   // stock clock on every routine restart.
   const auto resetReason = esp_reset_reason();
-  const bool faultReset = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_TASK_WDT ||
-                          resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_WDT ||
-                          resetReason == ESP_RST_BROWNOUT;
+  const bool faultReset = resetReason == ESP_RST_PANIC || resetReason == ESP_RST_CPU_LOCKUP ||
+                          resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_INT_WDT ||
+                          resetReason == ESP_RST_WDT || resetReason == ESP_RST_BROWNOUT;
   if (faultReset) {
     LOG_ERR("PWR", "Fault reset (%d) after boot - recording an endurance strike", static_cast<int>(resetReason));
     reportInstability(InstabilityReason::Crash);
@@ -187,12 +193,18 @@ void EnduranceGovernor::loadAndMigrateStrikes() {
   strikesLightSleep_.store(decodeStrikes(oldState).lightSleepStrikes, std::memory_order_relaxed);
   persistedFloor_ = decodeRatchet(oldState);
 
+  // Boot resolves the rung with the SAME rule the runtime path uses: escalate
+  // from the persisted floor, not from the profile base. Using promote(base, ...)
+  // here made a boot disagree with the escalation task (which escalates from the
+  // floor), so a device already at rung 2 that struck again came back at rung 2.
   const endurance::StrikeState bootStrikes = strikes();
+  const uint8_t escalated =
+      endurance::escalate(persistedFloor_, bootStrikes.idleStrikes, bootStrikes.lightSleepStrikes);
   const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile())];
-  const uint8_t promoted = endurance::promote(base, bootStrikes.idleStrikes, bootStrikes.lightSleepStrikes);
+  const uint8_t wanted = escalated > base ? escalated : base;
   // The floor only ratchets up: a device that once proved unstable at 10 MHz
   // never silently returns there because a later boot read a clean byte.
-  strategyIndex_ = promoted > persistedFloor_ ? promoted : persistedFloor_;
+  strategyIndex_ = wanted > persistedFloor_ ? wanted : persistedFloor_;
   // Carry the promotion into the in-memory floor. Without this the very next
   // refreshFromSettings() re-derives the rung from the (now cleared) strikes and
   // the boot's promotion evaporates before the clock is ever set from it.
@@ -219,6 +231,18 @@ void EnduranceGovernor::setProfile(endurance::Profile p) {
   // over rather than re-resolved here: the ladder is only ever mutated on the
   // main task, under the state mutex.
   pendingProfile_.store(static_cast<uint32_t>(p) + 1u, std::memory_order_release);
+}
+
+void EnduranceGovernor::persistFloor(const uint8_t floorIndex) {
+  // Strikes are already cleared at this point, so the byte carries the ratchet.
+  const uint8_t byte = encodeStateByte(endurance::StrikeState{}, floorIndex);
+  Preferences prefs;
+  if (prefs.begin(kNvsNamespace, false)) {
+    prefs.putUChar(kNvsStateKey, byte);
+    prefs.end();
+  } else {
+    LOG_ERR("PWR", "endurance.state floor write failed (NVS open)");
+  }
 }
 
 void EnduranceGovernor::refreshFromSettings() {
@@ -257,7 +281,12 @@ void EnduranceGovernor::applyStrategy() {
   // A failed touch-INT verdict is sticky: it has to survive every later profile
   // or ladder refresh, or the next escalation would re-enable the low-power
   // cadence that is dropping touches.
+  // Read under the state mutex: demoteToPollSlices() stores it under the same
+  // lock, so a concurrent applyStrategy cannot observe a stale `false`, publish
+  // idlePollSlices_ = true, and silently undo the demotion.
+  lockState();
   const bool pollSlices = defaults.idlePollSlices && !pollSlicesDemoted_.load(std::memory_order_relaxed);
+  unlockState();
 
   // Publish the three targets as one locked update so no reader can observe a
   // mixed clock/poll pair from two different rungs.
@@ -328,6 +357,10 @@ void EnduranceGovernor::escalationTaskEntry() {
       index = strategyIndex_;
       persistedFloor_ = index;
       unlockState();
+      // Persist the raised floor: otherwise the promotion lives only in RAM and
+      // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
+      // putting the device back on the rung that was failing it.
+      persistFloor(index);
       applyStrategy();
       LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));
       strikesIdle_.store(0, std::memory_order_relaxed);
@@ -465,8 +498,8 @@ void EnduranceGovernor::tick() {
 
 void EnduranceGovernor::demoteToPollSlices(const char* reason) {
   wakeVerdict_.store(WakeVerdict::DemotedToPoll, std::memory_order_relaxed);
-  pollSlicesDemoted_.store(true, std::memory_order_relaxed);
   lockState();
+  pollSlicesDemoted_.store(true, std::memory_order_relaxed);
   idlePollSlices_ = false;
   unlockState();
   powerManager.setIdlePollSlicesEnabled(false);

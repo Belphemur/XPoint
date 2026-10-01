@@ -12,6 +12,10 @@ namespace {
 // refcount and deadline go through atomics rather than the power-manager mutex.
 std::atomic<int> s_sessions{0};
 std::atomic<unsigned long> s_deadlineMs{0};
+// The span the current deadline was armed with. Re-arming must use the SESSION's
+// configured timeout, not the default: a guard built as WifiLeakGuard(60000)
+// would otherwise silently get a five-minute window back whenever it re-armed.
+std::atomic<unsigned long> s_deadlineSpanMs{WifiLeakGuard::DEFAULT_LEAK_TIMEOUT_MS};
 std::atomic<uint32_t> s_leaksStopped{0};
 std::atomic<WifiLeakGuard::StopReason> s_lastStopReason{WifiLeakGuard::StopReason::ScopeExit};
 // millis() of the last poll that saw the radio DOWN (or of the last forced
@@ -41,6 +45,7 @@ WifiLeakGuard::WifiLeakGuard() : WifiLeakGuard(DEFAULT_LEAK_TIMEOUT_MS) {}
 WifiLeakGuard::WifiLeakGuard(const unsigned long leakTimeoutMs) : leakTimeoutMs_(leakTimeoutMs) {
   const unsigned long now = millis();
   if (s_sessions.fetch_add(1, std::memory_order_relaxed) == 0) {
+    s_deadlineSpanMs.store(leakTimeoutMs_, std::memory_order_relaxed);
     s_deadlineMs.store(now + leakTimeoutMs_, std::memory_order_relaxed);
   }
 }
@@ -57,6 +62,7 @@ WifiLeakGuard::~WifiLeakGuard() {
 
 void WifiLeakGuard::keepAlive(const unsigned long nowMs) {
   if (s_sessions.load(std::memory_order_relaxed) > 0) {
+    s_deadlineSpanMs.store(leakTimeoutMs_, std::memory_order_relaxed);
     s_deadlineMs.store(nowMs + leakTimeoutMs_, std::memory_order_relaxed);
   }
 }
@@ -67,10 +73,15 @@ bool WifiLeakGuard::poll(const unsigned long nowMs, const bool allowUnownedShutd
   if (!radioUp) {
     s_haveRadioBaseline = true;
     s_radioDownSinceMs.store(nowMs, std::memory_order_relaxed);
-    // Only disarm the deadline when no session owns the radio; a live session
-    // that put the radio down for a moment must keep its window.
     if (s_sessions.load(std::memory_order_relaxed) <= 0) {
       s_deadlineMs.store(0, std::memory_order_relaxed);
+    } else {
+      // A live session may deliberately take the radio down and bring it back
+      // (Wi-Fi off between transfers). Re-arm from the moment the radio was
+      // observed down rather than leaving the old deadline in place: a session
+      // that spent longer than its window with the radio down would otherwise
+      // be force-stopped the instant it came back up.
+      s_deadlineMs.store(nowMs + s_deadlineSpanMs.load(std::memory_order_relaxed), std::memory_order_relaxed);
     }
     return false;
   }
@@ -83,7 +94,7 @@ bool WifiLeakGuard::poll(const unsigned long nowMs, const bool allowUnownedShutd
       // radio-down branch clears it). Zero means "not armed", NOT "expired", so
       // stopping here would kill a session the moment it brought the radio back
       // up. Re-arm from now instead.
-      s_deadlineMs.store(nowMs + DEFAULT_LEAK_TIMEOUT_MS, std::memory_order_relaxed);
+      s_deadlineMs.store(nowMs + s_deadlineSpanMs.load(std::memory_order_relaxed), std::memory_order_relaxed);
       return false;
     }
     // Still inside the window? A negative signed delta means nowMs < deadline,
