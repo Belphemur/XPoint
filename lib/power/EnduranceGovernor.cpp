@@ -278,29 +278,25 @@ void EnduranceGovernor::applyStrategy() {
   // straight performance regression; the render clock is therefore floored at the
   // boot clock and never lowered.
   const int renderClock = defaults.renderClockMHz > bootClock ? defaults.renderClockMHz : bootClock;
-  // A failed touch-INT verdict is sticky: it has to survive every later profile
-  // or ladder refresh, or the next escalation would re-enable the low-power
-  // cadence that is dropping touches.
-  // Read under the state mutex: demoteToPollSlices() stores it under the same
-  // lock, so a concurrent applyStrategy cannot observe a stale `false`, publish
-  // idlePollSlices_ = true, and silently undo the demotion.
+  // Read the sticky demotion flag, publish the members and push the HAL target
+  // in ONE locked section. Splitting them let a demoteToPollSlices() land between
+  // the read and the publish, so a stale pollSlices = true could re-set the bit a
+  // demotion had just cleared, restoring the cadence that drops touches with no
+  // later applyStrategy to correct it. setGovernorTarget() is a plain atomic
+  // store with no callback into the governor, so it is safe to hold the mutex
+  // across it.
   lockState();
   const bool pollSlices = defaults.idlePollSlices && !pollSlicesDemoted_.load(std::memory_order_relaxed);
-  unlockState();
-
-  // Publish the three targets as one locked update so no reader can observe a
-  // mixed clock/poll pair from two different rungs.
-  lockState();
   renderClockMHz_ = renderClock;
   idleClockMHz_ = defaults.idleClockMHz;
   idlePollSlices_ = pollSlices;
+  // The clock still moves only through HalPowerManager::setPowerSaving(); the
+  // governor supplies the target, not the transition. Published as one snapshot:
+  // two separate setters would let idle entry pair a new clock with the previous
+  // rung's polling policy.
+  powerManager.setGovernorTarget(defaults.idleClockMHz, pollSlices);
   unlockState();
 
-  // The clock still moves only through HalPowerManager::setPowerSaving(); the
-  // governor supplies the target, not the transition.
-  // Published as one snapshot: two separate setters would let idle entry pair the
-  // new clock with the previous rung's polling policy.
-  powerManager.setGovernorTarget(defaults.idleClockMHz, pollSlices);
   // "poll slices", not "light sleep": XPoint never enters light sleep, so logging
   // the Crossfire wording here would claim a sleep mode the device does not take.
   LOG_INF("PWR", "Profile %u: idle %d / active %d / render %u MHz, poll slices %s", static_cast<unsigned>(profile),
@@ -369,8 +365,11 @@ void EnduranceGovernor::escalationTaskEntry() {
     }
     // A heavy job still running must never be throttled by an idle tick from
     // another task; restore the clock here so the job's window is honoured even
-    // if the main loop asked for idle in the meantime.
-    if (heavyJobs_.load(std::memory_order_relaxed) > 0 && powerManager.isLowPowerActive()) {
+    // if the main loop asked for idle in the meantime. Gated on the same hold
+    // flag setPowerSaving() consults: restoring it here while the user turned
+    // Heavy-Job Boost off would re-raise the clock anyway and make the setting
+    // ineffective.
+    if (heavyJobs_.load(std::memory_order_relaxed) > 0 && heavyJobHoldEnabled() && powerManager.isLowPowerActive()) {
       powerManager.setPowerSaving(false);
     }
     vTaskDelay(pdMS_TO_TICKS(kEscalationPeriodMs));
@@ -502,8 +501,12 @@ void EnduranceGovernor::demoteToPollSlices(const char* reason) {
   lockState();
   pollSlicesDemoted_.store(true, std::memory_order_relaxed);
   idlePollSlices_ = false;
-  unlockState();
+  // Cleared inside the same lock applyStrategy() holds across its read+publish,
+  // so the two publishes are serialised and neither can strand the other's value.
   powerManager.setIdlePollSlicesEnabled(false);
+  unlockState();
+  // Deliberately outside the lock: setPowerSaving() can call back into
+  // reportInstability(), which takes this same non-recursive mutex.
   if (powerManager.isLowPowerActive()) {
     // The cadence is applied on the transition into low power, so a device that
     // is already idle needs the change pushed explicitly.
