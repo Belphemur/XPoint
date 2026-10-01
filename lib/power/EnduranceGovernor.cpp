@@ -141,8 +141,7 @@ void EnduranceGovernor::begin() {
               static_cast<unsigned long>(naps_));
     } else {
       LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% (no trusted clock; no sleep rate) (nap #%lu)",
-              static_cast<unsigned>(_preSleepPct), static_cast<unsigned>(wakePct),
-              static_cast<unsigned long>(naps_));
+              static_cast<unsigned>(_preSleepPct), static_cast<unsigned>(wakePct), static_cast<unsigned long>(naps_));
     }
     _preSleepPct = 0xFF;
     _preSleepEpoch = 0;
@@ -275,8 +274,7 @@ void EnduranceGovernor::applyStrategy() {
   // "poll slices", not "light sleep": XPoint never enters light sleep, so logging
   // the Crossfire wording here would claim a sleep mode the device does not take.
   LOG_INF("PWR", "Profile %u: idle %d / active %d / render %u MHz, poll slices %s", static_cast<unsigned>(profile),
-          defaults.idleClockMHz, bootClock, static_cast<unsigned>(renderClock),
-          pollSlices ? "enabled" : "disabled");
+          defaults.idleClockMHz, bootClock, static_cast<unsigned>(renderClock), pollSlices ? "enabled" : "disabled");
 }
 
 void EnduranceGovernor::reportInstability(InstabilityReason reason) {
@@ -463,7 +461,6 @@ void EnduranceGovernor::tick() {
       }
     }
   }
-
 }
 
 void EnduranceGovernor::demoteToPollSlices(const char* reason) {
