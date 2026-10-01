@@ -264,6 +264,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // lib/power/EnduranceLadder.h (0 Endurance, 1 Balanced, 2 Performance), which
   // is kept free of Arduino includes so the ladder stays host-testable.
   uint8_t powerProfile = 0;
+  // Hold the CPU at full speed while a heavy job (render, build, transfer) runs.
+  // Off lets the idle tick throttle a job mid-flight, so it defaults on.
+  uint8_t powerHeavyJobBoost = 1;
   // Auto-detected IANA time zone id, e.g. "America/Toronto". Empty = not detected (show UTC).
   char clockTimeZoneId[40] = "";
   // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4.

@@ -94,7 +94,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // A heavy job holds the clock up for its whole duration. Without this the
   // main loop's next idle tick can drop the CPU mid-render, because the job's
   // Lock only ever raised the clock and nothing kept it raised.
-  if (endurance_.heavyJobActive()) {
+  if (endurance_.heavyJobActive() && endurance_.heavyJobHoldEnabled()) {
     enabled = false;
   }
 
@@ -112,7 +112,11 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       return;  // recent full-speed work: stay at normal frequency
     }
     LOG_DBG("PWR", "Going to low-power mode");
-    const int lowFreq = governorLowFreqMhz_ > 0 ? governorLowFreqMhz_ : LOW_POWER_FREQ;
+    // One acquire load: the clock and the polling policy below come from the
+    // same published rung.
+    const uint32_t target = governorTarget_.load(std::memory_order_acquire);
+    const uint32_t targetFreq = target & 0xFFFFu;
+    const int lowFreq = targetFreq > 0 ? static_cast<int>(targetFreq) : LOW_POWER_FREQ;
     if (!setCpuFrequencyMhz(lowFreq)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", lowFreq);
       // A refused clock target IS the governor's instability signal: the ladder
@@ -123,7 +127,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     }
     // Poll slices are the idle-sleep class the governor's ladder toggles. A
     // demoted device keeps the input manager at its tight cadence instead.
-    InputManager::setLowPowerPolling(governorIdlePollSlices_);
+    InputManager::setLowPowerPolling((target & kPollSlicesBit) != 0);
     isLowPower = true;
 
   } else if ((!enabled || mode != None) && isLowPower) {

@@ -212,8 +212,14 @@ class EnduranceGovernor {
   void endHeavyJob() { heavyJobs_.fetch_sub(1, std::memory_order_relaxed); }
   bool heavyJobActive() const { return heavyJobs_.load(std::memory_order_relaxed) > 0; }
 
+  // Whether a running heavy job is allowed to hold the clock up. Backed by the
+  // user's "Heavy-Job Boost" setting; read by HalPowerManager::setPowerSaving().
+  void setHeavyJobHoldEnabled(bool enabled) { heavyJobHold_.store(enabled, std::memory_order_relaxed); }
+  bool heavyJobHoldEnabled() const { return heavyJobHold_.load(std::memory_order_relaxed); }
+
  private:
   std::atomic<int> heavyJobs_{0};
+  std::atomic<bool> heavyJobHold_{true};
 
   // Ladder floor recovered from NVS. Only ever ratchets up: a device that once
   // proved unstable at 10 MHz never silently returns there.

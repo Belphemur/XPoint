@@ -298,8 +298,9 @@ void EnduranceGovernor::applyStrategy() {
 
   // The clock still moves only through HalPowerManager::setPowerSaving(); the
   // governor supplies the target, not the transition.
-  powerManager.setLowPowerFrequency(defaults.idleClockMHz);
-  powerManager.setIdlePollSlicesEnabled(pollSlices);
+  // Published as one snapshot: two separate setters would let idle entry pair the
+  // new clock with the previous rung's polling policy.
+  powerManager.setGovernorTarget(defaults.idleClockMHz, pollSlices);
   // "poll slices", not "light sleep": XPoint never enters light sleep, so logging
   // the Crossfire wording here would claim a sleep mode the device does not take.
   LOG_INF("PWR", "Profile %u: idle %d / active %d / render %u MHz, poll slices %s", static_cast<unsigned>(profile),

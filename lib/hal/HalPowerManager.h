@@ -43,8 +43,12 @@ class HalPowerManager {
   // override": the pre-governor behaviour (LOW_POWER_FREQ) is unchanged until a
   // governor is constructed and installs a target.
   EnduranceGovernor endurance_{};
-  int governorLowFreqMhz_ = 0;
-  bool governorIdlePollSlices_ = true;
+  // The governor's idle target, published as ONE word: the idle clock and the
+  // poll-slice policy must be read as a pair, or idle entry can pair a new clock
+  // with the previous rung's polling policy. bits 0..15 = idle MHz (0 = no
+  // override), bit 16 = poll slices enabled.
+  static constexpr uint32_t kPollSlicesBit = 1u << 16;
+  std::atomic<uint32_t> governorTarget_{0};
 
  public:
 #if BOARD_HAS_PSRAM
@@ -63,14 +67,32 @@ class HalPowerManager {
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
 
-  // Endurance governor hooks (see EnduranceGovernor.h). governorLowFreqMhz_ = 0
-  // restores the stock LOW_POWER_FREQ floor.
-  void setLowPowerFrequency(int mhz) { governorLowFreqMhz_ = mhz > 0 ? mhz : 0; }
-  int lowPowerFrequency() const { return governorLowFreqMhz_ > 0 ? governorLowFreqMhz_ : LOW_POWER_FREQ; }
+  // Endurance governor hooks (see EnduranceGovernor.h). An idle MHz of 0
+  // restores the stock LOW_POWER_FREQ floor. setGovernorTarget() publishes both
+  // halves in a single release store so idle entry can never observe a mixed
+  // (clock, polling) pair.
+  void setGovernorTarget(int mhz, bool pollSlices) {
+    const uint32_t freq = static_cast<uint32_t>(mhz > 0 ? mhz : 0) & 0xFFFFu;
+    governorTarget_.store(freq | (pollSlices ? kPollSlicesBit : 0u), std::memory_order_release);
+  }
+  uint32_t governorTarget() const { return governorTarget_.load(std::memory_order_acquire); }
+  int lowPowerFrequency() const {
+    const uint32_t freq = governorTarget() & 0xFFFFu;
+    return freq > 0 ? static_cast<int>(freq) : LOW_POWER_FREQ;
+  }
   // Whether the idle loop may sleep in poll slices. The governor demotes this
   // when the touch-INT wake source fails verification.
-  void setIdlePollSlicesEnabled(bool enabled) { governorIdlePollSlices_ = enabled; }
-  bool idlePollSlicesEnabled() const { return governorIdlePollSlices_; }
+  // Sets the polling half only, preserving the clock half (and vice versa) by
+  // read-modify-writing the same atomic under a compare-exchange loop rather than
+  // writing a bare field.
+  void setIdlePollSlicesEnabled(bool enabled) {
+    uint32_t cur = governorTarget_.load(std::memory_order_acquire);
+    for (;;) {
+      const uint32_t next = enabled ? (cur | kPollSlicesBit) : (cur & ~kPollSlicesBit);
+      if (governorTarget_.compare_exchange_weak(cur, next, std::memory_order_acq_rel)) break;
+    }
+  }
+  bool idlePollSlicesEnabled() const { return (governorTarget() & kPollSlicesBit) != 0; }
   // True while the clock is at the idle target — the escalation task uses it to
   // know a heavy job got throttled underneath itself.
   bool isLowPowerActive() const { return isLowPower; }

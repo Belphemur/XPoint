@@ -541,6 +541,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // any crash strike promotes it.
         SettingInfo::Enum(StrId::STR_POWER_PROFILE, &CrossPointSettings::powerProfile, std::move(powerProfileValues),
                           "powerProfile", StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::Toggle(StrId::STR_HEAVY_JOB_BOOST, &CrossPointSettings::powerHeavyJobBoost, "powerHeavyJobBoost",
+                            StrId::STR_CUSTOMISE_STATUS_BAR),
         // Clock entries (web settings only; device UI shows the auto-detected zone).
         SettingInfo::Enum(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock, std::move(statusBarClockValues),
                           "statusBarClock", StrId::STR_CUSTOMISE_STATUS_BAR),
