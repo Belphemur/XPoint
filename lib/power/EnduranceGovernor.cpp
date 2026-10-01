@@ -6,6 +6,7 @@
 #include <HalPowerManager.h>
 #include <Logging.h>
 #include <Preferences.h>
+#include <TrustedTime.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -41,6 +42,10 @@ constexpr unsigned long kBatterySampleIntervalMs = 5000;
 // fabricated duration would put a wrong number in the overlay's per-sleep rate.
 static RTC_DATA_ATTR uint8_t _preSleepPct = 0xFF;
 static RTC_DATA_ATTR uint32_t _persistedNaps = 0;
+// Epoch seconds at sleep entry, when the clock was trustworthy. Zero means "no
+// clock", and the sleep window is then closed without a duration rather than
+// with an invented one.
+static RTC_DATA_ATTR int64_t _preSleepEpoch = 0;
 
 // Strike byte layout (design doc §3.1 names bit0/bit1):
 //   bit 0      idle-clock strikes >= 1
@@ -87,10 +92,10 @@ EnduranceGovernor::EnduranceGovernor() = default;
 
 EnduranceGovernor& EnduranceGovernor::instance() { return powerManager.endurance(); }
 
-void EnduranceGovernor::lockState() {
+void EnduranceGovernor::lockState() const {
   if (stateMutex_ != nullptr) xSemaphoreTake(stateMutex_, portMAX_DELAY);
 }
-void EnduranceGovernor::unlockState() {
+void EnduranceGovernor::unlockState() const {
   if (stateMutex_ != nullptr) xSemaphoreGive(stateMutex_);
 }
 
@@ -107,12 +112,40 @@ void EnduranceGovernor::begin() {
   bootClockMHz_ = getCpuFrequencyMhz();
   bootStartMs_ = millis();
 
-  // A nap staged by the previous boot's sleep entry closes here.
+  // A nap staged by the previous boot's sleep entry closes here. This is the only
+  // point at which the sleep actually ended, so it is where a real
+  // PowerDrainMonitor window is opened and closed — otherwise the overlay's
+  // sleep history could never become valid.
   if (_preSleepPct != 0xFF) {
     naps_ = _persistedNaps < 0xFFFFFFFFU ? _persistedNaps + 1 : _persistedNaps;
-    LOG_DBG("PWR", "Woke from a nap at %u%% (nap #%lu)", static_cast<unsigned>(_preSleepPct),
-            static_cast<unsigned long>(naps_));
+    _persistedNaps = naps_;
+
+    const uint8_t wakePct = static_cast<uint8_t>(powerManager.getBatteryPercentage());
+    const int64_t wakeEpoch = trustedtime::trustedNow();
+    unsigned long sleptMs = 0;
+    bool haveDuration = false;
+    if (_preSleepEpoch != 0 && wakeEpoch > _preSleepEpoch) {
+      const int64_t sleptSeconds = wakeEpoch - _preSleepEpoch;
+      // Guard against an implausible jump rather than reporting a rate derived
+      // from a clock step.
+      if (sleptSeconds < 30LL * 24LL * 60LL * 60LL) {
+        sleptMs = static_cast<unsigned long>(sleptSeconds * 1000LL);
+        haveDuration = true;
+      }
+    }
+    if (haveDuration) {
+      drain_.beginSleep(_preSleepPct, 0, false);
+      drain_.endSleep(wakePct, sleptMs, false);
+      LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% after %lus (nap #%lu)", static_cast<unsigned>(_preSleepPct),
+              static_cast<unsigned>(wakePct), static_cast<unsigned long>(sleptMs / 1000UL),
+              static_cast<unsigned long>(naps_));
+    } else {
+      LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% (no trusted clock; no sleep rate) (nap #%lu)",
+              static_cast<unsigned>(_preSleepPct), static_cast<unsigned>(wakePct),
+              static_cast<unsigned long>(naps_));
+    }
     _preSleepPct = 0xFF;
+    _preSleepEpoch = 0;
   }
 
   loadAndMigrateStrikes();
@@ -209,29 +242,41 @@ void EnduranceGovernor::refreshFromSettings() {
 void EnduranceGovernor::applyStrategy() {
   endurance::Profile profile;
   endurance::Strategy strategy;
+  int bootClock;
   lockState();
   profile = profile_;
   strategy = endurance::kStrategies[strategyIndex_];
+  bootClock = bootClockMHz_;
   unlockState();
 
-  endurance::ProfileDefaults defaults = endurance::defaultsFor(strategy, profile);
+  const endurance::ProfileDefaults defaults = endurance::defaultsFor(strategy, profile);
   // Crossfire's ladder logs "render 80 MHz" because 80 MHz IS its boot clock.
   // XPoint boots at 240 MHz on the S3, so pinning renders down to 80 would be a
   // straight performance regression; the render clock is therefore floored at the
   // boot clock and never lowered.
-  renderClockMHz_ = defaults.renderClockMHz > bootClockMHz_ ? defaults.renderClockMHz : bootClockMHz_;
+  const int renderClock = defaults.renderClockMHz > bootClock ? defaults.renderClockMHz : bootClock;
+  // A failed touch-INT verdict is sticky: it has to survive every later profile
+  // or ladder refresh, or the next escalation would re-enable the low-power
+  // cadence that is dropping touches.
+  const bool pollSlices = defaults.idlePollSlices && !pollSlicesDemoted_.load(std::memory_order_relaxed);
+
+  // Publish the three targets as one locked update so no reader can observe a
+  // mixed clock/poll pair from two different rungs.
+  lockState();
+  renderClockMHz_ = renderClock;
   idleClockMHz_ = defaults.idleClockMHz;
-  idlePollSlices_ = defaults.idlePollSlices;
+  idlePollSlices_ = pollSlices;
+  unlockState();
 
   // The clock still moves only through HalPowerManager::setPowerSaving(); the
   // governor supplies the target, not the transition.
-  powerManager.setLowPowerFrequency(idleClockMHz_);
-  powerManager.setIdlePollSlicesEnabled(idlePollSlices_);
+  powerManager.setLowPowerFrequency(defaults.idleClockMHz);
+  powerManager.setIdlePollSlicesEnabled(pollSlices);
   // "poll slices", not "light sleep": XPoint never enters light sleep, so logging
   // the Crossfire wording here would claim a sleep mode the device does not take.
   LOG_INF("PWR", "Profile %u: idle %d / active %d / render %u MHz, poll slices %s", static_cast<unsigned>(profile),
-          idleClockMHz_, bootClockMHz_, static_cast<unsigned>(renderClockMHz_),
-          idlePollSlices_ ? "enabled" : "disabled");
+          defaults.idleClockMHz, bootClock, static_cast<unsigned>(renderClock),
+          pollSlices ? "enabled" : "disabled");
 }
 
 void EnduranceGovernor::reportInstability(InstabilityReason reason) {
@@ -387,38 +432,54 @@ void EnduranceGovernor::tick() {
       const bool asserted =
           BoardConfig::ACTIVE.touch.irqActiveLow ? (digitalRead(irq) == LOW) : (digitalRead(irq) == HIGH);
       const bool touchSeen = gpio.wasTouchActivity();
+      const bool windowOpen = lastWakeProbeMs_ != 0;
+      const bool windowExpired = windowOpen && (now - lastWakeProbeMs_) > kWakeProbeSettleMs;
+
       if (touchSeen) {
-        if (asserted && lastWakeProbeMs_ != 0 && now - lastWakeProbeMs_ <= kWakeProbeSettleMs) {
-          // A gesture arrived inside the settle window WITH the INT line
-          // asserted. Both halves are required: a gesture on its own proves the
-          // touch path works, not that the line reports it.
+        // The gesture opens the settle window; the line normally asserts within
+        // it. Both halves are required for a verified verdict: a gesture alone
+        // proves the touch path works, not that the INT line reports it.
+        if (asserted) {
           wakeVerdict_.store(WakeVerdict::Verified, std::memory_order_relaxed);
           LOG_INF("PWR", "Touch INT verified as a light-sleep wake source");
-        } else {
-          // Latch the window start; the assertion is normally seen on the next
-          // probe after the touch is registered.
+        } else if (!windowOpen) {
           lastWakeProbeMs_ = now;
         }
-      } else if (asserted) {
-        // INT asserted with no gesture behind it. A line that ghosts cannot be
-        // used to skip work, so demote to always-poll — and actually apply the
-        // demotion, not just record it: otherwise the verdict is decorative and
-        // the input manager keeps the throttled cadence that is dropping touches.
-        wakeVerdict_.store(WakeVerdict::DemotedToPoll, std::memory_order_relaxed);
-        lockState();
-        idlePollSlices_ = false;
-        unlockState();
-        powerManager.setIdlePollSlicesEnabled(false);
-        if (powerManager.isLowPowerActive()) {
-          // The cadence is only applied on the transition into low power, so a
-          // device that is already idle needs it pushed explicitly.
-          powerManager.setPowerSaving(false);
-          powerManager.setPowerSaving(true);
+      } else if (windowOpen && !windowExpired) {
+        // Still inside the settle window: the assertion may yet arrive.
+        if (asserted) {
+          wakeVerdict_.store(WakeVerdict::Verified, std::memory_order_relaxed);
+          LOG_INF("PWR", "Touch INT verified as a light-sleep wake source");
         }
-        LOG_ERR("PWR", "Touch INT wakes without touches; using poll slices");
+      } else if (asserted) {
+        // INT asserted with no gesture behind it: the line ghosts, so it cannot
+        // be trusted to report a pending touch.
+        demoteToPollSlices("Touch INT wakes without touches; using poll slices");
+      } else if (windowExpired) {
+        // A gesture was registered and the line never asserted within the window.
+        // Without this transition a genuinely missed wake would sit Unverified
+        // forever and the advertised fail-safe would never engage.
+        demoteToPollSlices("Touch INT missed wakes; using poll slices");
       }
     }
   }
+
+}
+
+void EnduranceGovernor::demoteToPollSlices(const char* reason) {
+  wakeVerdict_.store(WakeVerdict::DemotedToPoll, std::memory_order_relaxed);
+  pollSlicesDemoted_.store(true, std::memory_order_relaxed);
+  lockState();
+  idlePollSlices_ = false;
+  unlockState();
+  powerManager.setIdlePollSlicesEnabled(false);
+  if (powerManager.isLowPowerActive()) {
+    // The cadence is applied on the transition into low power, so a device that
+    // is already idle needs the change pushed explicitly.
+    powerManager.setPowerSaving(false);
+    powerManager.setPowerSaving(true);
+  }
+  LOG_ERR("PWR", "%s", reason);
 }
 
 void EnduranceGovernor::beginSleepWindow() {
@@ -427,6 +488,7 @@ void EnduranceGovernor::beginSleepWindow() {
   // would never close before millis() restarts.
   _preSleepPct = drain_.lastPercent();
   _persistedNaps = naps_;
+  _preSleepEpoch = trustedtime::trustedNow();
 }
 
 void EnduranceGovernor::endSleepWindow() {

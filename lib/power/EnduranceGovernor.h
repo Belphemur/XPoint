@@ -61,13 +61,42 @@ class EnduranceGovernor {
   void reportInstability(InstabilityReason reason);
 
   // Profile + ladder accessors (settings-backed; see CrossPointSettings).
-  endurance::Profile profile() const { return endurance::clampProfile(static_cast<uint8_t>(profile_)); }
   void setProfile(endurance::Profile p);
 
-  int idleClockMHz() const { return idleClockMHz_; }
-  int renderClockMHz() const { return renderClockMHz_; }
-  bool idlePollSlices() const { return idlePollSlices_; }
-  uint8_t strategyIndex() const { return strategyIndex_; }
+  // The published clock/poll targets are written by the escalation task and read
+  // by the render path and the overlay, so every accessor takes the state mutex:
+  // a bare read could otherwise observe idleClockMHz_ and idlePollSlices_ from
+  // two different rungs.
+  int idleClockMHz() const {
+    lockState();
+    const int v = idleClockMHz_;
+    unlockState();
+    return v;
+  }
+  int renderClockMHz() const {
+    lockState();
+    const int v = renderClockMHz_;
+    unlockState();
+    return v;
+  }
+  bool idlePollSlices() const {
+    lockState();
+    const bool v = idlePollSlices_;
+    unlockState();
+    return v;
+  }
+  uint8_t strategyIndex() const {
+    lockState();
+    const uint8_t v = strategyIndex_;
+    unlockState();
+    return v;
+  }
+  endurance::Profile profile() const {
+    lockState();
+    const endurance::Profile p = endurance::clampProfile(static_cast<uint8_t>(profile_));
+    unlockState();
+    return p;
+  }
   int bootClockMHz() const { return bootClockMHz_; }
 
   endurance::StrikeState strikes() const {
@@ -150,9 +179,13 @@ class EnduranceGovernor {
   // live behind a FreeRTOS mutex rather than being bare members: reading
   // idleClockMHz_ and idlePollSlices_ without a lock could hand the reader a
   // mismatched pair from two different rungs.
-  SemaphoreHandle_t stateMutex_ = nullptr;
-  void lockState();
-  void unlockState();
+  mutable SemaphoreHandle_t stateMutex_ = nullptr;
+  void lockState() const;
+  void unlockState() const;
+  // Fail the touch-INT wake verification: record the verdict and switch the
+  // input manager back to its tight poll cadence. Sticky, so a later profile or
+  // ladder refresh cannot silently re-enable the cadence that drops touches.
+  void demoteToPollSlices(const char* reason);
 
   endurance::Profile profile_ = endurance::Profile::Endurance;
   std::atomic<uint8_t> strikesIdle_{0};
@@ -163,6 +196,9 @@ class EnduranceGovernor {
   int renderClockMHz_ = 80;
   int bootClockMHz_ = 240;
   bool idlePollSlices_ = true;
+  // Set once the touch-INT verification fails. applyStrategy() honours it, so
+  // the demotion survives every subsequent refresh and strike escalation.
+  std::atomic<bool> pollSlicesDemoted_{false};
   bool began_ = false;
 
   // Heavy-job refcount. Held up by Lock; the escalation task restores the clock

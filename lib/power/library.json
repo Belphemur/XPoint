@@ -11,7 +11,8 @@
     "BatteryMonitor",
     "InputManager",
     "SDCardManager",
-    "BoardConfig"
+    "BoardConfig",
+    "TrustedTime"
   ],
   "build": {}
 }
