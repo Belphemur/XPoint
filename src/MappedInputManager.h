@@ -4,6 +4,7 @@
 
 #include "util/HomeButtonInput.h"
 #include "util/PowerClickWindow.h"
+#include "util/RepeatHoldDiscount.h"
 
 class GfxRenderer;
 namespace freeink {
@@ -60,10 +61,7 @@ class MappedInputManager {
   // One inter-tick gap above this counts as a render stall (X3/X4 double
   // input): generous against a normal 10-50 ms tick so ordinary jitter is
   // never charged to the hold window.
-  static constexpr unsigned long kFrameStallThresholdMs = 100;
-  // Bound on the discounted stall total, so a long session cannot subtract
-  // more hold time than it ever accumulated.
-  static constexpr unsigned long kMaxStallAccumMs = 10000;
+  static constexpr unsigned long kFrameStallThresholdMs = repeathold::kStallThresholdMs;
 
   // Blocking transfer loops pump physical input themselves. Defer configured
   // Home-key actions so the next main-loop pass can dispatch them, while the
@@ -227,10 +225,16 @@ class MappedInputManager {
   mutable unsigned long touchHeldOverrideAt = 0;
   // Render-stall accounting for getRepeatHeldTime() (non-PSRAM boards only,
   // see kRepeatHoldExcludesStalls): the previous dispatch's timestamp and the
-  // total stall time discounted from hold windows so far. Zeroed on every
-  // press edge — a fresh press starts a clean hold window.
+  // total stall time discounted from hold windows so far. Zeroed when a press
+  // edge STARTS a contact — see heldButtonsLastFrame for why a mid-hold press
+  // must not clear it.
   mutable unsigned long lastFrameAtMs = 0;
   mutable unsigned long stallAccumMs = 0;
+  // Whether ANY logical button was held on the previous dispatch. The SDK's
+  // held clock is aggregate (it starts at the first button down), so this is
+  // what distinguishes a contact's opening press edge from a second button
+  // pressed while the navigation button is still down.
+  mutable uint8_t heldButtonsLastFrame = 0;
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
   // This tick's physical button edges, taken ONCE in update() (soak-fix7:

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "util/RepeatHoldDiscount.h"
+
 extern unsigned long testNowMs;
 inline unsigned long millis() { return testNowMs; }
 
@@ -21,7 +23,9 @@ class MappedInputManager {
   bool wasReleased(Button button) const { return frame.released & (1u << static_cast<unsigned>(button)); }
   bool isPressed(Button button) const { return frame.held & (1u << static_cast<unsigned>(button)); }
   unsigned long getHeldTime() const { return frame.heldMs; }
-  unsigned long getRepeatHeldTime() const { return frame.heldMs > frame.stallMs ? frame.heldMs - frame.stallMs : 0; }
+  // Uses the SAME discount arithmetic as production, so a capped or otherwise
+  // weakened discount cannot pass these tests.
+  unsigned long getRepeatHeldTime() const { return repeathold::discount(frame.heldMs, frame.stallMs); }
   // Host tests model the non-PSRAM (C3-class) build: no async poll task.
   static constexpr bool kRepeatHoldExcludesStalls() { return true; }
 };

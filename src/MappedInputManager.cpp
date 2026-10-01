@@ -37,9 +37,8 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
   // accrues, and a press edge later in update() clears the total.
   if (kRepeatHoldExcludesStalls()) {
     const unsigned long now = millis();
-    if (lastFrameAtMs != 0 && now - lastFrameAtMs > kFrameStallThresholdMs) {
-      stallAccumMs += (now - lastFrameAtMs) - kFrameStallThresholdMs;
-      if (stallAccumMs > kMaxStallAccumMs) stallAccumMs = kMaxStallAccumMs;
+    if (lastFrameAtMs != 0) {
+      stallAccumMs = repeathold::addSaturated(stallAccumMs, repeathold::stallFor(now - lastFrameAtMs));
     }
     lastFrameAtMs = now;
   }
@@ -174,12 +173,20 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       deferredHomeGesture = HomeButtonGesture::None;
     }
   }
+  uint8_t heldButtons = 0;
   for (uint8_t value = 0; value <= static_cast<uint8_t>(Button::ScreenDown); ++value) {
-    if (!isPressed(static_cast<Button>(value))) longPressFiredButtons &= ~(1u << value);
+    const bool held = isPressed(static_cast<Button>(value));
+    if (!held) longPressFiredButtons &= ~(1u << value);
+    if (held) heldButtons |= static_cast<uint8_t>(1u << value);
   }
-  // A fresh press edge starts a clean hold window: the stalls before it
-  // describe a different contact and must not discount this one's hold time.
-  if (kRepeatHoldExcludesStalls() && framePressedEdges != 0) stallAccumMs = 0;
+  // A press edge that STARTS a contact opens a clean hold window: the stalls
+  // before it belong to earlier contacts. A second button pressed while the
+  // navigation button is still held keeps its discount (the SDK's held clock
+  // is aggregate), as does an edge parked across a blocking transfer.
+  if (kRepeatHoldExcludesStalls() && repeathold::startsNewContact(framePressedEdges != 0, heldButtonsLastFrame != 0)) {
+    stallAccumMs = 0;
+  }
+  heldButtonsLastFrame = heldButtons;
 }
 
 bool MappedInputManager::isNavDirectionSwapped() const {
@@ -645,7 +652,7 @@ unsigned long MappedInputManager::getHeldTime() const {
 unsigned long MappedInputManager::getRepeatHeldTime() const {
   const unsigned long held = getHeldTime();
   if (!kRepeatHoldExcludesStalls()) return held;
-  return held > stallAccumMs ? held - stallAccumMs : 0;
+  return repeathold::discount(held, stallAccumMs);
 }
 
 MappedInputManager::Labels MappedInputManager::mapLabels(const char* back, const char* confirm, const char* previous,

@@ -49,9 +49,17 @@ hold-repeat on boards that already behave correctly must not slow down.
 1. `MappedInputManager` (`src/MappedInputManager.h/.cpp`) tracks render stalls:
    `lastFrameAtMs` / `stallAccumMs`, sampled at the top of every `update()`.
    Only an inter-tick gap in excess of `kFrameStallThresholdMs` (100 ms, far
-   above a normal 10-50 ms tick) accrues, so ordinary jitter is never charged;
-   the total is capped at `kMaxStallAccumMs` (10 s) and zeroed whenever a fresh
-   press edge arrives, so each contact starts a clean hold window.
+   above a normal 10-50 ms tick) accrues, so ordinary jitter is never charged.
+   The accumulator **saturates** (it is never capped): the hold time it is
+   subtracted from is uncapped wall clock, so capping the discount would leave
+   the remainder as hold time and re-arm the repeat for any stall longer than
+   the cap — a multi-second chapter build on the C3 (qodo #1, copilot).
+   The discount is cleared only when a press edge **starts** a contact
+   (`repeathold::startsNewContact`: press edge AND no button held on the
+   previous dispatch). The SDK's held clock is aggregate — it runs from the
+   first button down — so a second button pressed while the navigation button
+   is still held, or an edge parked across a blocking transfer, must not wipe
+   the discount belonging to that still-held contact (qodo #2, kody).
 2. `getRepeatHeldTime()` = `getHeldTime()` minus the accrued stalls
    (saturating at 0). It shares `getHeldTime()`'s Home-action and
    touch-override preconditions. `getHeldTime()` itself is UNCHANGED, so
@@ -70,18 +78,29 @@ hold-repeat on boards that already behave correctly must not slow down.
    `getHeldTime()` and the edge tick keeps `lastContinuousNavTime = 0`.
 
 ## Test plan
-- `test/button_press_navigation` (host gtest; the stub `MappedInputManager`
-  gained a `stallMs` frame field mirroring the production discount):
+`src/util/RepeatHoldDiscount.h` holds the pure constexpr policy
+(`stallFor`, `addSaturated`, `discount`, `startsNewContact`) so the arithmetic
+is host-testable while `MappedInputManager` owns the state. The host stub
+`MappedInputManager` calls the same `repeathold::discount`, so the navigator
+tests cannot pass against a weakened discount.
+
+- `test/button_press_navigation` (host gtest):
   - `RenderStallWhileStillHeldDoesNotRepeatThePress` — REGRESSION: press edge,
     2 s stall, still held -> `pages == 0`. Fails on the pre-fix navigator
-    (verified by rebuilding against `HEAD`'s ButtonNavigator).
+    (verified by rebuilding against `develop`'s ButtonNavigator).
+  - `VeryLongStallStillCoversTheWholeHold` — a 30 s stall covers the whole
+    30 s hold (qodo #1 / copilot).
   - `DeliberateHoldWithoutStallStillRepeats` — a genuine 1.5 s hold with no
     stall still repeats once.
   - `ReleaseAfterARepeatDoesNotStepAgain` — a fired repeat suppresses the
     release step on every board.
-- Full host `ctest` suite; `pio check`; `clang-format` via the wrapper.
-- Firmware images built for both `default` (C3) and `x4pro` (S3) when a
-  toolchain is available.
+  - `RepeatHoldDiscountTest.*` — normal ticks accrue nothing; only the excess
+    over the threshold is a stall; accumulation saturates instead of capping;
+    discount saturates at zero; only an opening press edge starts a contact.
+- Both defect shapes are mutation-checked: re-introducing the 10 s cap and the
+  unconditional press-edge reset each fail the suite.
+- Full host `ctest` suite; `pio run -e default` (C3) and `pio run -e x4pro`
+  (S3); `pio check` (cppcheck); `clang-format` via the wrapper.
 
 Device confirmation remains outstanding (owner has no X3/X4 unit on hand);
 this ships on the strength of the code-level mechanism and the host regression

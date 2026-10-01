@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "util/ButtonNavigator.h"
+#include "util/RepeatHoldDiscount.h"
 
 unsigned long testNowMs = 1000;
 
@@ -150,6 +151,55 @@ TEST_F(ButtonPressNavigationTest, ReleaseAfterARepeatDoesNotStepAgain) {
   input.frame = {1600, 0, NEXT, 0};
   navigator.onRelease(ButtonNavigator::getNextButtons(), [&steps] { ++steps; });
   EXPECT_EQ(steps, 1);  // the release must not answer the same contact again
+}
+
+// A stall longer than any plausible discount cap must still cover the WHOLE
+// stall: the hold time it is subtracted from is uncapped wall clock, so a
+// capped discount re-arms the repeat on the first tick after a multi-second
+// chapter build (qodo #1 / copilot).
+TEST_F(ButtonPressNavigationTest, VeryLongStallStillCoversTheWholeHold) {
+  input.frame = {0, NEXT, 0, NEXT};
+  navigate();
+  EXPECT_EQ(selected, 1);
+  testNowMs += 30000;
+  input.frame = {30000, 0, 0, NEXT, 30000};
+  navigate();
+  EXPECT_EQ(pages, 0);
+}
+
+TEST(RepeatHoldDiscountTest, NormalTicksAccrueNothing) {
+  EXPECT_EQ(repeathold::stallFor(0), 0u);
+  EXPECT_EQ(repeathold::stallFor(10), 0u);
+  EXPECT_EQ(repeathold::stallFor(repeathold::kStallThresholdMs), 0u);
+}
+
+TEST(RepeatHoldDiscountTest, OnlyTheExcessOverTheThresholdIsAStall) {
+  EXPECT_EQ(repeathold::stallFor(repeathold::kStallThresholdMs + 1), 1u);
+  EXPECT_EQ(repeathold::stallFor(2000), 2000u - repeathold::kStallThresholdMs);
+}
+
+TEST(RepeatHoldDiscountTest, AccumulationSaturatesInsteadOfCapping) {
+  const unsigned long fifteenSeconds = 15000;
+  const unsigned long accumulated = repeathold::addSaturated(0, fifteenSeconds);
+  EXPECT_EQ(repeathold::discount(fifteenSeconds, accumulated), 0u);
+  EXPECT_GE(accumulated, fifteenSeconds);
+  EXPECT_EQ(repeathold::addSaturated(ULONG_MAX - 5, 10), ULONG_MAX);
+}
+
+TEST(RepeatHoldDiscountTest, DiscountSaturatesAtZero) {
+  EXPECT_EQ(repeathold::discount(300, 0), 300u);
+  EXPECT_EQ(repeathold::discount(300, 300), 0u);
+  EXPECT_EQ(repeathold::discount(300, 900), 0u);
+}
+
+// The SDK's held clock is aggregate: it starts at the first button down. A
+// second button pressed while the navigation button is still held must NOT
+// open a new hold window (qodo #2 / kody).
+TEST(RepeatHoldDiscountTest, OnlyAnOpeningPressEdgeStartsAContact) {
+  EXPECT_TRUE(repeathold::startsNewContact(true, false));
+  EXPECT_FALSE(repeathold::startsNewContact(true, true));    // second press mid-hold
+  EXPECT_FALSE(repeathold::startsNewContact(false, false));  // no edge
+  EXPECT_FALSE(repeathold::startsNewContact(false, true));
 }
 
 }  // namespace
