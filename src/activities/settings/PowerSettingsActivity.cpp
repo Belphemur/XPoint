@@ -3,6 +3,8 @@
 #include <GfxRenderer.h>
 #include <HalPowerManager.h>
 #include <I18n.h>
+#include <Logging.h>
+#include <Memory.h>
 
 #include <cstdio>
 #include <utility>
@@ -91,34 +93,43 @@ void PowerSettingsActivity::activateIndex(const int index) {
 }
 
 void PowerSettingsActivity::openSleepTimeoutPicker() {
-  startActivityForResult(
-      std::make_unique<IntervalSelectionActivity>(
-          renderer, mappedInput, "SleepTimeoutInterval", StrId::STR_TIME_TO_SLEEP, SETTINGS.sleepTimeoutMinutes,
-          CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1, 5,
-          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, StrId::STR_SLEEP_NEVER),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          SETTINGS.sleepTimeoutMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-          SETTINGS.saveToFile();
-        }
-        requestUpdate();
-      });
+  // Firmware builds compile with -fno-exceptions, so a throwing make_unique
+  // aborts on OOM instead of returning control. Same no-throw + log shape as
+  // SettingsActivity's own child launches.
+  auto picker = makeUniqueNoThrow<IntervalSelectionActivity>(
+      renderer, mappedInput, "SleepTimeoutInterval", StrId::STR_TIME_TO_SLEEP, SETTINGS.sleepTimeoutMinutes,
+      CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1, 5,
+      StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, StrId::STR_SLEEP_NEVER);
+  if (!picker) {
+    LOG_ERR("SET", "OOM: sleep timeout picker");
+    return;
+  }
+  startActivityForResult(std::move(picker), [this](const ActivityResult& result) {
+    if (!result.isCancelled) {
+      SETTINGS.sleepTimeoutMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+      SETTINGS.saveToFile();
+    }
+    requestUpdate();
+  });
 }
 
 void PowerSettingsActivity::openAutoPowerOffPicker() {
-  startActivityForResult(
-      std::make_unique<IntervalSelectionActivity>(
-          renderer, mappedInput, "AutoPowerOffInterval", StrId::STR_AUTO_POWER_OFF, SETTINGS.autoPowerOffHours,
-          CrossPointSettings::AUTO_POWER_OFF_MIN_HOURS, CrossPointSettings::AUTO_POWER_OFF_MAX_HOURS,
-          CrossPointSettings::AUTO_POWER_OFF_STEP_HOURS, CrossPointSettings::AUTO_POWER_OFF_STEP_HOURS,
-          StrId::STR_AUTO_POWER_OFF_HOURS_FORMAT, false, StrId::STR_STATE_OFF),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          SETTINGS.autoPowerOffHours = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-          SETTINGS.saveToFile();
-        }
-        requestUpdate();
-      });
+  auto picker = makeUniqueNoThrow<IntervalSelectionActivity>(
+      renderer, mappedInput, "AutoPowerOffInterval", StrId::STR_AUTO_POWER_OFF, SETTINGS.autoPowerOffHours,
+      CrossPointSettings::AUTO_POWER_OFF_MIN_HOURS, CrossPointSettings::AUTO_POWER_OFF_MAX_HOURS,
+      CrossPointSettings::AUTO_POWER_OFF_STEP_HOURS, CrossPointSettings::AUTO_POWER_OFF_STEP_HOURS,
+      StrId::STR_AUTO_POWER_OFF_HOURS_FORMAT, false, StrId::STR_STATE_OFF);
+  if (!picker) {
+    LOG_ERR("SET", "OOM: auto power-off picker");
+    return;
+  }
+  startActivityForResult(std::move(picker), [this](const ActivityResult& result) {
+    if (!result.isCancelled) {
+      SETTINGS.autoPowerOffHours = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+      SETTINGS.saveToFile();
+    }
+    requestUpdate();
+  });
 }
 
 void PowerSettingsActivity::render(RenderLock&& lock) {

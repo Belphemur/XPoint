@@ -368,11 +368,6 @@ void XtcReaderActivity::renderPage() {
       }
     }
 
-    // The 2-bit path commits its own frame below and never reaches
-    // renderStatusBarOverlay, so the Full block has to be painted here or the
-    // setting is silently dead for two-bit XTC pages.
-    renderPowerStatsOverlay(renderer);
-
     if (pagesUntilFullRefresh <= 1) {
       // Periodic ghost cleanup: scrub via the normal path, then run the
       // settle flavor of the grayscale base pass (DTM planes are equal after
@@ -422,6 +417,13 @@ void XtcReaderActivity::renderPage() {
         }
       }
     }
+
+    // The 2-bit path never reaches renderStatusBarOverlay, so Full is painted
+    // here — but only now. Every earlier draw was wiped by the clearScreen()
+    // calls that build the LSB/MSB planes and rebuild the base, so the overlay
+    // has to go into the final framebuffer that
+    // cleanupGrayscaleWithFrameBuffer() restores.
+    renderPowerStatsOverlay(renderer);
 
     renderer.cleanupGrayscaleWithFrameBuffer();
 

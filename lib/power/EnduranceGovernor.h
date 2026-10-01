@@ -202,6 +202,9 @@ class EnduranceGovernor {
   // the demotion survives every subsequent refresh and strike escalation.
   std::atomic<bool> pollSlicesDemoted_{false};
   bool began_ = false;
+  // Set when the state mutex could not be allocated: the governor then runs no
+  // task and mutates nothing, so the unsynchronised accessors stay safe.
+  bool disabled_ = false;
 
   // Heavy-job refcount. Held up by Lock; the escalation task restores the clock
   // if the main loop asked for idle while a heavy job is still running. Atomic:

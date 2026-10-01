@@ -425,6 +425,12 @@ HalPowerManager::Lock::Lock() {
   }
   xSemaphoreGive(powerManager.modeMutex);
   if (valid) {
+    // Register the scope as a governor heavy job. This Lock is what the firmware
+    // actually uses (rendering, sleep and shutdown preparation), so without the
+    // refcount here the governor's heavy-job state would never go non-zero and
+    // neither the hold in setPowerSaving() nor the "Heavy-Job Boost" setting
+    // could have any effect.
+    powerManager.endurance().beginHeavyJob();
     // Immediately restore normal CPU frequency if currently in low-power mode
     powerManager.setPowerSaving(false);
   }
@@ -434,6 +440,7 @@ HalPowerManager::Lock::~Lock() {
   xSemaphoreTake(powerManager.modeMutex, portMAX_DELAY);
   if (valid) {
     powerManager.currentLockMode = None;
+    powerManager.endurance().endHeavyJob();
   }
   xSemaphoreGive(powerManager.modeMutex);
 }

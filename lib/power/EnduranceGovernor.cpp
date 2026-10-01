@@ -104,10 +104,18 @@ void EnduranceGovernor::begin() {
   began_ = true;
   stateMutex_ = xSemaphoreCreateMutex();
   if (stateMutex_ == nullptr) {
-    // Without it lockState()/unlockState() degrade to no-ops and the ladder
+    // Without it lockState()/unlockState() degrade to no-ops, and the ladder
     // state would be written concurrently by the main tick, the escalation task
-    // and a web-server profile change. Say so rather than silently racing.
-    LOG_ERR("PWR", "Governor state mutex allocation failed; ladder state is UNPROTECTED");
+    // and a web-server profile change. Running the task unsynchronised is worse
+    // than not running it, so start nothing: with no target installed,
+    // HalPowerManager keeps the stock LOW_POWER_FREQ behaviour, which is the
+    // pre-feature default. The sleep markers are cleared so a later boot does
+    // not count a nap the disabled governor never consumed.
+    LOG_ERR("PWR", "Governor state mutex allocation failed; endurance governor disabled");
+    disabled_ = true;
+    _preSleepPct = 0xFF;
+    _preSleepEpoch = 0;
+    return;
   }
   bootClockMHz_ = getCpuFrequencyMhz();
   bootStartMs_ = millis();
@@ -227,6 +235,7 @@ void EnduranceGovernor::loadAndMigrateStrikes() {
 }
 
 void EnduranceGovernor::setProfile(endurance::Profile p) {
+  if (disabled_) return;
   // The profile can be changed from the web-server task, so the byte is handed
   // over rather than re-resolved here: the ladder is only ever mutated on the
   // main task, under the state mutex.
@@ -389,6 +398,7 @@ const char* EnduranceGovernor::wakeVerdictText() const {
 }
 
 void EnduranceGovernor::tick() {
+  if (disabled_) return;
   const unsigned long now = millis();
   const unsigned long deltaMs = lastTickMs_ == 0 ? 0 : now - lastTickMs_;
   lastTickMs_ = now;
