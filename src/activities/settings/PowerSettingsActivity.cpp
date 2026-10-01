@@ -69,8 +69,8 @@ void PowerSettingsActivity::activateIndex(const int index) {
       return;
     // Heavy-job boost is a plain On/Off choice, not an interval.
     case StrId::STR_HEAVY_JOB_BOOST:
-      optionPopup.show(StrId::STR_HEAVY_JOB_BOOST, toggleNames, TOGGLE_ITEMS,
-                       SETTINGS.powerHeavyJobBoost ? 1 : 0, [this](int idx) {
+      optionPopup.show(StrId::STR_HEAVY_JOB_BOOST, toggleNames, TOGGLE_ITEMS, SETTINGS.powerHeavyJobBoost ? 1 : 0,
+                       [this](int idx) {
                          SETTINGS.powerHeavyJobBoost = idx ? 1 : 0;
                          SETTINGS.saveToFile();
                          requestUpdate();
@@ -140,12 +140,12 @@ void PowerSettingsActivity::buildScreen(UiScreen& screen) {
     rowItems_[i].actionValue = static_cast<int16_t>(i);
     switch (power_menu::ROW_LABELS[i]) {
       case StrId::STR_POWER_PROFILE:
-        rowValues_[i] = I18N.get(powerProfileNames[SETTINGS.powerProfile < POWER_PROFILE_ITEMS ? SETTINGS.powerProfile
-                                                                                               : 0]);
+        rowValues_[i] =
+            I18N.get(powerProfileNames[SETTINGS.powerProfile < POWER_PROFILE_ITEMS ? SETTINGS.powerProfile : 0]);
         break;
       case StrId::STR_POWER_STATS:
-        rowValues_[i] = I18N.get(powerStatsNames[SETTINGS.powerStatsMode < POWER_STATS_ITEMS ? SETTINGS.powerStatsMode
-                                                                                             : 0]);
+        rowValues_[i] =
+            I18N.get(powerStatsNames[SETTINGS.powerStatsMode < POWER_STATS_ITEMS ? SETTINGS.powerStatsMode : 0]);
         break;
       case StrId::STR_HEAVY_JOB_BOOST:
         rowValues_[i] = I18N.get(SETTINGS.powerHeavyJobBoost ? StrId::STR_STATE_ON : StrId::STR_STATE_OFF);

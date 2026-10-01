@@ -1,11 +1,10 @@
 #pragma once
 
 #include <I18n.h>
-
-#include <string>
-
 #include <activities/UiListActivity.h>
 #include <components/OptionPopup.h>
+
+#include <string>
 
 #include "PowerSettings.h"
 
