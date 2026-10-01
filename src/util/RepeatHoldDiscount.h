@@ -41,8 +41,6 @@ constexpr unsigned long discount(unsigned long heldMs, unsigned long accumulated
 // button down — so a second button pressed while the navigation button is
 // still held (or an edge parked across a blocking transfer) must not wipe the
 // discount belonging to that still-held contact.
-constexpr bool startsNewContact(bool hasPressEdge, bool anyHeldLastFrame) {
-  return hasPressEdge && !anyHeldLastFrame;
-}
+constexpr bool startsNewContact(bool hasPressEdge, bool anyHeldLastFrame) { return hasPressEdge && !anyHeldLastFrame; }
 
 }  // namespace repeathold
