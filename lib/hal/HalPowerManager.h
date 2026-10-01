@@ -100,6 +100,13 @@ class HalPowerManager {
   // decision log, 2026-09-10).
   bool isBatteryCharging() const;
 
+  // True when external power (USB / charger) is PHYSICALLY present, which is not
+  // the same question as isBatteryCharging(): a full battery stops charging with
+  // the cable still attached. `known` reports whether the board can observe the
+  // input rail at all; when it cannot, the answer is false and `known` is false,
+  // so a caller never treats "cannot tell" as "on battery is true".
+  bool isExternalPowerPresent(bool* known = nullptr) const;
+
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 

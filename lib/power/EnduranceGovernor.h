@@ -2,6 +2,7 @@
 
 #include <PowerDrainMonitor.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <atomic>
 
@@ -62,7 +63,6 @@ class EnduranceGovernor {
   // Profile + ladder accessors (settings-backed; see CrossPointSettings).
   endurance::Profile profile() const { return endurance::clampProfile(static_cast<uint8_t>(profile_)); }
   void setProfile(endurance::Profile p);
-  void refreshFromSettings();
 
   int idleClockMHz() const { return idleClockMHz_; }
   int renderClockMHz() const { return renderClockMHz_; }
@@ -70,7 +70,10 @@ class EnduranceGovernor {
   uint8_t strategyIndex() const { return strategyIndex_; }
   int bootClockMHz() const { return bootClockMHz_; }
 
-  endurance::StrikeState strikes() const { return strikes_; }
+  endurance::StrikeState strikes() const {
+    return endurance::StrikeState{strikesIdle_.load(std::memory_order_relaxed),
+                                  strikesLightSleep_.load(std::memory_order_relaxed)};
+  }
 
   PowerDrainMonitor& drain() { return drain_; }
   const PowerDrainMonitor& drain() const { return drain_; }
@@ -84,7 +87,7 @@ class EnduranceGovernor {
   // input manager skip its I2C poll. A line that is not trustworthy must not be
   // used to skip work, so a failed verdict demotes to always-poll.
   enum class WakeVerdict : uint8_t { Unverified = 0, Verified = 1, DemotedToPoll = 2 };
-  WakeVerdict wakeVerdict() const { return wakeVerdict_; }
+  WakeVerdict wakeVerdict() const { return wakeVerdict_.load(std::memory_order_relaxed); }
   const char* wakeVerdictText() const;
 
   // ---- per-sleep window hook (overlay's "Last sleep" row) ----
@@ -97,10 +100,13 @@ class EnduranceGovernor {
   uint32_t napMs() const { return napMs_; }
   uint32_t idleMs() const { return idleMs_; }
   uint32_t pageRenders() const { return pageRenders_; }
-  uint32_t pageRenderMs() const { return pageRenderMs_; }
-  uint32_t panelRefreshMs() const { return panelRefreshMs_; }
   uint32_t pageTurnMs() const { return pageTurnMs_; }
-  void notePageTurn(unsigned long renderMs, unsigned long panelMs, unsigned long totalMs);
+  // Records one completed page render: the wall time from entering the render
+  // path to returning from it, which covers both the drawing and the panel
+  // submission. The decompiled overlay splits this into "render" + "panel" but
+  // this render pipeline exposes no per-stage timestamps, and inventing a split
+  // would report two numbers that were never measured.
+  void notePageTurn(unsigned long totalMs);
 
   void setOnUsbPower(bool onUsb);
 
@@ -121,6 +127,7 @@ class EnduranceGovernor {
   EnduranceGovernor();
 
   void loadAndMigrateStrikes();
+  void refreshFromSettings();
   void applyStrategy();
 
  public:
@@ -130,8 +137,18 @@ class EnduranceGovernor {
   void escalationTaskEntry();
 
  private:
+  // Strategy + clock targets are written by the core-0 escalation task (through
+  // applyStrategy) and read by the main task's render path and the overlay. They
+  // live behind a FreeRTOS mutex rather than being bare members: reading
+  // idleClockMHz_ and idlePollSlices_ without a lock could hand the reader a
+  // mismatched pair from two different rungs.
+  SemaphoreHandle_t stateMutex_ = nullptr;
+  void lockState();
+  void unlockState();
+
   endurance::Profile profile_ = endurance::Profile::Endurance;
-  endurance::StrikeState strikes_{};
+  std::atomic<uint8_t> strikesIdle_{0};
+  std::atomic<uint8_t> strikesLightSleep_{0};
   endurance::Strategy strategy_{endurance::kStrategies[0]};
   uint8_t strategyIndex_ = 0;
   int idleClockMHz_ = 10;
@@ -156,6 +173,12 @@ class EnduranceGovernor {
   // proved unstable at 10 MHz never silently returns there.
   uint8_t persistedFloor_ = 0;
   unsigned long lastTickMs_ = 0;
+  unsigned long lastBatterySampleMs_ = 0;
+  uint8_t lastBatteryPct_ = PowerDrainMonitor::kInvalid;
+  // Profile byte handed over by refreshFromSettings() (which may run on any
+  // task, including the web-server task) and adopted by tick() on the main task,
+  // so the ladder is only ever re-resolved under the state mutex.
+  std::atomic<uint32_t> pendingProfile_{0};
 
   // Drain measurement + per-sleep window.
   PowerDrainMonitor drain_{};
@@ -166,16 +189,19 @@ class EnduranceGovernor {
   uint32_t bootMs_ = 0;
   unsigned long bootStartMs_ = 0;
   uint32_t pageRenders_ = 0;
-  uint32_t pageRenderMs_ = 0;
-  uint32_t panelRefreshMs_ = 0;
   uint32_t pageTurnMs_ = 0;
 
   // Touch-INT verification.
-  WakeVerdict wakeVerdict_ = WakeVerdict::Unverified;
   unsigned long lastWakeProbeMs_ = 0;
 
   TaskHandle_t taskHandle_ = nullptr;
-  bool strikesDirty_ = false;
+  // Set by reportInstability() on any task, consumed by the escalation task.
+  // exchange() rather than a plain clear so a strike recorded between the load
+  // and the clear cannot be swallowed.
+  std::atomic<bool> strikesDirty_{false};
+  // Read/written by both tasks; the mutex covers it, but making it atomic keeps
+  // the verdict readable from the overlay without taking the lock.
+  std::atomic<WakeVerdict> wakeVerdict_{WakeVerdict::Unverified};
 
   friend class HalPowerManager;
 };

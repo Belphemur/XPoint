@@ -26,37 +26,41 @@ uint32_t tenthsPercent(uint32_t part, uint32_t total) {
 
 // Scale a milli-unit into a human string: 330000 -> "330", 45300 -> "45.3".
 // Embedded newlib builds do not enable float printf, so every decimal on this
-// screen is rendered from integer arithmetic.
+// screen is rendered from integer arithmetic. The unit is NOT appended here —
+// every caller's translated format string already carries it (mA, %/h, %), so a
+// suffix would render as "32.8mmA".
 void formatMilli(char* out, size_t outLen, uint32_t milli, int decimals) {
+  const unsigned long whole = static_cast<unsigned long>(milli / 1000UL);
+  const unsigned long frac = static_cast<unsigned long>(milli % 1000UL);
   if (decimals == 1) {
-    std::snprintf(out, outLen, "%lu.%lum", static_cast<unsigned long>(milli / 1000UL),
-                  static_cast<unsigned long>((milli % 1000UL) / 100UL));
+    std::snprintf(out, outLen, "%lu.%lu", whole, frac / 100UL);
   } else if (decimals == 2) {
-    std::snprintf(out, outLen, "%lu.%02lum", static_cast<unsigned long>(milli / 1000UL),
-                  static_cast<unsigned long>((milli % 1000UL) / 10UL));
+    std::snprintf(out, outLen, "%lu.%02lu", whole, frac / 10UL);
   } else if (decimals == 3) {
-    std::snprintf(out, outLen, "%lu.%03lum", static_cast<unsigned long>(milli / 1000UL),
-                  static_cast<unsigned long>(milli % 1000UL));
+    std::snprintf(out, outLen, "%lu.%03lu", whole, frac);
   } else {
-    std::snprintf(out, outLen, "%lu", static_cast<unsigned long>(milli / 1000UL));
+    std::snprintf(out, outLen, "%lu", whole);
   }
 }
 
+// Profile names go through tr() like every other user-facing string: the
+// overlay header is rendered on-screen, so a hard-coded English name would leave
+// this row untranslated in every other locale.
 const char* profileName(const endurance::Profile profile) {
   switch (profile) {
     case endurance::Profile::Balanced:
-      return "Balanced";
+      return tr(STR_PROFILE_BALANCED);
     case endurance::Profile::Performance:
-      return "Performance";
+      return tr(STR_PROFILE_PERFORMANCE);
     case endurance::Profile::Endurance:
     default:
-      return "Endurance";
+      return tr(STR_PROFILE_ENDURANCE);
   }
 }
 
 }  // namespace
 
-void PowerStatsOverlay::drawCompact(GfxRenderer& renderer, const int statusBarTextY) {
+const char* PowerStatsOverlay::buildCompact(char* out, const size_t outLen) {
   const EnduranceGovernor& governor = EnduranceGovernor::instance();
   const PowerDrainMonitor& drain = governor.drain();
   const auto& estimate = drain.estimate();
@@ -66,13 +70,11 @@ void PowerStatsOverlay::drawCompact(GfxRenderer& renderer, const int statusBarTe
   char current[16] = "--";
   if (estimate.measured) formatMilli(current, sizeof(current), estimate.milliAmp, 1);
 
-  char line[ROW_BYTES];
-  std::snprintf(line, sizeof(line), tr(STR_PWR_COMPACT_LINE), governor.idleClockMHz(),
+  std::snprintf(out, outLen, tr(STR_PWR_COMPACT_LINE), governor.idleClockMHz(),
                 static_cast<unsigned long>(tenthsPercent(governor.napMs(), governor.bootMs()) / 10),
                 static_cast<unsigned>(powerManager.getBatteryPercentage()), current,
                 static_cast<unsigned long>(governor.pageTurnMs()));
-
-  renderer.drawText(kFontId, 0, statusBarTextY, line);
+  return out;
 }
 
 void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor& governor) {
@@ -89,108 +91,119 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
   const int x = marginLeft + 4;
   const int y = marginTop + 4;
 
-  // Clear a block behind the rows so the block stays legible over page text.
-  // The height is computed from the longest row the block can produce, so the
-  // white-out always covers every row it is about to draw.
-  const int blockWidth = renderer.getScreenWidth() - marginLeft - marginRight - 8;
-  const int blockHeight = lineHeight * MAX_ROWS;
-  renderer.fillRect(x - 4, y - 2, blockWidth + 8, blockHeight, false);
-  renderer.drawRect(x - 4, y - 2, blockWidth + 8, blockHeight, 1, true);
-
+  // Two passes over an identical builder keeps the white-out sized to what is
+  // drawn without buffering 20 rows of text on the stack.
+  bool drawing = false;
   int rowIndex = 0;
   auto emit = [&](const char* text) {
     if (rowIndex >= MAX_ROWS) return;  // hard budget: never overrun the block
-    renderer.drawText(kFontId, x, y + rowIndex * lineHeight, text);
+    if (drawing) {
+      renderer.drawText(kFontId, x, y + rowIndex * lineHeight, text);
+    }
     rowIndex++;
   };
 
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_HEADER), profileName(governor.profile()),
-                governor.heavyJobActive() ? tr(STR_YES) : tr(STR_NO));
-  emit(row);
+  auto build = [&](bool doDraw) {
+    drawing = doDraw;
+    rowIndex = 0;
 
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_REST), governor.idleClockMHz(), governor.wakeVerdictText());
-  emit(row);
-
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_CLOCKS), governor.idleClockMHz(), governor.bootClockMHz(),
-                governor.renderClockMHz(), governor.idlePollSlices() ? tr(STR_YES) : tr(STR_NO));
-  emit(row);
-
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SINCE_BOOT),
-                static_cast<unsigned long>(tenthsPercent(governor.napMs(), governor.bootMs()) / 10),
-                static_cast<unsigned long>(tenthsPercent(governor.idleMs(), governor.bootMs()) / 10));
-  emit(row);
-
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_NAPS), static_cast<unsigned long>(governor.naps()));
-  emit(row);
-
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_BATT), static_cast<unsigned>(powerManager.getBatteryPercentage()),
-                estimate.onUsbPower ? tr(STR_STATE_ON_USB) : tr(STR_STATE_ON_BATTERY));
-  emit(row);
-
-  if (estimate.onUsbPower) {
-    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN_USB));
-    emit(row);
-  } else if (!estimate.measured) {
-    // The 10-minute gate (design doc §3.2): minutes of window collected so far.
-    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN_MEASURING),
-                  static_cast<unsigned long>(estimate.windowMs / 60000UL),
-                  static_cast<unsigned long>(PowerDrainMonitor::WINDOW_MINUTES));
-    emit(row);
-  } else {
-    char perHour[20];
-    char milliamps[20];
-    formatMilli(perHour, sizeof(perHour), estimate.milliPctPerHour, 2);
-    formatMilli(milliamps, sizeof(milliamps), estimate.milliAmp, 1);
-    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN), perHour, milliamps);
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_HEADER), profileName(governor.profile()),
+                  governor.heavyJobActive() ? tr(STR_YES) : tr(STR_NO));
     emit(row);
 
-    // A zero drain over a full window yields a zero rate; dividing by it would
-    // report an infinite runtime, so the estimate row is skipped instead.
-    if (estimate.milliAmp > 0) {
-      char left[32];
-      PowerDrainMonitor::formatDuration(
-          left, sizeof(left),
-          PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(), estimate.milliAmp));
-      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_EST), milliamps, left);
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_REST), governor.idleClockMHz(), governor.wakeVerdictText());
+    emit(row);
+
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_CLOCKS), governor.idleClockMHz(), governor.bootClockMHz(),
+                  governor.renderClockMHz(), governor.idlePollSlices() ? tr(STR_YES) : tr(STR_NO));
+    emit(row);
+
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SINCE_BOOT),
+                  static_cast<unsigned long>(tenthsPercent(governor.napMs(), governor.bootMs()) / 10),
+                  static_cast<unsigned long>(tenthsPercent(governor.idleMs(), governor.bootMs()) / 10));
+    emit(row);
+
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_NAPS), static_cast<unsigned long>(governor.naps()));
+    emit(row);
+
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_BATT), static_cast<unsigned>(powerManager.getBatteryPercentage()),
+                  estimate.onUsbPower ? tr(STR_STATE_ON_USB) : tr(STR_STATE_ON_BATTERY));
+    emit(row);
+
+    if (estimate.onUsbPower) {
+      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN_USB));
+      emit(row);
+    } else if (!estimate.measured) {
+      // The 10-minute gate (design doc §3.2): minutes of window collected so far.
+      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN_MEASURING),
+                    static_cast<unsigned long>(estimate.windowMs / 60000UL),
+                    static_cast<unsigned long>(PowerDrainMonitor::WINDOW_MINUTES));
+      emit(row);
+    } else {
+      char perHour[20];
+      char milliamps[20];
+      formatMilli(perHour, sizeof(perHour), estimate.milliPctPerHour, 2);
+      formatMilli(milliamps, sizeof(milliamps), estimate.milliAmp, 1);
+      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN), perHour, milliamps);
+      emit(row);
+
+      // A zero drain over a full window yields a zero rate; dividing by it would
+      // report an infinite runtime, so the estimate row is skipped instead.
+      if (estimate.milliAmp > 0) {
+        char left[32];
+        PowerDrainMonitor::formatDuration(
+            left, sizeof(left),
+            PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(), estimate.milliAmp));
+        std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_EST), milliamps, left);
+        emit(row);
+      }
+    }
+
+    if (sleep.valid) {
+      char duration[32];
+      char dropped[20];
+      char perHour[20];
+      PowerDrainMonitor::formatDuration(duration, sizeof(duration), sleep.durationMs / 60000UL);
+      formatMilli(dropped, sizeof(dropped), (static_cast<uint32_t>(sleep.startPct) - sleep.endPct) * 1000UL, 2);
+      if (sleep.rateable) {
+        formatMilli(perHour, sizeof(perHour), sleep.milliPctPerHour, 3);
+        std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SLEEP), duration, dropped, perHour);
+      } else {
+        // Sub-minute sleeps do not have enough gauge samples to divide by.
+        std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SLEEP_SHORT), duration);
+      }
       emit(row);
     }
-  }
 
-  if (sleep.valid) {
-    char duration[32];
-    char dropped[20];
-    char perHour[20];
-    PowerDrainMonitor::formatDuration(duration, sizeof(duration), sleep.durationMs / 60000UL);
-    formatMilli(dropped, sizeof(dropped), (static_cast<uint32_t>(sleep.startPct) - sleep.endPct) * 1000UL, 2);
-    if (sleep.rateable) {
-      formatMilli(perHour, sizeof(perHour), sleep.milliPctPerHour, 3);
-      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SLEEP), duration, dropped, perHour);
-    } else {
-      // Sub-minute sleeps do not have enough gauge samples to divide by.
-      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SLEEP_SHORT), duration);
-    }
+    std::snprintf(
+        row, sizeof(row), tr(STR_PWR_FULL_PAGE),
+        static_cast<unsigned long>(governor.pageTurnMs() / (governor.pageRenders() ? governor.pageRenders() : 1u)));
     emit(row);
-  }
 
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_PAGE), static_cast<unsigned long>(governor.pageTurnMs()),
-                static_cast<unsigned long>(governor.pageRenderMs()),
-                static_cast<unsigned long>(governor.panelRefreshMs()));
-  emit(row);
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_RADIO), WifiLeakGuard::sessionActive() ? tr(STR_YES) : tr(STR_NO),
+                  static_cast<unsigned long>(WifiLeakGuard::leaksStopped()));
+    emit(row);
 
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_RADIO), WifiLeakGuard::sessionActive() ? tr(STR_YES) : tr(STR_NO),
-                static_cast<unsigned long>(WifiLeakGuard::leaksStopped()));
-  emit(row);
+    std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_STRATEGY), static_cast<unsigned>(governor.strategyIndex()),
+                  governor.strikes().toByte() != 0 ? tr(STR_YES) : tr(STR_NO));
+    emit(row);
+  };
 
-  std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_STRATEGY), static_cast<unsigned>(governor.strategyIndex()),
-                governor.strikes().toByte() != 0 ? tr(STR_YES) : tr(STR_NO));
-  emit(row);
+  build(false);
+  const int drawnRows = rowIndex;
+
+  const int blockWidth = renderer.getScreenWidth() - marginLeft - marginRight - 8;
+  const int blockHeight = drawnRows * lineHeight;
+  renderer.fillRect(x - 4, y - 2, blockWidth + 8, blockHeight, false);
+  renderer.drawRect(x - 4, y - 2, blockWidth + 8, blockHeight, 1, true);
+
+  build(true);
 }
 
-void PowerStatsOverlay::draw(GfxRenderer& renderer, const Mode mode, const int statusBarTextY,
-                             const EnduranceGovernor& governor) {
+void PowerStatsOverlay::draw(GfxRenderer& renderer, const Mode mode, const EnduranceGovernor& governor) {
   switch (mode) {
     case Mode::Compact:
-      drawCompact(renderer, statusBarTextY);
+      // Formatted by the caller into the theme's status bar; nothing to draw here.
       return;
     case Mode::Full:
       drawFull(renderer, governor);

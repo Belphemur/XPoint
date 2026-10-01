@@ -6,6 +6,7 @@
 #include <HalPowerManager.h>
 #include <Logging.h>
 #include <Preferences.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -29,6 +30,17 @@ constexpr unsigned long kWakeProbeIntervalMs = 250;
 // A gesture that never got its INT line asserted within this window after the
 // line was read at rest is treated as a missed wake.
 constexpr unsigned long kWakeProbeSettleMs = 1500;
+
+// Battery is sampled on this cadence, not once per loop() pass.
+constexpr unsigned long kBatterySampleIntervalMs = 5000;
+
+// RTC slow memory survives deep sleep, so the nap bookkeeping and the pre-sleep
+// gauge reading are carried across the reboot that a sleep causes. millis() does
+// NOT survive it, which is why no sleep DURATION is persisted: there is no
+// cheap boot-survivable clock in this firmware to derive one from, and a
+// fabricated duration would put a wrong number in the overlay's per-sleep rate.
+static RTC_DATA_ATTR uint8_t _preSleepPct = 0xFF;
+static RTC_DATA_ATTR uint32_t _persistedNaps = 0;
 
 // Strike byte layout (design doc §3.1 names bit0/bit1):
 //   bit 0      idle-clock strikes >= 1
@@ -75,17 +87,41 @@ EnduranceGovernor::EnduranceGovernor() = default;
 
 EnduranceGovernor& EnduranceGovernor::instance() { return powerManager.endurance(); }
 
+void EnduranceGovernor::lockState() {
+  if (stateMutex_ != nullptr) xSemaphoreTake(stateMutex_, portMAX_DELAY);
+}
+void EnduranceGovernor::unlockState() {
+  if (stateMutex_ != nullptr) xSemaphoreGive(stateMutex_);
+}
+
 void EnduranceGovernor::begin() {
   if (began_) return;
   began_ = true;
+  stateMutex_ = xSemaphoreCreateMutex();
   bootClockMHz_ = getCpuFrequencyMhz();
   bootStartMs_ = millis();
+
+  // A nap staged by the previous boot's sleep entry closes here.
+  if (_preSleepPct != 0xFF) {
+    naps_ = _persistedNaps < 0xFFFFFFFFU ? _persistedNaps + 1 : _persistedNaps;
+    LOG_DBG("PWR", "Woke from a nap at %u%% (nap #%lu)", static_cast<unsigned>(_preSleepPct),
+            static_cast<unsigned long>(naps_));
+    _preSleepPct = 0xFF;
+  }
 
   loadAndMigrateStrikes();
   refreshFromSettings();
   applyStrategy();
 
-  LOG_INF("PWR", "Endurance governor ready: boot at %d MHz, safety=%u", bootClockMHz_, strikes_.toByte());
+  // An abnormal reset is the crash signal the ladder is built around. A plain
+  // power-on and a deep-sleep wake are both NORMAL events and must not strike.
+  const auto resetReason = esp_reset_reason();
+  if (resetReason != ESP_RST_POWERON && resetReason != ESP_RST_DEEPSLEEP) {
+    LOG_ERR("PWR", "Abnormal reset (%d) after boot — recording an endurance strike", static_cast<int>(resetReason));
+    reportInstability(InstabilityReason::Crash);
+  }
+
+  LOG_INF("PWR", "Endurance governor ready: boot at %d MHz, safety=%u", bootClockMHz_, strikes().toByte());
 
   if (xTaskCreatePinnedToCore(escalationTrampoline, "endurance_gov", kEscalationStackBytes, this, kEscalationPriority,
                               &taskHandle_, kCore) != pdPASS) {
@@ -103,14 +139,20 @@ void EnduranceGovernor::loadAndMigrateStrikes() {
     return raw;
   }();
 
-  strikes_ = decodeStrikes(oldState);
+  strikesIdle_.store(decodeStrikes(oldState).idleStrikes, std::memory_order_relaxed);
+  strikesLightSleep_.store(decodeStrikes(oldState).lightSleepStrikes, std::memory_order_relaxed);
   persistedFloor_ = decodeRatchet(oldState);
 
+  const endurance::StrikeState bootStrikes = strikes();
   const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile())];
-  const uint8_t promoted = endurance::promote(base, strikes_.idleStrikes, strikes_.lightSleepStrikes);
+  const uint8_t promoted = endurance::promote(base, bootStrikes.idleStrikes, bootStrikes.lightSleepStrikes);
   // The floor only ratchets up: a device that once proved unstable at 10 MHz
   // never silently returns there because a later boot read a clean byte.
   strategyIndex_ = promoted > persistedFloor_ ? promoted : persistedFloor_;
+  // Carry the promotion into the in-memory floor. Without this the very next
+  // refreshFromSettings() re-derives the rung from the (now cleared) strikes and
+  // the boot's promotion evaporates before the clock is ever set from it.
+  persistedFloor_ = strategyIndex_;
 
   const uint8_t newState = encodeStateByte(endurance::StrikeState{}, strategyIndex_);
   if (newState != oldState) {
@@ -124,25 +166,43 @@ void EnduranceGovernor::loadAndMigrateStrikes() {
     }
   }
   // The strikes have been consumed by the promotion above.
-  strikes_ = endurance::StrikeState{};
+  strikesIdle_.store(0, std::memory_order_relaxed);
+  strikesLightSleep_.store(0, std::memory_order_relaxed);
 }
 
 void EnduranceGovernor::setProfile(endurance::Profile p) {
-  profile_ = p;
-  refreshFromSettings();
-  applyStrategy();
+  // The profile can be changed from the web-server task, so the byte is handed
+  // over rather than re-resolved here: the ladder is only ever mutated on the
+  // main task, under the state mutex.
+  pendingProfile_.store(static_cast<uint32_t>(p) + 1u, std::memory_order_release);
 }
 
 void EnduranceGovernor::refreshFromSettings() {
+  lockState();
   profile_ = endurance::clampProfile(static_cast<uint8_t>(profile_));
+  const endurance::StrikeState current = strikes();
+  // Escalate from the rung the device is ON, not from the profile base: strike
+  // counters are boolean flags, so a base-derived rung would be recomputed
+  // identically on every strike and the ladder could never climb past base+1.
+  const uint8_t escalated = endurance::escalate(persistedFloor_, current.idleStrikes, current.lightSleepStrikes);
   const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile_)];
-  const uint8_t promoted = endurance::promote(base, strikes_.idleStrikes, strikes_.lightSleepStrikes);
-  strategyIndex_ = promoted > persistedFloor_ ? promoted : persistedFloor_;
-  strategy_ = endurance::kStrategies[strategyIndex_];
+  const uint8_t wanted = escalated > base ? escalated : base;
+  if (wanted != strategyIndex_) {
+    strategyIndex_ = wanted;
+    strategy_ = endurance::kStrategies[strategyIndex_];
+  }
+  unlockState();
 }
 
 void EnduranceGovernor::applyStrategy() {
-  endurance::ProfileDefaults defaults = endurance::defaultsFor(strategy_, profile_);
+  endurance::Profile profile;
+  endurance::Strategy strategy;
+  lockState();
+  profile = profile_;
+  strategy = endurance::kStrategies[strategyIndex_];
+  unlockState();
+
+  endurance::ProfileDefaults defaults = endurance::defaultsFor(strategy, profile);
   // Crossfire's ladder logs "render 80 MHz" because 80 MHz IS its boot clock.
   // XPoint boots at 240 MHz on the S3, so pinning renders down to 80 would be a
   // straight performance regression; the render clock is therefore floored at the
@@ -155,18 +215,39 @@ void EnduranceGovernor::applyStrategy() {
   // governor supplies the target, not the transition.
   powerManager.setLowPowerFrequency(idleClockMHz_);
   powerManager.setIdlePollSlicesEnabled(idlePollSlices_);
-  LOG_INF("PWR", "Profile %u: idle %d / active %d / burst %d / render %u MHz, light sleep %s",
-          static_cast<unsigned>(profile_), idleClockMHz_, bootClockMHz_, bootClockMHz_,
-          static_cast<unsigned>(renderClockMHz_), idlePollSlices_ ? "enabled" : "disabled");
+  // "poll slices", not "light sleep": XPoint never enters light sleep, so logging
+  // the Crossfire wording here would claim a sleep mode the device does not take.
+  LOG_INF("PWR", "Profile %u: idle %d / active %d / render %u MHz, poll slices %s", static_cast<unsigned>(profile),
+          idleClockMHz_, bootClockMHz_, static_cast<unsigned>(renderClockMHz_),
+          idlePollSlices_ ? "enabled" : "disabled");
 }
 
 void EnduranceGovernor::reportInstability(InstabilityReason reason) {
-  if (reason == InstabilityReason::ClockSwitchFailure) {
-    strikes_.idleStrikes = 1;
-  } else if (reason == InstabilityReason::Watchdog) {
-    strikes_.lightSleepStrikes = 1;
+  switch (reason) {
+    case InstabilityReason::ClockSwitchFailure:
+      strikesIdle_.store(1, std::memory_order_relaxed);
+      break;
+    case InstabilityReason::Watchdog:
+      strikesLightSleep_.store(1, std::memory_order_relaxed);
+      break;
+    case InstabilityReason::Crash:
+      // A crash says nothing about WHICH dimension was at fault, so it strikes
+      // both: the ladder has to move or the device keeps crashing at the same
+      // clock forever.
+      strikesIdle_.store(1, std::memory_order_relaxed);
+      strikesLightSleep_.store(1, std::memory_order_relaxed);
+      break;
+    case InstabilityReason::None:
+    default:
+      return;
   }
-  const uint8_t byte = encodeStateByte(strikes_, strategyIndex_);
+  const endurance::StrikeState pending{strikesIdle_.load(std::memory_order_relaxed),
+                                       strikesLightSleep_.load(std::memory_order_relaxed)};
+  uint8_t index;
+  lockState();
+  index = strategyIndex_;
+  unlockState();
+  const uint8_t byte = encodeStateByte(pending, index);
   // Persist synchronously: the common reason to strike is that the device is
   // about to crash or reset, and the escalation task may never run again.
   Preferences prefs;
@@ -176,23 +257,26 @@ void EnduranceGovernor::reportInstability(InstabilityReason reason) {
   } else {
     LOG_ERR("PWR", "endurance.state strike write failed (NVS open)");
   }
-  strikesDirty_ = true;
+  strikesDirty_.store(true, std::memory_order_release);
   LOG_ERR("PWR", "Endurance strike recorded: %s (state 0x%02x)", reasonText(reason), static_cast<unsigned>(byte));
 }
 
 void EnduranceGovernor::escalationTaskEntry() {
   for (;;) {
-    if (strikesDirty_) {
-      strikesDirty_ = false;
+    // exchange(), not load-then-clear: a strike recorded between the load and
+    // the clear would otherwise be swallowed.
+    if (strikesDirty_.exchange(false, std::memory_order_acquire)) {
       // Promote this session immediately rather than waiting for the next boot.
-      const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile())];
-      const uint8_t promoted = endurance::promote(base, strikes_.idleStrikes, strikes_.lightSleepStrikes);
-      if (promoted > strategyIndex_) {
-        strategyIndex_ = promoted;
-        applyStrategy();
-        LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(strategyIndex_));
-      }
-      strikes_ = endurance::StrikeState{};
+      refreshFromSettings();
+      uint8_t index;
+      lockState();
+      index = strategyIndex_;
+      persistedFloor_ = index;
+      unlockState();
+      applyStrategy();
+      LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));
+      strikesIdle_.store(0, std::memory_order_relaxed);
+      strikesLightSleep_.store(0, std::memory_order_relaxed);
     }
     // A heavy job still running must never be throttled by an idle tick from
     // another task; restore the clock here so the job's window is honoured even
@@ -205,7 +289,7 @@ void EnduranceGovernor::escalationTaskEntry() {
 }
 
 const char* EnduranceGovernor::wakeVerdictText() const {
-  switch (wakeVerdict_) {
+  switch (wakeVerdict_.load(std::memory_order_relaxed)) {
     case WakeVerdict::Verified:
       return "verified";
     case WakeVerdict::DemotedToPoll:
@@ -222,9 +306,47 @@ void EnduranceGovernor::tick() {
   lastTickMs_ = now;
   bootMs_ = static_cast<uint32_t>(now - bootStartMs_);
 
-  const bool onUsb = powerManager.isBatteryCharging();
-  drain_.setOnUsbPower(onUsb);
-  drain_.sample(powerManager.getBatteryPercentage(), now);
+  // External power, NOT "charging": a full battery stops charging with the cable
+  // still attached, and reporting a drain rate for a device running off USB is
+  // exactly the wrong number. Only a board that can observe the input rail
+  // answers this; elsewhere the flag stays false and the rate is simply absent.
+  bool externalKnown = false;
+  const bool onUsb = powerManager.isExternalPowerPresent(&externalKnown);
+  drain_.setOnUsbPower(externalKnown && onUsb);
+
+  // Battery sampling is throttled: the loop runs hundreds of times a second and
+  // an ADC read per pass both advances the HAL's smoothing filter far faster
+  // than it was designed for (a noisier status-bar reading) and lets +/-1% gauge
+  // jitter restart the drain window often enough that the 10-minute gate may
+  // never open.
+  if (now - lastBatterySampleMs_ >= kBatterySampleIntervalMs) {
+    lastBatterySampleMs_ = now;
+    // A gauge board reports 0% for "unknown" until its first successful read.
+    // Feeding that in as a real zero would drag every window's drain to absurd.
+    uint8_t pct = PowerDrainMonitor::kInvalid;
+    if (!powerManager.isBatteryHealthStale() || lastBatteryPct_ != PowerDrainMonitor::kInvalid) {
+      const uint8_t reported = static_cast<uint8_t>(powerManager.getBatteryPercentage());
+      if (lastBatteryPct_ == PowerDrainMonitor::kInvalid && reported == 0 &&
+          powerManager.getBatteryHealthState() == HalPowerManager::BatteryHealthState::STALE) {
+        pct = PowerDrainMonitor::kInvalid;
+      } else {
+        pct = reported;
+      }
+      lastBatteryPct_ = pct;
+    }
+    drain_.sample(pct, now);
+  }
+
+  // A profile change requested from another task is adopted here, on the main
+  // task, so the ladder is only re-resolved under the state mutex.
+  const uint32_t requestedProfile = pendingProfile_.exchange(0, std::memory_order_acquire);
+  if (requestedProfile != 0) {
+    lockState();
+    profile_ = endurance::clampProfile(static_cast<uint8_t>(requestedProfile - 1u));
+    unlockState();
+    refreshFromSettings();
+    applyStrategy();
+  }
 
   // Idle vs nap accounting for the Full overlay. Which bucket a tick lands in is
   // decided by the clock state the governor itself asked for, not by a timer.
@@ -239,7 +361,7 @@ void EnduranceGovernor::tick() {
   WifiLeakGuard::poll(now);
 
   // Touch-INT verification, cached after the first verdict.
-  if (wakeVerdict_ == WakeVerdict::Unverified && BoardConfig::hasTouch()) {
+  if (wakeVerdict() == WakeVerdict::Unverified && BoardConfig::hasTouch()) {
     const int8_t irq = BoardConfig::ACTIVE.touch.irq;
     if (irq >= 0) {
       pinMode(irq, INPUT);
@@ -247,18 +369,33 @@ void EnduranceGovernor::tick() {
           BoardConfig::ACTIVE.touch.irqActiveLow ? (digitalRead(irq) == LOW) : (digitalRead(irq) == HIGH);
       const bool touchSeen = gpio.wasTouchActivity();
       if (touchSeen) {
-        if (lastWakeProbeMs_ != 0 && now - lastWakeProbeMs_ <= kWakeProbeSettleMs) {
-          // A gesture arrived inside the settle window with the INT line
-          // asserted: the line is a usable wake source.
-          wakeVerdict_ = WakeVerdict::Verified;
+        if (asserted && lastWakeProbeMs_ != 0 && now - lastWakeProbeMs_ <= kWakeProbeSettleMs) {
+          // A gesture arrived inside the settle window WITH the INT line
+          // asserted. Both halves are required: a gesture on its own proves the
+          // touch path works, not that the line reports it.
+          wakeVerdict_.store(WakeVerdict::Verified, std::memory_order_relaxed);
           LOG_INF("PWR", "Touch INT verified as a light-sleep wake source");
         } else {
+          // Latch the window start; the assertion is normally seen on the next
+          // probe after the touch is registered.
           lastWakeProbeMs_ = now;
         }
       } else if (asserted) {
         // INT asserted with no gesture behind it. A line that ghosts cannot be
-        // used to skip work, so demote to always-poll.
-        wakeVerdict_ = WakeVerdict::DemotedToPoll;
+        // used to skip work, so demote to always-poll — and actually apply the
+        // demotion, not just record it: otherwise the verdict is decorative and
+        // the input manager keeps the throttled cadence that is dropping touches.
+        wakeVerdict_.store(WakeVerdict::DemotedToPoll, std::memory_order_relaxed);
+        lockState();
+        idlePollSlices_ = false;
+        unlockState();
+        powerManager.setIdlePollSlicesEnabled(false);
+        if (powerManager.isLowPowerActive()) {
+          // The cadence is only applied on the transition into low power, so a
+          // device that is already idle needs it pushed explicitly.
+          powerManager.setPowerSaving(false);
+          powerManager.setPowerSaving(true);
+        }
         LOG_ERR("PWR", "Touch INT wakes without touches; using poll slices");
       }
     }
@@ -266,24 +403,21 @@ void EnduranceGovernor::tick() {
 }
 
 void EnduranceGovernor::beginSleepWindow() {
-  const unsigned long now = millis();
-  sleepStartMs_ = now;
-  drain_.beginSleep(drain_.lastPercent(), now, powerManager.isBatteryCharging());
+  // Stage the reading for the boot that follows the sleep. No in-boot sleep
+  // window is opened: every sleep path here ends in deep sleep, so the window
+  // would never close before millis() restarts.
+  _preSleepPct = drain_.lastPercent();
+  _persistedNaps = naps_;
 }
 
 void EnduranceGovernor::endSleepWindow() {
-  const unsigned long now = millis();
-  const unsigned long slept = now - sleepStartMs_;
-  drain_.endSleep(drain_.lastPercent(), now, powerManager.isBatteryCharging());
-  if (naps_ < 0xFFFFFFFFU) naps_++;
-  napMs_ += static_cast<uint32_t>(slept);
+  // Nothing to close in RAM: a nap is accounted at the next boot's begin(),
+  // which is the only point where the sleep actually ended.
+  (void)0;
 }
 
-void EnduranceGovernor::notePageTurn(const unsigned long renderMs, const unsigned long panelMs,
-                                     const unsigned long totalMs) {
+void EnduranceGovernor::notePageTurn(const unsigned long totalMs) {
   if (pageRenders_ < 0xFFFFFFFFU) pageRenders_++;
-  pageRenderMs_ += static_cast<uint32_t>(renderMs);
-  panelRefreshMs_ += static_cast<uint32_t>(panelMs);
   pageTurnMs_ += static_cast<uint32_t>(totalMs);
 }
 

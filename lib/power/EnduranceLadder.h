@@ -69,6 +69,17 @@ inline uint8_t promote(uint8_t baseStrategy, uint8_t idleStrikes, uint8_t lightS
   return static_cast<uint8_t>(sum >= kStrategyCount ? kStrategyCount - 1 : sum);
 }
 
+// Advance from the rung the device is actually ON, not from the profile's base.
+// Strike counters are persisted as boolean flags, so re-deriving from the base
+// on every strike recomputes the same rung forever and the ladder can never
+// climb past base+1 — a device that keeps failing would stay on the clock that
+// is failing it.
+inline uint8_t escalate(uint8_t currentStrategy, uint8_t idleStrikes, uint8_t lightSleepStrikes) {
+  const unsigned int sum =
+      static_cast<unsigned int>(currentStrategy) + (idleStrikes ? 1u : 0u) + (lightSleepStrikes ? 1u : 0u);
+  return static_cast<uint8_t>(sum >= kStrategyCount ? kStrategyCount - 1 : sum);
+}
+
 inline Strategy resolveStrategy(Profile profile, uint8_t idleStrikes, uint8_t lightSleepStrikes) {
   const uint8_t base = kProfileBaseStrategy[static_cast<uint8_t>(profile)];
   return kStrategies[promote(base, idleStrikes, lightSleepStrikes)];

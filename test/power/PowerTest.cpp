@@ -78,6 +78,47 @@ TEST(EnduranceLadder, StrikeStateByteUsesTheDocumentedBits) {
   EXPECT_EQ(1u, decoded.lightSleepStrikes);
 }
 
+TEST(EnduranceLadder, EscalateClimbsPastTheBaseRungOnRepeatStrikes) {
+  // The bug this pins: strike counters are boolean flags, so a promotion
+  // recomputed from the profile base lands on base+1 every time and an Endurance
+  // device (base 0) can never reach rung 3. Escalating from the CURRENT rung is
+  // what makes the ladder a ladder.
+  uint8_t rung = endurance::kProfileBaseStrategy[static_cast<uint8_t>(Profile::Endurance)];
+  ASSERT_EQ(0u, rung);
+
+  rung = endurance::escalate(rung, 1, 0);
+  EXPECT_EQ(1u, rung);
+  rung = endurance::escalate(rung, 1, 0);
+  EXPECT_EQ(2u, rung) << "a second idle strike must climb past base+1";
+  rung = endurance::escalate(rung, 1, 0);
+  EXPECT_EQ(3u, rung) << "the ladder must reach the stock 80 MHz floor";
+  rung = endurance::escalate(rung, 1, 1);
+  EXPECT_EQ(3u, rung) << "and saturate there, never overrun";
+}
+
+TEST(EnduranceLadder, EscalateFromTheBaseIsIdempotentWhichIsTheBug) {
+  // Documents the defect shape so a future refactor cannot quietly reintroduce
+  // it: re-deriving from the base yields the same rung no matter how many times
+  // the device fails.
+  const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(Profile::Endurance)];
+  EXPECT_EQ(endurance::promote(base, 1, 0), endurance::promote(base, 1, 0));
+  EXPECT_NE(endurance::escalate(endurance::escalate(base, 1, 0), 1, 0), endurance::promote(base, 1, 0))
+      << "escalating from the current rung must differ from re-deriving from the base";
+}
+
+TEST(EnduranceLadder, CrashStrikeStateIsRepresentable) {
+  // reportInstability(Crash) strikes both dimensions, so the persisted byte must
+  // carry both bits; a crash that sets neither is the defect kody/coderabbit
+  // flagged as a silently-dropped strike.
+  endurance::StrikeState crash;
+  crash.idleStrikes = 1;
+  crash.lightSleepStrikes = 1;
+  EXPECT_EQ(0x03u, crash.toByte());
+  const auto decoded = endurance::strikeStateFromByte(crash.toByte());
+  EXPECT_EQ(1u, decoded.idleStrikes);
+  EXPECT_EQ(1u, decoded.lightSleepStrikes);
+}
+
 TEST(EnduranceLadder, ClampProfileRejectsOutOfRangeBytes) {
   EXPECT_EQ(Profile::Endurance, endurance::clampProfile(0));
   EXPECT_EQ(Profile::Balanced, endurance::clampProfile(1));
@@ -132,10 +173,22 @@ TEST(PowerDrain, AvgMilliAmpFormula) {
 }
 
 TEST(PowerDrain, RuntimeLeftFormula) {
-  // 50% left at 110 mA => 50 * 1100 / 110 = 500 hours.
-  EXPECT_EQ(500UL * 60UL, PowerDrainMonitor::runtimeLeftMinutes(50, 110000u));
+  // 50% of a 1100 mAh pack is 550 mAh; at 110 mA that is 5 hours = 300 minutes.
+  // Missing the /100 that turns the percentage into a fraction reported 500
+  // hours here, which the old expectation silently blessed.
+  EXPECT_EQ(5UL * 60UL, PowerDrainMonitor::runtimeLeftMinutes(50, 110000u));
+  EXPECT_EQ(10UL * 60UL, PowerDrainMonitor::runtimeLeftMinutes(100, 110000u));
   // A drained pack has no runtime left.
   EXPECT_EQ(0UL, PowerDrainMonitor::runtimeLeftMinutes(0, 110000u));
+}
+
+TEST(PowerDrain, Regression_PercentageIsAFractionNotAMultiplier) {
+  // Half the pack must be half the runtime. A whole-pack reading would make
+  // runtimeLeftMinutes(50, ...) == runtimeLeftMinutes(100, ...).
+  const unsigned long half = PowerDrainMonitor::runtimeLeftMinutes(50, 110000u);
+  const unsigned long full = PowerDrainMonitor::runtimeLeftMinutes(100, 110000u);
+  EXPECT_GT(full, 0UL);
+  EXPECT_EQ(full / 2, half) << "50% remaining must be half the runtime of 100%";
 }
 
 TEST(PowerDrain, RuntimeLeftIsZeroWithoutAUsableRate) {
@@ -295,6 +348,14 @@ TEST(PowerDrain, RisingGaugeDuringSleepIsNotADrain) {
 // ---------------------------------------------------------------------------
 // Load-bearing checks: reinject the suspected bug and the suite must fail.
 // ---------------------------------------------------------------------------
+
+TEST(PowerDrain, Regression_RuntimeLeftIsNotOneHundredTimesTooLong) {
+  // Without the /100 that turns a percentage into a fraction, 50% of an 1100 mAh
+  // pack at 110 mA reported 500 hours instead of 5. Pin the real value so the
+  // defect cannot come back silently through the test.
+  EXPECT_EQ(300UL, PowerDrainMonitor::runtimeLeftMinutes(50, 110000u));
+  EXPECT_LT(PowerDrainMonitor::runtimeLeftMinutes(50, 110000u), 10UL * 60UL);
+}
 
 TEST(PowerDrain, Regression_ZeroDivisionGuardIsLoadBearing) {
   // If the zero-rate guard in runtimeLeftMinutes were removed, a device that

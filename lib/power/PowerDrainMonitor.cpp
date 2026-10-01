@@ -27,7 +27,11 @@ uint32_t PowerDrainMonitor::avgMilliAmpMilli(const uint32_t milliPctPerHour) {
 // The mA arrives scaled by 1000, so the division carries a *1000 back out.
 unsigned long PowerDrainMonitor::runtimeLeftMinutes(const uint8_t remainingPct, const uint32_t milliAmpMilli) {
   if (milliAmpMilli == 0) return 0;  // no usable rate (see design doc §3.2 gate)
-  const uint64_t numerator = static_cast<uint64_t>(remainingPct) * ASSUMED_CAPACITY_MAH * 1000ULL * 60ULL;
+  // The percentage is a FRACTION of the pack, so it divides by 100; the mA
+  // arrives scaled by 1000, so the division carries that *1000 back out.
+  // Dropping the /100 reports 50% of a 1100 mAh pack at 110 mA as 500 hours
+  // instead of 5.
+  const uint64_t numerator = static_cast<uint64_t>(remainingPct) * ASSUMED_CAPACITY_MAH * 1000ULL * 60ULL / 100ULL;
   return static_cast<unsigned long>(numerator / milliAmpMilli);
 }
 

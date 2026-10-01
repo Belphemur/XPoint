@@ -2185,7 +2185,22 @@ bool EpubReaderActivity::skipLoopDelay() {
   return !buildHeapPaused && backgroundBuildWanted();
 }
 
+namespace {
+// Reports one completed page render to the endurance governor. RAII so every
+// early return in the render path (empty chapter, out-of-bounds page, failed SD
+// read) still closes the measurement instead of leaving a timer running.
+class PageTurnTimer {
+ public:
+  PageTurnTimer() : startMs_(millis()) {}
+  ~PageTurnTimer() { powerManager.endurance().notePageTurn(millis() - startMs_); }
+
+ private:
+  unsigned long startMs_;
+};
+}  // namespace
+
 void EpubReaderActivity::renderBook() {
+  const PageTurnTimer pageTurnTimer;
 #if defined(CROSSPOINT_TTF_READER)
   // Native-TTF page source (design §3.5): a fully separate render path so the
   // legacy Section pipeline below stays untouched.
@@ -2883,6 +2898,7 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 }
 
 void EpubReaderActivity::renderBookTtf() {
+  const PageTurnTimer pageTurnTimer;
   if (!epub || !ttf_) return;
 #if CROSSPOINT_TTF_UI_FALLBACK
   // makeLayoutParams() below can reload the shared font loader on this render
@@ -4666,23 +4682,25 @@ void EpubReaderActivity::renderStatusBar() const {
   const char* chapterTimeLeft = nullptr;
 #endif
 
-  GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section ? section->isBuilding() : false, chapterTimeLeft);
-
-  // Power-stats overlay. Drawn here rather than on a timer: renderStatusBar()
-  // already runs on every page turn and data refresh, which are the only moments
-  // the panel is being redrawn anyway. A periodic repaint would both wear the
-  // e-ink and undo the idle clock the governor just dropped.
+  // Power-stats overlay. No timer: renderStatusBar() already runs on every page
+  // turn and data refresh, which are the only moments the panel is being
+  // redrawn anyway. A periodic repaint would both wear the e-ink and undo the
+  // idle clock the governor just dropped.
+  //   Full    — a text block over the page, drawn here.
+  //   Compact — only FORMATTED here; the theme lays it out as a status-bar
+  //             element, because it owns that baseline and the clusters already
+  //             painted on it.
   const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
-  if (powerStatsMode != PowerStatsOverlay::Mode::Off) {
-    // Same baseline the theme just used for the status bar, so the compact line
-    // sits on the bar instead of on a second, independently-derived row.
-    int marginTop, marginRight, marginBottom, marginLeft;
-    renderer.getOrientedViewableTRBL(&marginTop, &marginRight, &marginBottom, &marginLeft);
-    const int statusBarTextY =
-        renderer.getScreenHeight() - UITheme::getInstance().getStatusBarHeight() - marginBottom - 4;
-    PowerStatsOverlay::draw(renderer, powerStatsMode, statusBarTextY, powerManager.endurance());
+  char compactBuf[PowerStatsOverlay::ROW_BYTES];
+  const char* powerStatsLine = nullptr;
+  if (powerStatsMode == PowerStatsOverlay::Mode::Compact) {
+    powerStatsLine = PowerStatsOverlay::buildCompact(compactBuf, sizeof(compactBuf));
+  } else if (powerStatsMode == PowerStatsOverlay::Mode::Full) {
+    PowerStatsOverlay::draw(renderer, powerStatsMode, powerManager.endurance());
   }
+
+  GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
+                    section ? section->isBuilding() : false, chapterTimeLeft, powerStatsLine);
 }
 
 // ---------------------------------------------------------------------------

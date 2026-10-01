@@ -260,6 +260,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
   // Endurance-governor telemetry overlay (design doc 2026-10-01 §3.3).
   uint8_t powerStatsMode = POWER_STATS_OFF;  // POWER_STATS_MODE
+  // Endurance governor profile. Values match endurance::Profile in
+  // lib/power/EnduranceLadder.h (0 Endurance, 1 Balanced, 2 Performance), which
+  // is kept free of Arduino includes so the ladder stays host-testable.
+  uint8_t powerProfile = 0;
   // Auto-detected IANA time zone id, e.g. "America/Toronto". Empty = not detected (show UTC).
   char clockTimeZoneId[40] = "";
   // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4.

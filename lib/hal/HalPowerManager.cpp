@@ -91,6 +91,13 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   // it's not very important if we read a slightly stale value for currentLockMode
   const LockMode mode = currentLockMode;
 
+  // A heavy job holds the clock up for its whole duration. Without this the
+  // main loop's next idle tick can drop the CPU mid-render, because the job's
+  // Lock only ever raised the clock and nothing kept it raised.
+  if (endurance_.heavyJobActive()) {
+    enabled = false;
+  }
+
   // Any request for normal speed (render lock, user input, active build)
   // refreshes the dwell window. Without this, the input-idle low-power entry
   // fights every render: each render's Lock restores full speed and the next
@@ -108,6 +115,10 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     const int lowFreq = governorLowFreqMhz_ > 0 ? governorLowFreqMhz_ : LOW_POWER_FREQ;
     if (!setCpuFrequencyMhz(lowFreq)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", lowFreq);
+      // A refused clock target IS the governor's instability signal: the ladder
+      // must ratchet to a rung this board can actually reach, or it will keep
+      // asking for a clock the hardware declines every idle tick.
+      endurance_.reportInstability(EnduranceGovernor::InstabilityReason::ClockSwitchFailure);
       return;
     }
     // Poll slices are the idle-sleep class the governor's ladder toggles. A
@@ -323,6 +334,11 @@ void HalPowerManager::clearShutdownMarker() {
 bool HalPowerManager::isBatteryCharging() const {
   static const BatteryMonitor battery;
   return battery.isCharging();
+}
+
+bool HalPowerManager::isExternalPowerPresent(bool* known) const {
+  static const BatteryMonitor battery;
+  return battery.isExternalPowerPresent(known);
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {
