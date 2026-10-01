@@ -283,15 +283,15 @@ void XtcReaderActivity::renderStatusBarOverlay(GfxRenderer& renderer, const Stat
   const int displayPage = static_cast<int>(currentPage) + 1;
   const float progress = pageCount > 0 ? (static_cast<float>(displayPage) * 100.0f) / pageCount : 0.0f;
   const auto pageInfo = getStatusBarInfo();
-  // Same power-stats surface the EPUB reader gets: the setting is global, so a
-  // reader that skipped it would make the option silently dead for XTC books.
+  // This method owns the Compact line only. Full is painted by
+  // renderPowerStatsOverlay(), which runs on both render paths — drawing it here
+  // as well double-painted the block on every 1-bit page turn and re-covered a
+  // Top-positioned status bar's own text.
   const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
   char compactBuf[PowerStatsOverlay::COMPACT_BYTES];
   const char* powerStatsLine = nullptr;
   if (powerStatsMode == PowerStatsOverlay::Mode::Compact) {
     powerStatsLine = PowerStatsOverlay::buildCompact(compactBuf, sizeof(compactBuf));
-  } else if (powerStatsMode == PowerStatsOverlay::Mode::Full) {
-    PowerStatsOverlay::draw(renderer, powerStatsMode, powerManager.endurance());
   }
   GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom, 0,
                     true, false, false, nullptr, powerStatsLine);

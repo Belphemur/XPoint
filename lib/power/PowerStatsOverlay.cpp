@@ -45,11 +45,9 @@ void formatMilli(char* out, size_t outLen, uint32_t milli, int decimals) {
 
 // Profile names go through tr() like every other user-facing string: the
 // overlay header is rendered on-screen, so a hard-coded English name would leave
+// Profile names go through tr() like every other user-facing string: the
+// overlay header is rendered on-screen, so a hard-coded English name would leave
 // this row untranslated in every other locale.
-// Translated duration labels for the drain monitor's pure formatter.
-PowerDrainMonitor::DurationLabels kDurationLabels{tr(STR_PWR_DUR_LT_MIN), tr(STR_PWR_DUR_MIN), tr(STR_PWR_DUR_HM),
-                                                  tr(STR_PWR_DUR_DH)};
-
 const char* profileName(const endurance::Profile profile) {
   switch (profile) {
     case endurance::Profile::Balanced:
@@ -220,7 +218,13 @@ const char* PowerStatsOverlay::verdictText(const EnduranceGovernor& governor) {
                       : StrId::STR_PWR_VERDICT_UNVERIFIED);
 }
 
-PowerDrainMonitor::DurationLabels PowerStatsOverlay::durationLabels() { return kDurationLabels; }
+// Resolved on every call, never cached: tr() at namespace scope would run during
+// static initialisation, before setup() calls I18N.setLanguage(), and freeze the
+// units to English for the whole boot — and would not follow a runtime language
+// change either.
+PowerDrainMonitor::DurationLabels PowerStatsOverlay::durationLabels() {
+  return {tr(STR_PWR_DUR_LT_MIN), tr(STR_PWR_DUR_MIN), tr(STR_PWR_DUR_HM), tr(STR_PWR_DUR_DH)};
+}
 
 void PowerStatsOverlay::draw(GfxRenderer& renderer, const Mode mode, const EnduranceGovernor& governor) {
   switch (mode) {
