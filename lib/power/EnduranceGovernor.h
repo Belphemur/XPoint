@@ -1,9 +1,9 @@
 #pragma once
 
 #include <PowerDrainMonitor.h>
+#include <freertos/FreeRTOS.h>
 
 #include <atomic>
-#include <freertos/FreeRTOS.h>
 
 #include "EnduranceLadder.h"
 

@@ -54,7 +54,8 @@ bool WifiLeakGuard::poll(const unsigned long nowMs) {
   s_deadlineMs.store(0, std::memory_order_relaxed);
   s_lastStopReason.store(StopReason::LeakTimeout, std::memory_order_relaxed);
   const uint32_t count = s_leaksStopped.fetch_add(1, std::memory_order_relaxed) + 1;
-  LOG_ERR("PWR", "Wi-Fi leak guard: stopping a radio left on past its deadline (leak #%u)", static_cast<unsigned>(count));
+  LOG_ERR("PWR", "Wi-Fi leak guard: stopping a radio left on past its deadline (leak #%u)",
+          static_cast<unsigned>(count));
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   return true;
@@ -64,6 +65,4 @@ bool WifiLeakGuard::sessionActive() { return s_sessions.load(std::memory_order_r
 
 uint32_t WifiLeakGuard::leaksStopped() { return s_leaksStopped.load(std::memory_order_relaxed); }
 
-WifiLeakGuard::StopReason WifiLeakGuard::lastStopReason() {
-  return s_lastStopReason.load(std::memory_order_relaxed);
-}
+WifiLeakGuard::StopReason WifiLeakGuard::lastStopReason() { return s_lastStopReason.load(std::memory_order_relaxed); }

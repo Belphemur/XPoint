@@ -88,7 +88,7 @@ void EnduranceGovernor::begin() {
   LOG_INF("PWR", "Endurance governor ready: boot at %d MHz, safety=%u", bootClockMHz_, strikes_.toByte());
 
   if (xTaskCreatePinnedToCore(escalationTrampoline, "endurance_gov", kEscalationStackBytes, this, kEscalationPriority,
-                             &taskHandle_, kCore) != pdPASS) {
+                              &taskHandle_, kCore) != pdPASS) {
     taskHandle_ = nullptr;
     LOG_ERR("PWR", "Governor task creation failed; on-demand escalation disabled");
   }

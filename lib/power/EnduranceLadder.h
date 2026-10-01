@@ -15,12 +15,7 @@ namespace endurance {
 
 // User-selectable power profile. Endurance is the shipped default, matching the
 // Crossfire binary's first-boot profile name.
-enum class Profile : uint8_t {
-  Endurance = 0,
-  Balanced = 1,
-  Performance = 2,
-  Count
-};
+enum class Profile : uint8_t { Endurance = 0, Balanced = 1, Performance = 2, Count };
 
 // One rung of the ladder. idlePollSlices is Crossfire's "light sleep enabled"
 // dimension (see lib/power/README notes in the design doc's divergence list):
@@ -110,8 +105,9 @@ struct StrikeState {
   uint8_t idleStrikes = 0;
   uint8_t lightSleepStrikes = 0;
 
-  uint8_t toByte() const { return static_cast<uint8_t>((idleStrikes ? kIdleStrikeBit : 0) |
-                                                       (lightSleepStrikes ? kLightSleepStrikeBit : 0)); }
+  uint8_t toByte() const {
+    return static_cast<uint8_t>((idleStrikes ? kIdleStrikeBit : 0) | (lightSleepStrikes ? kLightSleepStrikeBit : 0));
+  }
 };
 
 inline StrikeState strikeStateFromByte(uint8_t raw) {

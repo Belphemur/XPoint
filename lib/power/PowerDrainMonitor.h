@@ -40,21 +40,21 @@ class PowerDrainMonitor {
   static constexpr uint8_t kInvalid = 0xFF;
 
   struct Estimate {
-    bool measured = false;           // past MEASUREMENT_WINDOW_MS with usable samples
-    unsigned long windowMs = 0;      // length of the measurement window
-    uint8_t samples = 0;             // gauge samples folded into the window
-    uint32_t milliPctPerHour = 0;    // %/h * 1000
-    uint32_t milliAmp = 0;           // mA * 1000
-    bool onUsbPower = false;         // charging: rate is meaningless
+    bool measured = false;         // past MEASUREMENT_WINDOW_MS with usable samples
+    unsigned long windowMs = 0;    // length of the measurement window
+    uint8_t samples = 0;           // gauge samples folded into the window
+    uint32_t milliPctPerHour = 0;  // %/h * 1000
+    uint32_t milliAmp = 0;         // mA * 1000
+    bool onUsbPower = false;       // charging: rate is meaningless
   };
 
   struct SleepWindow {
-    bool valid = false;              // had a usable start/end sample pair
+    bool valid = false;  // had a usable start/end sample pair
     unsigned long durationMs = 0;
     uint8_t startPct = 0;
     uint8_t endPct = 0;
-    bool rateable = false;           // duration >= MIN_SLEEP_WINDOW_MS
-    uint32_t milliPctPerHour = 0;    // valid + rateable only
+    bool rateable = false;         // duration >= MIN_SLEEP_WINDOW_MS
+    uint32_t milliPctPerHour = 0;  // valid + rateable only
   };
 
   // Feed one gauge sample. Non-monotonic readings (charge, or a gauge that went

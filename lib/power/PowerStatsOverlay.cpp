@@ -148,9 +148,9 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
     // report an infinite runtime, so the estimate row is skipped instead.
     if (estimate.milliAmp > 0) {
       char left[32];
-      PowerDrainMonitor::formatDuration(left, sizeof(left),
-                                        PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(),
-                                                                                estimate.milliAmp));
+      PowerDrainMonitor::formatDuration(
+          left, sizeof(left),
+          PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(), estimate.milliAmp));
       std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_EST), milliamps, left);
       emit(row);
     }
