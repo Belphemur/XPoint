@@ -151,23 +151,52 @@ bool TtfFontDownloadActivity::internString(const char* text, StrRef& outRef) {
 // backslashes, extra separators, a basename that disagrees with the file's
 // name field) is rejected outright rather than sanitised — a manifest we do
 // not understand must not be able to steer a write outside the family folder.
-bool TtfFontDownloadActivity::splitFilePath(const char* path, char* dirBuf, size_t dirBufSize, const char*& baseName) {
-  if (path == nullptr || *path == '\0') return false;
-  if (std::strchr(path, '\\') != nullptr) return false;
-  if (std::strstr(path, "..") != nullptr) return false;
+bool TtfFontDownloadActivity::splitCatalogPath(const char* path, char* dirBuf, const size_t dirBufSize,
+                                               const char*& slug, const char*& baseName) {
+  // Bound mirrors the longest published catalog path with room to spare, and
+  // keeps every later buffer size derivable from it.
+  constexpr size_t kMaxCatalogPathLen = 128;
 
-  const char* slash = std::strchr(path, '/');
-  if (slash == nullptr || slash == path || slash[1] == '\0') return false;
-  if (std::strchr(slash + 1, '/') != nullptr) return false;
+  if (path == nullptr) return false;
+  const size_t length = std::strlen(path);
+  if (length == 0 || length > kMaxCatalogPathLen) return false;
+  if (path[0] == '/' || std::strchr(path, '\\') != nullptr) return false;
 
-  const size_t dirLen = static_cast<size_t>(slash - path);
+  // Walk the '/'-separated components: each must be a non-empty plain name.
+  size_t componentStart = 0;
+  const char* lastSlash = nullptr;
+  for (size_t i = 0; i <= length; i++) {
+    if (i != length && path[i] != '/') continue;
+    const size_t componentLen = i - componentStart;
+    if (componentLen == 0) return false;
+    if (path[componentStart] == '.' && (componentLen == 1 || (componentLen == 2 && path[componentStart + 1] == '.'))) {
+      return false;
+    }
+    lastSlash = (i != length) ? path + i : lastSlash;
+    componentStart = i + 1;
+  }
+  if (lastSlash == nullptr) return false;  // no directory component at all
+
+  baseName = lastSlash + 1;
+  if (!FontInstaller::isValidTtfFilename(baseName)) return false;
+
+  // Copy the directory part out so the slug is a plain C string that survives
+  // past the path's own lifetime.
+  const size_t dirLen = static_cast<size_t>(baseName - path) - 1;
   if (dirLen + 1 > dirBufSize) return false;
   std::memcpy(dirBuf, path, dirLen);
   dirBuf[dirLen] = '\0';
-  if (!FontInstaller::isValidFamilyName(dirBuf)) return false;
 
-  baseName = slash + 1;
+  const char* lastDirSlash = std::strrchr(dirBuf, '/');
+  slug = lastDirSlash != nullptr ? lastDirSlash + 1 : dirBuf;
+  if (!FontInstaller::isValidFamilyName(slug)) return false;
   return true;
+}
+
+const char* TtfFontDownloadActivity::fileBaseName(const StrRef path) {
+  const char* text = str(path);
+  const char* slash = std::strrchr(text, '/');
+  return slash != nullptr ? slash + 1 : text;
 }
 
 void TtfFontDownloadActivity::refreshInstalledState(TtfManifestFamily& family) {
@@ -180,7 +209,7 @@ void TtfFontDownloadActivity::refreshInstalledState(TtfManifestFamily& family) {
   for (uint32_t i = 0; i < family.fileCount; i++) {
     const TtfManifestFile& file = files_[family.fileStart + i];
     char path[160];
-    FontInstaller::buildFontPath(str(family.dirName), str(file.name), path, sizeof(path));
+    FontInstaller::buildFontPath(str(family.dirName), fileBaseName(file.path), path, sizeof(path));
     HalFile f;
     if (!Storage.openFileForRead("FONT", path, f)) continue;
     ++foundCount;
@@ -259,7 +288,6 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
     filter["baseUrl"] = true;
     filter["families"][0]["name"] = true;
     filter["families"][0]["description"] = true;
-    filter["families"][0]["files"][0]["name"] = true;
     filter["families"][0]["files"][0]["path"] = true;
     filter["families"][0]["files"][0]["style"] = true;
     filter["families"][0]["files"][0]["size"] = true;
@@ -318,7 +346,6 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
     arenaBytes += std::strlen(fObj["name"] | "") + 1;
     arenaBytes += std::strlen(fObj["description"] | "") + 1;
     for (JsonObject fileObj : fObj["files"].as<JsonArray>()) {
-      arenaBytes += std::strlen(fileObj["name"] | "") + 1;
       arenaBytes += std::strlen(fileObj["path"] | "") + 1;
       manifestFileCount++;
     }
@@ -362,49 +389,42 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
     }
 
     family.fileStart = fileEntryCount_;
-    bool dirResolved = false;
-    char dirBuf[64] = {0};
+    bool slugResolved = false;
+    char slugBuf[64] = {0};
     for (JsonObject fileObj : filesArr) {
-      const char* fileName = fileObj["name"] | "";
-      if (!FontInstaller::isValidTtfFilename(fileName)) {
-        LOG_ERR("TTFFONT", "Rejected manifest file name: %s", fileName);
-        errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
-        return false;
-      }
-
       char fileDir[64];
+      const char* fileSlug = nullptr;
       const char* pathBase = nullptr;
-      if (!splitFilePath(fileObj["path"] | "", fileDir, sizeof(fileDir), pathBase) ||
-          std::strcmp(pathBase, fileName) != 0) {
-        LOG_ERR("TTFFONT", "Rejected manifest path for %s: %s", fileName, fileObj["path"] | "");
+      if (!splitCatalogPath(fileObj["path"] | "", fileDir, sizeof(fileDir), fileSlug, pathBase)) {
+        LOG_ERR("TTFFONT", "Rejected manifest path in %s: %s", familyName, fileObj["path"] | "");
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
 
       // Every file of a family has to land in the same folder: ensureFamilyDir
       // and the delete path both address the family by that single slug.
-      if (!dirResolved) {
-        std::snprintf(dirBuf, sizeof(dirBuf), "%s", fileDir);
-        dirResolved = true;
-        if (!internString(dirBuf, family.dirName)) {
+      if (!slugResolved) {
+        std::snprintf(slugBuf, sizeof(slugBuf), "%s", fileSlug);
+        slugResolved = true;
+        if (!internString(slugBuf, family.dirName)) {
           errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
           return false;
         }
-      } else if (std::strcmp(dirBuf, fileDir) != 0) {
+      } else if (std::strcmp(slugBuf, fileSlug) != 0) {
         LOG_ERR("TTFFONT", "Family %s spans more than one folder", familyName);
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
 
       TtfManifestFile file;
-      if (!internString(fileName, file.name) || !internString(fileObj["path"] | "", file.path)) {
+      if (!internString(fileObj["path"] | "", file.path)) {
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
       file.size = fileObj["size"] | 0u;
 
       if (!fileObj["crc32"].is<uint32_t>()) {
-        LOG_ERR("TTFFONT", "Malformed manifest file entry: missing or invalid crc32 for %s", fileName);
+        LOG_ERR("TTFFONT", "Malformed manifest file entry: missing or invalid crc32 for %s", pathBase);
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
@@ -484,9 +504,7 @@ bool TtfFontDownloadActivity::isUpdateAllRow(int index) const {
   return showUpdateAllRow() && index == (showDownloadAllRow() ? 1 : 0);
 }
 
-int TtfFontDownloadActivity::listItemCount() const {
-  return static_cast<int>(families_.size()) + specialRowCount();
-}
+int TtfFontDownloadActivity::listItemCount() const { return static_cast<int>(families_.size()) + specialRowCount(); }
 
 int TtfFontDownloadActivity::listCount() const {
   switch (state_) {
@@ -597,8 +615,13 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
     }
     requestUpdateAndWait();
 
+    // On-SD layout is <fonts root>/<slug>/<object key> — the catalog path's
+    // last two components, not its full path. Reproducing the path verbatim
+    // would bury the files one level too deep for BookFontLoader, which reads
+    // a family's faces straight out of the folder it finds in the root.
+    const char* baseName = fileBaseName(file.path);
     char destPath[160];
-    FontInstaller::buildFontPath(str(family.dirName), str(file.name), destPath, sizeof(destPath));
+    FontInstaller::buildFontPath(str(family.dirName), baseName, destPath, sizeof(destPath));
     downloadUrl_.assign(baseUrl_).append(str(file.path));
 
     const auto result = HttpDownloader::downloadToFile(
@@ -639,11 +662,11 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
     }
 
     if (result != HttpDownloader::OK) {
-      LOG_ERR("TTFFONT", "Download failed: %s (%d)", str(file.name), result);
+      LOG_ERR("TTFFONT", "Download failed: %s (%d)", baseName, result);
       abandonFamily(family);
       RenderLock lock(*this);
       state_ = ERROR;
-      errorMessage_ = std::string("Download failed: ") + str(file.name);
+      errorMessage_ = std::string("Download failed: ") + baseName;
       return;
     }
 
@@ -653,18 +676,18 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
       abandonFamily(family);
       RenderLock lock(*this);
       state_ = ERROR;
-      errorMessage_ = std::string("Failed to compute checksum: ") + str(file.name);
+      errorMessage_ = std::string("Failed to compute checksum: ") + baseName;
       return;
     }
     if (actualCrc != file.crc32) {
-      LOG_ERR("TTFFONT", "CRC32 mismatch for %s: got %08x expected %08x", str(file.name), actualCrc, file.crc32);
+      LOG_ERR("TTFFONT", "CRC32 mismatch for %s: got %08x expected %08x", baseName, actualCrc, file.crc32);
       abandonFamily(family);
       RenderLock lock(*this);
       state_ = ERROR;
-      errorMessage_ = std::string("Checksum mismatch: ") + str(file.name);
+      errorMessage_ = std::string("Checksum mismatch: ") + baseName;
       return;
     }
-    LOG_DBG("TTFFONT", "Downloaded %s (size=%u crc32=%08x)", str(file.name), file.size, actualCrc);
+    LOG_DBG("TTFFONT", "Downloaded %s (size=%u crc32=%08x)", baseName, file.size, actualCrc);
 
     // CRC only proves the bytes are the ones the catalog published; this proves
     // they are a font.
@@ -673,7 +696,7 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
       abandonFamily(family);
       RenderLock lock(*this);
       state_ = ERROR;
-      errorMessage_ = std::string("Invalid font file: ") + str(file.name);
+      errorMessage_ = std::string("Invalid font file: ") + baseName;
       return;
     }
     currentFileIndex_++;
@@ -695,8 +718,9 @@ void TtfFontDownloadActivity::promptDeleteSelectedFamily() {
   }
 
   const auto& family = families_[pendingDeleteFamilyIndex];
-  startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE), str(family.name)),
-                         [this](const ActivityResult& result) { onDeleteConfirmationResult(result); });
+  startActivityForResult(
+      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE), str(family.name)),
+      [this](const ActivityResult& result) { onDeleteConfirmationResult(result); });
 }
 
 void TtfFontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& result) {
@@ -877,8 +901,7 @@ bool TtfFontDownloadActivity::handleCustomInput() {
     int y = 0;
     const bool retryRequested =
         mappedInput.wasPressed(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(x, y);
-    const bool canRetry = downloadingFamilyIndex_ >= 0 &&
-                          downloadingFamilyIndex_ < static_cast<int>(families_.size());
+    const bool canRetry = downloadingFamilyIndex_ >= 0 && downloadingFamilyIndex_ < static_cast<int>(families_.size());
     if (retryRequested && canRetry) {
       downloadFamily(families_[downloadingFamilyIndex_]);
       requestUpdateAndWait();

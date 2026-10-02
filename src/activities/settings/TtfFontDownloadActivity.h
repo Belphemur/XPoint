@@ -68,9 +68,12 @@ class TtfFontDownloadActivity final : public UiListActivity {
   using StrRef = uint32_t;
 
   struct TtfManifestFile {
-    StrRef name = 0;
-    // Manifest-relative path ("<dir>/<name>"): the base-URL suffix to fetch
-    // from and the on-SD suffix to write under the fonts root.
+    // Manifest-relative path ("<slug>/<file>.ttf", sometimes with an extra
+    // leading directory): the base-URL suffix to fetch from, and the only
+    // string the device derives the SD layout from. The manifest's own "name"
+    // field is deliberately not stored — it is not reliably the object's key
+    // ("PT Serif" publishes "PT Serif Regular.ttf" as "PT_Serif_Regular.ttf"),
+    // and carrying both invites a write under the wrong name.
     StrRef path = 0;
     uint32_t size = 0;
     uint32_t crc32 = 0;
@@ -80,9 +83,9 @@ class TtfFontDownloadActivity final : public UiListActivity {
   struct TtfManifestFamily {
     StrRef name = 0;
     StrRef description = 0;
-    // Directory component of every file's path; the folder on SD. Kept
-    // separate from name because the catalog's display names carry spaces
-    // ("Atkinson Hyperlegible") while its paths do not ("AtkinsonHyperlegible").
+    // Last path component of every file; the folder on SD. Kept separate from
+    // name because the catalog's display names carry spaces ("Atkinson Hyper
+    // Legible") while its slugs do not ("AtkinsonHyperlegible").
     StrRef dirName = 0;
     // Range into files_, which holds every family's files back to back.
     uint32_t fileStart = 0;
@@ -150,9 +153,20 @@ class TtfFontDownloadActivity final : public UiListActivity {
   // Human-readable style list for a family's row subtitle, e.g.
   // "Regular, Bold, Italic".
   static std::string formatStyles(uint8_t styleFlags);
-  // Splits "<dir>/<name>.ttf" and validates both halves; see the definition for
-  // the exact rules.
-  static bool splitFilePath(const char* path, char* dirBuf, size_t dirBufSize, const char*& baseName);
+  // Validates a catalog path and yields the two pieces the device needs:
+  //   - slug: its last directory component, which becomes the on-SD folder.
+  //     BookFontLoader scans exactly one level below the fonts root, so the
+  //     catalog's optional leading directory ("ebook_fonts_extra/...") must not
+  //     be reproduced on the card.
+  //   - baseName: the object's key on the bucket, which is also its name on SD.
+  //     Points into `path`, which must outlive the call.
+  // The whole path is rejected unless every component is a plain name — no
+  // leading '/', no empty, "." or ".." segment, no backslash — so a manifest we
+  // do not understand can never steer a write outside the family folder.
+  static bool splitCatalogPath(const char* path, char* dirBuf, size_t dirBufSize, const char*& slug,
+                               const char*& baseName);
+  // Basename of an already-validated file path, without re-validating it.
+  static const char* fileBaseName(StrRef path);
   // Removes a family's folder after a failed or aborted download.
   void abandonFamily(TtfManifestFamily& family);
 
