@@ -70,6 +70,14 @@ class HalStorage::StorageLock {
 
 bool HalStorage::transactionActive() { return g_sdTransactions.busy(); }
 
+uint64_t HalStorage::freeBytes() {
+  StorageLock lock;
+  const uint64_t total = SDCard.sdTotalBytes();
+  const uint64_t used = SDCard.sdUsedBytes();
+  if (total == 0 || used >= total) return 0;
+  return total - used;
+}
+
 HalStorage::BusGate::BusGate() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
 
 HalStorage::BusGate::~BusGate() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }

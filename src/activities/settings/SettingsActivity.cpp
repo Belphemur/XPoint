@@ -439,11 +439,17 @@ void SettingsActivity::toggleCurrentSetting() {
         // One Settings row, two catalogs: raw .ttf on the native-TTF device
         // class, .cpfont on the classic one.
 #if defined(CROSSPOINT_TTF_READER)
-        startActivityForResult(std::make_unique<TtfFontDownloadActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) {
-                                 SETTINGS.saveToFile();
-                                 rebuildSettingsLists();
-                               });
+      {
+        auto activity = makeUniqueNoThrow<TtfFontDownloadActivity>(renderer, mappedInput);
+        if (!activity) {
+          LOG_ERR("SET", "OOM: TTF font download");
+          return;
+        }
+        startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+          SETTINGS.saveToFile();
+          rebuildSettingsLists();
+        });
+      }
 #else
         startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
                                [this](const ActivityResult&) {
@@ -451,7 +457,7 @@ void SettingsActivity::toggleCurrentSetting() {
                                  rebuildSettingsLists();
                                });
 #endif
-        break;
+      break;
       case SettingAction::TextSettings:
         startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
                                                                       TextSettingsActivity::Tab::Family),

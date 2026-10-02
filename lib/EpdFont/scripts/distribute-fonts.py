@@ -512,6 +512,20 @@ def generate_manifest(catalog: dict) -> None:
     total_files = 0
     total_size = 0
 
+    # The device derives the on-card folder from the path's last directory
+    # component, so two catalog names that slugify to the same folder would
+    # collide on the card (both families writing into one directory). Fail
+    # before uploading rather than publish a manifest the device cannot map.
+    slug_owner = {}
+    for family in sorted(catalog.keys()):
+        slug = family.replace(" ", "_")
+        if slug in slug_owner:
+            raise SystemExit(
+                f"ERROR: family '{family}' slugifies to '{slug}', already used by "
+                f"'{slug_owner[slug]}'. Rename one of them in the catalog."
+            )
+        slug_owner[slug] = family
+
     for family in sorted(catalog.keys()):
         meta = catalog[family]
         family_dir = CACHE_DIR / family.replace(" ", "_")

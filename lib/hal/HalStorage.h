@@ -84,6 +84,11 @@ class HalStorage {
   // switch mid-transfer is unrecoverable.
   static bool transactionActive();
 
+  // Free space on the card in bytes, 0 when the card is not mounted or its
+  // cluster count cannot be read. `used` is cached for 20 seconds upstream
+  // because the FAT scan is too slow for a per-frame query.
+  uint64_t freeBytes();
+
   // Blocks until no SD transaction is in flight and keeps the bus quiescent for
   // the guard's lifetime.
   //
