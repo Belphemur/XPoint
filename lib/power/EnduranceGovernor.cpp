@@ -277,10 +277,10 @@ void EnduranceGovernor::persistFloor(const uint8_t floorIndex) {
 
 void EnduranceGovernor::refreshFromSettings() {
   const endurance::StrikeState current = strikes();
-  resolveLadder(current.idleStrikes, current.lightSleepStrikes);
+  (void)resolveLadder(current.idleStrikes, current.lightSleepStrikes);
 }
 
-void EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes) {
+uint8_t EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes) {
   lockState();
   profile_ = endurance::clampProfile(static_cast<uint8_t>(profile_));
   // Escalate from the rung the device is ON, not from the profile base: strike
@@ -289,10 +289,23 @@ void EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t l
   const uint8_t escalated = endurance::escalate(persistedFloor_, idleStrikes, lightStrikes);
   const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile_)];
   const uint8_t wanted = escalated > base ? escalated : base;
-  if (wanted != strategyIndex_) {
+  // Only upward. Assigning `wanted` outright let a caller that had just consumed
+  // the strike batch (so it passes zeros) recompute the rung from a floor that
+  // another task had not yet raised, and write strategyIndex_ back DOWN over a
+  // promotion in flight.
+  if (wanted > strategyIndex_) {
     strategyIndex_ = wanted;
   }
+  // The rung and its floor move together inside this one critical section, and
+  // the promoted index is handed back to the caller: a separate lock/re-read
+  // would leave a window where a concurrent profile adoption resets the rung
+  // between the promotion and the observation of it.
+  if (strategyIndex_ > persistedFloor_) {
+    persistedFloor_ = strategyIndex_;
+  }
+  const uint8_t index = strategyIndex_;
   unlockState();
+  return index;
 }
 
 void EnduranceGovernor::applyStrategy() {
@@ -389,12 +402,9 @@ void EnduranceGovernor::escalationTaskEntry() {
       const uint8_t idleSeen = strikesIdle_.exchange(0, std::memory_order_acq_rel);
       const uint8_t lightSeen = strikesLightSleep_.exchange(0, std::memory_order_acq_rel);
       // Promote from the batch just taken, not from whatever is live at read time.
-      resolveLadder(idleSeen, lightSeen);
-      uint8_t index;
-      lockState();
-      index = strategyIndex_;
-      persistedFloor_ = index;
-      unlockState();
+      // resolveLadder publishes the rung and its floor together and hands the
+      // promoted index back, so nothing here re-reads shared state.
+      const uint8_t index = resolveLadder(idleSeen, lightSeen);
       // Persist the raised floor: otherwise the promotion lives only in RAM and
       // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
       // putting the device back on the rung that was failing it. The batch was

@@ -171,7 +171,11 @@ class EnduranceGovernor {
   // is what lets the escalation task consume it atomically BEFORE promoting: computing
   // the rung from whatever happens to be live at read time cannot distinguish a
   // strike this promotion already accounted for from one reported after it.
-  void resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes);
+  // Re-resolve the rung from an explicit strike batch and RETURN the resulting
+  // index. Returning it is essential rather than convenient: the caller must not
+  // re-read strategyIndex_ across a gap where another task could have recomputed
+  // it from a batch this promotion never saw.
+  uint8_t resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes);
   void applyStrategy();
 
  public:
