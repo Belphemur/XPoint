@@ -78,6 +78,20 @@ Actually — simpler: keep FontDownloadActivity for C3 only, add TtfFontDownload
 ## Risk: C3 compat
 C3 has ~380KB RAM, no PSRAM. Loading a TTF face into PSRAM and letting FreeType manage glyph atlases can exceed DRAM on C3. That's exactly why `CROSSPOINT_TTF_READER` is absent from the C3 build — the new activity inherits that gate automatically.
 
+## Known limits
+- **32 families on the card.** `BookFontLoader::kMaxDiscoveredFamilies = 32`
+  (src/BookFontLoader.h:74) bounds the discovery table to a fixed DRAM
+  allocation (~30KB). The distribution manifest advertises more families than
+  that, so a user who installs every family ends up with the surplus invisible
+  to the reader. The cap is a deliberate memory bound, not an oversight;
+  raising it means re-deriving the reader's DRAM budget, which is a separate
+  change from this pipeline.
+- **The committed `fonts.json` is a published artifact.** `distribute-fonts.py`
+  regenerates it from `FONT_CATALOG`, which only describes part of the catalog
+  the snapshot carries. The manifest phase refuses to write a manifest listing
+  fewer families than the published one (override with `--allow-family-drop`)
+  so a partial catalog cannot uninstall families that devices already show.
+
 ## Verification
 1. `pio run -e default` (C3 build) — must compile without the new class
 2. `pio run -e x4pro` (S3 build) — must compile with the new class

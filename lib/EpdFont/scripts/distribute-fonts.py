@@ -21,6 +21,16 @@ Usage:
 Environment:
   WRANGLER_BIN  Override path to wrangler CLI (default: ~/.local/bin/wrangler)
   R2_BUCKET     Override R2 bucket name (default: reader-fonts)
+  R2_DEV_URL    REQUIRED for --manifest/--upload/--all. The absolute public
+                origin (https://<subdomain>.r2.dev). fonts.json is uploaded at
+                <origin>/manifest/fonts.json while the fonts live under
+                <origin>/ttf/, so a relative baseUrl would resolve to
+                <origin>/manifest/ttf/ and every device download would 404.
+
+Exit codes:
+  non-zero when a required download, preview render, or object upload failed,
+  or when the regenerated manifest would list fewer families than the
+  published one (override the latter with --allow-family-drop).
 """
 
 from __future__ import annotations
@@ -51,6 +61,9 @@ WORKSPACE = SCRIPT_DIR.parent.parent.parent.parent  # repo root
 
 R2_BUCKET = os.environ.get("R2_BUCKET", "reader-fonts")
 WRANGLER_BIN = os.environ.get("WRANGLER_BIN", os.path.expanduser("~/.local/bin/wrangler"))
+
+# sfnt magic values accepted by FT_New_Memory_Face (see the FreeType docs).
+SFNT_MAGICS = (b"\x00\x01\x00\x00", b"true", b"OTTO", b"ttcf")
 
 # ── Font source catalog ─────────────────────────────────────────────────────
 
@@ -340,18 +353,43 @@ def compute_crc32(filepath: Path) -> int:
 
 # ── Phase 1: Download ────────────────────────────────────────────────────────
 
+def is_valid_font(path: Path) -> bool:
+    """True when `path` exists and starts with an sfnt magic FreeType accepts."""
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    with open(path, "rb") as f:
+        return f.read(4) in SFNT_MAGICS
+
+
 def _download_one(url: str, dest: Path) -> tuple[str, bool, int, str | None]:
-    """Download a single file. Returns (url, success, size, error)."""
+    """Download a single file. Returns (url, success, size, error).
+
+    The bytes land on a sibling `.part` file and are only renamed onto `dest`
+    after the transfer finished AND the result looks like a font: a truncated
+    or HTML error body left at `dest` would be picked up by the next run's
+    cache-hit check and shipped to devices with a wrong size and CRC32.
+    """
+    tmp = dest.with_name(dest.name + ".part")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "font-distributor/1.0"})
-        urllib.request.urlretrieve(url, dest)
+        with urllib.request.urlopen(req) as resp, open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out)
+        if not is_valid_font(tmp):
+            raise ValueError("downloaded bytes are not an sfnt font")
+        os.replace(tmp, dest)
         return (url, True, dest.stat().st_size, None)
     except Exception as e:
+        tmp.unlink(missing_ok=True)
         return (url, False, 0, str(e))
 
 
-def download_fonts(catalog: dict) -> None:
-    """Download all TTF files configured in the catalog."""
+def download_fonts(catalog: dict) -> list[tuple[str, str]]:
+    """Download all TTF files configured in the catalog. Returns the failures.
+
+    The caller must not publish anything derived from the cache while this list
+    is non-empty: the manifest records size + CRC32 from disk, so a failed
+    download silently becomes a font no device can fetch (or a stale one).
+    """
     print(f"\n=== Downloading {sum(len(f['files']) for f in catalog.values())} font files ===")
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -362,12 +400,19 @@ def download_fonts(catalog: dict) -> None:
         for style, url in meta["files"].items():
             fname = Path(url).name
             dest = family_dir / fname
-            if dest.exists() and dest.stat().st_size > 0:
+            if is_valid_font(dest):
                 print(f"  SKIP {family}/{fname} (already cached, {dest.stat().st_size:,} bytes)")
                 continue
+            if dest.exists():
+                # Cached bytes that no longer validate: a half-written file
+                # from an older run, or a font the repo moved. Re-fetch it.
+                print(f"  STALE {family}/{fname} (cached copy is not a valid font, refetching)")
+                dest.unlink()
             tasks.append((family, style, url, dest))
 
     print(f"  {len(tasks)} files to download (concurrent, 8 workers)...")
+
+    failures: list[tuple[str, str]] = []
 
     def worker(t):
         family, style, url, dest = t
@@ -377,15 +422,16 @@ def download_fonts(catalog: dict) -> None:
             print(f"  OK   {family}/{style} ({size:,} bytes)")
         else:
             print(f"  FAIL {family}/{style}: {err and err[:80]}")
-        return (family, style, dest, ok, size)
+            failures.append((family, style))
+        return ok
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        for _ in ex.map(worker, tasks):
-            pass
+        list(ex.map(worker, tasks))
 
     total = sum(f.stat().st_size for d in CACHE_DIR.rglob("*.ttf") for f in [d] if f.exists())
     file_count = len(list(CACHE_DIR.rglob("*.ttf")))
     print(f"\n  Total cached: {file_count} files, {total / 1048576:.1f} MB")
+    return failures
 
 
 # ── Phase 2: Previews ───────────────────────────────────────────────────────
@@ -410,6 +456,17 @@ def _find_font_file(family: str, style: str, catalog: dict) -> Path | None:
     return family_dir / fname
 
 
+def preview_name(family: str, meta: dict) -> str:
+    """The preview file name for a family — the one source every phase reads.
+
+    Families without an explicit `preview` get a derived default. Resolving it
+    once here keeps generate_previews (which renders the PNG), generate_manifest
+    (which publishes its URL) and generate_html_gallery (which renders its card)
+    from disagreeing about the name.
+    """
+    return meta.get("preview") or f"preview_{family.replace(' ', '_')}.png"
+
+
 def _has_pillow() -> bool:
     try:
         import PIL
@@ -418,27 +475,25 @@ def _has_pillow() -> bool:
         return False
 
 
-def generate_previews(catalog: dict) -> None:
-    """Render PNG previews for each font family."""
+def generate_previews(catalog: dict) -> bool:
+    """Render PNG previews for each font family. False when nothing was made."""
     if not _has_pillow():
-        print("WARNING: Pillow not installed. Skipping previews.")
+        print("ERROR: Pillow not installed — cannot render previews.")
         print("  Install: pip install Pillow")
-        return
+        return False
 
     from PIL import Image, ImageDraw, ImageFont
 
     if not SCRIPT_DIR.exists():
-        return
+        return False
 
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"\n=== Generating font previews ===")
 
+    rendered = 0
     for family, meta in catalog.items():
-        preview_name = meta.get("preview")
-        if not preview_name:
-            # Generate a default preview name
-            preview_name = f"preview_{family.replace(' ', '_')}.png"
+        name = preview_name(family, meta)
 
         # Find a regular font file to preview
         regular = _find_font_file(family, "regular", catalog)
@@ -484,33 +539,63 @@ def generate_previews(catalog: dict) -> None:
                 sheet.paste(r, (10, y))
                 y += r.height
 
-            out_path = PREVIEW_DIR / preview_name
+            out_path = PREVIEW_DIR / name
             sheet.save(out_path, "PNG")
-            print(f"  OK   {preview_name} ({out_path.stat().st_size:,} bytes)")
+            rendered += 1
+            print(f"  OK   {name} ({out_path.stat().st_size:,} bytes)")
 
         except Exception as e:
             print(f"  FAIL {family}: {e}")
 
+    # Counts what THIS run rendered, not what happens to be in the directory:
+    # previews left by an earlier run must not make a failed render look like
+    # a successful one.
+    return rendered > 0
+
 
 # ── Phase 3: Manifest ───────────────────────────────────────────────────────
 
-def generate_manifest(catalog: dict) -> None:
+def generate_manifest(catalog: dict, allow_family_drop: bool = False) -> None:
     """Build the JSON manifest from cached font files."""
     print(f"\n=== Building font manifest ===")
 
-    r2_base = f"https://{os.environ.get('R2_DEV_URL', '')}"
-    r2_dev = os.environ.get("R2_DEV_URL", "")
-    if r2_dev:
-        base_url = r2_dev.rstrip("/") + "/ttf/"
-        previews_url = r2_dev.rstrip("/") + "/previews/"
-    else:
-        # Local only — just set paths relative to ttf/
-        base_url = "ttf/"
-        previews_url = "previews/"
+    # fonts.json is a PUBLISHED artifact: it is uploaded at
+    # <base>/manifest/fonts.json while the fonts live under <base>/ttf/. A
+    # relative baseUrl would therefore resolve to <base>/manifest/ttf/ and every
+    # device download would 404, so the absolute public origin is required
+    # rather than defaulted.
+    r2_dev = os.environ.get("R2_DEV_URL", "").strip()
+    if not r2_dev.lower().startswith("https://"):
+        raise SystemExit(
+            "ERROR: R2_DEV_URL must be set to the absolute public bucket origin "
+            "(https://<subdomain>.r2.dev) before writing the manifest."
+        )
+    base_url = r2_dev.rstrip("/") + "/ttf/"
+    previews_url = r2_dev.rstrip("/") + "/previews/"
 
     families = []
     total_files = 0
     total_size = 0
+
+    # The catalog only has to describe the families this pipeline knows how to
+    # fetch. It must never describe FEWER families than the manifest it is about
+    # to replace: the generated file is uploaded over the live manifest, so a
+    # partial catalog would uninstall every family it does not list.
+    published = []
+    if MANIFEST_PATH.exists():
+        with open(MANIFEST_PATH) as f:
+            published = [fam["name"] for fam in json.load(f).get("families", [])]
+    catalogued = set(catalog)
+    dropped = [name for name in published if name not in catalogued]
+    if dropped and not allow_family_drop:
+        raise SystemExit(
+            f"ERROR: the catalog covers {len(catalog)} families but the published "
+            f"manifest lists {len(published)}; regenerating would remove "
+            f"{len(dropped)} of them from devices: {', '.join(dropped[:8])}"
+            f"{' …' if len(dropped) > 8 else ''}.\n"
+            "  Add the missing families to FONT_CATALOG, or re-run with "
+            "--allow-family-drop if dropping them is intended."
+        )
 
     # The device derives the on-card folder from the path's last directory
     # component, so two catalog names that slugify to the same folder would
@@ -540,6 +625,11 @@ def generate_manifest(catalog: dict) -> None:
             if not fpath.exists():
                 print(f"  WARN {family}/{style}: file not cached at {fpath}")
                 continue
+            if not is_valid_font(fpath):
+                raise SystemExit(
+                    f"ERROR: cached file {fpath} is not a valid sfnt font — refusing "
+                    "to publish its size/CRC32. Re-run the download phase."
+                )
 
             size = fpath.stat().st_size
             crc = compute_crc32(fpath)
@@ -567,8 +657,11 @@ def generate_manifest(catalog: dict) -> None:
             "styles": [e["style"] for e in file_entries],
             "files": file_entries,
         }
-        if meta.get("preview"):
-            entry["preview"] = f"{previews_url}{meta['preview']}"
+        name = preview_name(family, meta)
+        if (PREVIEW_DIR / name).exists():
+            entry["preview"] = f"{previews_url}{name}"
+        else:
+            print(f"  WARN {family}: preview {name} not rendered; omitting from manifest")
 
         families.append(entry)
 
@@ -587,9 +680,16 @@ def generate_manifest(catalog: dict) -> None:
     }
 
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(MANIFEST_PATH, "w") as f:
+    # The committed manifest is what the owner and the devices read; writing it
+    # in place would truncate the last known-good copy and a crash mid-write
+    # would publish an empty manifest. Stage, fsync, then swap atomically.
+    tmp = MANIFEST_PATH.with_name(MANIFEST_PATH.name + ".tmp")
+    with open(tmp, "w") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, MANIFEST_PATH)
 
     print(f"  Written: {MANIFEST_PATH}")
     print(f"  Families: {len(families)}")
@@ -604,8 +704,13 @@ def _wrangler(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
 
-def upload_to_r2() -> None:
-    """Upload all fonts, previews, and manifest to the R2 bucket."""
+def upload_to_r2() -> bool:
+    """Upload all fonts, previews, and manifest to the R2 bucket.
+
+    Returns True only when every font and preview object landed. The manifest
+    is published last and only on success: it is the index devices resolve
+    against, so publishing it after a failed upload advertises objects that 404.
+    """
     print(f"\n=== Uploading to R2 bucket '{R2_BUCKET}' ===")
 
     # Verify wrangler is available
@@ -613,11 +718,14 @@ def upload_to_r2() -> None:
     if result.returncode != 0:
         print(f"ERROR: wrangler not available or not authenticated")
         print(f"  Run: {WRANGLER_BIN} login")
-        return
+        return False
+
+    failures: list[str] = []
 
     # Upload TTF files
     ttf_count = 0
-    for family_dir in sorted(CACHE_DIR.iterdir()):
+    family_dirs = sorted(CACHE_DIR.iterdir()) if CACHE_DIR.exists() else []
+    for family_dir in family_dirs:
         if not family_dir.is_dir():
             continue
         for ttf_file in sorted(family_dir.glob("*.ttf")) + sorted(family_dir.glob("*.otf")):
@@ -628,6 +736,7 @@ def upload_to_r2() -> None:
                 ttf_count += 1
             else:
                 print(f"  FAIL {r2_key}: {result.stderr.strip()[:100]}")
+                failures.append(r2_key)
     print(f"  Uploaded {ttf_count} TTF files")
 
     # Upload previews
@@ -641,7 +750,13 @@ def upload_to_r2() -> None:
                 preview_count += 1
             else:
                 print(f"  FAIL {r2_key}: {result.stderr.strip()[:100]}")
+                failures.append(r2_key)
     print(f"  Uploaded {preview_count} preview images")
+
+    if failures:
+        print(f"\nERROR: {len(failures)} object(s) failed to upload; withholding the manifest")
+        print("  The published fonts.json would point at objects that are not there.")
+        return False
 
     # Upload HTML gallery
     html_path = MANIFEST_PATH.parent / "font-gallery.html"
@@ -652,6 +767,7 @@ def upload_to_r2() -> None:
             print(f"  Uploaded gallery (index.html)")
         else:
             print(f"  FAIL gallery: {result.stderr.strip()[:100]}")
+            return False
 
     # Upload manifest
     if MANIFEST_PATH.exists():
@@ -661,6 +777,9 @@ def upload_to_r2() -> None:
             print(f"  Uploaded manifest (fonts.json)")
         else:
             print(f"  FAIL manifest: {result.stderr.strip()[:100]}")
+            return False
+
+    return True
 
 
 def make_bucket_public() -> None:
@@ -711,9 +830,10 @@ def generate_html_gallery(catalog: dict) -> Path:
         '    .subtitle { color: #6c757d; font-size: 0.9rem; margin-bottom: 24px; }',
         '    .filter-bar { margin-bottom: 20px; display: flex; gap: 12px; flex-wrap: wrap; }',
         '    .filter-btn { padding: 6px 16px; border: 1px solid #dee2e6; border-radius: 20px;',
-        '                   background: white; cursor: pointer; font-size: 0.85rem; }',
+        '                   background: white; cursor: pointer; font-size: 0.85rem;',
+        '                   font-family: inherit; color: inherit; }',
         '    .filter-btn.active { background: #0d6efd; color: white; border-color: #0d6efd; }',
-        '    .font-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));',
+        '    .font-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(480px, 100%), 1fr));',
         '                   gap: 20px; }',
         '    .font-card { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);',
         '                  border: 1px solid #e9ecef; }',
@@ -737,19 +857,21 @@ def generate_html_gallery(catalog: dict) -> Path:
         f'  <div class="subtitle">Font previews for PSRAM-enabled devices (ESP32-S3). ',
         f'Download the <a href="{manifest_url}">manifest</a> or browse the <a href="{preview_prefix}">previews</a>.</div>',
         '  <div class="filter-bar">',
-        '    <div class="filter-btn active" data-filter="all">All</div>',
-        '    <div class="filter-btn" data-filter="eink">E-ink Optimized</div>',
-        '    <div class="filter-btn" data-filter="accessibility">Accessibility</div>',
-        '    <div class="filter-btn" data-filter="serif">Serif</div>',
-        '    <div class="filter-btn" data-filter="sans">Sans-serif</div>',
-        '    <div class="filter-btn" data-filter="slab">Slab-serif</div>',
+        '    <button type="button" class="filter-btn active" data-filter="all">All</button>',
+        '    <button type="button" class="filter-btn" data-filter="eink">E-ink Optimized</button>',
+        '    <button type="button" class="filter-btn" data-filter="accessibility">Accessibility</button>',
+        '    <button type="button" class="filter-btn" data-filter="serif">Serif</button>',
+        '    <button type="button" class="filter-btn" data-filter="sans">Sans-serif</button>',
+        '    <button type="button" class="filter-btn" data-filter="slab">Slab-serif</button>',
         '  </div>',
         '  <div class="font-grid">',
     ]
 
     for family, meta in sorted(catalog.items()):
-        preview = meta.get("preview")
-        if not preview:
+        preview = preview_name(family, meta)
+        if not (PREVIEW_DIR / preview).exists():
+            # No PNG was rendered for this family: linking to it would publish
+            # a broken image, so the family simply gets no card.
             continue
 
         is_eink = "ebook-fonts" in meta.get("source", "")
@@ -777,9 +899,11 @@ def generate_html_gallery(catalog: dict) -> Path:
             filter_tags.append("eink")
         if is_accessibility or is_dyslexia:
             filter_tags.append("accessibility")
-        if "serif" in cat:
+        # "serif" is a substring of "sans-serif" and of "slab-serif"; only the
+        # exclusive serif category carries the Serif tag.
+        if "serif" in cat and "sans" not in cat and "slab" not in cat:
             filter_tags.append("serif")
-        if "sans" in cat and "slab" not in cat:
+        if "sans" in cat:
             filter_tags.append("sans")
         if "slab" in cat:
             filter_tags.append("slab")
@@ -840,22 +964,39 @@ def main():
     parser.add_argument("--upload", action="store_true", help="Upload to R2")
     parser.add_argument("--make-public", action="store_true", help="Enable r2.dev public URL")
     parser.add_argument("--all", action="store_true", help="Run all phases")
+    parser.add_argument("--allow-family-drop", action="store_true",
+                        help="Permit a regenerated manifest that lists fewer families than the "
+                             "currently published one (use only when the drop is intended)")
     args = parser.parse_args()
 
     if not any([args.download, args.previews, args.manifest, args.html,
                 args.upload, args.make_public]):
         args.all = True
 
+    # Each phase below reports whether it completed: --all chains them, and a
+    # silent failure upstream (missing Pillow, a failed download, a refused
+    # upload) would otherwise publish a manifest and a gallery full of links
+    # to artifacts that were never produced.
     if args.all or args.download:
-        download_fonts(FONT_CATALOG)
+        failures = download_fonts(FONT_CATALOG)
+        if failures:
+            print(f"\nERROR: {len(failures)} download(s) failed: "
+                  f"{', '.join(f'{fam}/{style}' for fam, style in failures)}")
+            print("  The manifest records size + CRC32 from disk, so publishing now would")
+            print("  ship a truncated font. Re-run the download phase before publishing.")
+            raise SystemExit(1)
+
     if args.all or args.previews:
-        generate_previews(FONT_CATALOG)
+        if not generate_previews(FONT_CATALOG):
+            raise SystemExit("ERROR: no previews were generated — install Pillow and re-run")
+
     if args.all or args.manifest:
-        generate_manifest(FONT_CATALOG)
+        generate_manifest(FONT_CATALOG, allow_family_drop=args.allow_family_drop)
     if args.all or args.html:
         generate_html_gallery(FONT_CATALOG)
     if args.all or args.upload:
-        upload_to_r2()
+        if not upload_to_r2():
+            raise SystemExit(1)
     if args.all or args.make_public:
         make_bucket_public()
 

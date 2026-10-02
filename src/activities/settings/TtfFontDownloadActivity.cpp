@@ -325,7 +325,7 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
   const int version = doc["version"] | 0;
   if (version != FONTS_MANIFEST_VERSION) {
     LOG_ERR("TTFFONT", "Unsupported manifest version: %d", version);
-    errorMessage_ = "Unsupported manifest version";
+    errorMessage_ = tr(STR_UNSUPPORTED_MANIFEST_VERSION);
     return false;
   }
 
@@ -514,6 +514,9 @@ void TtfFontDownloadActivity::downloadAll() {
       RenderLock lock(*this);
       state_ = ERROR;
       errorMessage_ = tr(STR_NOT_ENOUGH_SPACE);
+      // The batch never started, so nothing is retryable: without this the
+      // error screen's RETRY would re-run the family of an earlier download.
+      downloadingFamilyIndex_ = -1;
     }
     return;
   }
@@ -545,6 +548,7 @@ void TtfFontDownloadActivity::updateAll() {
       RenderLock lock(*this);
       state_ = ERROR;
       errorMessage_ = tr(STR_NOT_ENOUGH_SPACE);
+      downloadingFamilyIndex_ = -1;
     }
     return;
   }
@@ -659,11 +663,12 @@ void TtfFontDownloadActivity::discardStagedFiles(TtfManifestFamily& family) {
 // A card that cannot hold the pending bytes cannot report a useful download
 // error halfway through, so the check runs before any file is fetched.
 bool TtfFontDownloadActivity::hasFreeSpaceFor(const uint64_t requiredBytes) const {
-  const uint64_t freeBytes = Storage.freeBytes();
-  if (freeBytes == 0) {
+  uint64_t freeBytes = 0;
+  if (!Storage.freeBytes(&freeBytes)) {
     // Unknown capacity (card not mounted, or the FAT scan could not report a
     // cluster count): let the download discover the problem the hard way rather
-    // than refusing work that would have fit.
+    // than refusing work that would have fit. A full card is NOT unknown — it
+    // reports a real 0 and is refused below.
     LOG_DBG("TTFFONT", "SD free space unknown; skipping preflight");
     return true;
   }
@@ -719,7 +724,7 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
   if (!fontInstaller_.ensureFamilyDir(str(family.dirName))) {
     RenderLock lock(*this);
     state_ = ERROR;
-    errorMessage_ = "Failed to create font directory";
+    errorMessage_ = tr(STR_FONT_DIR_CREATE_FAILED);
     return;
   }
 
@@ -765,10 +770,11 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
           }
           requestUpdate(true);
         },
-        // The catalog is plain HTTPS with no redirect chain, so this only
-        // matters if the bucket ever moves: the CRC check below (manifest
-        // fetched over TLS) is the integrity anchor either way.
-        &cancelRequested_, "", "", /*headers=*/{}, /*downgradeRedirectsToHttp=*/true);
+        // The catalog is served straight off the bucket origin with no redirect
+        // chain, so an HTTPS->HTTP redirect can only ever be an attack on the
+        // connection: refuse the downgrade rather than follow it. The CRC32 from
+        // the TLS-fetched manifest stays the integrity anchor either way.
+        &cancelRequested_, "", "", /*headers=*/{}, /*downgradeRedirectsToHttp=*/false);
 
     if (result == HttpDownloader::ABORTED) {
       discardStagedFiles(family);
@@ -890,7 +896,7 @@ void TtfFontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& r
   if (fontInstaller_.deleteTtfFamily(str(family.dirName)) != FontInstaller::Error::OK) {
     RenderLock lock(*this);
     state_ = ERROR;
-    errorMessage_ = "Failed to delete font";
+    errorMessage_ = tr(STR_FONT_DELETE_FAILED);
     // No download is in flight, so there is nothing for the retry affordance to
     // retry: without this it would restart an unrelated family.
     downloadingFamilyIndex_ = -1;

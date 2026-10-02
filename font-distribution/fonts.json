@@ -9,7 +9,7 @@
   "families": [
     {
       "name": "Atkinson Hyperlegible",
-      "type": "serif",
+      "type": "sans-serif (accessibility)",
       "description": "Atkinson Hyperlegible",
       "source": "nicoverbruggen/ebook-fonts",
       "license": "OFL",
@@ -174,7 +174,7 @@
     },
     {
       "name": "Fira Sans",
-      "type": "serif",
+      "type": "sans-serif",
       "description": "Fira Sans",
       "source": "nicoverbruggen/ebook-fonts",
       "license": "OFL",
@@ -333,7 +333,7 @@
     },
     {
       "name": "NV Bitter",
-      "type": "serif",
+      "type": "slab-serif",
       "description": "NV Bitter",
       "source": "nicoverbruggen/ebook-fonts",
       "license": "OFL",
@@ -376,7 +376,7 @@
     },
     {
       "name": "NV Disleksio",
-      "type": "serif",
+      "type": "sans-serif (dyslexia)",
       "description": "NV Disleksio",
       "source": "nicoverbruggen/ebook-fonts",
       "license": "OFL",
@@ -419,7 +419,7 @@
     },
     {
       "name": "NV Jost",
-      "type": "serif",
+      "type": "sans-serif",
       "description": "NV Jost",
       "source": "nicoverbruggen/ebook-fonts",
       "license": "OFL",
@@ -462,7 +462,7 @@
     },
     {
       "name": "NV Legible Next",
-      "type": "serif",
+      "type": "sans-serif (accessibility)",
       "description": "NV Legible Next",
       "source": "nicoverbruggen/ebook-fonts",
       "license": "OFL",
@@ -2215,16 +2215,16 @@
       "license": "OFL",
       "preview": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/preview_Source_Serif_4.png",
       "styles": [
-        "regular",
+        "italic",
         "regular",
         "bold",
-        "bold"
+        "bolditalic"
       ],
       "files": [
         {
           "name": "SourceSerif4-It.ttf",
           "path": "SourceSerif4/SourceSerif4-It.ttf",
-          "style": "regular",
+          "style": "italic",
           "size": 187808,
           "crc32": 2756640830
         },
@@ -2245,7 +2245,7 @@
         {
           "name": "SourceSerif4-BoldIt.ttf",
           "path": "SourceSerif4/SourceSerif4-BoldIt.ttf",
-          "style": "bold",
+          "style": "bolditalic",
           "size": 191832,
           "crc32": 3351126733
         }
