@@ -299,9 +299,23 @@ void XtcReaderActivity::renderStatusBarOverlay(GfxRenderer& renderer, const Stat
 
 void XtcReaderActivity::renderPowerStatsOverlay(GfxRenderer& renderer) const {
   const auto mode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
-  if (mode == PowerStatsOverlay::Mode::Full) {
-    PowerStatsOverlay::draw(renderer, mode, powerManager.endurance());
+  if (mode != PowerStatsOverlay::Mode::Full) {
+    return;
   }
+  // An XTC status bar set to TOP owns the band right below the top margin, and
+  // this reader draws it before the block. Anchoring the block at the very top
+  // would paint straight over the bar's clock and battery, so it starts below
+  // that band instead. XTC pages are pre-rendered bitmaps and cannot reflow, so
+  // the block overlaps the page image here — unlike the EPUB/TTF readers, which
+  // subtract topReservePx() from their layout viewport.
+  int bandAbovePx = 0;
+  if (SETTINGS.statusBarSpec().xtcMode == CrossPointSettings::XTC_STATUS_BAR_MODE::XTC_STATUS_BAR_TOP) {
+    int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
+    renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
+                                     &orientedMarginLeft);
+    bandAbovePx = orientedMarginTop + UITheme::getInstance().getStatusBarHeight() + 4;
+  }
+  PowerStatsOverlay::draw(renderer, mode, powerManager.endurance(), bandAbovePx);
 }
 
 void XtcReaderActivity::renderPage() {

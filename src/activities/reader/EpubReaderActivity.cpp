@@ -973,6 +973,12 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin;
+  // Full telemetry is anchored at the top, so the content area starts below it.
+  // Mirrors how orientedMarginBottom below reserves the status bar: the layout
+  // viewport and the paint origin are shifted by the same amount, so no text is
+  // ever drawn under the block.
+  orientedMarginTop += PowerStatsOverlay::topReservePx(
+      renderer, PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   orientedMarginLeft += SETTINGS.screenMargin;
 
   auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(
@@ -1004,6 +1010,10 @@ void EpubReaderActivity::openFootnoteSelect(const bool reopenMenuOnCancel) {
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin;
+  // Must match the layout origin used by renderBook(), or footnote taps land on
+  // the wrong line while the Full block is showing.
+  orientedMarginTop += PowerStatsOverlay::topReservePx(
+      renderer, PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   orientedMarginLeft += SETTINGS.screenMargin;
   auto selector = makeUniqueNoThrow<EpubReaderFootnoteSelectActivity>(renderer, mappedInput, std::move(page),
                                                                       orientedMarginLeft, orientedMarginTop);
@@ -2238,6 +2248,15 @@ void EpubReaderActivity::renderBook() {
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin;
+  // Full telemetry occupies the top of the screen, so the page layout viewport
+  // shrinks by exactly the block's height and the text begins below it. This is
+  // the same mechanism as the status-bar reserve on orientedMarginBottom just
+  // below: cache key and paint origin always agree, so a mode change re-lays out
+  // once (like a margin or font change does) and then stays stable, because
+  // PowerStatsOverlay::topReservePx() depends only on the mode, never on the
+  // telemetry values being displayed.
+  orientedMarginTop += PowerStatsOverlay::topReservePx(
+      renderer, PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   orientedMarginLeft += SETTINGS.screenMargin;
   orientedMarginRight += SETTINGS.screenMargin;
 
@@ -4676,7 +4695,9 @@ void EpubReaderActivity::renderStatusBar() const {
   // turn and data refresh, which are the only moments the panel is being
   // redrawn anyway. A periodic repaint would both wear the e-ink and undo the
   // idle clock the governor just dropped.
-  //   Full    — a text block over the page, drawn here.
+  //   Full    — a text block anchored at the TOP of the screen, drawn here. The
+  //             layout viewport already shrank by topReservePx() in renderBook(),
+  //             so the block lands in reserved space above the text.
   //   Compact — only FORMATTED here; the theme lays it out as a status-bar
   //             element, because it owns that baseline and the clusters already
   //             painted on it.

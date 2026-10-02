@@ -12,6 +12,7 @@
 
 #include "HalFrontlight.h"
 #include "HalGPIO.h"
+#include "HalStorage.h"
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <M5Pm1.h>
@@ -343,6 +344,16 @@ bool HalPowerManager::isBatteryCharging() const {
 bool HalPowerManager::isExternalPowerPresent(bool* known) const {
   static const BatteryMonitor battery;
   return battery.isExternalPowerPresent(known);
+}
+
+bool HalPowerManager::getBatteryMillivolts(uint16_t& millivoltsOut) const {
+  static const BatteryMonitor battery;
+  const BatteryMonitor::Status status = battery.readStatus();
+  if (!status.millivoltsKnown) {
+    return false;
+  }
+  millivoltsOut = status.millivolts;
+  return true;
 }
 
 uint16_t HalPowerManager::getBatteryPercentage() const {

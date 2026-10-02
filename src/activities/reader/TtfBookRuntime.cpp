@@ -8,6 +8,7 @@
 #include <BookFontLoader.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
+#include <PowerStatsOverlay.h>
 
 #include <cmath>
 #include <cstring>
@@ -453,6 +454,12 @@ void TtfBookRuntime::makeLayoutParams(GfxRenderer& renderer, LayoutParams& out, 
   renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
   const uint8_t screenMargin = SETTINGS.screenMargin;
   top += screenMargin;
+  // Full telemetry is anchored at the top of the screen; reserving it here keeps
+  // the layout viewport and the paint origin in agreement, exactly as the
+  // status-bar reserve on `bottom` does. The value depends only on the mode, so
+  // toggling it re-lays out once rather than on every telemetry update.
+  top += PowerStatsOverlay::topReservePx(renderer,
+                                         PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   left += screenMargin;
   right += screenMargin;
 

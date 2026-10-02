@@ -72,6 +72,16 @@ const char* PowerStatsOverlay::buildCompact(char* out, const size_t outLen) {
   char current[16] = "--";
   if (estimate.measured) formatMilli(current, sizeof(current), estimate.milliAmp, 1);
 
+  // Pack voltage, the reference Crossfire line's second segment. Built from
+  // millivolts with integer maths because embedded newlib has no float printf.
+  // A board with no voltage path shows `--V` rather than a plausible-looking 0V.
+  char volts[12] = "--V";
+  uint16_t millivolts = 0;
+  if (powerManager.getBatteryMillivolts(millivolts)) {
+    std::snprintf(volts, sizeof(volts), "%u.%02uV", static_cast<unsigned>(millivolts / 1000U),
+                  static_cast<unsigned>((millivolts % 1000U) / 10U));
+  }
+
   // pageTurnMs() is a cumulative total across every render, so printing it raw
   // made `pg` grow on each page turn instead of reporting a duration. The
   // average is what the label means (Full mode already divides the same way).
@@ -79,12 +89,23 @@ const char* PowerStatsOverlay::buildCompact(char* out, const size_t outLen) {
   const unsigned long avgPageMs = renders == 0 ? 0 : governor.pageTurnMs() / renders;
 
   std::snprintf(out, outLen, tr(STR_PWR_COMPACT_LINE), governor.idleClockMHz(),
-                static_cast<unsigned long>(tenthsPercent(governor.napMs(), governor.bootMs()) / 10),
+                static_cast<unsigned long>(tenthsPercent(governor.napMs(), governor.bootMs()) / 10), volts,
                 static_cast<unsigned>(powerManager.getBatteryPercentage()), current, avgPageMs);
   return out;
 }
 
-void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor& governor) {
+int PowerStatsOverlay::topReservePx(const GfxRenderer& renderer, const Mode mode, const int bandAbovePx) {
+  // The mode is a parameter, not a SETTINGS read: lib/power must not depend on
+  // src/CrossPointSettings.h, and callers already hold the clamped value.
+  if (mode != Mode::Full) {
+    return 0;
+  }
+  // The +4 matches the block's own 2px border on each side, so the first text
+  // line below the block is not flush against its frame.
+  return blockHeightPx(renderer.getLineHeight(kFontId), bandAbovePx);
+}
+
+void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor& governor, const int bandAbovePx) {
   char row[ROW_BYTES];
 
   int marginTop, marginRight, marginBottom, marginLeft;
@@ -96,7 +117,10 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
 
   const int lineHeight = renderer.getLineHeight(kFontId);
   const int x = marginLeft + 4;
-  const int y = marginTop + 4;
+  // Top-anchored, below any chrome band the reader already reserved at the top
+  // (a Top-positioned XTC status bar). Nothing here uses a screen-height offset:
+  // the block never moves to the bottom in any orientation.
+  const int y = marginTop + 4 + bandAbovePx;
 
   // Two passes over an identical builder keeps the white-out sized to what is
   // drawn without buffering 20 rows of text on the stack.
@@ -137,34 +161,43 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
                   estimate.onUsbPower ? tr(STR_STATE_ON_USB) : tr(STR_STATE_ON_BATTERY));
     emit(row);
 
+    // Drain and runtime-left are emitted unconditionally, each with a placeholder
+    // when its data is absent. Same for the sleep row below. The block must be
+    // exactly kFullRowCount rows tall at all times, because readers reserve that
+    // many rows of content area for it: a row that appeared only once a
+    // measurement arrived would change the viewport mid-read and re-paginate the
+    // book (and invalidate the section cache) out from under the reader.
+    char milliamps[20] = "--";
+    if (estimate.measured && !estimate.onUsbPower) {
+      formatMilli(milliamps, sizeof(milliamps), estimate.milliAmp, 1);
+    }
+
     if (estimate.onUsbPower) {
       std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN_USB));
-      emit(row);
     } else if (!estimate.measured) {
       // The 10-minute gate (design doc §3.2): minutes of window collected so far.
       std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN_MEASURING),
                     static_cast<unsigned long>(estimate.windowMs / 60000UL),
                     static_cast<unsigned long>(PowerDrainMonitor::WINDOW_MINUTES));
-      emit(row);
     } else {
       char perHour[20];
-      char milliamps[20];
       formatMilli(perHour, sizeof(perHour), estimate.milliPctPerHour, 2);
-      formatMilli(milliamps, sizeof(milliamps), estimate.milliAmp, 1);
       std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_DRAIN), perHour, milliamps);
-      emit(row);
+    }
+    emit(row);
 
+    {
       // A zero drain over a full window yields a zero rate; dividing by it would
-      // report an infinite runtime, so the estimate row is skipped instead.
-      if (estimate.milliAmp > 0) {
-        char left[32];
+      // report an infinite runtime, so the estimate prints its placeholder.
+      char left[32] = "--";
+      if (estimate.measured && !estimate.onUsbPower && estimate.milliAmp > 0) {
         PowerDrainMonitor::formatDuration(
             left, sizeof(left),
             PowerDrainMonitor::runtimeLeftMinutes(powerManager.getBatteryPercentage(), estimate.milliAmp),
             durationLabels());
-        std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_EST), milliamps, left);
-        emit(row);
       }
+      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_EST), milliamps, left);
+      emit(row);
     }
 
     if (sleep.valid) {
@@ -180,8 +213,10 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
         // Sub-minute sleeps do not have enough gauge samples to divide by.
         std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SLEEP_SHORT), duration);
       }
-      emit(row);
+    } else {
+      std::snprintf(row, sizeof(row), tr(STR_PWR_FULL_SLEEP_NONE));
     }
+    emit(row);
 
     // Two conversions in the format string, so two arguments: the average page
     // turn and the sample count it was averaged over. Supplying only the average
@@ -202,6 +237,15 @@ void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor&
 
   build(false);
   const int drawnRows = rowIndex;
+
+  // The readers subtract kFullRowCount rows from the content viewport, so the
+  // builder must emit exactly that many. emit() clamps at MAX_ROWS, and every row
+  // here is unconditional, so a mismatch can only come from an edit that added or
+  // removed a row without updating kFullRowCount — which would silently overlap
+  // the page text or leave dead space.
+  if (drawnRows != kFullRowCount) {
+    LOG_ERR("PWR", "Full block emitted %d rows but %d are reserved", drawnRows, kFullRowCount);
+  }
 
   const int blockWidth = renderer.getScreenWidth() - marginLeft - marginRight - 8;
   const int blockHeight = drawnRows * lineHeight;
@@ -226,13 +270,14 @@ PowerDrainMonitor::DurationLabels PowerStatsOverlay::durationLabels() {
   return {tr(STR_PWR_DUR_LT_MIN), tr(STR_PWR_DUR_MIN), tr(STR_PWR_DUR_HM), tr(STR_PWR_DUR_DH)};
 }
 
-void PowerStatsOverlay::draw(GfxRenderer& renderer, const Mode mode, const EnduranceGovernor& governor) {
+void PowerStatsOverlay::draw(GfxRenderer& renderer, const Mode mode, const EnduranceGovernor& governor,
+                             const int bandAbovePx) {
   switch (mode) {
     case Mode::Compact:
       // Formatted by the caller into the theme's status bar; nothing to draw here.
       return;
     case Mode::Full:
-      drawFull(renderer, governor);
+      drawFull(renderer, governor, bandAbovePx);
       return;
     case Mode::Off:
     default:

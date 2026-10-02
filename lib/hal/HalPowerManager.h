@@ -129,6 +129,12 @@ class HalPowerManager {
   // so a caller never treats "cannot tell" as "on battery is true".
   bool isExternalPowerPresent(bool* known = nullptr) const;
 
+  // Battery pack voltage in millivolts. Returns false when the active board has
+  // no voltage path, or the gauge/ADC read failed, so a caller never renders a
+  // real-looking value taken from an unsupported field (same "unknown is not
+  // zero" discipline as isExternalPowerPresent's `known`).
+  bool getBatteryMillivolts(uint16_t& millivoltsOut) const;
+
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;
 
