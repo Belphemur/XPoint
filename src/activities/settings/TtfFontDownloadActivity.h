@@ -1,10 +1,13 @@
 #pragma once
 
-// .cpfont downloader for the classic (non-PSRAM) device class. Where
-// CROSSPOINT_TTF_READER is set, TtfFontDownloadActivity takes over this Settings
-// row and this class is not compiled at all — the two catalogs ship different
-// payloads behind the same UI.
-#if !defined(CROSSPOINT_TTF_READER)
+// Direct TTF downloader for the native-TTF (PSRAM) device class. Sibling of
+// FontDownloadActivity, not a subclass: the two share the Wi-Fi → manifest →
+// family list → download flow but nothing else — the catalog ships raw sfnt
+// files with a path-shaped layout, where the .cpfont flow ships opaque
+// binaries keyed by family + point size. Only one of the two is ever compiled:
+// FontDownloadActivity for the C3, this one where CROSSPOINT_TTF_READER is set.
+
+#if defined(CROSSPOINT_TTF_READER)
 
 #include <memory>
 #include <string>
@@ -14,27 +17,22 @@
 #include "SdCardFont.h"
 #include "activities/UiListActivity.h"
 
-// JSON schema version of the fonts.json manifest. The canonical version for
-// the build tooling lives in lib/EpdFont/scripts/cpfont_version.py. This
-// firmware-side copy must be bumped manually when the firmware is updated to
-// support a new manifest schema.
+// JSON schema version of the TTF catalog manifest. Kept equal to the .cpfont
+// manifest's FONTS_MANIFEST_VERSION: both describe the same document shape for
+// different payloads, and the tooling bumps them together. Bump this whenever
+// the catalog schema changes.
 #define FONTS_MANIFEST_VERSION 1
 
-#ifndef FONT_MANIFEST_URL
-// Manifest + .cpfont assets are published by .github/workflows/release-fonts.yml
-// to the crosspoint-fonts repo under the "sd-fonts-m<META>-b<BIN>" tag. The tag
-// pattern must stay in sync with the workflow; it derives its version numbers
-// from lib/EpdFont/scripts/cpfont_version.py.
-#define FONT_MANIFEST_URL_STRINGIFY_INNER(x) #x
-#define FONT_MANIFEST_URL_STRINGIFY(x) FONT_MANIFEST_URL_STRINGIFY_INNER(x)
-#define FONT_MANIFEST_URL                                                                                           \
-  "https://github.com/crosspoint-reader/crosspoint-fonts/releases/download/sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY( \
-      FONTS_MANIFEST_VERSION) "-b" FONT_MANIFEST_URL_STRINGIFY(CPFONT_VERSION) "/fonts.json"
+#ifndef TTF_FONTS_MANIFEST_URL
+// Catalog manifest served from the public R2 bucket that also hosts the raw
+// .ttf files. The .cpfont catalog keeps its own FONT_MANIFEST_URL (GitHub
+// release assets), which is why the constant is not shared.
+#define TTF_FONTS_MANIFEST_URL "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/manifest/fonts.json"
 #endif
 
-class FontDownloadActivity final : public UiListActivity {
+class TtfFontDownloadActivity final : public UiListActivity {
  public:
-  explicit FontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  explicit TtfFontDownloadActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
   void onEnter() override;
   void onExit() override;
@@ -52,35 +50,49 @@ class FontDownloadActivity final : public UiListActivity {
   enum State {
     WIFI_SELECTION,
     LOADING_MANIFEST,
-    GROUP_LIST,
     FAMILY_LIST,
     DOWNLOADING,
     COMPLETE,
     ERROR,
   };
 
+  // Bit per style in a manifest file's "style" token.
+  enum StyleFlag : uint8_t {
+    STYLE_REGULAR = 1 << 0,
+    STYLE_BOLD = 1 << 1,
+    STYLE_ITALIC = 1 << 2,
+    STYLE_BOLD_ITALIC = 1 << 3,
+  };
+
   // Byte offset into stringArena_; 0 is the empty string.
   using StrRef = uint32_t;
 
-  struct ManifestFile {
+  struct TtfManifestFile {
     StrRef name = 0;
+    // Manifest-relative path ("<dir>/<name>"): the base-URL suffix to fetch
+    // from and the on-SD suffix to write under the fonts root.
+    StrRef path = 0;
     uint32_t size = 0;
     uint32_t crc32 = 0;
+    uint8_t styleFlags = 0;
   };
 
-  struct ManifestFamily {
+  struct TtfManifestFamily {
     StrRef name = 0;
     StrRef description = 0;
+    // Directory component of every file's path; the folder on SD. Kept
+    // separate from name because the catalog's display names carry spaces
+    // ("Atkinson Hyperlegible") while its paths do not ("AtkinsonHyperlegible").
+    StrRef dirName = 0;
     // Range into files_, which holds every family's files back to back.
     uint32_t fileStart = 0;
     uint32_t fileCount = 0;
     uint32_t totalSize = 0;
-    uint32_t scriptMask = 0;
+    // Union of its files' style bits, for the row subtitle.
+    uint8_t styleFlags = 0;
     bool installed = false;
     bool hasUpdate = false;
   };
-
-  static constexpr size_t MAX_SCRIPT_GROUPS = 32;
 
   State state_ = WIFI_SELECTION;
   FontInstaller fontInstaller_;
@@ -94,17 +106,11 @@ class FontDownloadActivity final : public UiListActivity {
   std::unique_ptr<char[]> stringArena_;
   uint32_t arenaUsed_ = 0;
   uint32_t arenaCapacity_ = 0;
-  std::vector<ManifestFamily> families_;
+  std::vector<TtfManifestFamily> families_;
   // Every family's files back to back; sized once from the manifest, so it is
   // allocated nothrow like the arena rather than through vector::reserve.
-  std::unique_ptr<ManifestFile[]> files_;
+  std::unique_ptr<TtfManifestFile[]> files_;
   uint32_t fileEntryCount_ = 0;
-  // Manifest-defined labels are dynamic; cap them at the 32-bit membership
-  // mask and retain only labels after parsing so group tags consume no steady-state heap.
-  std::vector<StrRef> scriptGroupLabels_;
-  // One 4-byte index per manifest family, allocated once and reused for every group.
-  std::vector<int> filteredIndices_;
-  freeink::ui::ListNav groupNav_;
 
   // Download progress
   size_t currentFileIndex_ = 0;
@@ -118,13 +124,12 @@ class FontDownloadActivity final : public UiListActivity {
   // callback's own input pump); exit to home after the abort unwinds.
   bool goHomeRequested_ = false;
 
-  // Shared cache for group and family rows. It is rebuilt only when the visible
-  // list changes, never for cursor movement or tap flash repaints.
+  // Row cache. Rebuilt only when the visible list changes, never for cursor
+  // movement or tap flash repaints.
   std::vector<std::string> rowLabels_;
   std::vector<freeink::ui::ListItem> rowItems_;
   bool rowsDirty_ = true;
   void rebuildRowItems();
-  void rebuildGroupRowItems();
   void rebuildFamilyRowItems();
 
   int listCount() const override;
@@ -133,10 +138,23 @@ class FontDownloadActivity final : public UiListActivity {
   freeink::ui::ListNav& activeNav() override;
   void onBackButton() override;
   // Non-list states (loading, downloading, complete, error) consume the loop
-  // pass here; the group and family lists use the base list protocol.
+  // pass here; the family list uses the base list protocol.
   bool handleCustomInput() override;
 
   void activateSelected();
+
+  // Maps a manifest "style" token to its StyleFlag bits. Unknown tokens yield
+  // 0: a catalog that grows a style this firmware does not know still
+  // installs, because BookFontLoader infers the style from the filename.
+  static uint8_t parseStyleToken(const char* token);
+  // Human-readable style list for a family's row subtitle, e.g.
+  // "Regular, Bold, Italic".
+  static std::string formatStyles(uint8_t styleFlags);
+  // Splits "<dir>/<name>.ttf" and validates both halves; see the definition for
+  // the exact rules.
+  static bool splitFilePath(const char* path, char* dirBuf, size_t dirBufSize, const char*& baseName);
+  // Removes a family's folder after a failed or aborted download.
+  void abandonFamily(TtfManifestFamily& family);
 
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifest();
@@ -145,10 +163,14 @@ class FontDownloadActivity final : public UiListActivity {
   // Returns false if the string does not fit the arena reserved for the manifest.
   bool internString(const char* text, StrRef& outRef);
   void clearManifest();
-  void downloadFamily(ManifestFamily& family);
+  void downloadFamily(TtfManifestFamily& family);
   void downloadAll();
   void updateAll();
   static bool computeFileCrc32(const char* path, uint32_t& outCrc);
+  // Reads a family's files from disk and sets installed/hasUpdate from what is
+  // there: every file present at the manifest's size means installed, any file
+  // present but short of that means an update is due.
+  void refreshInstalledState(TtfManifestFamily& family);
   bool showDownloadAllRow() const;
   bool showUpdateAllRow() const;
   int specialRowCount() const;
@@ -159,14 +181,9 @@ class FontDownloadActivity final : public UiListActivity {
   void onDeleteConfirmationResult(const ActivityResult& result);
   int familyIndexFromList(int listIndex) const;
   int listItemCount() const;
-  bool hasGroupScreen() const { return !scriptGroupLabels_.empty(); }
-  int groupListItemCount() const { return 1 + static_cast<int>(scriptGroupLabels_.size()); }
-  int groupMemberCount(int scriptGroupIndex) const;
-  void buildFilteredIndices(int groupListIndex);
-  void enterGroup(int groupListIndex);
   size_t totalDownloadSize() const;
   size_t totalUpdateSize() const;
   static std::string formatSize(size_t bytes);
 };
 
-#endif  // !CROSSPOINT_TTF_READER
+#endif  // CROSSPOINT_TTF_READER
