@@ -294,8 +294,8 @@ void EnduranceGovernor::refreshFromSettings() {
   (void)resolveLadder(0, 0, false);
 }
 
-uint8_t EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes,
-                                         const bool advanceFloor) {
+endurance::LadderResolution EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes,
+                                                             const bool advanceFloor) {
   lockState();
   profile_ = endurance::clampProfile(static_cast<uint8_t>(profile_));
   // One pure call publishes the rung and its floor together, so no caller can
@@ -306,12 +306,12 @@ uint8_t EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_
       endurance::resolveRung(profile_, persistedFloor_, idleStrikes, lightStrikes, advanceFloor);
   strategyIndex_ = resolved.rung;
   persistedFloor_ = resolved.floorIndex;
-  const uint8_t index = strategyIndex_;
   unlockState();
-  // The promoted index is handed back rather than re-read: a separate lock/re-read
-  // would leave a window where a concurrent profile adoption recomputed the rung
-  // between the promotion and the observation of it.
-  return index;
+  // Both halves are handed back rather than re-read: a separate lock/re-read would
+  // leave a window where a concurrent profile adoption recomputed the ladder
+  // between the promotion and the observation of it, and the caller has to
+  // persist the FLOOR, which is not the value the rung is published as.
+  return resolved;
 }
 
 void EnduranceGovernor::applyStrategy() {
@@ -376,11 +376,17 @@ void EnduranceGovernor::reportInstability(InstabilityReason reason) {
   }
   const endurance::StrikeState pending{strikesIdle_.load(std::memory_order_relaxed),
                                        strikesLightSleep_.load(std::memory_order_relaxed)};
-  uint8_t index;
+  // The ratchet half of this byte is the FLOOR, and this synchronous crash-path
+  // write must not raise it: nothing has consumed the strike yet, and the
+  // escalation task escalates it from that floor on the next pass. Writing the
+  // rung here raised the ratchet twice over on a high-base profile (once by the
+  // profile base, once by the strike), so the next boot promoted past the rung
+  // the device had actually reached.
+  uint8_t floorIndex;
   lockState();
-  index = strategyIndex_;
+  floorIndex = persistedFloor_;
   unlockState();
-  const uint8_t byte = encodeStateByte(pending, index);
+  const uint8_t byte = encodeStateByte(pending, floorIndex);
   // Persist synchronously: the common reason to strike is that the device is
   // about to crash or reset, and the escalation task may never run again.
   Preferences prefs;
@@ -408,19 +414,21 @@ void EnduranceGovernor::escalationTaskEntry() {
       const uint8_t idleSeen = strikesIdle_.exchange(0, std::memory_order_acq_rel);
       const uint8_t lightSeen = strikesLightSleep_.exchange(0, std::memory_order_acq_rel);
       // Promote from the batch just taken, not from whatever is live at read time.
-      // resolveLadder publishes the rung and its floor together and hands the
-      // promoted index back, so nothing here re-reads shared state.
-      const uint8_t index = resolveLadder(idleSeen, lightSeen, true);
-      // Persist the raised floor: otherwise the promotion lives only in RAM and
-      // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
-      // putting the device back on the rung that was failing it. The batch was
-      // already exchanged away above, so the live bits this write carries are
-      // precisely the strikes reported after it -- accounted for neither in `index`
-      // nor in the byte, and therefore re-armed for the next pass instead of being
-      // silently spent twice or lost.
-      persistFloor(index);
+      // resolveLadder publishes the rung and its floor together and hands both
+      // back, so nothing here re-reads shared state.
+      const endurance::LadderResolution promoted = resolveLadder(idleSeen, lightSeen, true);
+      // Persist the raised FLOOR, never the rung. The two differ whenever the
+      // profile base sits above the floor -- Performance is base 3 -- and writing
+      // the rung put a profile choice into the ratchet that no later profile
+      // change could lower: one strike on Performance pinned the device at stock
+      // 80 MHz across every reboot. The batch was already exchanged away above,
+      // so the live bits this write carries are precisely the strikes reported
+      // after it -- accounted for neither in `promoted` nor in the byte, and
+      // therefore re-armed for the next pass instead of being spent twice or lost.
+      persistFloor(promoted.floorIndex);
       applyStrategy();
-      LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));
+      LOG_ERR("PWR", "Escalated to strategy %u (floor %u) after strike", static_cast<unsigned>(promoted.rung),
+              static_cast<unsigned>(promoted.floorIndex));
     }
     // A heavy job still running must never be throttled by an idle tick from
     // another task; restore the clock here so the job's window is honoured even
@@ -616,6 +624,11 @@ void EnduranceGovernor::demoteToPollSlices(const char* reason) {
 }
 
 void EnduranceGovernor::beginSleepWindow() {
+  // A governor that could not allocate its state mutex stages nothing: the next
+  // boot, which can, would otherwise consume a nap for a governor that never ran
+  // -- incrementing its counter and opening a drain window from a reading this
+  // session never took. begin() clears the staged markers on the same failure.
+  if (disabled_) return;
   // Stage the reading for the boot that follows the sleep. No in-boot sleep
   // window is opened: every sleep path here ends in deep sleep, so the window
   // would never close before millis() restarts.

@@ -235,6 +235,33 @@ TEST(EnduranceLadder, ResolveRungClampsAnOutOfRangeProfileByte) {
   EXPECT_EQ(0u, state.floorIndex);
 }
 
+// The escalation path's persistence: a strike on a profile whose base sits ABOVE
+// the floor resolves a rung of 3 and a floor of 1, and it is the FLOOR that may be
+// written to NVS. Persisting the rung there pinned the device at stock 80 MHz on
+// every lower-base profile for the rest of its life, because no profile change can
+// lower the persisted ratchet.
+TEST(EnduranceLadder, StrikeOnAHighBaseProfilePersistsTheFloorNotTheRung) {
+  const endurance::LadderResolution promoted = endurance::resolveRung(Profile::Performance, 0, 1, 0, true);
+  EXPECT_EQ(3u, promoted.rung) << "Performance serves the stock clock while the base is at 3";
+  EXPECT_EQ(1u, promoted.floorIndex) << "one idle strike is one rung of floor, whatever the profile base is";
+
+  // Balanced has base 1, so a single strike lands exactly on the base: the rung and
+  // the floor agree there, and it is the profile alone (no strike) that puts the
+  // rung above the floor.
+  const endurance::LadderResolution balanced = endurance::resolveRung(Profile::Balanced, 0, 0, 1, true);
+  EXPECT_EQ(1u, balanced.rung);
+  EXPECT_EQ(1u, balanced.floorIndex);
+
+  const endurance::LadderResolution profileOnly = endurance::resolveRung(Profile::Balanced, 0, 0, 0, false);
+  EXPECT_EQ(1u, profileOnly.rung) << "Balanced serves its base with no strike at all";
+  EXPECT_EQ(0u, profileOnly.floorIndex) << "and that base must not be persisted as the floor";
+
+  // And the floor that gets persisted is the one a later profile change honours.
+  const endurance::LadderResolution dropped =
+      endurance::resolveRung(Profile::Endurance, promoted.floorIndex, 0, 0, false);
+  EXPECT_EQ(1u, dropped.rung) << "Endurance is reachable again because the floor, not the rung, was persisted";
+}
+
 TEST(EnduranceLadder, CrashStrikeStateIsRepresentable) {
   // reportInstability(Crash) strikes both dimensions, so the persisted byte must
   // carry both bits; a crash that sets neither is the defect kody/coderabbit

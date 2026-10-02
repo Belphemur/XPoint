@@ -168,16 +168,18 @@ class EnduranceGovernor {
   void persistFloor(uint8_t floorIndex);
   void refreshFromSettings();
   // Re-resolve the rung and the strike floor from an explicit strike batch, and
-  // return the resulting rung. The batch is an argument so the escalation task can
-  // consume it atomically BEFORE promoting: reading whatever happens to be live at
-  // resolve time cannot distinguish a strike this promotion already accounted for
-  // from one reported after it. `advanceFloor` marks the sole strike consumer --
-  // every other caller passes false with a zero batch, so a profile change can move
-  // the rung but can never ratchet the floor. See EnduranceLadder.h::resolveRung.
-  // Returning the index is essential rather than convenient: the caller must not
-  // re-read strategyIndex_ across a gap where another task could have recomputed it
-  // from a batch this promotion never saw.
-  uint8_t resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes, bool advanceFloor);
+  // return BOTH. The batch is an argument so the escalation task can consume it
+  // atomically BEFORE promoting: reading whatever happens to be live at resolve time
+  // cannot distinguish a strike this promotion already accounted for from one reported
+  // after it. `advanceFloor` marks the sole strike consumer -- every other caller
+  // passes false with a zero batch, so a profile change can move the rung but can
+  // never ratchet the floor. See EnduranceLadder.h::resolveRung.
+  //
+  // Both halves are returned rather than re-read because the caller persists the
+  // floor, and the floor is not what the rung is published as: whenever the profile
+  // base sits above the floor the two differ, and persisting the rung wrote a
+  // profile choice into the NVS ratchet that no later profile change could lower.
+  endurance::LadderResolution resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes, bool advanceFloor);
   void applyStrategy();
 
  public:
