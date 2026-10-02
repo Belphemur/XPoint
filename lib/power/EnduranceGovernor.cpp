@@ -276,13 +276,17 @@ void EnduranceGovernor::persistFloor(const uint8_t floorIndex) {
 }
 
 void EnduranceGovernor::refreshFromSettings() {
+  const endurance::StrikeState current = strikes();
+  resolveLadder(current.idleStrikes, current.lightSleepStrikes);
+}
+
+void EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes) {
   lockState();
   profile_ = endurance::clampProfile(static_cast<uint8_t>(profile_));
-  const endurance::StrikeState current = strikes();
   // Escalate from the rung the device is ON, not from the profile base: strike
   // counters are boolean flags, so a base-derived rung would be recomputed
   // identically on every strike and the ladder could never climb past base+1.
-  const uint8_t escalated = endurance::escalate(persistedFloor_, current.idleStrikes, current.lightSleepStrikes);
+  const uint8_t escalated = endurance::escalate(persistedFloor_, idleStrikes, lightStrikes);
   const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile_)];
   const uint8_t wanted = escalated > base ? escalated : base;
   if (wanted != strategyIndex_) {
@@ -376,32 +380,28 @@ void EnduranceGovernor::escalationTaskEntry() {
     // exchange(), not load-then-clear: a strike recorded between the load and
     // the clear would otherwise be swallowed.
     if (strikesDirty_.exchange(false, std::memory_order_acquire)) {
-      // Capture the batch this iteration acts on. A strike reported while the
-      // promotion is being computed must survive it, otherwise the worker clears
-      // a flag it never accounted for and that instability is lost.
-      const uint8_t idleSeen = strikesIdle_.load(std::memory_order_relaxed);
-      const uint8_t lightSeen = strikesLightSleep_.load(std::memory_order_relaxed);
-      // Promote this session immediately rather than waiting for the next boot.
-      refreshFromSettings();
+      // Take the whole batch with an atomic exchange, up front. Reading it and
+      // clearing it afterwards is not enough: a second same-dimension strike
+      // stored between the read and the clear leaves the value unchanged (1 -> 1),
+      // so a compare-exchange against the captured value still succeeds and erases
+      // an event this promotion never accounted for, stalling the ladder on a
+      // device that is failing repeatedly.
+      const uint8_t idleSeen = strikesIdle_.exchange(0, std::memory_order_acq_rel);
+      const uint8_t lightSeen = strikesLightSleep_.exchange(0, std::memory_order_acq_rel);
+      // Promote from the batch just taken, not from whatever is live at read time.
+      resolveLadder(idleSeen, lightSeen);
       uint8_t index;
       lockState();
       index = strategyIndex_;
       persistedFloor_ = index;
       unlockState();
-      // Consume only the captured batch BEFORE persisting, with compare-exchange
-      // so a strike that arrived mid-promotion stays set for the next pass.
-      uint8_t expectIdle = idleSeen;
-      strikesIdle_.compare_exchange_strong(expectIdle, 0, std::memory_order_acq_rel);
-      uint8_t expectLight = lightSeen;
-      strikesLightSleep_.compare_exchange_strong(expectLight, 0, std::memory_order_acq_rel);
       // Persist the raised floor: otherwise the promotion lives only in RAM and
       // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
-      // putting the device back on the rung that was failing it. Ordering matters
-      // exactly as much as the write itself: persistFloor() encodes the live
-      // strike bits, so it must run after the batch has been consumed. Writing
-      // the byte first would store the strikes this promotion already folded into
-      // `index`, and the next boot would escalate() from them again and climb two
-      // rungs past the settled level.
+      // putting the device back on the rung that was failing it. The batch was
+      // already exchanged away above, so the live bits this write carries are
+      // precisely the strikes reported after it -- accounted for neither in `index`
+      // nor in the byte, and therefore re-armed for the next pass instead of being
+      // silently spent twice or lost.
       persistFloor(index);
       applyStrategy();
       LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));

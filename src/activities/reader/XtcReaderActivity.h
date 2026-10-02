@@ -31,6 +31,10 @@ class XtcReaderActivity final : public ReaderActivity {
   // it must be called on BOTH render paths, because the 2-bit grayscale path
   // commits its frame without ever reaching renderStatusBarOverlay.
   void renderPowerStatsOverlay(GfxRenderer& renderer) const;
+  // Band the block has to clear at the top edge: a TOP-positioned XTC status bar
+  // is drawn above it. One definition, because the grayscale plane masks must
+  // exclude exactly the rectangle the block is painted into.
+  int powerStatsBandAbovePx(GfxRenderer& renderer) const;
   StatusBarInfo getStatusBarInfo() const;
   void saveProgress() const;
   void loadProgress();

@@ -107,6 +107,16 @@ int PowerStatsOverlay::topReservePx(const GfxRenderer& renderer, const Mode mode
   return blockHeightPx(renderer.getLineHeight(kFontId), bandAbovePx);
 }
 
+PowerStatsOverlay::BlockRect PowerStatsOverlay::fullBlockRect(const GfxRenderer& renderer, const int bandAbovePx) {
+  int marginTop, marginRight, marginBottom, marginLeft;
+  renderer.getOrientedViewableTRBL(&marginTop, &marginRight, &marginBottom, &marginLeft);
+  const int lineHeight = renderer.getLineHeight(kFontId);
+  // Same arithmetic the fill/outline use: the border sits 4px left and 2px above
+  // the text origin and spans the full row width.
+  return BlockRect{marginLeft, marginTop + 2 + bandAbovePx,
+                   static_cast<int>(renderer.getScreenWidth()) - marginLeft - marginRight, kFullRowCount * lineHeight};
+}
+
 void PowerStatsOverlay::drawFull(GfxRenderer& renderer, const EnduranceGovernor& governor, const int bandAbovePx) {
   char row[ROW_BYTES];
 

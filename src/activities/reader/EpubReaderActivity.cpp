@@ -2992,7 +2992,14 @@ void EpubReaderActivity::renderBookTtf() {
     return;
   }
   if (isBufferDisplayPass) {
+    // The cached turn commits a displayed page through ttfCommitFrame(), but this
+    // branch returns long before the timer is declared below, so sequential fast
+    // turns recorded no sample at all and left the page count and average stale.
+    // Its own scope: a failed attempt falls through to the full render, which is
+    // timed separately and must not be double-counted.
+    PageTurnTimer fastDisplayTimer;
     if (ttfFastDisplayPass(params)) return;
+    fastDisplayTimer.cancel();
     // Page read failed or an image page slipped through: the framebuffer no
     // longer matches the reading position — full render below.
     ttfInvalidatePreRender("fast pass precondition");

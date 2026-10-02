@@ -167,6 +167,11 @@ class EnduranceGovernor {
   // Write the persisted ladder floor so an in-session promotion survives reboot.
   void persistFloor(uint8_t floorIndex);
   void refreshFromSettings();
+  // Re-resolve the rung from an explicit strike batch. Taking the batch as an argument
+  // is what lets the escalation task consume it atomically BEFORE promoting: computing
+  // the rung from whatever happens to be live at read time cannot distinguish a
+  // strike this promotion already accounted for from one reported after it.
+  void resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes);
   void applyStrategy();
 
  public:

@@ -79,6 +79,18 @@ class PowerStatsOverlay {
   // the reading content. The reader reserves topReservePx() for it.
   static void drawFull(GfxRenderer& renderer, const EnduranceGovernor& governor, int bandAbovePx = 0);
 
+  // Outer rectangle the Full block occupies, in oriented screen pixels.
+  struct BlockRect {
+    int x;
+    int y;
+    int w;
+    int h;
+  };
+  // Exposed because a caller that composites grayscale planes must exclude this
+  // area from its own masks: the gray cells are built from the source image alone,
+  // and driving them over the block washes the telemetry out.
+  static BlockRect fullBlockRect(const GfxRenderer& renderer, int bandAbovePx = 0);
+
   // Full text block, anchored at the top of the oriented viewable area, above
   // the reading content. The reader reserves topReservePx() for it.
   // (declared above with drawFull's signature)

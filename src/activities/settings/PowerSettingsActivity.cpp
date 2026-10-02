@@ -60,6 +60,10 @@ void PowerSettingsActivity::activateIndex(const int index) {
                          SETTINGS.saveToFile();
                          requestUpdate();
                        });
+      // Opening the popup changes only its own state; without a redraw here the
+      // list stays painted until some later input happens to trigger one, so the
+      // picker is invisible after a Confirm press.
+      requestUpdate();
       return;
     case StrId::STR_POWER_STATS:
       optionPopup.show(StrId::STR_POWER_STATS, powerStatsNames, POWER_STATS_ITEMS, SETTINGS.powerStatsMode,
@@ -68,6 +72,10 @@ void PowerSettingsActivity::activateIndex(const int index) {
                          SETTINGS.saveToFile();
                          requestUpdate();
                        });
+      // Opening the popup changes only its own state; without a redraw here the
+      // list stays painted until some later input happens to trigger one, so the
+      // picker is invisible after a Confirm press.
+      requestUpdate();
       return;
     // Heavy-job boost is a plain On/Off choice, not an interval.
     case StrId::STR_HEAVY_JOB_BOOST:
@@ -77,6 +85,10 @@ void PowerSettingsActivity::activateIndex(const int index) {
                          SETTINGS.saveToFile();
                          requestUpdate();
                        });
+      // Opening the popup changes only its own state; without a redraw here the
+      // list stays painted until some later input happens to trigger one, so the
+      // picker is invisible after a Confirm press.
+      requestUpdate();
       return;
     // Idle Clock and Page Render Clock are read-only: they report the rung the
     // endurance governor resolved at runtime, so there is nothing to pick, and a
