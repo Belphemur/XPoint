@@ -2,9 +2,12 @@
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
+#include <PageTurnTimer.h>
+#include <PowerStatsOverlay.h>
 
 #include <algorithm>
 
@@ -280,8 +283,41 @@ void XtcReaderActivity::renderStatusBarOverlay(GfxRenderer& renderer, const Stat
   const int displayPage = static_cast<int>(currentPage) + 1;
   const float progress = pageCount > 0 ? (static_cast<float>(displayPage) * 100.0f) / pageCount : 0.0f;
   const auto pageInfo = getStatusBarInfo();
+  // This method owns the Compact line only. Full is painted by
+  // renderPowerStatsOverlay(), which runs on both render paths — drawing it here
+  // as well double-painted the block on every 1-bit page turn and re-covered a
+  // Top-positioned status bar's own text.
+  const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
+  char compactBuf[PowerStatsOverlay::COMPACT_BYTES];
+  const char* powerStatsLine = nullptr;
+  if (powerStatsMode == PowerStatsOverlay::Mode::Compact) {
+    powerStatsLine = PowerStatsOverlay::buildCompact(compactBuf, sizeof(compactBuf));
+  }
   GUI.drawStatusBar(renderer, progress, pageInfo.currentPage, pageInfo.pageCount, pageInfo.title, paddingBottom, 0,
-                    true, false, false, nullptr);
+                    true, false, false, nullptr, powerStatsLine);
+}
+
+void XtcReaderActivity::renderPowerStatsOverlay(GfxRenderer& renderer) const {
+  const auto mode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
+  if (mode != PowerStatsOverlay::Mode::Full) {
+    return;
+  }
+  // An XTC status bar set to TOP owns the band right below the top margin, and
+  // this reader draws it before the block. Anchoring the block at the very top
+  // would paint straight over the bar's clock and battery, so it starts below
+  // that band instead. XTC pages are pre-rendered bitmaps and cannot reflow, so
+  // the block overlaps the page image here — unlike the EPUB/TTF readers, which
+  // subtract topReservePx() from their layout viewport.
+  PowerStatsOverlay::draw(renderer, mode, powerManager.endurance(), powerStatsBandAbovePx());
+}
+
+int XtcReaderActivity::powerStatsBandAbovePx() const {
+  if (SETTINGS.statusBarSpec().xtcMode != CrossPointSettings::XTC_STATUS_BAR_MODE::XTC_STATUS_BAR_TOP) {
+    return 0;
+  }
+  // drawFull() anchors at marginTop + 4 itself, so only the bar's own height is
+  // extra; adding the oriented margin again pushed the block down by it.
+  return UITheme::getInstance().getStatusBarHeight() + 4;
 }
 
 void XtcReaderActivity::renderPage() {
@@ -304,6 +340,10 @@ void XtcReaderActivity::renderPage() {
     renderer.displayBuffer();
     return;
   }
+
+  // One sample per rendered XTC page. Without this the Compact `pg` and the Full
+  // page row showed 0 on an XTC-only session (or stale EPUB samples).
+  PageTurnTimer pageTurnTimer;
 
   size_t bytesRead = xtc->loadPage(currentPage, pageBuffer, pageBufferSize);
   if (bytesRead == 0) {
@@ -344,6 +384,18 @@ void XtcReaderActivity::renderPage() {
       }
     }
 
+    // Full-mode telemetry on the 2-bit path. This path never reaches
+    // renderStatusBarOverlay, and it commits to the panel twice below (the
+    // grayscale base pass and displayGrayBuffer) before rebuilding the base
+    // framebuffer, so the block has to be drawn in TWO places:
+    //   1. here, so the base pass actually carries it to the glass, and
+    //   2. again after the base rebuild, so the RAM baseline that
+    //      cleanupGrayscaleWithFrameBuffer() reseeds matches what the panel
+    //      shows and the next page's differential does not ghost it.
+    // Drawing it only once is wrong either way: before the clears it never
+    // reaches the panel, after them it is never displayed.
+    renderPowerStatsOverlay(renderer);
+
     if (pagesUntilFullRefresh <= 1) {
       // Periodic ghost cleanup: scrub via the normal path, then run the
       // settle flavor of the grayscale base pass (DTM planes are equal after
@@ -362,10 +414,25 @@ void XtcReaderActivity::renderPage() {
       pagesUntilFullRefresh--;
     }
 
+    // The Full block is composited into the black-and-white base, but these two
+    // masks are built from the source bitmap alone, so gray cells under the
+    // block's rectangle would be driven straight over the telemetry by
+    // displayGrayBuffer() and wash it out. The second overlay draw below only
+    // fixes the RAM baseline, not what the panel shows, so the exclusion has to
+    // happen here.
+    const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
+    const PowerStatsOverlay::BlockRect block = powerStatsMode == PowerStatsOverlay::Mode::Full
+                                                   ? PowerStatsOverlay::fullBlockRect(renderer, powerStatsBandAbovePx())
+                                                   : PowerStatsOverlay::BlockRect{0, 0, 0, 0};
+    auto overlaysBlock = [&](const int px, const int py) {
+      return block.w > 0 && block.h > 0 && px >= block.x && px < block.x + block.w && py >= block.y &&
+             py < block.y + block.h;
+    };
+
     renderer.clearScreen(0x00);
     for (uint16_t y = 0; y < pageHeight; y++) {
       for (uint16_t x = 0; x < pageWidth; x++) {
-        if (getPixelValue(x, y) == 1) {
+        if (getPixelValue(x, y) == 1 && !overlaysBlock(x, y)) {
           renderer.drawPixel(x, y, false);
         }
       }
@@ -376,7 +443,7 @@ void XtcReaderActivity::renderPage() {
     for (uint16_t y = 0; y < pageHeight; y++) {
       for (uint16_t x = 0; x < pageWidth; x++) {
         const uint8_t pv = getPixelValue(x, y);
-        if (pv == 1 || pv == 2) {
+        if ((pv == 1 || pv == 2) && !overlaysBlock(x, y)) {
           renderer.drawPixel(x, y, false);
         }
       }
@@ -393,6 +460,10 @@ void XtcReaderActivity::renderPage() {
         }
       }
     }
+
+    // Second of the two draws — see the note above the base pass. Without this
+    // the rebuilt base omits the overlay the panel is currently showing.
+    renderPowerStatsOverlay(renderer);
 
     renderer.cleanupGrayscaleWithFrameBuffer();
 
@@ -426,6 +497,8 @@ void XtcReaderActivity::renderPage() {
   } else {
     renderStatusBarOverlay(renderer, StatusBarOverlayPosition::Bottom);
   }
+
+  renderPowerStatsOverlay(renderer);
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
