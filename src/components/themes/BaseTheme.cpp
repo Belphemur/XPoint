@@ -818,7 +818,7 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, std::string title, const int paddingBottom, const int textYOffset,
                               const bool fillMargin, const bool isPageBookmarked, const bool pageCountEstimated,
-                              const char* chapterTimeLeft) {
+                              const char* chapterTimeLeft, const char* powerStatsLine) {
   auto metrics = UITheme::getInstance().getMetrics();
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
@@ -946,6 +946,28 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
       const int gap = rightClusterWidth > 0 ? 10 : 0;
       const int x = rightClusterX - rightClusterWidth - gap - width;
       renderer.drawText(SMALL_FONT_ID, x, textY, ctl);
+      rightClusterWidth += width + gap;
+    }
+  }
+
+  // Endurance-governor telemetry (Compact mode). Drawn as a status-bar element
+  // rather than by the overlay on top of this function: by the time a caller
+  // had painted anything, the clusters below already own this baseline, and a
+  // second full-width draw would overprint them. UI_10 is the smallest UI face,
+  // which is what keeps a telemetry line from crowding the clusters out.
+  if (powerStatsLine != nullptr && powerStatsLine[0] != '\0') {
+    const int gap = rightClusterWidth > 0 ? 10 : 0;
+    const int width = renderer.getTextWidth(UI_10_FONT_ID, powerStatsLine);
+    const int x = rightClusterX - rightClusterWidth - gap - width;
+    // In portrait the left cluster plus the battery/progress reserves can leave
+    // less room than the line needs, which drives x negative and clips it off
+    // screen over the left cluster. A telemetry line that cannot fit between the
+    // two clusters is omitted rather than smeared across the reading status.
+    const int leftLimit = leftClusterX + leftClusterWidth;
+    if (x >= leftLimit && x >= 0) {
+      renderer.drawText(UI_10_FONT_ID, x,
+                        textY + (renderer.getLineHeight(SMALL_FONT_ID) - renderer.getLineHeight(UI_10_FONT_ID)) / 2,
+                        powerStatsLine);
       rightClusterWidth += width + gap;
     }
   }
