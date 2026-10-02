@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 // Counts SD-card transactions that are in flight, so the CPU clock can never be
@@ -46,24 +47,41 @@ class TransactionCounter {
   // moment the bus went from quiescent to busy — the point at which the clock
   // must already be at a safe frequency, because a transfer is about to start.
   bool enter() {
-    if (count_ == UINT16_MAX) return false;  // pinned; never overflow to 0
-    ++count_;
-    return count_ == 1;
+    uint16_t cur = count_.load(std::memory_order_relaxed);
+    if (cur == UINT16_MAX) return false;  // pinned; never overflow to 0
+    // The edge is decided inside the CAS, so two tasks can both increment and
+    // still only one of them observes 0 -> 1.
+    while (!count_.compare_exchange_weak(cur, static_cast<uint16_t>(cur + 1), std::memory_order_acq_rel,
+                                         std::memory_order_relaxed)) {
+      if (cur == UINT16_MAX) return false;
+    }
+    return cur == 0;
   }
 
   // Decrement. Returns true when this call dropped the count to 0, i.e. the bus
   // is quiescent again and the governor may lower the clock.
   bool leave() {
-    if (count_ == 0) return false;  // unbalanced release; stay busy rather than lie
-    --count_;
-    return count_ == 0;
+    uint16_t cur = count_.load(std::memory_order_relaxed);
+    for (;;) {
+      if (cur == 0) return false;  // unbalanced release; stay busy rather than lie
+      if (count_.compare_exchange_weak(cur, static_cast<uint16_t>(cur - 1), std::memory_order_acq_rel,
+                                       std::memory_order_relaxed)) {
+        return cur == 1;
+      }
+    }
   }
 
-  bool busy() const { return count_ != 0; }
-  uint16_t count() const { return count_; }
+  // Acquire pairs with the release in enter(): a reader that sees the bus idle
+  // also sees every store the transaction made before dropping the count.
+  bool busy() const { return count_.load(std::memory_order_acquire) != 0; }
+  uint16_t count() const { return count_.load(std::memory_order_acquire); }
 
  private:
-  uint16_t count_ = 0;
+  // Atomic because HalPowerManager::setPowerSaving() reads the busy state on
+  // purpose WITHOUT holding the storage mutex: the governor must be able to
+  // refuse an idle entry while a transfer is in flight without blocking on the
+  // card. A plain field read against writers that hold the mutex is a data race.
+  std::atomic<uint16_t> count_{0};
 };
 
 }  // namespace sd_bus

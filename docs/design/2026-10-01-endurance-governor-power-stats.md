@@ -378,3 +378,55 @@ itself is on-device only.
 Trade-off worth stating plainly: this keeps the CPU out of the idle rung during SD
 I/O, so a page render that reads many small sections costs clock raises. That is
 the correct direction — a save that silently corrupts is not a saving.
+
+### 7.3 Concurrency details the first pass got wrong (2026-10-02, review rounds 8-9)
+
+**The busy check is atomic, the clock switch is mutex-guarded — both are needed.**
+`HalPowerManager::setPowerSaving()` consults `HalStorage::transactionActive()` early,
+*before* it can afford to block, so that read happens outside the storage mutex. With a
+plain `uint16_t` counter that is a data race against the writers that do hold the mutex,
+so `sd_bus::TransactionCounter::count_` is `std::atomic<uint16_t>` (acq_rel on the edges,
+acquire on the read; the 0->1 edge is decided inside the CAS so two concurrent increments
+still yield exactly one "bus became busy" answer).
+
+Atomicity alone does NOT make the idle entry safe. The check and `setCpuFrequencyMhz()`
+must be indivisible with respect to transaction entry, which is why the drop path also
+holds `HalStorage::BusGate` — the same recursive mutex `StorageLock` takes to mark itself
+busy — across both. The counter answers "should I bother"; the gate answers "may I
+actually move the divider".
+
+**Strike persistence order.** `reportInstability()` writes the state byte itself, so
+`persistFloor()` must not write a byte that zeroes the strike half (it would erase a
+strike reported while the promotion was being computed). It therefore encodes the live
+strike bits — which means the caller has to consume its batch *first*. Persisting the
+floor while the consumed strikes are still set re-ratchets them on the next boot:
+`loadAndMigrateStrikes()` runs `escalate(persistedFloor_, strikes)` again on bits that
+this promotion already accounted for, and with both bits set the device lands two rungs
+above the settled level. Consume, then persist.
+
+**`ghostStreak_` counts consecutive probes.** The input manager runs its own 10 ms task on
+PSRAM builds, so one sample can legitimately catch the INT line asserted a moment before
+the task publishes the gesture. The debounce exists for exactly that, so it must be
+broken by any probe that finds the line quiet — not only by a gesture, otherwise two
+isolated spurious assertions minutes apart reach the threshold and permanently demote the
+device (the demotion is sticky via `pollSlicesDemoted_`).
+
+**External power has to be *known*, not merely "not seen on USB".**
+`isExternalPowerPresent()` returns `false` with `known == false` on boards without a
+charger-IC rail sense. Treating unknown as battery would let a nap of indeterminate power
+source produce a drain rate, so the wake side requires `_preSleepUsb == 0` (known off at
+entry) *and* `known && !onUsb` at wake before opening a sleep window. The nap is still
+counted either way — a nap is a nap regardless of what powered it.
+
+**Telemetry scopes are declared where a page is actually committed.** `PageTurnTimer` in
+`renderBookTtf()` is constructed after the index-building and pre-render blocks, not at the
+top of the function. Those paths return without ever calling `ttfCommitFrame()`, and a
+multi-slice build would add one false sample per pass to the average the Compact `pg` field
+and the Full page-time row print. Declaring the scope late makes the guarantee structural
+rather than a per-branch `cancel()` list that a future early return would silently bypass.
+
+**A demotion cannot be applied by toggling the power state.**
+`setPowerSaving(false)` refreshes `lastNormalMs`, so a following `setPowerSaving(true)` is
+rejected by the dwell guard and the change never lands. `HalPowerManager::applyIdlePolling()`
+pushes only the polling half to the input manager and touches no clock, so the dwell is
+irrelevant to it.

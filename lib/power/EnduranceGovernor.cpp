@@ -154,16 +154,23 @@ void EnduranceGovernor::begin() {
     // battery sleep. Re-check the rail at wake and combine it with the staged
     // entry state: a nap that began or ended on external power has no battery
     // drain meaning, so it must not yield a rate (or a zero-drain record).
+    // Off-battery must be KNOWN at both ends, not merely "not seen on USB".
+    // isExternalPowerPresent() returns false with *known == false* on boards that
+    // cannot observe the rail, and `_preSleepUsb == 0xFF` is that unknown case;
+    // treating either as battery power would let a nap of indeterminate power
+    // source produce a battery drain rate.
     bool wakeUsbKnown = false;
-    const bool onUsb = powerManager.isExternalPowerPresent(&wakeUsbKnown) || _preSleepUsb == 1;
-    if (haveDuration && wakePct != PowerDrainMonitor::kInvalid && !onUsb) {
+    const bool wakeOnUsb = powerManager.isExternalPowerPresent(&wakeUsbKnown);
+    const bool knownOnBattery = _preSleepUsb == 0 && wakeUsbKnown && !wakeOnUsb;
+    if (haveDuration && wakePct != PowerDrainMonitor::kInvalid && knownOnBattery) {
       drain_.beginSleep(_preSleepPct, 0, false);
       drain_.endSleep(wakePct, sleptMs, false);
       LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% after %lus (nap #%lu)", static_cast<unsigned>(_preSleepPct),
               static_cast<unsigned>(wakePct), static_cast<unsigned long>(sleptMs / 1000UL),
               static_cast<unsigned long>(naps_));
     } else {
-      LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% (no trusted clock; no sleep rate) (nap #%lu)",
+      LOG_DBG("PWR",
+              "Woke from a nap at %u%% -> %u%% (no rate: no clock, stale gauge, or power source unknown) (nap #%lu)",
               static_cast<unsigned>(_preSleepPct), static_cast<unsigned>(wakePct), static_cast<unsigned long>(naps_));
     }
     _preSleepPct = 0xFF;
@@ -252,10 +259,12 @@ void EnduranceGovernor::setProfile(endurance::Profile p) {
 }
 
 void EnduranceGovernor::persistFloor(const uint8_t floorIndex) {
-  // Carry whatever strike bits are live right now rather than writing a cleared
-  // batch. reportInstability() persists its own byte when a strike arrives, so a
-  // floor write that unconditionally zeroed the strike half would undo a strike
-  // reported while this promotion was being computed.
+  // Carry whatever strike bits are STILL live: these are the residual, i.e. the
+  // strikes reported after the caller consumed its batch. reportInstability()
+  // persists its own byte when a strike arrives, so a floor write that
+  // unconditionally zeroed the strike half would undo a strike reported while
+  // this promotion was being computed. Callers must therefore consume their
+  // batch before calling this.
   const uint8_t byte = encodeStateByte(strikes(), floorIndex);
   Preferences prefs;
   if (prefs.begin(kNvsNamespace, false)) {
@@ -379,18 +388,23 @@ void EnduranceGovernor::escalationTaskEntry() {
       index = strategyIndex_;
       persistedFloor_ = index;
       unlockState();
-      // Persist the raised floor: otherwise the promotion lives only in RAM and
-      // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
-      // putting the device back on the rung that was failing it.
-      persistFloor(index);
-      applyStrategy();
-      LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));
-      // Consume only the captured batch: compare-exchange so a strike that
-      // arrived mid-promotion stays set for the next pass.
+      // Consume only the captured batch BEFORE persisting, with compare-exchange
+      // so a strike that arrived mid-promotion stays set for the next pass.
       uint8_t expectIdle = idleSeen;
       strikesIdle_.compare_exchange_strong(expectIdle, 0, std::memory_order_acq_rel);
       uint8_t expectLight = lightSeen;
       strikesLightSleep_.compare_exchange_strong(expectLight, 0, std::memory_order_acq_rel);
+      // Persist the raised floor: otherwise the promotion lives only in RAM and
+      // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
+      // putting the device back on the rung that was failing it. Ordering matters
+      // exactly as much as the write itself: persistFloor() encodes the live
+      // strike bits, so it must run after the batch has been consumed. Writing
+      // the byte first would store the strikes this promotion already folded into
+      // `index`, and the next boot would escalate() from them again and climb two
+      // rungs past the settled level.
+      persistFloor(index);
+      applyStrategy();
+      LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));
     }
     // A heavy job still running must never be throttled by an idle tick from
     // another task; restore the clock here so the job's window is honoured even
@@ -527,6 +541,12 @@ void EnduranceGovernor::tick() {
       const bool touchSeen = gpio.wasTouchActivity();
       const bool windowOpen = lastWakeProbeMs_ != 0;
       const bool windowExpired = windowOpen && (now - lastWakeProbeMs_) > kWakeProbeSettleMs;
+
+      // The streak means CONSECUTIVE asserted probes, so any probe that finds the
+      // line quiet breaks it -- not just a gesture. Without this, two isolated
+      // spurious assertions minutes apart, each individually explainable by the
+      // input task's latency, would reach 2 and permanently demote the device.
+      if (!asserted) ghostStreak_ = 0;
 
       if (touchSeen) {
         ghostStreak_ = 0;

@@ -2907,7 +2907,6 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 }
 
 void EpubReaderActivity::renderBookTtf() {
-  PageTurnTimer pageTurnTimer;
   if (!epub || !ttf_) return;
 #if CROSSPOINT_TTF_UI_FALLBACK
   // makeLayoutParams() below can reload the shared font loader on this render
@@ -2989,8 +2988,6 @@ void EpubReaderActivity::renderBookTtf() {
   // settleOverlayRefresh() above drained any deferred overlay waveform, and
   // the previous page's commit waited for its own refresh.
   if (isPreRenderPass) {
-    // Not a page turn: record no sample.
-    pageTurnTimer.cancel();
     ttfRunPreRenderPass(params);
     return;
   }
@@ -3276,6 +3273,14 @@ void EpubReaderActivity::renderBookTtf() {
 
   updateBookmarkFlag();
 
+  // Declared here rather than at the top of the function: everything above is
+  // index-building or pre-render work that returns without committing a frame,
+  // and each of those exits would otherwise add a false sample to the page-turn
+  // average. Positioning the scope this way makes the guarantee structural --
+  // a future early return in the build block cannot regress it the way a
+  // per-branch cancel() list would.
+  PageTurnTimer pageTurnTimer;
+
   // 5) Read + rasterize the page. Run text lives in the runtime's scratch
   // arena for exactly this block. A failed read must not expose the prior
   // frame through overlay fast paths.
@@ -3285,7 +3290,8 @@ void EpubReaderActivity::renderBookTtf() {
   if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
     ttf_->scratch().release(scratchMark);
     LOG_ERR("ERS", "TTF page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
-    requestUpdate();  // transient SD failure; retry on the next pass
+    pageTurnTimer.cancel();  // no frame committed, so no page-turn sample
+    requestUpdate();         // transient SD failure; retry on the next pass
     return;
   }
   ttfCurrentCharStart = page.charStart;
