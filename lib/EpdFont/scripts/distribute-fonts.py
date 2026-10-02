@@ -65,6 +65,10 @@ WRANGLER_BIN = os.environ.get("WRANGLER_BIN", os.path.expanduser("~/.local/bin/w
 # sfnt magic values accepted by FT_New_Memory_Face (see the FreeType docs).
 SFNT_MAGICS = (b"\x00\x01\x00\x00", b"true", b"OTTO", b"ttcf")
 
+# A stalled TLS connection must not pin a worker thread forever: the executor
+# joins every worker, so one hang would stall the whole download phase.
+DOWNLOAD_TIMEOUT_S = 60
+
 # ── Font source catalog ─────────────────────────────────────────────────────
 
 # Each family lists style → (source_label, url).
@@ -372,7 +376,7 @@ def _download_one(url: str, dest: Path) -> tuple[str, bool, int, str | None]:
     tmp = dest.with_name(dest.name + ".part")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "font-distributor/1.0"})
-        with urllib.request.urlopen(req) as resp, open(tmp, "wb") as out:
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_S) as resp, open(tmp, "wb") as out:
             shutil.copyfileobj(resp, out)
         if not is_valid_font(tmp):
             raise ValueError("downloaded bytes are not an sfnt font")
@@ -581,21 +585,15 @@ def generate_manifest(catalog: dict, allow_family_drop: bool = False) -> None:
     # fetch. It must never describe FEWER families than the manifest it is about
     # to replace: the generated file is uploaded over the live manifest, so a
     # partial catalog would uninstall every family it does not list.
+    #
+    # Compared against the families actually EMITTED, not against the catalog:
+    # a catalogued family whose files are not all cached is skipped below, and
+    # that skip is just as much a removal from the published set.
     published = []
     if MANIFEST_PATH.exists():
         with open(MANIFEST_PATH) as f:
             published = [fam["name"] for fam in json.load(f).get("families", [])]
     catalogued = set(catalog)
-    dropped = [name for name in published if name not in catalogued]
-    if dropped and not allow_family_drop:
-        raise SystemExit(
-            f"ERROR: the catalog covers {len(catalog)} families but the published "
-            f"manifest lists {len(published)}; regenerating would remove "
-            f"{len(dropped)} of them from devices: {', '.join(dropped[:8])}"
-            f"{' …' if len(dropped) > 8 else ''}.\n"
-            "  Add the missing families to FONT_CATALOG, or re-run with "
-            "--allow-family-drop if dropping them is intended."
-        )
 
     # The device derives the on-card folder from the path's last directory
     # component, so two catalog names that slugify to the same folder would
@@ -664,6 +662,23 @@ def generate_manifest(catalog: dict, allow_family_drop: bool = False) -> None:
             print(f"  WARN {family}: preview {name} not rendered; omitting from manifest")
 
         families.append(entry)
+
+    # Compared against what was EMITTED, not against the catalog: a catalogued
+    # family whose files are not all cached is skipped above, and that skip
+    # removes it from the published set exactly as surely as omitting it from
+    # the catalog would.
+    emitted = {e["name"] for e in families}
+    dropped = [name for name in published if name not in emitted]
+    if dropped and not allow_family_drop:
+        raise SystemExit(
+            f"ERROR: this run would publish {len(emitted)} families but the "
+            f"published manifest lists {len(published)}; regenerating would remove "
+            f"{len(dropped)} of them from devices: {', '.join(dropped[:8])}"
+            f"{' …' if len(dropped) > 8 else ''}.\n"
+            "  Add the missing families to FONT_CATALOG, or cache the files that are "
+            "listed but missing, or re-run with --allow-family-drop if dropping them "
+            "is intended."
+        )
 
     manifest = {
         "version": 1,
