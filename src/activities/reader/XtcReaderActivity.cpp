@@ -308,10 +308,10 @@ void XtcReaderActivity::renderPowerStatsOverlay(GfxRenderer& renderer) const {
   // that band instead. XTC pages are pre-rendered bitmaps and cannot reflow, so
   // the block overlaps the page image here — unlike the EPUB/TTF readers, which
   // subtract topReservePx() from their layout viewport.
-  PowerStatsOverlay::draw(renderer, mode, powerManager.endurance(), powerStatsBandAbovePx(renderer));
+  PowerStatsOverlay::draw(renderer, mode, powerManager.endurance(), powerStatsBandAbovePx());
 }
 
-int XtcReaderActivity::powerStatsBandAbovePx(GfxRenderer& renderer) const {
+int XtcReaderActivity::powerStatsBandAbovePx() const {
   if (SETTINGS.statusBarSpec().xtcMode != CrossPointSettings::XTC_STATUS_BAR_MODE::XTC_STATUS_BAR_TOP) {
     return 0;
   }
@@ -421,10 +421,9 @@ void XtcReaderActivity::renderPage() {
     // fixes the RAM baseline, not what the panel shows, so the exclusion has to
     // happen here.
     const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
-    const PowerStatsOverlay::BlockRect block =
-        powerStatsMode == PowerStatsOverlay::Mode::Full
-            ? PowerStatsOverlay::fullBlockRect(renderer, powerStatsBandAbovePx(renderer))
-            : PowerStatsOverlay::BlockRect{0, 0, 0, 0};
+    const PowerStatsOverlay::BlockRect block = powerStatsMode == PowerStatsOverlay::Mode::Full
+                                                   ? PowerStatsOverlay::fullBlockRect(renderer, powerStatsBandAbovePx())
+                                                   : PowerStatsOverlay::BlockRect{0, 0, 0, 0};
     auto overlaysBlock = [&](const int px, const int py) {
       return block.w > 0 && block.h > 0 && px >= block.x && px < block.x + block.w && py >= block.y &&
              py < block.y + block.h;

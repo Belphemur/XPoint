@@ -34,7 +34,7 @@ class XtcReaderActivity final : public ReaderActivity {
   // Band the block has to clear at the top edge: a TOP-positioned XTC status bar
   // is drawn above it. One definition, because the grayscale plane masks must
   // exclude exactly the rectangle the block is painted into.
-  int powerStatsBandAbovePx(GfxRenderer& renderer) const;
+  int powerStatsBandAbovePx() const;
   StatusBarInfo getStatusBarInfo() const;
   void saveProgress() const;
   void loadProgress();
