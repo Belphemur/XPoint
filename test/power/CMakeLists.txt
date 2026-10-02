@@ -6,6 +6,7 @@ add_executable(PowerTest
 )
 target_include_directories(PowerTest PRIVATE
   ${REPO_ROOT}/lib/power
+  ${REPO_ROOT}/lib/hal
 )
 target_link_libraries(PowerTest PRIVATE crosspoint_test_common GTest::gtest_main)
 gtest_discover_tests(PowerTest)

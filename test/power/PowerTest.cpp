@@ -10,6 +10,8 @@
 
 #include "EnduranceLadder.h"
 #include "PowerDrainMonitor.h"
+#include "PowerStatsOverlay.h"
+#include "SdBusGuard.h"
 
 using endurance::Profile;
 using endurance::StrikeState;
@@ -385,4 +387,90 @@ TEST(PowerDrain, Regression_TenMinuteGateIsLoadBearing) {
   mon.sample(90, 0);
   mon.sample(89, 30 * 1000);
   EXPECT_FALSE(mon.estimate().measured);
+}
+
+// ---------------------------------------------------------------------------
+// Full-block geometry (top-anchored overlay + the reserve readers subtract)
+// ---------------------------------------------------------------------------
+
+// The Full block's height is what the readers subtract from their layout
+// viewport, so it is asserted here as pure arithmetic: host tests cannot build a
+// GfxRenderer, and topReservePx() is that helper plus the live line height.
+using Overlay = PowerStatsOverlay;
+
+TEST(PowerOverlay, BlockIsExactlyTheReservedRowCount) {
+  // drawFull() emits every row unconditionally, so the height the readers reserve
+  // can be a constant. If a row became conditional again the reserve would drift
+  // and the block would overlap the page text.
+  EXPECT_EQ(12, Overlay::kFullRowCount);
+}
+
+TEST(PowerOverlay, BlockHeightIsRowsPlusBorder) {
+  EXPECT_EQ(4, Overlay::blockHeightPx(0, 0));
+  EXPECT_EQ(12 * 10 + 4, Overlay::blockHeightPx(10, 0));
+}
+
+TEST(PowerOverlay, TopBandChromeIsStackedNotOverlapped) {
+  // A Top-positioned XTC status bar occupies a band of its own; the block starts
+  // below it and the reservation grows by the same amount.
+  const int lineHeight = 10;
+  const int statusBarBand = 4 + 20;  // oriented margin + bar height
+  EXPECT_EQ(statusBarBand + Overlay::kFullRowCount * lineHeight + 4, Overlay::blockHeightPx(lineHeight, statusBarBand));
+}
+
+TEST(PowerOverlay, BlockLeavesContentAreaOnSmallestTarget) {
+  // The compatibility floor is the 800x480 panel's short edge. With the most
+  // generous plausible UI_10 line height, the reserved block must still leave
+  // most of the screen for text, or the mode is unusable on C3.
+  const int shortEdge = 480;
+  const int generousLineHeight = 16;
+  const int reserve = Overlay::blockHeightPx(generousLineHeight, 0);
+  EXPECT_LT(reserve, shortEdge / 2) << "Full block must not eat half the screen";
+}
+
+// ---------------------------------------------------------------------------
+// SD transaction accounting (design doc 2026-10-01 §7.2)
+//
+// The governor must not reconfigure the CPU/APB divider while the SD host has a
+// command outstanding. Everything below models the counter that decides "is a
+// transfer in flight" -- the clock refusal itself lives in HalPowerManager and is
+// exercised on-device.
+// ---------------------------------------------------------------------------
+
+using sd_bus::TransactionCounter;
+
+TEST(SdBusGuard, OnlyTheZeroToOneEdgeReportsBusy) {
+  TransactionCounter c;
+  EXPECT_FALSE(c.busy());
+  EXPECT_TRUE(c.enter());   // 0 -> 1: a transfer is about to start
+  EXPECT_FALSE(c.enter());  // nested: already busy, no second clock request
+  EXPECT_TRUE(c.busy());
+  c.leave();
+  EXPECT_TRUE(c.busy());  // inner scope left, outer transaction still running
+  c.leave();
+  EXPECT_FALSE(c.busy());
+}
+
+TEST(SdBusGuard, UnbalancedLeaveNeverClaimsIdle) {
+  // An extra release must not make the guard lie about the bus being quiescent,
+  // because "idle" is what permits the clock drop that corrupts a transfer.
+  TransactionCounter c;
+  EXPECT_FALSE(c.leave());
+  EXPECT_FALSE(c.busy());
+  c.enter();
+  c.leave();
+  EXPECT_FALSE(c.leave());
+  EXPECT_FALSE(c.busy());
+}
+
+TEST(SdBusGuard, CountIsNeverLostThroughOverflow) {
+  // Saturating at the top keeps `busy()` true. Wrapping to 0 would silently
+  // re-admit clock switching with transfers outstanding.
+  TransactionCounter c;
+  c.enter();
+  for (int i = 0; i < 0xFFFF; ++i) {
+    c.enter();
+  }
+  EXPECT_TRUE(c.busy());
+  EXPECT_EQ(0xFFFF, c.count());
 }

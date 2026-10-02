@@ -285,3 +285,96 @@ Per XPoint's per-phase hardware gate:
    saturates the fork's existing status-bar/overlay machinery memory budget.
 4. Decide the escalate-task stack and priority against the existing
    `FibpPrefetchWorker` / `ProgressManager` core-0 family (§3.1's role).
+
+## 7. Addendum — overlay geometry and the 10 MHz SD failure (2026-10-02)
+
+### 7.1 Overlay placement
+
+Two rules govern where the telemetry may be painted, and they are not in tension
+once stated precisely:
+
+- **Compact** shares the reader's status-bar band with the clock. It is *formatted*
+  by `PowerStatsOverlay::buildCompact()` and *laid out* by
+  `BaseTheme::drawStatusBar()` as a first-class cluster element, because that
+  function owns the baseline (`src/components/themes/BaseTheme.cpp:831`) and has
+  already painted the battery/progress clusters on it. The band itself moves: an
+  XTC reader set to `XTC_STATUS_BAR_TOP` passes a computed `paddingBottom` that
+  resolves the same expression to `orientedMarginTop`, so Compact follows the bar
+  to whichever edge the user chose.
+- **Full** is anchored at the top (`y = marginTop + 4 + bandAbovePx`). It is not
+  an overlay over the text: reflowable readers subtract `topReservePx()` from their
+  content top margin, so the layout viewport and the paint origin move together
+  (`EpubReaderActivity.cpp:2256`, `TtfBookRuntime.cpp:461`, and the two hit-test
+  sites at `:980`/`:1014` that must agree with the stored layout).
+
+The reservation is a **constant**, `kFullRowCount` rows, which is why every row in
+`drawFull()` is emitted unconditionally with a placeholder when its data is absent.
+A data-dependent height would change `viewportHeight` as telemetry arrived, and
+`viewportHeight` is part of the section cache key
+(`Section.cpp:164-165`, compared on load at `:228`) — the book would re-paginate
+mid-read. `drawFull()` logs an error if the built row count ever drifts from the
+reserved count.
+
+XTC pages are pre-rendered bitmaps and cannot reflow, so on that reader the block
+overlaps the page image; when the XTC bar is also Top-positioned, the block is
+pushed below that band so the two never fight.
+
+### 7.2 The 10 MHz SD-card failure
+
+Field log at the idle rung:
+
+```
+E (13031) sdmmc_cmd: sdmmc_read_sectors_dma: sdmmc_send_cmd returned 0x107, failed to get status (0x107)
+E (14039) sdmmc_req: handle_idle_state_events unhandled: 00001000 00000000
+[SD] Failed to open file for writing: /.crosspoint/state.json.tmp
+```
+
+The first hypotheses to rule out, because they are wrong for this firmware:
+
+- **It is not light sleep.** There is no light sleep anywhere in this tree —
+  `grep -rn 'esp_light_sleep|light_sleep|CONFIG_PM_ENABLE|pm_lock' src/ lib/
+  freeink-sdk/libs` returns nothing. ESP-IDF's own SDMMC power-management lock is
+  gated on `CONFIG_PM_ENABLE` (`components/esp_driver_sdmmc/src/sdmmc_transaction.c:185-187`)
+  and is therefore compiled out here.
+- **It is not the card clock.** SD is wired as native 4-bit SDMMC
+  (`SdmmcBlockDevice.cpp:47`, `sdmmc_host_t host = SDMMC_HOST_DEFAULT()`), and
+  `SDMMC_CLK_SRC_DEFAULT = SOC_MOD_CLK_PLL_F160M`
+  (`components/soc/esp32s3/include/soc/clk_tree_defs.h:481`). The bus clock is
+  derived from the fixed 160 MHz PLL, so lowering the CPU does not slow SCLK.
+
+What is left is the host side. The failing call is
+`sdmmc_write_sectors_dma` (`components/sdmmc/sdmmc_cmd.c:551`): the multi-block
+write command returns `ESP_ERR_TIMEOUT` **and** the recovery `CMD13` status query
+times out too — that is the `failed to get status (0x107)` branch at
+`sdmmc_cmd.c:597`. Losing both means command *sequencing* broke, not that the card
+was merely slow. The follow-on `handle_idle_state_events unhandled: 00001000` is
+the driver objecting that a non-card-detect interrupt status survived into idle,
+which its own comment states cannot happen
+(`sdmmc_transaction.c:193-207`).
+
+The mechanism: the SD host's register interface and completion ISR are paced by
+APB, and APB follows the CPU frequency. The governor changes that divider from a
+core-0 task (`EnduranceGovernor::escalationTaskEntry()` → `applyStrategy()`) and
+from `HalPowerManager::setPowerSaving()` on whichever task runs it — asynchronously
+to the task that is mid-transfer. A divider retune in that window drops the
+completion event.
+
+The fix is to make the two mutually exclusive, at the funnel every SD access in
+this firmware already passes through:
+
+- `HalStorage::StorageLock` (the recursive `storageMutex` holder used by all 22
+  storage entry points, including `HalFile::Impl::~Impl`) marks the bus busy for
+  the duration via `sd_bus::TransactionCounter` (`lib/hal/SdBusGuard.h`), and on
+  the 0 → 1 edge raises the clock *before* any command is issued.
+- `HalPowerManager::setPowerSaving()` refuses a drop while
+  `HalStorage::transactionActive()` (`HalPowerManager.cpp:97`), alongside the
+  existing "Wi-Fi is up" refusal.
+
+Only the counter edges act, so nesting is free and the guard sits above the
+backend — the C3 (SPI SD) and the S3 (SDMMC) hold identically. The accounting is
+host-tested in `test/power/PowerTest.cpp` (`SdBusGuard.*`); the clock refusal
+itself is on-device only.
+
+Trade-off worth stating plainly: this keeps the CPU out of the idle rung during SD
+I/O, so a page render that reads many small sections costs clock raises. That is
+the correct direction — a save that silently corrupts is not a saving.

@@ -88,6 +88,16 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     enabled = false;
   }
 
+  // Same reasoning as Wi-Fi, for the card: the CPU/APB divider that this call
+  // reconfigures paces the SD host's register interface and ISR, so switching it
+  // while a command is outstanding loses the completion event and the driver
+  // cannot even recover with a status query (see SdBusGuard.h). StorageLock
+  // raises the clock before a transfer begins, so refusing this drop cannot
+  // strand the device at the low frequency.
+  if (enabled && HalStorage::transactionActive()) {
+    return;
+  }
+
   // Note: We don't use mutex here to avoid too much overhead,
   // it's not very important if we read a slightly stale value for currentLockMode
   const LockMode mode = currentLockMode;

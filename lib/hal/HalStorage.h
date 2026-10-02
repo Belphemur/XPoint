@@ -79,6 +79,11 @@ class HalStorage {
 
   static HalStorage& getInstance() { return instance; }
 
+  // True while at least one SD transaction is in flight. The power manager asks
+  // this before changing the CPU/APB frequency; see SdBusGuard.h for why a clock
+  // switch mid-transfer is unrecoverable.
+  static bool transactionActive();
+
   class StorageLock;  // private class, used internally
 
  private:
