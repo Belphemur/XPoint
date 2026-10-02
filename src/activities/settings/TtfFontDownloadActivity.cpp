@@ -29,6 +29,18 @@
 
 namespace fui = freeink::ui;
 
+namespace {
+// Suffix for a face that has been downloaded and verified but not published
+// yet. Deliberately not a font extension, so BookFontLoader never registers a
+// staged file if the download is interrupted.
+constexpr const char* kStageSuffix = ".part";
+// Room for "<fonts root>/<slug>/<file>.part": buildFontPath's own buffer plus
+// the suffix and its terminator.
+constexpr size_t kStagePathSize = 176;
+// FAT slack plus the cluster rounding of the staged copies.
+constexpr uint64_t kFreeSpaceMargin = 64 * 1024;
+}  // namespace
+
 uint8_t TtfFontDownloadActivity::parseStyleToken(const char* token) {
   if (token == nullptr) return 0;
   if (std::strcmp(token, "regular") == 0) return STYLE_REGULAR;
@@ -68,7 +80,13 @@ void TtfFontDownloadActivity::onBackButton() { finish(); }
 void TtfFontDownloadActivity::onEnter() {
   UiListActivity::onEnter();
   WiFi.mode(WIFI_STA);
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  auto wifiPicker = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifiPicker) {
+    LOG_ERR("TTFFONT", "OOM: Wi-Fi selection");
+    finish();
+    return;
+  }
+  startActivityForResult(std::move(wifiPicker),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -105,6 +123,8 @@ void TtfFontDownloadActivity::onWifiSelectionComplete(const bool success) {
     {
       RenderLock lock(*this);
       state_ = ERROR;
+      // Nothing was downloaded, so the error screen offers no retry.
+      downloadingFamilyIndex_ = -1;
     }
     return;
   }
@@ -193,7 +213,7 @@ bool TtfFontDownloadActivity::splitCatalogPath(const char* path, char* dirBuf, c
   return true;
 }
 
-const char* TtfFontDownloadActivity::fileBaseName(const StrRef path) {
+const char* TtfFontDownloadActivity::fileBaseName(const StrRef path) const {
   const char* text = str(path);
   const char* slash = std::strrchr(text, '/');
   return slash != nullptr ? slash + 1 : text;
@@ -340,14 +360,28 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
   // Size the arena and the file table in one pass so neither reallocates while
   // the catalog is built: a mid-build growth would both fragment the heap and
   // invalidate arena pointers already handed out below.
+  // Mirrors the interning pass below string for string: name, description, one
+  // dirName slug per family, and every file path. A slug the sizing pass cannot
+  // resolve only means the build pass aborts on that same path a moment later,
+  // so the missing bytes are never written against.
   size_t arenaBytes = 1;  // leading terminator makes offset 0 the empty string
   size_t manifestFileCount = 0;
   for (JsonObject fObj : familiesArr) {
     arenaBytes += std::strlen(fObj["name"] | "") + 1;
     arenaBytes += std::strlen(fObj["description"] | "") + 1;
+    bool slugCounted = false;
     for (JsonObject fileObj : fObj["files"].as<JsonArray>()) {
-      arenaBytes += std::strlen(fileObj["path"] | "") + 1;
+      const char* path = fileObj["path"] | "";
+      arenaBytes += std::strlen(path) + 1;
       manifestFileCount++;
+      if (slugCounted) continue;
+      slugCounted = true;
+      char fileDir[64];
+      const char* fileSlug = nullptr;
+      const char* pathBase = nullptr;
+      if (splitCatalogPath(path, fileDir, sizeof(fileDir), fileSlug, pathBase)) {
+        arenaBytes += std::strlen(fileSlug) + 1;
+      }
     }
   }
   stringArena_ = makeUniqueNoThrow<char[]>(arenaBytes);
@@ -376,11 +410,6 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
       errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
       return false;
     }
-    if (!internString(familyName, family.name) || !internString(fObj["description"] | "", family.description)) {
-      errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
-      return false;
-    }
-
     JsonArray filesArr = fObj["files"].as<JsonArray>();
     if (filesArr.isNull() || filesArr.size() == 0) {
       LOG_ERR("TTFFONT", "Family has no files: %s", familyName);
@@ -388,9 +417,11 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
       return false;
     }
 
-    family.fileStart = fileEntryCount_;
-    bool slugResolved = false;
+    // Resolve (and validate) the family's folder before interning anything:
+    // every file has to land in the same folder because ensureFamilyDir and
+    // the delete path both address the family by that single slug.
     char slugBuf[64] = {0};
+    bool slugResolved = false;
     for (JsonObject fileObj : filesArr) {
       char fileDir[64];
       const char* fileSlug = nullptr;
@@ -400,27 +431,49 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
-
-      // Every file of a family has to land in the same folder: ensureFamilyDir
-      // and the delete path both address the family by that single slug.
       if (!slugResolved) {
         std::snprintf(slugBuf, sizeof(slugBuf), "%s", fileSlug);
         slugResolved = true;
-        if (!internString(slugBuf, family.dirName)) {
-          errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
-          return false;
-        }
       } else if (std::strcmp(slugBuf, fileSlug) != 0) {
         LOG_ERR("TTFFONT", "Family %s spans more than one folder", familyName);
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
+    }
 
+    // Two catalog names can share one slug (they differ only in spacing or
+    // case), and the card layout is keyed by the slug alone. Installing both
+    // would make them overwrite each other's faces in the same folder, so the
+    // later entry loses and the first one keeps the folder.
+    const TtfManifestFamily* duplicate = nullptr;
+    for (const TtfManifestFamily& seen : families_) {
+      if (std::strcmp(str(seen.dirName), slugBuf) == 0) {
+        duplicate = &seen;
+        break;
+      }
+    }
+    if (duplicate != nullptr) {
+      LOG_ERR("TTFFONT", "Duplicate folder slug '%s' in family %s; skipping (already served by %s)", slugBuf,
+              familyName, str(duplicate->name));
+      continue;
+    }
+
+    if (!internString(familyName, family.name) || !internString(fObj["description"] | "", family.description) ||
+        !internString(slugBuf, family.dirName)) {
+      errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
+      return false;
+    }
+
+    family.fileStart = fileEntryCount_;
+    for (JsonObject fileObj : filesArr) {
       TtfManifestFile file;
       if (!internString(fileObj["path"] | "", file.path)) {
         errorMessage_ = tr(STR_INVALID_FONT_MANIFEST);
         return false;
       }
+      // Every path was validated in the slug pre-pass, so the basename is a
+      // plain name here.
+      const char* pathBase = fileBaseName(file.path);
       file.size = fileObj["size"] | 0u;
 
       if (!fileObj["crc32"].is<uint32_t>()) {
@@ -454,6 +507,16 @@ bool TtfFontDownloadActivity::fetchAndParseManifest() {
 
 void TtfFontDownloadActivity::downloadAll() {
   cancelRequested_ = false;
+  // One preflight for the whole batch; each family is checked again on its own
+  // because the card fills up as the run proceeds.
+  if (!hasFreeSpaceFor(totalDownloadSize() + kFreeSpaceMargin)) {
+    {
+      RenderLock lock(*this);
+      state_ = ERROR;
+      errorMessage_ = tr(STR_NOT_ENOUGH_SPACE);
+    }
+    return;
+  }
   for (int familyIndex = 0; familyIndex < static_cast<int>(families_.size()); familyIndex++) {
     if (families_[familyIndex].installed) continue;
     downloadFamily(families_[familyIndex]);
@@ -468,6 +531,23 @@ void TtfFontDownloadActivity::downloadAll() {
 
 void TtfFontDownloadActivity::updateAll() {
   cancelRequested_ = false;
+  // An update keeps the installed faces on the card until the new ones are
+  // published, so the batch needs room for both copies of the largest face.
+  uint32_t largestFile = 0;
+  for (const auto& family : families_) {
+    if (!family.hasUpdate) continue;
+    for (uint32_t i = 0; i < family.fileCount; i++) {
+      largestFile = std::max(largestFile, files_[family.fileStart + i].size);
+    }
+  }
+  if (!hasFreeSpaceFor(totalUpdateSize() + largestFile + kFreeSpaceMargin)) {
+    {
+      RenderLock lock(*this);
+      state_ = ERROR;
+      errorMessage_ = tr(STR_NOT_ENOUGH_SPACE);
+    }
+    return;
+  }
   for (int familyIndex = 0; familyIndex < static_cast<int>(families_.size()); familyIndex++) {
     if (!families_[familyIndex].hasUpdate) continue;
     downloadFamily(families_[familyIndex]);
@@ -560,13 +640,37 @@ bool TtfFontDownloadActivity::computeFileCrc32(const char* path, uint32_t& outCr
   return true;
 }
 
-// Rolls a failed or aborted family back off the card. Half a family is worse
-// than none: BookFontLoader would register the faces that did land and the
-// reader would silently fall back for the missing styles.
-void TtfFontDownloadActivity::abandonFamily(TtfManifestFamily& family) {
-  fontInstaller_.deleteTtfFamily(str(family.dirName));
-  family.installed = false;
-  family.hasUpdate = false;
+// Removes the family's staged (<name>.part) files and re-reads what the card
+// actually holds. Nothing else on the card is touched: an interrupted download
+// leaves the previously installed family exactly as it was, which is why the
+// flags come back from disk instead of being assumed.
+void TtfFontDownloadActivity::discardStagedFiles(TtfManifestFamily& family) {
+  char destPath[160];
+  char stagePath[kStagePathSize];
+  for (uint32_t i = 0; i < family.fileCount; i++) {
+    const TtfManifestFile& file = files_[family.fileStart + i];
+    FontInstaller::buildFontPath(str(family.dirName), fileBaseName(file.path), destPath, sizeof(destPath));
+    snprintf(stagePath, sizeof(stagePath), "%s%s", destPath, kStageSuffix);
+    Storage.remove(stagePath);
+  }
+  refreshInstalledState(family);
+}
+
+// A card that cannot hold the pending bytes cannot report a useful download
+// error halfway through, so the check runs before any file is fetched.
+bool TtfFontDownloadActivity::hasFreeSpaceFor(const uint64_t requiredBytes) const {
+  const uint64_t freeBytes = Storage.freeBytes();
+  if (freeBytes == 0) {
+    // Unknown capacity (card not mounted, or the FAT scan could not report a
+    // cluster count): let the download discover the problem the hard way rather
+    // than refusing work that would have fit.
+    LOG_DBG("TTFFONT", "SD free space unknown; skipping preflight");
+    return true;
+  }
+  if (freeBytes >= requiredBytes) return true;
+  LOG_ERR("TTFFONT", "SD needs %llu bytes, %llu free", static_cast<unsigned long long>(requiredBytes),
+          static_cast<unsigned long long>(freeBytes));
+  return false;
 }
 
 void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
@@ -598,6 +702,20 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
     return;
   }
 
+  // Peak usage is the whole family plus the largest single face, which is
+  // still on the card as the installed copy while its staged replacement is
+  // being written.
+  uint32_t largestFile = 0;
+  for (uint32_t i = 0; i < family.fileCount; i++) {
+    largestFile = std::max(largestFile, files_[family.fileStart + i].size);
+  }
+  if (!hasFreeSpaceFor(static_cast<uint64_t>(family.totalSize) + largestFile + kFreeSpaceMargin)) {
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = tr(STR_NOT_ENOUGH_SPACE);
+    return;
+  }
+
   if (!fontInstaller_.ensureFamilyDir(str(family.dirName))) {
     RenderLock lock(*this);
     state_ = ERROR;
@@ -622,10 +740,15 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
     const char* baseName = fileBaseName(file.path);
     char destPath[160];
     FontInstaller::buildFontPath(str(family.dirName), baseName, destPath, sizeof(destPath));
+    // Every face is staged and verified before anything is published, so an
+    // update that dies halfway cannot leave the family mixed between old and
+    // new bytes — and cannot destroy a working install to get there.
+    char stagePath[kStagePathSize];
+    snprintf(stagePath, sizeof(stagePath), "%s%s", destPath, kStageSuffix);
     downloadUrl_.assign(baseUrl_).append(str(file.path));
 
     const auto result = HttpDownloader::downloadToFile(
-        downloadUrl_, destPath,
+        downloadUrl_, stagePath,
         [this](size_t downloaded, size_t total) {
           fileProgress_ = downloaded;
           fileTotal_ = total;
@@ -648,7 +771,7 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
         &cancelRequested_, "", "", /*headers=*/{}, /*downgradeRedirectsToHttp=*/true);
 
     if (result == HttpDownloader::ABORTED) {
-      abandonFamily(family);
+      discardStagedFiles(family);
       if (goHomeRequested_) {
         onGoHome();
         return;
@@ -663,7 +786,7 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
 
     if (result != HttpDownloader::OK) {
       LOG_ERR("TTFFONT", "Download failed: %s (%d)", baseName, result);
-      abandonFamily(family);
+      discardStagedFiles(family);
       RenderLock lock(*this);
       state_ = ERROR;
       errorMessage_ = std::string("Download failed: ") + baseName;
@@ -671,9 +794,9 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
     }
 
     uint32_t actualCrc = 0;
-    if (!computeFileCrc32(destPath, actualCrc)) {
-      LOG_ERR("TTFFONT", "Failed to open file for CRC check: %s", destPath);
-      abandonFamily(family);
+    if (!computeFileCrc32(stagePath, actualCrc)) {
+      LOG_ERR("TTFFONT", "Failed to open file for CRC check: %s", stagePath);
+      discardStagedFiles(family);
       RenderLock lock(*this);
       state_ = ERROR;
       errorMessage_ = std::string("Failed to compute checksum: ") + baseName;
@@ -681,7 +804,7 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
     }
     if (actualCrc != file.crc32) {
       LOG_ERR("TTFFONT", "CRC32 mismatch for %s: got %08x expected %08x", baseName, actualCrc, file.crc32);
-      abandonFamily(family);
+      discardStagedFiles(family);
       RenderLock lock(*this);
       state_ = ERROR;
       errorMessage_ = std::string("Checksum mismatch: ") + baseName;
@@ -691,15 +814,37 @@ void TtfFontDownloadActivity::downloadFamily(TtfManifestFamily& family) {
 
     // CRC only proves the bytes are the ones the catalog published; this proves
     // they are a font.
-    if (!fontInstaller_.validateTtfFile(destPath)) {
-      LOG_ERR("TTFFONT", "Invalid sfnt file: %s", destPath);
-      abandonFamily(family);
+    if (!fontInstaller_.validateTtfFile(stagePath)) {
+      LOG_ERR("TTFFONT", "Invalid sfnt file: %s", stagePath);
+      discardStagedFiles(family);
       RenderLock lock(*this);
       state_ = ERROR;
       errorMessage_ = std::string("Invalid font file: ") + baseName;
       return;
     }
     currentFileIndex_++;
+  }
+
+  // Publish: the whole family is verified, so the folder can now be swapped
+  // over face by face. A failure here is the one case that can leave a mixed
+  // family behind, so the folder is dropped rather than left half-updated.
+  for (uint32_t i = 0; i < family.fileCount; i++) {
+    const TtfManifestFile& file = files_[family.fileStart + i];
+    const char* baseName = fileBaseName(file.path);
+    char destPath[160];
+    FontInstaller::buildFontPath(str(family.dirName), baseName, destPath, sizeof(destPath));
+    char stagePath[kStagePathSize];
+    snprintf(stagePath, sizeof(stagePath), "%s%s", destPath, kStageSuffix);
+    if (Storage.replaceFile(stagePath, destPath)) continue;
+
+    LOG_ERR("TTFFONT", "Failed to publish %s", baseName);
+    fontInstaller_.deleteTtfFamily(str(family.dirName));
+    family.installed = false;
+    family.hasUpdate = false;
+    RenderLock lock(*this);
+    state_ = ERROR;
+    errorMessage_ = std::string("Failed to install: ") + baseName;
+    return;
   }
 
   family.installed = true;
@@ -718,9 +863,13 @@ void TtfFontDownloadActivity::promptDeleteSelectedFamily() {
   }
 
   const auto& family = families_[pendingDeleteFamilyIndex];
-  startActivityForResult(
-      std::make_unique<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE), str(family.name)),
-      [this](const ActivityResult& result) { onDeleteConfirmationResult(result); });
+  auto confirm = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, tr(STR_DELETE), str(family.name));
+  if (!confirm) {
+    LOG_ERR("TTFFONT", "OOM: delete confirmation");
+    return;
+  }
+  startActivityForResult(std::move(confirm),
+                         [this](const ActivityResult& result) { onDeleteConfirmationResult(result); });
 }
 
 void TtfFontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& result) {
@@ -742,6 +891,9 @@ void TtfFontDownloadActivity::onDeleteConfirmationResult(const ActivityResult& r
     RenderLock lock(*this);
     state_ = ERROR;
     errorMessage_ = "Failed to delete font";
+    // No download is in flight, so there is nothing for the retry affordance to
+    // retry: without this it would restart an unrelated family.
+    downloadingFamilyIndex_ = -1;
   } else {
     family.installed = false;
     family.hasUpdate = false;

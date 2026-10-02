@@ -68,10 +68,12 @@ class TtfFontDownloadActivity final : public UiListActivity {
   using StrRef = uint32_t;
 
   struct TtfManifestFile {
-    // Manifest-relative path ("<slug>/<file>.ttf", sometimes with an extra
-    // leading directory): the base-URL suffix to fetch from, and the only
-    // string the device derives the SD layout from. The manifest's own "name"
-    // field is deliberately not stored — it is not reliably the object's key
+    // Manifest-relative path ("<slug>/<file>.ttf"): the base-URL suffix to
+    // fetch from, and the only string the device derives the SD layout from.
+    // A leading directory beyond the slug is tolerated on parse (it never
+    // reaches the card) but the published catalog does not emit one. The
+    // manifest's own "name" field is deliberately not stored — it is not
+    // reliably the object's key
     // ("PT Serif" publishes "PT Serif Regular.ttf" as "PT_Serif_Regular.ttf"),
     // and carrying both invites a write under the wrong name.
     StrRef path = 0;
@@ -120,7 +122,7 @@ class TtfFontDownloadActivity final : public UiListActivity {
   size_t currentFileTotal_ = 0;
   size_t fileProgress_ = 0;
   size_t fileTotal_ = 0;
-  int downloadingFamilyIndex_ = 0;
+  int downloadingFamilyIndex_ = -1;  // -1 = no download in flight, so ERROR offers no retry
   std::string errorMessage_;
   bool cancelRequested_ = false;
   // Set when the cancel came from the home gesture (consumed by the download
@@ -166,9 +168,16 @@ class TtfFontDownloadActivity final : public UiListActivity {
   static bool splitCatalogPath(const char* path, char* dirBuf, size_t dirBufSize, const char*& slug,
                                const char*& baseName);
   // Basename of an already-validated file path, without re-validating it.
-  static const char* fileBaseName(StrRef path);
-  // Removes a family's folder after a failed or aborted download.
-  void abandonFamily(TtfManifestFamily& family);
+  const char* fileBaseName(StrRef path) const;
+  // Deletes a family's staged (<name>.part) files after a failed or aborted
+  // download and re-reads the family's installed flags from the card. The
+  // published files are never touched, so a failed update keeps whatever was
+  // installed before.
+  void discardStagedFiles(TtfManifestFamily& family);
+  // True when the card reports enough room for `requiredBytes`. A card whose
+  // capacity cannot be read is allowed through: the download itself will
+  // surface the real failure.
+  bool hasFreeSpaceFor(uint64_t requiredBytes) const;
 
   void onWifiSelectionComplete(bool success);
   bool fetchAndParseManifest();
