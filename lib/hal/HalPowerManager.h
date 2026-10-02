@@ -17,7 +17,9 @@ extern HalPowerManager powerManager;  // Singleton
 
 class HalPowerManager {
   int normalFreq = 0;  // MHz
-  bool isLowPower = false;
+  // Written by the core-0 escalation task (via setPowerSaving) and read by the
+  // main task, so it cannot be a plain bool.
+  std::atomic<bool> isLowPower{false};
 
   mutable int _batteryCachedPercent = 0;         // Last read battery percentage (0-100)
   mutable unsigned long _batteryLastPollMs = 0;  // Timestamp of last battery read in milliseconds
@@ -95,7 +97,14 @@ class HalPowerManager {
   bool idlePollSlicesEnabled() const { return (governorTarget() & kPollSlicesBit) != 0; }
   // True while the clock is at the idle target — the escalation task uses it to
   // know a heavy job got throttled underneath itself.
-  bool isLowPowerActive() const { return isLowPower; }
+  bool isLowPowerActive() const { return isLowPower.load(std::memory_order_acquire); }
+
+  // Push the polling half of the published target to the input manager right
+  // away, without touching the clock. Needed when the wake-source verdict
+  // demotes a device that is already idle: the cadence is otherwise applied only
+  // on the transition into low power, and re-running that transition is rejected
+  // by the dwell guard below NORMAL_POWER_DWELL_MS.
+  void applyIdlePolling() { InputManager::setLowPowerPolling(idlePollSlicesEnabled()); }
 
   EnduranceGovernor& endurance() { return endurance_; }
 

@@ -959,10 +959,17 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     const int gap = rightClusterWidth > 0 ? 10 : 0;
     const int width = renderer.getTextWidth(UI_10_FONT_ID, powerStatsLine);
     const int x = rightClusterX - rightClusterWidth - gap - width;
-    renderer.drawText(UI_10_FONT_ID, x,
-                      textY + (renderer.getLineHeight(SMALL_FONT_ID) - renderer.getLineHeight(UI_10_FONT_ID)) / 2,
-                      powerStatsLine);
-    rightClusterWidth += width + gap;
+    // In portrait the left cluster plus the battery/progress reserves can leave
+    // less room than the line needs, which drives x negative and clips it off
+    // screen over the left cluster. A telemetry line that cannot fit between the
+    // two clusters is omitted rather than smeared across the reading status.
+    const int leftLimit = leftClusterX + leftClusterWidth;
+    if (x >= leftLimit && x >= 0) {
+      renderer.drawText(UI_10_FONT_ID, x,
+                        textY + (renderer.getLineHeight(SMALL_FONT_ID) - renderer.getLineHeight(UI_10_FONT_ID)) / 2,
+                        powerStatsLine);
+      rightClusterWidth += width + gap;
+    }
   }
 
   // Draw Title

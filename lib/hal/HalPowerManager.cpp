@@ -118,11 +118,17 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     lastNormalMs = millis();
   }
 
-  if (mode == None && enabled && !isLowPower) {
+  if (mode == None && enabled && !isLowPower.load(std::memory_order_acquire)) {
     if (millis() - lastNormalMs < NORMAL_POWER_DWELL_MS) {
       return;  // recent full-speed work: stay at normal frequency
     }
-    LOG_DBG("PWR", "Going to low-power mode");
+    // Close the window between "is the card busy?" and the divider actually
+    // moving. While this is held no task can start an SD transaction, so the
+    // check below cannot go stale before setCpuFrequencyMhz() runs.
+    HalStorage::BusGate sdQuiet;
+    if (HalStorage::transactionActive()) {
+      return;  // defensive: a transaction already owns the bus
+    }
     // One acquire load: the clock and the polling policy below come from the
     // same published rung.
     const uint32_t target = governorTarget_.load(std::memory_order_acquire);
@@ -136,19 +142,23 @@ void HalPowerManager::setPowerSaving(bool enabled) {
       endurance_.reportInstability(EnduranceGovernor::InstabilityReason::ClockSwitchFailure);
       return;
     }
+    // Reported after the switch, with the frequency that was actually applied:
+    // the ladder now spans 10/40/80 MHz, so a "low power" label cannot tell an
+    // idle rung from a demoted one.
+    LOG_DBG("PWR", "Going to low power: %d MHz", lowFreq);
     // Poll slices are the idle-sleep class the governor's ladder toggles. A
     // demoted device keeps the input manager at its tight cadence instead.
     InputManager::setLowPowerPolling((target & kPollSlicesBit) != 0);
-    isLowPower = true;
+    isLowPower.store(true, std::memory_order_release);
 
-  } else if ((!enabled || mode != None) && isLowPower) {
-    LOG_DBG("PWR", "Restoring normal CPU frequency");
+  } else if ((!enabled || mode != None) && isLowPower.load(std::memory_order_acquire)) {
+    LOG_DBG("PWR", "Restoring normal CPU frequency: %d MHz", normalFreq);
     if (!setCpuFrequencyMhz(normalFreq)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
       return;
     }
     InputManager::setLowPowerPolling(false);
-    isLowPower = false;
+    isLowPower.store(false, std::memory_order_release);
   }
 
   // Otherwise, no change needed

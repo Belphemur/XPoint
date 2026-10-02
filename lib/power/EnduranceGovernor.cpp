@@ -41,6 +41,9 @@ constexpr unsigned long kBatterySampleIntervalMs = 5000;
 // cheap boot-survivable clock in this firmware to derive one from, and a
 // fabricated duration would put a wrong number in the overlay's per-sleep rate.
 static RTC_DATA_ATTR uint8_t _preSleepPct = 0xFF;
+// Whether external power was present when the nap began (255 = board cannot
+// tell). A sleep that starts or ends on USB must not yield a battery rate.
+static RTC_DATA_ATTR uint8_t _preSleepUsb = 0xFF;
 static RTC_DATA_ATTR uint32_t _persistedNaps = 0;
 // Epoch seconds at sleep entry, when the clock was trustworthy. Zero means "no
 // clock", and the sleep window is then closed without a duration rather than
@@ -147,7 +150,13 @@ void EnduranceGovernor::begin() {
         haveDuration = true;
       }
     }
-    if (haveDuration && wakePct != PowerDrainMonitor::kInvalid) {
+    // Passing `false` at both endpoints made every restored sleep look like a
+    // battery sleep. Re-check the rail at wake and combine it with the staged
+    // entry state: a nap that began or ended on external power has no battery
+    // drain meaning, so it must not yield a rate (or a zero-drain record).
+    bool wakeUsbKnown = false;
+    const bool onUsb = powerManager.isExternalPowerPresent(&wakeUsbKnown) || _preSleepUsb == 1;
+    if (haveDuration && wakePct != PowerDrainMonitor::kInvalid && !onUsb) {
       drain_.beginSleep(_preSleepPct, 0, false);
       drain_.endSleep(wakePct, sleptMs, false);
       LOG_DBG("PWR", "Woke from a nap at %u%% -> %u%% after %lus (nap #%lu)", static_cast<unsigned>(_preSleepPct),
@@ -243,8 +252,11 @@ void EnduranceGovernor::setProfile(endurance::Profile p) {
 }
 
 void EnduranceGovernor::persistFloor(const uint8_t floorIndex) {
-  // Strikes are already cleared at this point, so the byte carries the ratchet.
-  const uint8_t byte = encodeStateByte(endurance::StrikeState{}, floorIndex);
+  // Carry whatever strike bits are live right now rather than writing a cleared
+  // batch. reportInstability() persists its own byte when a strike arrives, so a
+  // floor write that unconditionally zeroed the strike half would undo a strike
+  // reported while this promotion was being computed.
+  const uint8_t byte = encodeStateByte(strikes(), floorIndex);
   Preferences prefs;
   if (prefs.begin(kNvsNamespace, false)) {
     prefs.putUChar(kNvsStateKey, byte);
@@ -266,7 +278,6 @@ void EnduranceGovernor::refreshFromSettings() {
   const uint8_t wanted = escalated > base ? escalated : base;
   if (wanted != strategyIndex_) {
     strategyIndex_ = wanted;
-    strategy_ = endurance::kStrategies[strategyIndex_];
   }
   unlockState();
 }
@@ -356,6 +367,11 @@ void EnduranceGovernor::escalationTaskEntry() {
     // exchange(), not load-then-clear: a strike recorded between the load and
     // the clear would otherwise be swallowed.
     if (strikesDirty_.exchange(false, std::memory_order_acquire)) {
+      // Capture the batch this iteration acts on. A strike reported while the
+      // promotion is being computed must survive it, otherwise the worker clears
+      // a flag it never accounted for and that instability is lost.
+      const uint8_t idleSeen = strikesIdle_.load(std::memory_order_relaxed);
+      const uint8_t lightSeen = strikesLightSleep_.load(std::memory_order_relaxed);
       // Promote this session immediately rather than waiting for the next boot.
       refreshFromSettings();
       uint8_t index;
@@ -369,8 +385,12 @@ void EnduranceGovernor::escalationTaskEntry() {
       persistFloor(index);
       applyStrategy();
       LOG_ERR("PWR", "Escalated to strategy %u after strike", static_cast<unsigned>(index));
-      strikesIdle_.store(0, std::memory_order_relaxed);
-      strikesLightSleep_.store(0, std::memory_order_relaxed);
+      // Consume only the captured batch: compare-exchange so a strike that
+      // arrived mid-promotion stays set for the next pass.
+      uint8_t expectIdle = idleSeen;
+      strikesIdle_.compare_exchange_strong(expectIdle, 0, std::memory_order_acq_rel);
+      uint8_t expectLight = lightSeen;
+      strikesLightSleep_.compare_exchange_strong(expectLight, 0, std::memory_order_acq_rel);
     }
     // A heavy job still running must never be throttled by an idle tick from
     // another task; restore the clock here so the job's window is honoured even
@@ -408,9 +428,12 @@ void EnduranceGovernor::tick() {
   // still attached, and reporting a drain rate for a device running off USB is
   // exactly the wrong number. Only a board that can observe the input rail
   // answers this; elsewhere the flag stays false and the rate is simply absent.
+  // Both the input-rail read and the gauge read are synchronous I2C/ADC traffic
+  // on a bus shared with the GT911 touch controller, so neither may happen once
+  // per loop() pass — see the throttle below.
   bool externalKnown = false;
-  const bool onUsb = powerManager.isExternalPowerPresent(&externalKnown);
-  drain_.setOnUsbPower(externalKnown && onUsb);
+  bool onUsb = false;
+  const bool gaugeSupported = powerManager.getBatteryHealthState() != HalPowerManager::BatteryHealthState::UNSUPPORTED;
 
   // Battery sampling is throttled: the loop runs hundreds of times a second and
   // an ADC read per pass both advances the HAL's smoothing filter far faster
@@ -419,20 +442,42 @@ void EnduranceGovernor::tick() {
   // never open.
   if (now - lastBatterySampleMs_ >= kBatterySampleIntervalMs) {
     lastBatterySampleMs_ = now;
-    // A gauge board reports 0% for "unknown" until its first successful read.
-    // Feeding that in as a real zero would drag every window's drain to absurd.
-    uint8_t pct = PowerDrainMonitor::kInvalid;
-    if (!powerManager.isBatteryHealthStale() || lastBatteryPct_ != PowerDrainMonitor::kInvalid) {
-      const uint8_t reported = static_cast<uint8_t>(powerManager.getBatteryPercentage());
-      if (lastBatteryPct_ == PowerDrainMonitor::kInvalid && reported == 0 &&
-          powerManager.getBatteryHealthState() == HalPowerManager::BatteryHealthState::STALE) {
-        pct = PowerDrainMonitor::kInvalid;
-      } else {
-        pct = reported;
+
+    externalKnown = false;
+    onUsb = powerManager.isExternalPowerPresent(&externalKnown);
+    drain_.setOnUsbPower(externalKnown && onUsb);
+
+    // Poll first, then validate. A read can itself be the one that notices the
+    // gauge has gone bad, and checking health *before* the read would miss that
+    // transition and also skip recovery once a local sample exists.
+    const uint8_t reported =
+        gaugeSupported ? static_cast<uint8_t>(powerManager.getBatteryPercentage()) : PowerDrainMonitor::kInvalid;
+    const bool usable =
+        gaugeSupported && powerManager.getBatteryHealthState() == HalPowerManager::BatteryHealthState::HEALTHY;
+
+    if (!usable) {
+      // The HAL retains the last known-good percentage once the gauge goes
+      // stale, so a stale poll returns a FROZEN number. Feeding that in would
+      // keep extending the drain window with fabricated constant charge and
+      // report an artificially low — possibly zero — consumption rate. Drop the
+      // partial window instead, so the rate stays unavailable until a fresh
+      // ten-minute window completes on trustworthy samples.
+      if (lastBatteryPct_ != PowerDrainMonitor::kInvalid) {
+        drain_.resetWindow();
+        lastBatteryPct_ = PowerDrainMonitor::kInvalid;
       }
-      lastBatteryPct_ = pct;
+      drain_.sample(PowerDrainMonitor::kInvalid, now);
+    } else {
+      // A gauge board reports 0% for "unknown" until its first successful read;
+      // that must never be sampled as a real empty pack.
+      const bool firstAndUnknown = lastBatteryPct_ == PowerDrainMonitor::kInvalid && reported == 0;
+      if (firstAndUnknown) {
+        drain_.sample(PowerDrainMonitor::kInvalid, now);
+      } else {
+        lastBatteryPct_ = reported;
+        drain_.sample(reported, now);
+      }
     }
-    drain_.sample(pct, now);
   }
 
   // A profile change requested from another task is adopted here, on the main
@@ -466,10 +511,17 @@ void EnduranceGovernor::tick() {
   WifiLeakGuard::poll(now, unownedRadioShutdownAllowed_.load(std::memory_order_relaxed));
 
   // Touch-INT verification, cached after the first verdict.
-  if (wakeVerdict() == WakeVerdict::Unverified && BoardConfig::hasTouch()) {
+  if (wakeVerdict() == WakeVerdict::Unverified && BoardConfig::hasTouch() &&
+      now - lastWakeProbeRunMs_ >= kWakeProbeIntervalMs) {
+    lastWakeProbeRunMs_ = now;
     const int8_t irq = BoardConfig::ACTIVE.touch.irq;
     if (irq >= 0) {
-      pinMode(irq, INPUT);
+      // Configure once: the probe is now throttled, and repeating gpio_config on
+      // every pass is what the interval exists to stop.
+      if (wakeProbePinConfigured_ != irq) {
+        pinMode(irq, INPUT);
+        wakeProbePinConfigured_ = irq;
+      }
       const bool asserted =
           BoardConfig::ACTIVE.touch.irqActiveLow ? (digitalRead(irq) == LOW) : (digitalRead(irq) == HIGH);
       const bool touchSeen = gpio.wasTouchActivity();
@@ -477,6 +529,7 @@ void EnduranceGovernor::tick() {
       const bool windowExpired = windowOpen && (now - lastWakeProbeMs_) > kWakeProbeSettleMs;
 
       if (touchSeen) {
+        ghostStreak_ = 0;
         // The gesture opens the settle window; the line normally asserts within
         // it. Both halves are required for a verified verdict: a gesture alone
         // proves the touch path works, not that the INT line reports it.
@@ -492,9 +545,11 @@ void EnduranceGovernor::tick() {
           wakeVerdict_.store(WakeVerdict::Verified, std::memory_order_relaxed);
           LOG_INF("PWR", "Touch INT verified as a light-sleep wake source");
         }
-      } else if (asserted) {
-        // INT asserted with no gesture behind it: the line ghosts, so it cannot
-        // be trusted to report a pending touch.
+      } else if (asserted && ++ghostStreak_ >= 2) {
+        // INT asserted with no gesture behind it, seen on two consecutive probes.
+        // The input manager runs a separate 10 ms task, so a single sample can
+        // catch the line asserted just before the gesture is published; only a
+        // persisting condition means the line really ghosts.
         demoteToPollSlices("Touch INT wakes without touches; using poll slices");
       } else if (windowExpired) {
         // A gesture was registered and the line never asserted within the window.
@@ -515,14 +570,12 @@ void EnduranceGovernor::demoteToPollSlices(const char* reason) {
   // so the two publishes are serialised and neither can strand the other's value.
   powerManager.setIdlePollSlicesEnabled(false);
   unlockState();
-  // Deliberately outside the lock: setPowerSaving() can call back into
-  // reportInstability(), which takes this same non-recursive mutex.
-  if (powerManager.isLowPowerActive()) {
-    // The cadence is applied on the transition into low power, so a device that
-    // is already idle needs the change pushed explicitly.
-    powerManager.setPowerSaving(false);
-    powerManager.setPowerSaving(true);
-  }
+  // A device that is already idle needs the cadence pushed explicitly. The
+  // obvious setPowerSaving(false)/(true) pair cannot do it: the first call
+  // refreshes lastNormalMs, so the second is rejected by the dwell guard and the
+  // demotion would silently never take effect. Push the polling half only, which
+  // touches no clock and so needs no dwell.
+  powerManager.applyIdlePolling();
   LOG_ERR("PWR", "%s", reason);
 }
 
@@ -533,6 +586,8 @@ void EnduranceGovernor::beginSleepWindow() {
   _preSleepPct = drain_.lastPercent();
   _persistedNaps = naps_;
   _preSleepEpoch = trustedtime::trustedNow();
+  bool known = false;
+  _preSleepUsb = powerManager.isExternalPowerPresent(&known) ? 1 : (known ? 0 : 0xFF);
 }
 
 void EnduranceGovernor::endSleepWindow() {

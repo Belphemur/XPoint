@@ -70,6 +70,10 @@ class HalStorage::StorageLock {
 
 bool HalStorage::transactionActive() { return g_sdTransactions.busy(); }
 
+HalStorage::BusGate::BusGate() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
+
+HalStorage::BusGate::~BusGate() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
+
 void HalStorage::prepareForDeepSleep() {
   StorageLock lock;
   SDCard.shutdown();

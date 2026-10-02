@@ -192,7 +192,6 @@ class EnduranceGovernor {
   endurance::Profile profile_ = endurance::Profile::Endurance;
   std::atomic<uint8_t> strikesIdle_{0};
   std::atomic<uint8_t> strikesLightSleep_{0};
-  endurance::Strategy strategy_{endurance::kStrategies[0]};
   uint8_t strategyIndex_ = 0;
   int idleClockMHz_ = 10;
   int renderClockMHz_ = 80;
@@ -248,6 +247,17 @@ class EnduranceGovernor {
 
   // Touch-INT verification.
   unsigned long lastWakeProbeMs_ = 0;
+  // Probe cadence. Without it the verification ran on every main-loop pass, so
+  // an untouched device (verdict stays Unverified) paid a gpio_config + read
+  // hundreds of times a second — work that defeats the power goal of the very
+  // feature it serves, and which the interval exists to prevent.
+  unsigned long lastWakeProbeRunMs_ = 0;
+  int8_t wakeProbePinConfigured_ = -1;
+  // Consecutive probes that saw the INT line asserted with no gesture behind it.
+  // The input manager runs its own 10 ms task, so a single asynchronous sample
+  // can legitimately catch the line asserted a moment before the gesture is
+  // published; one sample must not permanently demote the device.
+  uint8_t ghostStreak_ = 0;
 
   TaskHandle_t taskHandle_ = nullptr;
   // Set by reportInstability() on any task, consumed by the escalation task.

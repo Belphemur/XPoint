@@ -2208,7 +2208,7 @@ void EpubReaderActivity::renderBook() {
   }
 #endif
   // Legacy (Section) path only.
-  const PageTurnTimer pageTurnTimer;
+  PageTurnTimer pageTurnTimer;
 #ifdef BOOK_PROFILE
   uint32_t render_book_start_ms = millis();
   uint8_t core = xPortGetCoreID();
@@ -2907,7 +2907,7 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 }
 
 void EpubReaderActivity::renderBookTtf() {
-  const PageTurnTimer pageTurnTimer;
+  PageTurnTimer pageTurnTimer;
   if (!epub || !ttf_) return;
 #if CROSSPOINT_TTF_UI_FALLBACK
   // makeLayoutParams() below can reload the shared font loader on this render
@@ -2989,6 +2989,8 @@ void EpubReaderActivity::renderBookTtf() {
   // settleOverlayRefresh() above drained any deferred overlay waveform, and
   // the previous page's commit waited for its own refresh.
   if (isPreRenderPass) {
+    // Not a page turn: record no sample.
+    pageTurnTimer.cancel();
     ttfRunPreRenderPass(params);
     return;
   }

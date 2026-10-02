@@ -512,6 +512,10 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     uint8_t progressBarMode = HIDE_PROGRESS;                           // STATUS_BAR_PROGRESS_BAR
     uint8_t progressBarHeightPx = 0;                                   // (thickness+1)*2; 0 when the bar is hidden
     uint8_t xtcMode = XTC_STATUS_BAR_HIDE;                             // XTC_STATUS_BAR_MODE
+    // Compact power telemetry is drawn into the text lane, so it participates in
+    // the lane's visibility contract. Copied like every other field here: the spec
+    // is a value snapshot and cannot reach the enclosing class's members.
+    bool showPowerStatsCompact = false;
 
     bool showsProgressBar() const { return progressBarMode != HIDE_PROGRESS; }
     bool showsTitle() const { return titleMode != HIDE_TITLE; }
@@ -520,8 +524,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Visibility of the text lane. Clock hardware presence is the caller's
     // concern: pass halClock.isAvailable(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
+      // The Compact telemetry line lives in this lane. Omitting it left the lane
+      // unreserved when every other text element was hidden, so EPUB drew the
+      // line over unreserved space and XTC skipped the bar on zero height.
       return showChapterPageCount || showChapterTimeLeft || showBookProgressPercent || showsTitle() || showBattery ||
-             (showsClock() && clockAvailable);
+             (showsClock() && clockAvailable) || showPowerStatsCompact;
     }
   };
   StatusBarSpec statusBarSpec() const;

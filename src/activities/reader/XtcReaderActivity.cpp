@@ -313,7 +313,9 @@ void XtcReaderActivity::renderPowerStatsOverlay(GfxRenderer& renderer) const {
     int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
     renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                      &orientedMarginLeft);
-    bandAbovePx = orientedMarginTop + UITheme::getInstance().getStatusBarHeight() + 4;
+    // drawFull() anchors at marginTop + 4 itself, so only the bar's own height
+    // is extra; adding the oriented margin again pushed the block down by it.
+    bandAbovePx = UITheme::getInstance().getStatusBarHeight() + 4;
   }
   PowerStatsOverlay::draw(renderer, mode, powerManager.endurance(), bandAbovePx);
 }
@@ -341,7 +343,7 @@ void XtcReaderActivity::renderPage() {
 
   // One sample per rendered XTC page. Without this the Compact `pg` and the Full
   // page row showed 0 on an XTC-only session (or stale EPUB samples).
-  const PageTurnTimer pageTurnTimer;
+  PageTurnTimer pageTurnTimer;
 
   size_t bytesRead = xtc->loadPage(currentPage, pageBuffer, pageBufferSize);
   if (bytesRead == 0) {

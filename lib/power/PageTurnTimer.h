@@ -15,12 +15,20 @@
 // report two samples and double the accumulated page time.
 class PageTurnTimer {
  public:
-  PageTurnTimer() : startMs_(millis()) {}
-  ~PageTurnTimer() { powerManager.endurance().notePageTurn(millis() - startMs_); }
+  PageTurnTimer() = default;
+  ~PageTurnTimer() {
+    if (!cancelled_) powerManager.endurance().notePageTurn(millis() - startMs_);
+  }
+
+  // Drop this sample. A TTF pre-render pass warms glyph and layout state and
+  // never commits a page, so counting it inflated the average with several
+  // samples per displayed page.
+  void cancel() { cancelled_ = true; }
 
   PageTurnTimer(const PageTurnTimer&) = delete;
   PageTurnTimer& operator=(const PageTurnTimer&) = delete;
 
  private:
-  unsigned long startMs_;
+  unsigned long startMs_ = millis();
+  bool cancelled_ = false;
 };

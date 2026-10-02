@@ -84,6 +84,21 @@ class HalStorage {
   // switch mid-transfer is unrecoverable.
   static bool transactionActive();
 
+  // Blocks until no SD transaction is in flight and keeps the bus quiescent for
+  // the guard's lifetime.
+  //
+  // The idle-clock drop path must hold this across BOTH the busy check and the
+  // divider change. StorageLock takes the same recursive mutex to mark a
+  // transaction busy, so an atomic counter alone would still let a transfer
+  // start in the gap between "is the card idle?" and setCpuFrequencyMhz().
+  class BusGate {
+   public:
+    BusGate();
+    ~BusGate();
+    BusGate(const BusGate&) = delete;
+    BusGate& operator=(const BusGate&) = delete;
+  };
+
   class StorageLock;  // private class, used internally
 
  private:

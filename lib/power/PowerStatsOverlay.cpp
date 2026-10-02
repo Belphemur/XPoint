@@ -70,7 +70,9 @@ const char* PowerStatsOverlay::buildCompact(char* out, const size_t outLen) {
   // ~mA is only honest once the 10-minute gate has opened; before that the
   // compact line shows a dash rather than a rate that is mostly page-turn noise.
   char current[16] = "--";
-  if (estimate.measured) formatMilli(current, sizeof(current), estimate.milliAmp, 1);
+  // A window collected on external power is not battery current; Full says so
+  // explicitly, so Compact must suppress the value the same way.
+  if (estimate.measured && !estimate.onUsbPower) formatMilli(current, sizeof(current), estimate.milliAmp, 1);
 
   // Pack voltage, the reference Crossfire line's second segment. Built from
   // millivolts with integer maths because embedded newlib has no float printf.
