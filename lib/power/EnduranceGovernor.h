@@ -167,15 +167,17 @@ class EnduranceGovernor {
   // Write the persisted ladder floor so an in-session promotion survives reboot.
   void persistFloor(uint8_t floorIndex);
   void refreshFromSettings();
-  // Re-resolve the rung from an explicit strike batch. Taking the batch as an argument
-  // is what lets the escalation task consume it atomically BEFORE promoting: computing
-  // the rung from whatever happens to be live at read time cannot distinguish a
-  // strike this promotion already accounted for from one reported after it.
-  // Re-resolve the rung from an explicit strike batch and RETURN the resulting
-  // index. Returning it is essential rather than convenient: the caller must not
-  // re-read strategyIndex_ across a gap where another task could have recomputed
-  // it from a batch this promotion never saw.
-  uint8_t resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes);
+  // Re-resolve the rung and the strike floor from an explicit strike batch, and
+  // return the resulting rung. The batch is an argument so the escalation task can
+  // consume it atomically BEFORE promoting: reading whatever happens to be live at
+  // resolve time cannot distinguish a strike this promotion already accounted for
+  // from one reported after it. `advanceFloor` marks the sole strike consumer --
+  // every other caller passes false with a zero batch, so a profile change can move
+  // the rung but can never ratchet the floor. See EnduranceLadder.h::resolveRung.
+  // Returning the index is essential rather than convenient: the caller must not
+  // re-read strategyIndex_ across a gap where another task could have recomputed it
+  // from a batch this promotion never saw.
+  uint8_t resolveLadder(uint8_t idleStrikes, uint8_t lightStrikes, bool advanceFloor);
   void applyStrategy();
 
  public:
@@ -232,8 +234,10 @@ class EnduranceGovernor {
   std::atomic<int> heavyJobs_{0};
   std::atomic<bool> heavyJobHold_{true};
 
-  // Ladder floor recovered from NVS. Only ever ratchets up: a device that once
-  // proved unstable at 10 MHz never silently returns there.
+  // Ladder floor recovered from NVS. Ratchets up ONLY through a strike batch the
+  // escalation task consumed (resolveLadder's advanceFloor): a profile change
+  // selects a rung within it, never raises it. A device that once proved unstable
+  // at 10 MHz never silently returns there.
   uint8_t persistedFloor_ = 0;
   unsigned long lastTickMs_ = 0;
   unsigned long lastBatterySampleMs_ = 0;

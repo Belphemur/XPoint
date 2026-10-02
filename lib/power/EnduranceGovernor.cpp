@@ -217,24 +217,33 @@ void EnduranceGovernor::loadAndMigrateStrikes() {
   strikesLightSleep_.store(decodeStrikes(oldState).lightSleepStrikes, std::memory_order_relaxed);
   persistedFloor_ = decodeRatchet(oldState);
 
-  // Boot resolves the rung with the SAME rule the runtime path uses: escalate
-  // from the persisted floor, not from the profile base. Using promote(base, ...)
-  // here made a boot disagree with the escalation task (which escalates from the
-  // floor), so a device already at rung 2 that struck again came back at rung 2.
+  // Boot resolves the rung with the SAME rule the runtime paths use, via the same
+  // pure function, with this boot's strike batch as the consumed one. Escalating
+  // from the persisted floor (not from the profile base) is what makes a boot
+  // agree with the escalation task, so a device already at rung 2 that struck
+  // again comes back at rung 2 and not at rung 2 forever.
+  //
+  // The floor only ratchets up: a device that once
+  // proved unstable at 10 MHz never silently returns there because a later boot
+  // read a clean byte. Carrying the promotion into the in-memory floor matters as
+  // much -- without it the very next refreshFromSettings() re-derives the rung
+  // from the (now cleared) strikes and the boot's promotion evaporates before the
+  // clock is ever set from it.
+  //
+  // The floor takes the STRIKE escalation only, never the profile base: folding
+  // the base in would strand a device that boots on a high-base profile above its
+  // lower-base choice for the rest of the session.
   const endurance::StrikeState bootStrikes = strikes();
-  const uint8_t escalated =
-      endurance::escalate(persistedFloor_, bootStrikes.idleStrikes, bootStrikes.lightSleepStrikes);
-  const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile())];
-  const uint8_t wanted = escalated > base ? escalated : base;
-  // The floor only ratchets up: a device that once proved unstable at 10 MHz
-  // never silently returns there because a later boot read a clean byte.
-  strategyIndex_ = wanted > persistedFloor_ ? wanted : persistedFloor_;
-  // Carry the promotion into the in-memory floor. Without this the very next
-  // refreshFromSettings() re-derives the rung from the (now cleared) strikes and
-  // the boot's promotion evaporates before the clock is ever set from it.
-  persistedFloor_ = strategyIndex_;
+  const endurance::LadderResolution boot =
+      endurance::resolveRung(profile(), persistedFloor_, bootStrikes.idleStrikes, bootStrikes.lightSleepStrikes, true);
+  strategyIndex_ = boot.rung;
+  persistedFloor_ = boot.floorIndex;
 
-  const uint8_t newState = encodeStateByte(endurance::StrikeState{}, strategyIndex_);
+  // The persisted ratchet is the FLOOR, never the rung. Writing the rung folded
+  // the profile base into the persisted floor, which no profile change could then
+  // lower: a device that ever booted on Performance stayed above its Endurance
+  // choice across every later boot.
+  const uint8_t newState = encodeStateByte(endurance::StrikeState{}, persistedFloor_);
   if (newState != oldState) {
     LOG_INF("PWR", kEnduranceMigrationLogFormat, static_cast<unsigned>(oldState), static_cast<unsigned>(newState));
     Preferences prefs;
@@ -276,35 +285,32 @@ void EnduranceGovernor::persistFloor(const uint8_t floorIndex) {
 }
 
 void EnduranceGovernor::refreshFromSettings() {
-  const endurance::StrikeState current = strikes();
-  (void)resolveLadder(current.idleStrikes, current.lightSleepStrikes);
+  // A zero batch, and no floor advance: this path is the PROFILE's, not a strike
+  // consumer's. Folding the still-live strike flags in here let a profile change
+  // that landed between reportInstability() and the escalation task's exchange
+  // raise the floor, and the task then escalated the same event a second time
+  // from that already-raised floor -- one failure, two rungs, with the surplus
+  // ratcheted into NVS by persistFloor() and surviving every reboot.
+  (void)resolveLadder(0, 0, false);
 }
 
-uint8_t EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes) {
+uint8_t EnduranceGovernor::resolveLadder(const uint8_t idleStrikes, const uint8_t lightStrikes,
+                                         const bool advanceFloor) {
   lockState();
   profile_ = endurance::clampProfile(static_cast<uint8_t>(profile_));
-  // Escalate from the rung the device is ON, not from the profile base: strike
-  // counters are boolean flags, so a base-derived rung would be recomputed
-  // identically on every strike and the ladder could never climb past base+1.
-  const uint8_t escalated = endurance::escalate(persistedFloor_, idleStrikes, lightStrikes);
-  const uint8_t base = endurance::kProfileBaseStrategy[static_cast<uint8_t>(profile_)];
-  const uint8_t wanted = escalated > base ? escalated : base;
-  // Only upward. Assigning `wanted` outright let a caller that had just consumed
-  // the strike batch (so it passes zeros) recompute the rung from a floor that
-  // another task had not yet raised, and write strategyIndex_ back DOWN over a
-  // promotion in flight.
-  if (wanted > strategyIndex_) {
-    strategyIndex_ = wanted;
-  }
-  // The rung and its floor move together inside this one critical section, and
-  // the promoted index is handed back to the caller: a separate lock/re-read
-  // would leave a window where a concurrent profile adoption resets the rung
-  // between the promotion and the observation of it.
-  if (strategyIndex_ > persistedFloor_) {
-    persistedFloor_ = strategyIndex_;
-  }
+  // One pure call publishes the rung and its floor together, so no caller can
+  // observe -- or persist -- one without the other. See EnduranceLadder.h for the
+  // ownership rule: the floor is raised ONLY by a consumed strike batch, the
+  // rung may move in either direction bounded below by that floor.
+  const endurance::LadderResolution resolved =
+      endurance::resolveRung(profile_, persistedFloor_, idleStrikes, lightStrikes, advanceFloor);
+  strategyIndex_ = resolved.rung;
+  persistedFloor_ = resolved.floorIndex;
   const uint8_t index = strategyIndex_;
   unlockState();
+  // The promoted index is handed back rather than re-read: a separate lock/re-read
+  // would leave a window where a concurrent profile adoption recomputed the rung
+  // between the promotion and the observation of it.
   return index;
 }
 
@@ -404,7 +410,7 @@ void EnduranceGovernor::escalationTaskEntry() {
       // Promote from the batch just taken, not from whatever is live at read time.
       // resolveLadder publishes the rung and its floor together and hands the
       // promoted index back, so nothing here re-reads shared state.
-      const uint8_t index = resolveLadder(idleSeen, lightSeen);
+      const uint8_t index = resolveLadder(idleSeen, lightSeen, true);
       // Persist the raised floor: otherwise the promotion lives only in RAM and
       // the next boot's loadAndMigrateStrikes() reads the pre-escalation ratchet,
       // putting the device back on the rung that was failing it. The batch was

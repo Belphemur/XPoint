@@ -108,6 +108,133 @@ TEST(EnduranceLadder, EscalateFromTheBaseIsIdempotentWhichIsTheBug) {
       << "escalating from the current rung must differ from re-deriving from the base";
 }
 
+// ---- rung vs strike-floor ownership (review threads PRRT_kwDOUDrzps6oWh{D,8,Tv}) ----
+//
+// The three callers of the ladder used to share one rule that folded the strike
+// floor, the profile base and the live rung together. These pin the separated
+// ownership: only a CONSUMED strike batch ratchets the floor, and the rung moves
+// in either direction within that floor.
+
+// One instability event must advance the ladder by EXACTLY one rung, even when a
+// profile refresh lands between reportInstability() and the escalation task's
+// exchange. The refresh passes a zero batch (it is not a strike consumer), so it
+// moves nothing and the task's own batch promotes once.
+TEST(EnduranceLadder, OneInstabilityEventPromotesExactlyOneRung) {
+  auto state = endurance::resolveRung(Profile::Endurance, 0, 0, 0, false);
+  ASSERT_EQ(0u, state.rung);
+  ASSERT_EQ(0u, state.floorIndex);
+
+  // A profile refresh arriving while the strike is still live: it must not see it.
+  const endurance::LadderResolution refreshed =
+      endurance::resolveRung(Profile::Endurance, state.floorIndex, 0, 0, false);
+  EXPECT_EQ(0u, refreshed.rung) << "a profile refresh must not consume or re-commit a live strike";
+  EXPECT_EQ(0u, refreshed.floorIndex) << "and must not ratchet the floor for a strike it did not consume";
+
+  // Now the escalation task takes that batch.
+  state = endurance::resolveRung(Profile::Endurance, state.floorIndex, 1, 0, true);
+  EXPECT_EQ(1u, state.rung) << "one idle strike is one rung, not the two a shared ratchet produced";
+  EXPECT_EQ(1u, state.floorIndex);
+
+  // And a repeated event keeps climbing one rung at a time.
+  state = endurance::resolveRung(Profile::Endurance, state.floorIndex, 1, 0, true);
+  EXPECT_EQ(2u, state.rung);
+  EXPECT_EQ(2u, state.floorIndex);
+
+  // Documents the defect shape, so the "zero batch" above cannot look arbitrary:
+  // feeding the SAME unconsumed strike to two resolutions costs two rungs, which
+  // is what happened while refreshFromSettings() passed the live flags through.
+  const endurance::LadderResolution staleRefresh = endurance::resolveRung(Profile::Endurance, 0, 1, 0, true);
+  ASSERT_EQ(1u, staleRefresh.floorIndex) << "a live batch seen by a non-consumer still moves the floor";
+  const endurance::LadderResolution replayed =
+      endurance::resolveRung(Profile::Endurance, staleRefresh.floorIndex, 1, 0, true);
+  EXPECT_EQ(2u, replayed.rung) << "two resolutions of one event = +2 rungs; only the sole consumer may pass a batch";
+}
+
+// A profile with a lower base must be able to pull the device back down when the
+// strike floor does not pin it.
+TEST(EnduranceLadder, LowerBaseProfileFallsBackToItsOwnBase) {
+  endurance::LadderResolution state = endurance::resolveRung(Profile::Performance, 0, 0, 0, false);
+  ASSERT_EQ(3u, state.rung);
+  ASSERT_EQ(0u, state.floorIndex) << "the profile base must never be persisted as the floor";
+
+  state = endurance::resolveRung(Profile::Endurance, state.floorIndex, 0, 0, false);
+  EXPECT_EQ(0u, state.rung) << "switching to a lower-base profile must restore its rung, not pin the old one";
+  EXPECT_EQ(0u, state.floorIndex);
+
+  state = endurance::resolveRung(Profile::Balanced, state.floorIndex, 0, 0, false);
+  EXPECT_EQ(1u, state.rung);
+}
+
+// The floor is the lower bound: a strike-proven rung survives a lower-base
+// profile, and a profile above it may raise the rung without ratcheting anything.
+TEST(EnduranceLadder, StrikeFloorBoundsTheProfileFromBelow) {
+  endurance::LadderResolution state = endurance::resolveRung(Profile::Endurance, 0, 1, 0, true);
+  ASSERT_EQ(1u, state.floorIndex);
+
+  state = endurance::resolveRung(Profile::Performance, state.floorIndex, 0, 0, false);
+  EXPECT_EQ(3u, state.rung);
+  EXPECT_EQ(1u, state.floorIndex) << "a profile change must not ratchet the floor it happens to exceed";
+
+  state = endurance::resolveRung(Profile::Endurance, state.floorIndex, 0, 0, false);
+  EXPECT_EQ(1u, state.rung) << "the strike floor, not the old profile, is the lower bound";
+  EXPECT_EQ(1u, state.floorIndex);
+}
+
+// The NVS strand: after a profile-only change the persisted ratchet must still be
+// the strike-derived value, or the surplus rung survives every reboot.
+TEST(EnduranceLadder, ProfileOnlyChangeLeavesThePersistedFloorAtTheStrikeValue) {
+  endurance::LadderResolution state = endurance::resolveRung(Profile::Endurance, 0, 1, 0, true);
+  ASSERT_EQ(1u, state.floorIndex);
+
+  state = endurance::resolveRung(Profile::Performance, state.floorIndex, 0, 0, false);
+  EXPECT_EQ(3u, state.rung) << "Performance still gets the stock clock";
+  // This is the byte loadAndMigrateStrikes() writes back and the next boot reads.
+  EXPECT_EQ(1u, state.floorIndex)
+      << "a rung of 3 must never reach NVS as the ratchet, or Endurance is unreachable after reboot";
+
+  // And a reboot on that ratchet reproduces exactly the same ladder.
+  const endurance::LadderResolution rebooted = endurance::resolveRung(Profile::Endurance, state.floorIndex, 0, 0, true);
+  EXPECT_EQ(1u, rebooted.rung);
+  EXPECT_EQ(1u, rebooted.floorIndex);
+}
+
+// Boot and runtime share the rule, so a strike byte restored from NVS promotes the
+// same rung the escalation task would have promoted, and consumes it once.
+TEST(EnduranceLadder, BootEscalationMatchesTheRuntimePromotion) {
+  const endurance::LadderResolution booted = endurance::resolveRung(Profile::Endurance, 0, 1, 1, true);
+  EXPECT_EQ(2u, booted.rung);
+  EXPECT_EQ(2u, booted.floorIndex)
+      << "the boot promotion must be carried into the floor or it evaporates on the next refresh";
+
+  // The batch is consumed by that promotion, so re-resolving with no live strike
+  // (what refreshFromSettings() does) must be a no-op.
+  const endurance::LadderResolution afterRefresh =
+      endurance::resolveRung(Profile::Endurance, booted.floorIndex, 0, 0, false);
+  EXPECT_EQ(booted.rung, afterRefresh.rung);
+  EXPECT_EQ(booted.floorIndex, afterRefresh.floorIndex);
+}
+
+// Saturation and idempotence: a zero batch never moves anything, and the ladder
+// still stops at the top rung.
+TEST(EnduranceLadder, ZeroBatchResolutionIsIdempotentAndTheLadderSaturates) {
+  const endurance::LadderResolution first = endurance::resolveRung(Profile::Balanced, 0, 0, 0, false);
+  for (int i = 0; i < 5; ++i) {
+    const endurance::LadderResolution again = endurance::resolveRung(Profile::Balanced, first.floorIndex, 0, 0, false);
+    EXPECT_EQ(first.rung, again.rung);
+    EXPECT_EQ(first.floorIndex, again.floorIndex);
+  }
+  const endurance::LadderResolution top = endurance::resolveRung(Profile::Endurance, 3, 1, 1, true);
+  EXPECT_EQ(3u, top.rung);
+  EXPECT_EQ(3u, top.floorIndex);
+}
+
+// A corrupt/migrated profile byte must not index past the base table.
+TEST(EnduranceLadder, ResolveRungClampsAnOutOfRangeProfileByte) {
+  const endurance::LadderResolution state = endurance::resolveRung(static_cast<Profile>(0xFF), 0, 0, 0, false);
+  EXPECT_EQ(0u, state.rung);
+  EXPECT_EQ(0u, state.floorIndex);
+}
+
 TEST(EnduranceLadder, CrashStrikeStateIsRepresentable) {
   // reportInstability(Crash) strikes both dimensions, so the persisted byte must
   // carry both bits; a crash that sets neither is the defect kody/coderabbit
