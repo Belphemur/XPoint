@@ -116,6 +116,28 @@ SD card and fall back to your TTF font for CJK text in menus. Practical rule of
 thumb: `.ttf` files work on both readers; `.cpfont` pre-rasterized families are
 XPoint-specific. Details in [docs/ttf.md](./docs/ttf.md).
 
+#### Built-in font catalog
+
+On first launch, the reader can download a curated catalog of 53 type families
+(207 font files) straight over Wi-Fi — no SD-card copy needed. The catalog is
+curated for readability on e-ink: serif, sans-serif, and accessibility
+families, including e-ink-optimized variants tuned for low-contrast,
+high-frequency waveforms.
+
+**Where the fonts come from:** The catalog is built from fonts by
+[Nico Verbruggen](https://nicoverbruggen.be) and the
+[`nicoverbruggen/ebook-fonts`](https://github.com/nicoverbruggen/ebook-fonts)
+GitHub repository, with additional families from Google Fonts static
+releases. All fonts carry the SIL Open Font License (OFL).
+
+- **Browse previews**: <https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/index.html>
+- **Source repository**: <https://github.com/nicoverbruggen/ebook-fonts>
+- **Font sources page**: <https://ebook-fonts.nicoverbruggen.be/>
+- **Pipeline script**: [`lib/EpdFont/scripts/distribute-fonts.py`](./lib/EpdFont/scripts/distribute-fonts.py)
+  generates the manifest (`fonts.json`), PNG previews, and HTML gallery, then
+  uploads them to a Cloudflare R2 bucket.
+- **Design doc**: [`font-distribution/TTF_DOWNLOAD_DESIGN.md`](./font-distribution/TTF_DOWNLOAD_DESIGN.md)
+
 ### 🏠 Home & library
 
 - **Progress on every home card.** "42% • 2h 30m" right under each book in
