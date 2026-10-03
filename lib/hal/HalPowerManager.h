@@ -38,10 +38,12 @@ class HalPowerManager {
 
  public:
 #if BOARD_HAS_PSRAM
-  // 40 MHz idle floor on PSRAM boards (owner directive, 2026-10): 80 was
-  // higher than the device needs at idle; 40 halves the low-power clock while
-  // staying in spec for the PSRAM bus.
-  static constexpr int LOW_POWER_FREQ = 40;  // MHz
+  // 80 MHz idle floor on PSRAM boards (ESP32-S3). The SDMMC host's register
+  // interface and its ISR run off APB, which follows the CPU clock, so a floor
+  // below 80 costs SD transfers: at 40 MHz the driver loses the completion
+  // event for a multi-block transfer and cannot even recover with a status
+  // query (sdmmc_read_sectors_dma ... returned 0x107).
+  static constexpr int LOW_POWER_FREQ = 80;  // MHz
 #else
   static constexpr int LOW_POWER_FREQ = 10;  // MHz
 #endif
