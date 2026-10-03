@@ -104,18 +104,20 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     if (millis() - lastNormalMs < NORMAL_POWER_DWELL_MS) {
       return;  // recent full-speed work: stay at normal frequency
     }
-    LOG_DBG("PWR", "Going to low-power mode");
+    const int prev = getCpuFrequencyMhz();
+    LOG_INF("PWR", "CPU freq %d->%d MHz [idle-enter]", prev, LOW_POWER_FREQ);
     if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
-      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
+      LOG_ERR("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
       return;
     }
     InputManager::setLowPowerPolling(true);
     isLowPower = true;
 
   } else if ((!enabled || mode != None) && isLowPower) {
-    LOG_DBG("PWR", "Restoring normal CPU frequency");
+    const int prev = getCpuFrequencyMhz();
+    LOG_INF("PWR", "CPU freq %d->%d MHz [normal-restore]", prev, normalFreq);
     if (!setCpuFrequencyMhz(normalFreq)) {
-      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
+      LOG_ERR("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
       return;
     }
     InputManager::setLowPowerPolling(false);
@@ -200,6 +202,7 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffT
 
   // Waits for the power button to be physically released (so holding it doesn't
   // immediately wake the device again), then arms the wake source and sleeps.
+  LOG_INF("PWR", "CPU freq %d->0 MHz [deep-sleep]", getCpuFrequencyMhz());
   LOG_DBG("PWR", "Entering deep sleep");
 
   // Auto power off: arm the dwell timer so the device wakes (and shuts down)

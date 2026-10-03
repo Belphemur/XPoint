@@ -127,6 +127,9 @@ psram_time_data: deque[str] = deque(maxlen=MAX_POINTS)
 psram_free_mem_data: deque[float] = deque(maxlen=MAX_POINTS)
 psram_total_mem_data: deque[float] = deque(maxlen=MAX_POINTS)
 psram_max_alloc_data: deque[float] = deque(maxlen=MAX_POINTS)
+# CPU frequency (MHz) — one point per transition, e.g. 240->40 [idle-enter]
+freq_time_data: deque[str] = deque(maxlen=MAX_POINTS)
+freq_data: deque[int] = deque(maxlen=MAX_POINTS)
 data_lock: threading.Lock = threading.Lock()  # Prevent reading while writing
 
 # Global shutdown flag
@@ -204,6 +207,7 @@ COLOR_KEYWORDS: dict[str, list[str]] = {
         "STARTING CROSSPOINT",
         "VERSION",
     ],
+    Fore.LIGHTBLUE_EX: ["[PWR]"],
     Fore.LIGHTCYAN_EX: ["[RBS]"],
     Fore.LIGHTMAGENTA_EX: [
         "[KRS]",
@@ -262,6 +266,21 @@ def parse_memory_line(line: str) -> tuple[int | None, int | None, int | None]:
         _find(r"\bTotal:\s*(\d+)"),
         _find(r"\bMaxAlloc:\s*(\d+)"),
     )
+
+
+def parse_freq_line(line: str) -> int | None:
+    """
+    Extracts the resulting CPU frequency (MHz) from a PWR frequency-transition log
+    line emitted by HalPowerManager, e.g. '[PWR] CPU freq 240->40 MHz [idle-enter]'.
+    Returns the NEW target frequency, or None if the line isn't a freq transition.
+    """
+    m = re.search(r"CPU freq\s*\d+->(\d+)\s*MHz", line)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
 
 
 def serial_worker(ser, kwargs: dict[str, str]) -> None:
@@ -353,6 +372,13 @@ def serial_worker(ser, kwargs: dict[str, str]) -> None:
                                     free_mem_data.append(free_val / 1024)
                                     total_mem_data.append(total_val / 1024)
                                     max_alloc_data.append((max_alloc_val or 0) / 1024)
+                    # Check for CPU frequency transition line
+                    elif "[PWR]" in formatted_line and "CPU freq" in formatted_line:
+                        freq_val = parse_freq_line(formatted_line)
+                        if freq_val is not None:
+                            with data_lock:
+                                freq_time_data.append(pc_time)
+                                freq_data.append(freq_val)
                     # Apply filters
                     if filter_keyword and filter_keyword not in formatted_line.lower():
                         continue
@@ -398,7 +424,7 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
         return []
 
     with data_lock:
-        if not time_data and not psram_time_data:
+        if not time_data and not psram_time_data and not freq_data:
             return []
 
         x = list(time_data)
@@ -409,10 +435,21 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
         py_free = list(psram_free_mem_data)
         py_total = list(psram_total_mem_data)
         py_max_alloc = list(psram_max_alloc_data)
+        fx = list(freq_time_data)
+        fy = list(freq_data)
+
+    def _band_color(mhz: int) -> str:
+        # green = boot/normal (>=200), orange = mid (80-199), red = idle floor (<80)
+        if mhz >= 200:
+            return "green"
+        if mhz >= 80:
+            return "orange"
+        return "red"
 
     fig = plt.gcf()
     fig.clf()
-    ax1 = fig.add_subplot(211 if px else 111)
+    nrows = 3 if px else 2
+    ax1 = fig.add_subplot(nrows, 1, 1)
 
     ax1.plot(x, y_total, label="Total RAM (KB)", color="red", linestyle="--")
     ax1.plot(x, y_free, label="Free RAM (KB)", color="green", marker="o", markersize=3)
@@ -427,7 +464,7 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
     plt.setp(ax1.get_xticklabels(), rotation=45, ha="right")
 
     if px:
-        ax2 = fig.add_subplot(212)
+        ax2 = fig.add_subplot(nrows, 1, 2)
         ax2.plot(px, py_total, label="Total PSRAM (KB)", color="red", linestyle="--")
         ax2.plot(px, py_free, label="Free PSRAM (KB)", color="green", marker="o", markersize=3)
         if any(v > 0 for v in py_max_alloc):
@@ -439,6 +476,20 @@ def update_graph(frame) -> list:  # pylint: disable=unused-argument
         ax2.legend(loc="upper left")
         ax2.grid(True, linestyle=":", alpha=0.6)
         plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
+
+    ax3 = fig.add_subplot(nrows, 1, nrows)
+    ax3.plot(fx, fy, color="cyan", linestyle="-", marker="o", markersize=3,
+             label="CPU freq (MHz)")
+    if fy:
+        for xv, yv in zip(fx, fy):
+            ax3.scatter([xv], [yv], color=_band_color(yv), s=22, zorder=5)
+        ax3.axhline(40, color="red", linestyle=":", alpha=0.6, label="idle floor (40)")
+    ax3.set_title("ESP32 CPU Frequency")
+    ax3.set_ylabel("Freq (MHz)")
+    ax3.set_xlabel("Time")
+    ax3.legend(loc="upper right")
+    ax3.grid(True, linestyle=":", alpha=0.6)
+    plt.setp(ax3.get_xticklabels(), rotation=45, ha="right")
 
     fig.tight_layout()
     return []
