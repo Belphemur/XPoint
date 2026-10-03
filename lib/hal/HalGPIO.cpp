@@ -164,12 +164,18 @@ bool HalGPIO::anyPhysicalButtonHeld() {
     if (inputMgr.isPressed(i)) return true;
   }
   // Sticky-style boards route the nav keys to plain GPIOs (INPUT_PULLUP) that
-  // rawInputActive()'s ADC read cannot see. Sample them live too, so a tap
-  // released inside the 50 ms idle slice still breaks it (CodeRabbit PR #171
-  // round 2 finding — a level-only read loses sub-10 ms taps between samples).
-  const BoardConfig::InputPins& pins = BoardConfig::ACTIVE.input;
-  if (pins.up >= 0 && digitalRead(pins.up) == LOW) return true;
-  if (pins.down >= 0 && digitalRead(pins.down) == LOW) return true;
+  // rawInputActive()'s ADC read cannot see. Sample them live only for input
+  // styles that actually wire digital nav keys — on ADC-ladder profiles
+  // (X4/X3) input.up/.down map to display DC/RST output pins, so reading
+  // them spuriously breaks the idle slice (Kody PR #171 K2 on 90a84566).
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalButtons ||
+      BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalTwoButton ||
+      BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalFiveKey ||
+      BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
+    const BoardConfig::InputPins& pins = BoardConfig::ACTIVE.input;
+    if (pins.up >= 0 && digitalRead(pins.up) == LOW) return true;
+    if (pins.down >= 0 && digitalRead(pins.down) == LOW) return true;
+  }
   return false;
 }
 
