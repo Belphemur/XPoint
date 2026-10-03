@@ -1,0 +1,2255 @@
+{
+  "version": 1,
+  "kind": "ttf",
+  "description": "TTF font download manifest for PSRAM-enabled devices (ESP32-S3). C3/non-PSRAM devices use the .cpfont system.",
+  "generated": "2026-10-02",
+  "license": "SIL Open Font License (OFL) - all fonts unless noted",
+  "baseUrl": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/ttf/",
+  "previewsUrl": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/",
+  "families": [
+    {
+      "name": "Atkinson Hyperlegible",
+      "type": "sans-serif (accessibility)",
+      "description": "Atkinson Hyperlegible",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "AtkinsonHyperlegible-Regular.ttf",
+          "path": "AtkinsonHyperlegible/AtkinsonHyperlegible-Regular.ttf",
+          "style": "regular",
+          "size": 54348,
+          "crc32": 1714479648
+        },
+        {
+          "name": "AtkinsonHyperlegible-Bold.ttf",
+          "path": "AtkinsonHyperlegible/AtkinsonHyperlegible-Bold.ttf",
+          "style": "bold",
+          "size": 55256,
+          "crc32": 3913438222
+        },
+        {
+          "name": "AtkinsonHyperlegible-Italic.ttf",
+          "path": "AtkinsonHyperlegible/AtkinsonHyperlegible-Italic.ttf",
+          "style": "italic",
+          "size": 54892,
+          "crc32": 2070748207
+        },
+        {
+          "name": "AtkinsonHyperlegible-BoldItalic.ttf",
+          "path": "AtkinsonHyperlegible/AtkinsonHyperlegible-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 55288,
+          "crc32": 3329465047
+        }
+      ]
+    },
+    {
+      "name": "Cardo",
+      "type": "serif",
+      "description": "Cardo",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic"
+      ],
+      "files": [
+        {
+          "name": "Cardo-Regular.ttf",
+          "path": "Cardo/Cardo-Regular.ttf",
+          "style": "regular",
+          "size": 400468,
+          "crc32": 2178158125
+        },
+        {
+          "name": "Cardo-Bold.ttf",
+          "path": "Cardo/Cardo-Bold.ttf",
+          "style": "bold",
+          "size": 348320,
+          "crc32": 2117281038
+        },
+        {
+          "name": "Cardo-Italic.ttf",
+          "path": "Cardo/Cardo-Italic.ttf",
+          "style": "italic",
+          "size": 262388,
+          "crc32": 1808529760
+        }
+      ]
+    },
+    {
+      "name": "Cartisse",
+      "type": "serif",
+      "description": "Cartisse",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "preview": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/preview_Cartisse_e-ink_opt.png",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "Cartisse-Regular.ttf",
+          "path": "NV_Cartisse/Cartisse-Regular.ttf",
+          "style": "regular",
+          "size": 199520,
+          "crc32": 3804344891
+        },
+        {
+          "name": "Cartisse-Bold.ttf",
+          "path": "NV_Cartisse/Cartisse-Bold.ttf",
+          "style": "bold",
+          "size": 179156,
+          "crc32": 1022438438
+        },
+        {
+          "name": "Cartisse-Italic.ttf",
+          "path": "NV_Cartisse/Cartisse-Italic.ttf",
+          "style": "italic",
+          "size": 184228,
+          "crc32": 704791672
+        },
+        {
+          "name": "Cartisse-BoldItalic.ttf",
+          "path": "NV_Cartisse/Cartisse-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 166640,
+          "crc32": 4174118893
+        }
+      ]
+    },
+    {
+      "name": "Crimson Pro",
+      "type": "serif",
+      "description": "Crimson Pro",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "CrimsonPro-Regular.ttf",
+          "path": "CrimsonPro/CrimsonPro-Regular.ttf",
+          "style": "regular",
+          "size": 147428,
+          "crc32": 3672686786
+        },
+        {
+          "name": "CrimsonPro-Bold.ttf",
+          "path": "CrimsonPro/CrimsonPro-Bold.ttf",
+          "style": "bold",
+          "size": 147872,
+          "crc32": 2458922483
+        },
+        {
+          "name": "CrimsonPro-Italic.ttf",
+          "path": "CrimsonPro/CrimsonPro-Italic.ttf",
+          "style": "italic",
+          "size": 151220,
+          "crc32": 4063361528
+        },
+        {
+          "name": "CrimsonPro-BoldItalic.ttf",
+          "path": "CrimsonPro/CrimsonPro-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 151192,
+          "crc32": 1053337160
+        }
+      ]
+    },
+    {
+      "name": "Fira Sans",
+      "type": "sans-serif",
+      "description": "Fira Sans",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold"
+      ],
+      "files": [
+        {
+          "name": "FiraSans-Regular.ttf",
+          "path": "FiraSans/FiraSans-Regular.ttf",
+          "style": "regular",
+          "size": 456996,
+          "crc32": 4175212357
+        },
+        {
+          "name": "FiraSans-Bold.ttf",
+          "path": "FiraSans/FiraSans-Bold.ttf",
+          "style": "bold",
+          "size": 489720,
+          "crc32": 2046639357
+        }
+      ]
+    },
+    {
+      "name": "Literata",
+      "type": "serif",
+      "description": "Literata",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "preview": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/preview_Literata.png",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "Literata-Regular.ttf",
+          "path": "Literata/Literata-Regular.ttf",
+          "style": "regular",
+          "size": 319964,
+          "crc32": 3444607403
+        },
+        {
+          "name": "Literata-Bold.ttf",
+          "path": "Literata/Literata-Bold.ttf",
+          "style": "bold",
+          "size": 331304,
+          "crc32": 4025781391
+        },
+        {
+          "name": "Literata-Italic.ttf",
+          "path": "Literata/Literata-Italic.ttf",
+          "style": "italic",
+          "size": 304104,
+          "crc32": 3743048182
+        },
+        {
+          "name": "Literata-BoldItalic.ttf",
+          "path": "Literata/Literata-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 318888,
+          "crc32": 4031374081
+        }
+      ]
+    },
+    {
+      "name": "Lora",
+      "type": "serif",
+      "description": "Lora",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "preview": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/preview_Lora.png",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "Lora-Regular.ttf",
+          "path": "Lora/Lora-Regular.ttf",
+          "style": "regular",
+          "size": 198380,
+          "crc32": 1994259967
+        },
+        {
+          "name": "Lora-Bold.ttf",
+          "path": "Lora/Lora-Bold.ttf",
+          "style": "bold",
+          "size": 218640,
+          "crc32": 524342852
+        },
+        {
+          "name": "Lora-Italic.ttf",
+          "path": "Lora/Lora-Italic.ttf",
+          "style": "italic",
+          "size": 206912,
+          "crc32": 1900356837
+        },
+        {
+          "name": "Lora-BoldItalic.ttf",
+          "path": "Lora/Lora-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 213560,
+          "crc32": 1752403913
+        }
+      ]
+    },
+    {
+      "name": "Merriweather",
+      "type": "serif",
+      "description": "Merriweather",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "preview": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/preview_Merriweather.png",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "Merriweather-Regular.ttf",
+          "path": "Merriweather/Merriweather-Regular.ttf",
+          "style": "regular",
+          "size": 282844,
+          "crc32": 377522616
+        },
+        {
+          "name": "Merriweather-Bold.ttf",
+          "path": "Merriweather/Merriweather-Bold.ttf",
+          "style": "bold",
+          "size": 282608,
+          "crc32": 2657724140
+        },
+        {
+          "name": "Merriweather-Italic.ttf",
+          "path": "Merriweather/Merriweather-Italic.ttf",
+          "style": "italic",
+          "size": 272256,
+          "crc32": 2626502056
+        },
+        {
+          "name": "Merriweather-BoldItalic.ttf",
+          "path": "Merriweather/Merriweather-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 272088,
+          "crc32": 2030812648
+        }
+      ]
+    },
+    {
+      "name": "NV Bitter",
+      "type": "slab-serif",
+      "description": "NV Bitter",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Bitter-Regular.ttf",
+          "path": "NV_Bitter/NV_Bitter-Regular.ttf",
+          "style": "regular",
+          "size": 187600,
+          "crc32": 3190989552
+        },
+        {
+          "name": "NV_Bitter-Bold.ttf",
+          "path": "NV_Bitter/NV_Bitter-Bold.ttf",
+          "style": "bold",
+          "size": 188800,
+          "crc32": 1735715053
+        },
+        {
+          "name": "NV_Bitter-Italic.ttf",
+          "path": "NV_Bitter/NV_Bitter-Italic.ttf",
+          "style": "italic",
+          "size": 187276,
+          "crc32": 1043707796
+        },
+        {
+          "name": "NV_Bitter-BoldItalic.ttf",
+          "path": "NV_Bitter/NV_Bitter-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 187900,
+          "crc32": 2977821363
+        }
+      ]
+    },
+    {
+      "name": "NV Disleksio",
+      "type": "sans-serif (dyslexia)",
+      "description": "NV Disleksio",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Disleksio-Regular.ttf",
+          "path": "NV_Disleksio/NV_Disleksio-Regular.ttf",
+          "style": "regular",
+          "size": 421300,
+          "crc32": 4256518156
+        },
+        {
+          "name": "NV_Disleksio-Bold.ttf",
+          "path": "NV_Disleksio/NV_Disleksio-Bold.ttf",
+          "style": "bold",
+          "size": 477256,
+          "crc32": 2775314475
+        },
+        {
+          "name": "NV_Disleksio-Italic.ttf",
+          "path": "NV_Disleksio/NV_Disleksio-Italic.ttf",
+          "style": "italic",
+          "size": 424040,
+          "crc32": 405097871
+        },
+        {
+          "name": "NV_Disleksio-BoldItalic.ttf",
+          "path": "NV_Disleksio/NV_Disleksio-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 469600,
+          "crc32": 2861461016
+        }
+      ]
+    },
+    {
+      "name": "NV Jost",
+      "type": "sans-serif",
+      "description": "NV Jost",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Jost-Regular.ttf",
+          "path": "NV_Jost/NV_Jost-Regular.ttf",
+          "style": "regular",
+          "size": 61728,
+          "crc32": 3122276877
+        },
+        {
+          "name": "NV_Jost-Bold.ttf",
+          "path": "NV_Jost/NV_Jost-Bold.ttf",
+          "style": "bold",
+          "size": 61892,
+          "crc32": 883218145
+        },
+        {
+          "name": "NV_Jost-Italic.ttf",
+          "path": "NV_Jost/NV_Jost-Italic.ttf",
+          "style": "italic",
+          "size": 66344,
+          "crc32": 3939381044
+        },
+        {
+          "name": "NV_Jost-BoldItalic.ttf",
+          "path": "NV_Jost/NV_Jost-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 66340,
+          "crc32": 3483583486
+        }
+      ]
+    },
+    {
+      "name": "NV Legible Next",
+      "type": "sans-serif (accessibility)",
+      "description": "NV Legible Next",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Legible_Next-Regular.ttf",
+          "path": "NV_LegibleNext/NV_Legible_Next-Regular.ttf",
+          "style": "regular",
+          "size": 61460,
+          "crc32": 3789478939
+        },
+        {
+          "name": "NV_Legible_Next-Bold.ttf",
+          "path": "NV_LegibleNext/NV_Legible_Next-Bold.ttf",
+          "style": "bold",
+          "size": 63388,
+          "crc32": 3978976955
+        },
+        {
+          "name": "NV_Legible_Next-Italic.ttf",
+          "path": "NV_LegibleNext/NV_Legible_Next-Italic.ttf",
+          "style": "italic",
+          "size": 65584,
+          "crc32": 3700945357
+        },
+        {
+          "name": "NV_Legible_Next-BoldItalic.ttf",
+          "path": "NV_LegibleNext/NV_Legible_Next-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 66824,
+          "crc32": 1525336922
+        }
+      ]
+    },
+    {
+      "name": "NV Libron",
+      "type": "serif",
+      "description": "NV Libron",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Libron-Regular.ttf",
+          "path": "NV_Libron/NV_Libron-Regular.ttf",
+          "style": "regular",
+          "size": 157220,
+          "crc32": 814320427
+        },
+        {
+          "name": "NV_Libron-Bold.ttf",
+          "path": "NV_Libron/NV_Libron-Bold.ttf",
+          "style": "bold",
+          "size": 158720,
+          "crc32": 2169651530
+        },
+        {
+          "name": "NV_Libron-Italic.ttf",
+          "path": "NV_Libron/NV_Libron-Italic.ttf",
+          "style": "italic",
+          "size": 178324,
+          "crc32": 1794523178
+        },
+        {
+          "name": "NV_Libron-BoldItalic.ttf",
+          "path": "NV_Libron/NV_Libron-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 178708,
+          "crc32": 729763036
+        }
+      ]
+    },
+    {
+      "name": "NV Sourcerer",
+      "type": "serif",
+      "description": "NV Sourcerer",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "Sourcerer-Regular.ttf",
+          "path": "NV_Sourcerer/Sourcerer-Regular.ttf",
+          "style": "regular",
+          "size": 407328,
+          "crc32": 3048762898
+        },
+        {
+          "name": "Sourcerer-Bold.ttf",
+          "path": "NV_Sourcerer/Sourcerer-Bold.ttf",
+          "style": "bold",
+          "size": 408668,
+          "crc32": 2326372474
+        },
+        {
+          "name": "Sourcerer-Italic.ttf",
+          "path": "NV_Sourcerer/Sourcerer-Italic.ttf",
+          "style": "italic",
+          "size": 262952,
+          "crc32": 1729299887
+        },
+        {
+          "name": "Sourcerer-BoldItalic.ttf",
+          "path": "NV_Sourcerer/Sourcerer-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 265480,
+          "crc32": 2834750014
+        }
+      ]
+    },
+    {
+      "name": "NV Tabula",
+      "type": "serif",
+      "description": "NV Tabula",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Tabula-Regular.ttf",
+          "path": "NV_Tabula/NV_Tabula-Regular.ttf",
+          "style": "regular",
+          "size": 161328,
+          "crc32": 2234407806
+        },
+        {
+          "name": "NV_Tabula-Bold.ttf",
+          "path": "NV_Tabula/NV_Tabula-Bold.ttf",
+          "style": "bold",
+          "size": 162064,
+          "crc32": 1392249306
+        },
+        {
+          "name": "NV_Tabula-Italic.ttf",
+          "path": "NV_Tabula/NV_Tabula-Italic.ttf",
+          "style": "italic",
+          "size": 171084,
+          "crc32": 88358311
+        },
+        {
+          "name": "NV_Tabula-BoldItalic.ttf",
+          "path": "NV_Tabula/NV_Tabula-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 171008,
+          "crc32": 723907688
+        }
+      ]
+    },
+    {
+      "name": "NV_Adelph",
+      "type": "serif",
+      "description": "Modern serif with generous spacing.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Adelph-Regular.ttf",
+          "path": "NV_Adelph/NV_Adelph-Regular.ttf",
+          "style": "regular",
+          "size": 118508,
+          "crc32": 155963107
+        },
+        {
+          "name": "NV_Adelph-Bold.ttf",
+          "path": "NV_Adelph/NV_Adelph-Bold.ttf",
+          "style": "bold",
+          "size": 119324,
+          "crc32": 2894747979
+        },
+        {
+          "name": "NV_Adelph-Italic.ttf",
+          "path": "NV_Adelph/NV_Adelph-Italic.ttf",
+          "style": "italic",
+          "size": 107116,
+          "crc32": 2707350145
+        },
+        {
+          "name": "NV_Adelph-BoldItalic.ttf",
+          "path": "NV_Adelph/NV_Adelph-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 104336,
+          "crc32": 1995618707
+        }
+      ]
+    },
+    {
+      "name": "NV_Alegreya",
+      "type": "serif",
+      "description": "Calligraphic serif for literary reading, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Alegreya)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Alegreya-Regular.ttf",
+          "path": "NV_Alegreya/NV_Alegreya-Regular.ttf",
+          "style": "regular",
+          "size": 318132,
+          "crc32": 3901627051
+        },
+        {
+          "name": "NV_Alegreya-Bold.ttf",
+          "path": "NV_Alegreya/NV_Alegreya-Bold.ttf",
+          "style": "bold",
+          "size": 326264,
+          "crc32": 3166499656
+        },
+        {
+          "name": "NV_Alegreya-Italic.ttf",
+          "path": "NV_Alegreya/NV_Alegreya-Italic.ttf",
+          "style": "italic",
+          "size": 318908,
+          "crc32": 1110851711
+        },
+        {
+          "name": "NV_Alegreya-BoldItalic.ttf",
+          "path": "NV_Alegreya/NV_Alegreya-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 329864,
+          "crc32": 179581253
+        }
+      ]
+    },
+    {
+      "name": "NV_Alizar",
+      "type": "serif",
+      "description": "Contemporary serif with vertical rhythm.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Alizar)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Alizar-Regular.ttf",
+          "path": "NV_Alizar/NV_Alizar-Regular.ttf",
+          "style": "regular",
+          "size": 108324,
+          "crc32": 2037428531
+        },
+        {
+          "name": "NV_Alizar-Bold.ttf",
+          "path": "NV_Alizar/NV_Alizar-Bold.ttf",
+          "style": "bold",
+          "size": 108532,
+          "crc32": 2020974603
+        },
+        {
+          "name": "NV_Alizar-Italic.ttf",
+          "path": "NV_Alizar/NV_Alizar-Italic.ttf",
+          "style": "italic",
+          "size": 110248,
+          "crc32": 2613666351
+        },
+        {
+          "name": "NV_Alizar-BoldItalic.ttf",
+          "path": "NV_Alizar/NV_Alizar-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 110312,
+          "crc32": 484932904
+        }
+      ]
+    },
+    {
+      "name": "NV_Ancizar_Sans",
+      "type": "sans-serif",
+      "description": "Geometric sans-serif, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Ancizar_Sans-Regular.ttf",
+          "path": "NV_Ancizar_Sans/NV_Ancizar_Sans-Regular.ttf",
+          "style": "regular",
+          "size": 145764,
+          "crc32": 4265734571
+        },
+        {
+          "name": "NV_Ancizar_Sans-Bold.ttf",
+          "path": "NV_Ancizar_Sans/NV_Ancizar_Sans-Bold.ttf",
+          "style": "bold",
+          "size": 145700,
+          "crc32": 1699286062
+        },
+        {
+          "name": "NV_Ancizar_Sans-Italic.ttf",
+          "path": "NV_Ancizar_Sans/NV_Ancizar_Sans-Italic.ttf",
+          "style": "italic",
+          "size": 152848,
+          "crc32": 2176192423
+        },
+        {
+          "name": "NV_Ancizar_Sans-BoldItalic.ttf",
+          "path": "NV_Ancizar_Sans/NV_Ancizar_Sans-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 152568,
+          "crc32": 1673897291
+        }
+      ]
+    },
+    {
+      "name": "NV_Ancizar_Serif",
+      "type": "serif",
+      "description": "Modern serif with bracketed serifs.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Ancizar_Serif-Regular.ttf",
+          "path": "NV_Ancizar_Serif/NV_Ancizar_Serif-Regular.ttf",
+          "style": "regular",
+          "size": 119536,
+          "crc32": 3242979242
+        },
+        {
+          "name": "NV_Ancizar_Serif-Bold.ttf",
+          "path": "NV_Ancizar_Serif/NV_Ancizar_Serif-Bold.ttf",
+          "style": "bold",
+          "size": 119824,
+          "crc32": 3967352777
+        },
+        {
+          "name": "NV_Ancizar_Serif-Italic.ttf",
+          "path": "NV_Ancizar_Serif/NV_Ancizar_Serif-Italic.ttf",
+          "style": "italic",
+          "size": 122928,
+          "crc32": 1554497354
+        },
+        {
+          "name": "NV_Ancizar_Serif-BoldItalic.ttf",
+          "path": "NV_Ancizar_Serif/NV_Ancizar_Serif-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 123156,
+          "crc32": 1323390536
+        }
+      ]
+    },
+    {
+      "name": "NV_Andada",
+      "type": "serif",
+      "description": "Slab serif for screen reading, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Andada)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Andada-Regular.ttf",
+          "path": "NV_Andada/NV_Andada-Regular.ttf",
+          "style": "regular",
+          "size": 161604,
+          "crc32": 3077842503
+        },
+        {
+          "name": "NV_Andada-Bold.ttf",
+          "path": "NV_Andada/NV_Andada-Bold.ttf",
+          "style": "bold",
+          "size": 161044,
+          "crc32": 1933319052
+        },
+        {
+          "name": "NV_Andada-Italic.ttf",
+          "path": "NV_Andada/NV_Andada-Italic.ttf",
+          "style": "italic",
+          "size": 162312,
+          "crc32": 658509327
+        },
+        {
+          "name": "NV_Andada-BoldItalic.ttf",
+          "path": "NV_Andada/NV_Andada-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 161376,
+          "crc32": 3068090453
+        }
+      ]
+    },
+    {
+      "name": "NV_Basker",
+      "type": "serif",
+      "description": "Classic transitional serif with high contrast, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Baskerville)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Basker-Regular.ttf",
+          "path": "NV_Basker/NV_Basker-Regular.ttf",
+          "style": "regular",
+          "size": 123284,
+          "crc32": 3246929153
+        },
+        {
+          "name": "NV_Basker-Bold.ttf",
+          "path": "NV_Basker/NV_Basker-Bold.ttf",
+          "style": "bold",
+          "size": 119972,
+          "crc32": 211521862
+        },
+        {
+          "name": "NV_Basker-Italic.ttf",
+          "path": "NV_Basker/NV_Basker-Italic.ttf",
+          "style": "italic",
+          "size": 98496,
+          "crc32": 1288332232
+        },
+        {
+          "name": "NV_Basker-BoldItalic.ttf",
+          "path": "NV_Basker/NV_Basker-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 97516,
+          "crc32": 4059419409
+        }
+      ]
+    },
+    {
+      "name": "NV_Castoro",
+      "type": "serif",
+      "description": "Moderate contrast serif for long reading, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Castoro)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Castoro-Regular.ttf",
+          "path": "NV_Castoro/NV_Castoro-Regular.ttf",
+          "style": "regular",
+          "size": 147548,
+          "crc32": 2045921048
+        },
+        {
+          "name": "NV_Castoro-Bold.ttf",
+          "path": "NV_Castoro/NV_Castoro-Bold.ttf",
+          "style": "bold",
+          "size": 145364,
+          "crc32": 201628699
+        },
+        {
+          "name": "NV_Castoro-Italic.ttf",
+          "path": "NV_Castoro/NV_Castoro-Italic.ttf",
+          "style": "italic",
+          "size": 149904,
+          "crc32": 3605074186
+        },
+        {
+          "name": "NV_Castoro-BoldItalic.ttf",
+          "path": "NV_Castoro/NV_Castoro-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 149916,
+          "crc32": 4162250442
+        }
+      ]
+    },
+    {
+      "name": "NV_Charis",
+      "type": "serif",
+      "description": "Scholarly serif with wide Unicode coverage, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Charis)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Charis-Regular.ttf",
+          "path": "NV_Charis/NV_Charis-Regular.ttf",
+          "style": "regular",
+          "size": 873376,
+          "crc32": 1905570719
+        },
+        {
+          "name": "NV_Charis-Bold.ttf",
+          "path": "NV_Charis/NV_Charis-Bold.ttf",
+          "style": "bold",
+          "size": 870312,
+          "crc32": 2997133432
+        },
+        {
+          "name": "NV_Charis-Italic.ttf",
+          "path": "NV_Charis/NV_Charis-Italic.ttf",
+          "style": "italic",
+          "size": 887768,
+          "crc32": 3442281996
+        },
+        {
+          "name": "NV_Charis-BoldItalic.ttf",
+          "path": "NV_Charis/NV_Charis-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 890764,
+          "crc32": 4009631926
+        }
+      ]
+    },
+    {
+      "name": "NV_Charis_Literacy",
+      "type": "serif",
+      "description": "Charis variant optimized for literacy, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Charis_Literacy-Regular.ttf",
+          "path": "NV_Charis_Literacy/NV_Charis_Literacy-Regular.ttf",
+          "style": "regular",
+          "size": 864088,
+          "crc32": 1618371996
+        },
+        {
+          "name": "NV_Charis_Literacy-Bold.ttf",
+          "path": "NV_Charis_Literacy/NV_Charis_Literacy-Bold.ttf",
+          "style": "bold",
+          "size": 861048,
+          "crc32": 2383137781
+        },
+        {
+          "name": "NV_Charis_Literacy-Italic.ttf",
+          "path": "NV_Charis_Literacy/NV_Charis_Literacy-Italic.ttf",
+          "style": "italic",
+          "size": 878504,
+          "crc32": 2417448370
+        },
+        {
+          "name": "NV_Charis_Literacy-BoldItalic.ttf",
+          "path": "NV_Charis_Literacy/NV_Charis_Literacy-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 881500,
+          "crc32": 2615632491
+        }
+      ]
+    },
+    {
+      "name": "NV_Charis_Old_Style",
+      "type": "serif",
+      "description": "Old-style variant of Charis, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Charis_Old_Style-Regular.ttf",
+          "path": "NV_Charis_Old_Style/NV_Charis_Old_Style-Regular.ttf",
+          "style": "regular",
+          "size": 864172,
+          "crc32": 1182762040
+        },
+        {
+          "name": "NV_Charis_Old_Style-Bold.ttf",
+          "path": "NV_Charis_Old_Style/NV_Charis_Old_Style-Bold.ttf",
+          "style": "bold",
+          "size": 861136,
+          "crc32": 2992390453
+        },
+        {
+          "name": "NV_Charis_Old_Style-Italic.ttf",
+          "path": "NV_Charis_Old_Style/NV_Charis_Old_Style-Italic.ttf",
+          "style": "italic",
+          "size": 878592,
+          "crc32": 2105250271
+        },
+        {
+          "name": "NV_Charis_Old_Style-BoldItalic.ttf",
+          "path": "NV_Charis_Old_Style/NV_Charis_Old_Style-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 881588,
+          "crc32": 3387610020
+        }
+      ]
+    },
+    {
+      "name": "NV_Clara",
+      "type": "serif",
+      "description": "Elegant serif with calligraphic influence, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Clara-Regular.ttf",
+          "path": "NV_Clara/NV_Clara-Regular.ttf",
+          "style": "regular",
+          "size": 218200,
+          "crc32": 896544982
+        },
+        {
+          "name": "NV_Clara-Bold.ttf",
+          "path": "NV_Clara/NV_Clara-Bold.ttf",
+          "style": "bold",
+          "size": 126972,
+          "crc32": 876197199
+        },
+        {
+          "name": "NV_Clara-Italic.ttf",
+          "path": "NV_Clara/NV_Clara-Italic.ttf",
+          "style": "italic",
+          "size": 156172,
+          "crc32": 2651029447
+        },
+        {
+          "name": "NV_Clara-BoldItalic.ttf",
+          "path": "NV_Clara/NV_Clara-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 123244,
+          "crc32": 73474912
+        }
+      ]
+    },
+    {
+      "name": "NV_Elstob",
+      "type": "serif",
+      "description": "Variable-weight historical serif, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Elstob)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Elstob-Regular.ttf",
+          "path": "NV_Elstob/NV_Elstob-Regular.ttf",
+          "style": "regular",
+          "size": 340832,
+          "crc32": 2772185778
+        },
+        {
+          "name": "NV_Elstob-Bold.ttf",
+          "path": "NV_Elstob/NV_Elstob-Bold.ttf",
+          "style": "bold",
+          "size": 344392,
+          "crc32": 894706184
+        },
+        {
+          "name": "NV_Elstob-Italic.ttf",
+          "path": "NV_Elstob/NV_Elstob-Italic.ttf",
+          "style": "italic",
+          "size": 364136,
+          "crc32": 4188767986
+        },
+        {
+          "name": "NV_Elstob-BoldItalic.ttf",
+          "path": "NV_Elstob/NV_Elstob-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 366960,
+          "crc32": 2295211383
+        }
+      ]
+    },
+    {
+      "name": "NV_Erewhon",
+      "type": "serif",
+      "description": "Libre Baskerville derivative, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Erewhon)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Erewhon-Regular.ttf",
+          "path": "NV_Erewhon/NV_Erewhon-Regular.ttf",
+          "style": "regular",
+          "size": 321996,
+          "crc32": 3055611474
+        },
+        {
+          "name": "NV_Erewhon-Bold.ttf",
+          "path": "NV_Erewhon/NV_Erewhon-Bold.ttf",
+          "style": "bold",
+          "size": 291316,
+          "crc32": 1986060518
+        },
+        {
+          "name": "NV_Erewhon-Italic.ttf",
+          "path": "NV_Erewhon/NV_Erewhon-Italic.ttf",
+          "style": "italic",
+          "size": 291524,
+          "crc32": 2527940959
+        },
+        {
+          "name": "NV_Erewhon-BoldItalic.ttf",
+          "path": "NV_Erewhon/NV_Erewhon-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 290168,
+          "crc32": 118661582
+        }
+      ]
+    },
+    {
+      "name": "NV_Garamond",
+      "type": "serif",
+      "description": "French Old Style serif, elegant and traditional, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Garamond revival)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Garamond-Regular.ttf",
+          "path": "NV_Garamond/NV_Garamond-Regular.ttf",
+          "style": "regular",
+          "size": 801940,
+          "crc32": 1233190592
+        },
+        {
+          "name": "NV_Garamond-Bold.ttf",
+          "path": "NV_Garamond/NV_Garamond-Bold.ttf",
+          "style": "bold",
+          "size": 857156,
+          "crc32": 875090735
+        },
+        {
+          "name": "NV_Garamond-Italic.ttf",
+          "path": "NV_Garamond/NV_Garamond-Italic.ttf",
+          "style": "italic",
+          "size": 787280,
+          "crc32": 3610693249
+        },
+        {
+          "name": "NV_Garamond-BoldItalic.ttf",
+          "path": "NV_Garamond/NV_Garamond-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 813392,
+          "crc32": 4205160848
+        }
+      ]
+    },
+    {
+      "name": "NV_Gentium",
+      "type": "serif",
+      "description": "Open apertures serif for wide language support, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Gentium)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Gentium-Regular.ttf",
+          "path": "NV_Gentium/NV_Gentium-Regular.ttf",
+          "style": "regular",
+          "size": 962388,
+          "crc32": 1378650506
+        },
+        {
+          "name": "NV_Gentium-Bold.ttf",
+          "path": "NV_Gentium/NV_Gentium-Bold.ttf",
+          "style": "bold",
+          "size": 975812,
+          "crc32": 2453929576
+        },
+        {
+          "name": "NV_Gentium-Italic.ttf",
+          "path": "NV_Gentium/NV_Gentium-Italic.ttf",
+          "style": "italic",
+          "size": 1033980,
+          "crc32": 2115345849
+        },
+        {
+          "name": "NV_Gentium-BoldItalic.ttf",
+          "path": "NV_Gentium/NV_Gentium-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 1047796,
+          "crc32": 1604185714
+        }
+      ]
+    },
+    {
+      "name": "NV_Georsio",
+      "type": "serif",
+      "description": "Georgia-inspired serif for screen reading, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Georgia-inspired)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Georsio-Regular.ttf",
+          "path": "NV_Georsio/NV_Georsio-Regular.ttf",
+          "style": "regular",
+          "size": 130720,
+          "crc32": 3820951486
+        },
+        {
+          "name": "NV_Georsio-Bold.ttf",
+          "path": "NV_Georsio/NV_Georsio-Bold.ttf",
+          "style": "bold",
+          "size": 133872,
+          "crc32": 2258491623
+        },
+        {
+          "name": "NV_Georsio-Italic.ttf",
+          "path": "NV_Georsio/NV_Georsio-Italic.ttf",
+          "style": "italic",
+          "size": 138732,
+          "crc32": 3412424798
+        },
+        {
+          "name": "NV_Georsio-BoldItalic.ttf",
+          "path": "NV_Georsio/NV_Georsio-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 142300,
+          "crc32": 3251119179
+        }
+      ]
+    },
+    {
+      "name": "NV_Halcyon",
+      "type": "sans-serif",
+      "description": "Modern sans-serif with clean lines, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Halcyon-Regular.ttf",
+          "path": "NV_Halcyon/NV_Halcyon-Regular.ttf",
+          "style": "regular",
+          "size": 176228,
+          "crc32": 2964499837
+        },
+        {
+          "name": "NV_Halcyon-Bold.ttf",
+          "path": "NV_Halcyon/NV_Halcyon-Bold.ttf",
+          "style": "bold",
+          "size": 161920,
+          "crc32": 21284532
+        },
+        {
+          "name": "NV_Halcyon-Italic.ttf",
+          "path": "NV_Halcyon/NV_Halcyon-Italic.ttf",
+          "style": "italic",
+          "size": 144080,
+          "crc32": 1205163713
+        },
+        {
+          "name": "NV_Halcyon-BoldItalic.ttf",
+          "path": "NV_Halcyon/NV_Halcyon-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 145440,
+          "crc32": 2908411586
+        }
+      ]
+    },
+    {
+      "name": "NV_Ibarra",
+      "type": "serif",
+      "description": "Contemporary serif with subtle contrast, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Ibarra)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Ibarra-Regular.ttf",
+          "path": "NV_Ibarra/NV_Ibarra-Regular.ttf",
+          "style": "regular",
+          "size": 74596,
+          "crc32": 2815252871
+        },
+        {
+          "name": "NV_Ibarra-Bold.ttf",
+          "path": "NV_Ibarra/NV_Ibarra-Bold.ttf",
+          "style": "bold",
+          "size": 74652,
+          "crc32": 730644655
+        },
+        {
+          "name": "NV_Ibarra-Italic.ttf",
+          "path": "NV_Ibarra/NV_Ibarra-Italic.ttf",
+          "style": "italic",
+          "size": 77920,
+          "crc32": 1331007786
+        },
+        {
+          "name": "NV_Ibarra-BoldItalic.ttf",
+          "path": "NV_Ibarra/NV_Ibarra-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 78060,
+          "crc32": 2872664063
+        }
+      ]
+    },
+    {
+      "name": "NV_Junius",
+      "type": "serif",
+      "description": "Compact historical serif for biblical texts, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Junius)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Junius-Regular.ttf",
+          "path": "NV_Junius/NV_Junius-Regular.ttf",
+          "style": "regular",
+          "size": 1104128,
+          "crc32": 3111266316
+        },
+        {
+          "name": "NV_Junius-Bold.ttf",
+          "path": "NV_Junius/NV_Junius-Bold.ttf",
+          "style": "bold",
+          "size": 1104464,
+          "crc32": 2639579813
+        },
+        {
+          "name": "NV_Junius-Italic.ttf",
+          "path": "NV_Junius/NV_Junius-Italic.ttf",
+          "style": "italic",
+          "size": 1110396,
+          "crc32": 3305085429
+        },
+        {
+          "name": "NV_Junius-BoldItalic.ttf",
+          "path": "NV_Junius/NV_Junius-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 1110716,
+          "crc32": 2932141167
+        }
+      ]
+    },
+    {
+      "name": "NV_Kierkegaard",
+      "type": "serif",
+      "description": "Serif with distinctive character, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Kierkegaard-Regular.ttf",
+          "path": "NV_Kierkegaard/NV_Kierkegaard-Regular.ttf",
+          "style": "regular",
+          "size": 180244,
+          "crc32": 1758887690
+        },
+        {
+          "name": "NV_Kierkegaard-Bold.ttf",
+          "path": "NV_Kierkegaard/NV_Kierkegaard-Bold.ttf",
+          "style": "bold",
+          "size": 193296,
+          "crc32": 4095335207
+        },
+        {
+          "name": "NV_Kierkegaard-Italic.ttf",
+          "path": "NV_Kierkegaard/NV_Kierkegaard-Italic.ttf",
+          "style": "italic",
+          "size": 182808,
+          "crc32": 4155522964
+        },
+        {
+          "name": "NV_Kierkegaard-BoldItalic.ttf",
+          "path": "NV_Kierkegaard/NV_Kierkegaard-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 191260,
+          "crc32": 3068173404
+        }
+      ]
+    },
+    {
+      "name": "NV_Libertinus",
+      "type": "serif",
+      "description": "Times-adjacent workhorse serif, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Libertinus)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Libertinus-Regular.ttf",
+          "path": "NV_Libertinus/NV_Libertinus-Regular.ttf",
+          "style": "regular",
+          "size": 557768,
+          "crc32": 3614916583
+        },
+        {
+          "name": "NV_Libertinus-Bold.ttf",
+          "path": "NV_Libertinus/NV_Libertinus-Bold.ttf",
+          "style": "bold",
+          "size": 460512,
+          "crc32": 1953581963
+        },
+        {
+          "name": "NV_Libertinus-Italic.ttf",
+          "path": "NV_Libertinus/NV_Libertinus-Italic.ttf",
+          "style": "italic",
+          "size": 584048,
+          "crc32": 1475563684
+        },
+        {
+          "name": "NV_Libertinus-BoldItalic.ttf",
+          "path": "NV_Libertinus/NV_Libertinus-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 497824,
+          "crc32": 1955791811
+        }
+      ]
+    },
+    {
+      "name": "NV_Literata",
+      "type": "serif",
+      "description": "e-ink-hinted version of Google Literata, optimized for e-readers.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Literata)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Literata-Regular.ttf",
+          "path": "NV_Literata/NV_Literata-Regular.ttf",
+          "style": "regular",
+          "size": 257504,
+          "crc32": 1149260136
+        },
+        {
+          "name": "NV_Literata-Bold.ttf",
+          "path": "NV_Literata/NV_Literata-Bold.ttf",
+          "style": "bold",
+          "size": 263372,
+          "crc32": 1844962994
+        },
+        {
+          "name": "NV_Literata-Italic.ttf",
+          "path": "NV_Literata/NV_Literata-Italic.ttf",
+          "style": "italic",
+          "size": 250268,
+          "crc32": 721410324
+        },
+        {
+          "name": "NV_Literata-BoldItalic.ttf",
+          "path": "NV_Literata/NV_Literata-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 256092,
+          "crc32": 1216376197
+        }
+      ]
+    },
+    {
+      "name": "NV_Lodestar",
+      "type": "sans-serif",
+      "description": "Adobe Source Sans derivative, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Source Sans)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Lodestar-Regular.ttf",
+          "path": "NV_Lodestar/NV_Lodestar-Regular.ttf",
+          "style": "regular",
+          "size": 62256,
+          "crc32": 3717303708
+        },
+        {
+          "name": "NV_Lodestar-Bold.ttf",
+          "path": "NV_Lodestar/NV_Lodestar-Bold.ttf",
+          "style": "bold",
+          "size": 61512,
+          "crc32": 3393284811
+        },
+        {
+          "name": "NV_Lodestar-Italic.ttf",
+          "path": "NV_Lodestar/NV_Lodestar-Italic.ttf",
+          "style": "italic",
+          "size": 66872,
+          "crc32": 424561139
+        },
+        {
+          "name": "NV_Lodestar-BoldItalic.ttf",
+          "path": "NV_Lodestar/NV_Lodestar-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 65828,
+          "crc32": 1775785797
+        }
+      ]
+    },
+    {
+      "name": "NV_Membo",
+      "type": "serif",
+      "description": "Compact metrics serif for efficient layouts, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Membo-Regular.ttf",
+          "path": "NV_Membo/NV_Membo-Regular.ttf",
+          "style": "regular",
+          "size": 204032,
+          "crc32": 3717866016
+        },
+        {
+          "name": "NV_Membo-Bold.ttf",
+          "path": "NV_Membo/NV_Membo-Bold.ttf",
+          "style": "bold",
+          "size": 200376,
+          "crc32": 2286545445
+        },
+        {
+          "name": "NV_Membo-Italic.ttf",
+          "path": "NV_Membo/NV_Membo-Italic.ttf",
+          "style": "italic",
+          "size": 219240,
+          "crc32": 3179339692
+        },
+        {
+          "name": "NV_Membo-BoldItalic.ttf",
+          "path": "NV_Membo/NV_Membo-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 228220,
+          "crc32": 3031175432
+        }
+      ]
+    },
+    {
+      "name": "NV_Newsreader",
+      "type": "serif",
+      "description": "High contrast serif with optical sizing, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Newsreader-Regular.ttf",
+          "path": "NV_Newsreader/NV_Newsreader-Regular.ttf",
+          "style": "regular",
+          "size": 118628,
+          "crc32": 1681208895
+        },
+        {
+          "name": "NV_Newsreader-Bold.ttf",
+          "path": "NV_Newsreader/NV_Newsreader-Bold.ttf",
+          "style": "bold",
+          "size": 120644,
+          "crc32": 1937335236
+        },
+        {
+          "name": "NV_Newsreader-Italic.ttf",
+          "path": "NV_Newsreader/NV_Newsreader-Italic.ttf",
+          "style": "italic",
+          "size": 129620,
+          "crc32": 1962058999
+        },
+        {
+          "name": "NV_Newsreader-BoldItalic.ttf",
+          "path": "NV_Newsreader/NV_Newsreader-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 131932,
+          "crc32": 3046318620
+        }
+      ]
+    },
+    {
+      "name": "NV_NinePoint",
+      "type": "sans-serif",
+      "description": "Compact sans-serif for small screens, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_NinePoint-Regular.ttf",
+          "path": "NV_NinePoint/NV_NinePoint-Regular.ttf",
+          "style": "regular",
+          "size": 118596,
+          "crc32": 840711900
+        },
+        {
+          "name": "NV_NinePoint-Bold.ttf",
+          "path": "NV_NinePoint/NV_NinePoint-Bold.ttf",
+          "style": "bold",
+          "size": 120668,
+          "crc32": 424332488
+        },
+        {
+          "name": "NV_NinePoint-Italic.ttf",
+          "path": "NV_NinePoint/NV_NinePoint-Italic.ttf",
+          "style": "italic",
+          "size": 129604,
+          "crc32": 505592522
+        },
+        {
+          "name": "NV_NinePoint-BoldItalic.ttf",
+          "path": "NV_NinePoint/NV_NinePoint-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 132004,
+          "crc32": 1848444165
+        }
+      ]
+    },
+    {
+      "name": "NV_Palatium",
+      "type": "serif",
+      "description": "Warm serif with large x-height, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Palatino)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Palatium-Regular.ttf",
+          "path": "NV_Palatium/NV_Palatium-Regular.ttf",
+          "style": "regular",
+          "size": 170192,
+          "crc32": 3226266372
+        },
+        {
+          "name": "NV_Palatium-Bold.ttf",
+          "path": "NV_Palatium/NV_Palatium-Bold.ttf",
+          "style": "bold",
+          "size": 138292,
+          "crc32": 3475885464
+        },
+        {
+          "name": "NV_Palatium-Italic.ttf",
+          "path": "NV_Palatium/NV_Palatium-Italic.ttf",
+          "style": "italic",
+          "size": 145416,
+          "crc32": 4270269084
+        },
+        {
+          "name": "NV_Palatium-BoldItalic.ttf",
+          "path": "NV_Palatium/NV_Palatium-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 146944,
+          "crc32": 3730821722
+        }
+      ]
+    },
+    {
+      "name": "NV_Publica",
+      "type": "serif",
+      "description": "Modern serif with clean lines, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Publica-Regular.ttf",
+          "path": "NV_Publica/NV_Publica-Regular.ttf",
+          "style": "regular",
+          "size": 324200,
+          "crc32": 140840598
+        },
+        {
+          "name": "NV_Publica-Bold.ttf",
+          "path": "NV_Publica/NV_Publica-Bold.ttf",
+          "style": "bold",
+          "size": 305604,
+          "crc32": 789746630
+        },
+        {
+          "name": "NV_Publica-Italic.ttf",
+          "path": "NV_Publica/NV_Publica-Italic.ttf",
+          "style": "italic",
+          "size": 340340,
+          "crc32": 3602823214
+        },
+        {
+          "name": "NV_Publica-BoldItalic.ttf",
+          "path": "NV_Publica/NV_Publica-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 301832,
+          "crc32": 3539182794
+        }
+      ]
+    },
+    {
+      "name": "NV_Publica_Wide",
+      "type": "sans-serif",
+      "description": "Wide sans-serif variant, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "italic"
+      ],
+      "files": [
+        {
+          "name": "NV_Publica_Wide-Regular.ttf",
+          "path": "NV_Publica_Wide/NV_Publica_Wide-Regular.ttf",
+          "style": "regular",
+          "size": 361120,
+          "crc32": 3162866153
+        },
+        {
+          "name": "NV_Publica_Wide-Italic.ttf",
+          "path": "NV_Publica_Wide/NV_Publica_Wide-Italic.ttf",
+          "style": "italic",
+          "size": 369504,
+          "crc32": 322551196
+        }
+      ]
+    },
+    {
+      "name": "NV_Sable",
+      "type": "serif",
+      "description": "New serif design with balanced contrast, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Sable-Regular.ttf",
+          "path": "NV_Sable/NV_Sable-Regular.ttf",
+          "style": "regular",
+          "size": 135872,
+          "crc32": 3805558082
+        },
+        {
+          "name": "NV_Sable-Bold.ttf",
+          "path": "NV_Sable/NV_Sable-Bold.ttf",
+          "style": "bold",
+          "size": 135600,
+          "crc32": 167707012
+        },
+        {
+          "name": "NV_Sable-Italic.ttf",
+          "path": "NV_Sable/NV_Sable-Italic.ttf",
+          "style": "italic",
+          "size": 141564,
+          "crc32": 3085383045
+        },
+        {
+          "name": "NV_Sable-BoldItalic.ttf",
+          "path": "NV_Sable/NV_Sable-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 142268,
+          "crc32": 2776466168
+        }
+      ]
+    },
+    {
+      "name": "NV_Scarlet",
+      "type": "serif",
+      "description": "Bold slab serif accents, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, slab-serif)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Scarlet-Regular.ttf",
+          "path": "NV_Scarlet/NV_Scarlet-Regular.ttf",
+          "style": "regular",
+          "size": 370076,
+          "crc32": 2576044587
+        },
+        {
+          "name": "NV_Scarlet-Bold.ttf",
+          "path": "NV_Scarlet/NV_Scarlet-Bold.ttf",
+          "style": "bold",
+          "size": 382712,
+          "crc32": 3696274271
+        },
+        {
+          "name": "NV_Scarlet-Italic.ttf",
+          "path": "NV_Scarlet/NV_Scarlet-Italic.ttf",
+          "style": "italic",
+          "size": 384508,
+          "crc32": 284444321
+        },
+        {
+          "name": "NV_Scarlet-BoldItalic.ttf",
+          "path": "NV_Scarlet/NV_Scarlet-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 370568,
+          "crc32": 1457190094
+        }
+      ]
+    },
+    {
+      "name": "NV_Technical",
+      "type": "sans-serif",
+      "description": "Monospace-influenced sans-serif for technical reading, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Technical-Regular.ttf",
+          "path": "NV_Technical/NV_Technical-Regular.ttf",
+          "style": "regular",
+          "size": 393352,
+          "crc32": 1397838026
+        },
+        {
+          "name": "NV_Technical-Bold.ttf",
+          "path": "NV_Technical/NV_Technical-Bold.ttf",
+          "style": "bold",
+          "size": 393972,
+          "crc32": 1728835074
+        },
+        {
+          "name": "NV_Technical-Italic.ttf",
+          "path": "NV_Technical/NV_Technical-Italic.ttf",
+          "style": "italic",
+          "size": 422848,
+          "crc32": 2196497076
+        },
+        {
+          "name": "NV_Technical-BoldItalic.ttf",
+          "path": "NV_Technical/NV_Technical-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 418484,
+          "crc32": 1270521659
+        }
+      ]
+    },
+    {
+      "name": "NV_Yrsa",
+      "type": "serif",
+      "description": "Lora variant, calligraphic serif, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Lora)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Yrsa-Regular.ttf",
+          "path": "NV_Yrsa/NV_Yrsa-Regular.ttf",
+          "style": "regular",
+          "size": 123876,
+          "crc32": 1022720072
+        },
+        {
+          "name": "NV_Yrsa-Bold.ttf",
+          "path": "NV_Yrsa/NV_Yrsa-Bold.ttf",
+          "style": "bold",
+          "size": 123316,
+          "crc32": 2201230998
+        },
+        {
+          "name": "NV_Yrsa-Italic.ttf",
+          "path": "NV_Yrsa/NV_Yrsa-Italic.ttf",
+          "style": "italic",
+          "size": 160188,
+          "crc32": 194522688
+        },
+        {
+          "name": "NV_Yrsa-BoldItalic.ttf",
+          "path": "NV_Yrsa/NV_Yrsa-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 159528,
+          "crc32": 653406889
+        }
+      ]
+    },
+    {
+      "name": "NV_Zilla_Slab",
+      "type": "slab-serif",
+      "description": "Friendly slab-serif, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized, Mozilla)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "NV_Zilla_Slab-Regular.ttf",
+          "path": "NV_Zilla_Slab/NV_Zilla_Slab-Regular.ttf",
+          "style": "regular",
+          "size": 167568,
+          "crc32": 988069739
+        },
+        {
+          "name": "NV_Zilla_Slab-Bold.ttf",
+          "path": "NV_Zilla_Slab/NV_Zilla_Slab-Bold.ttf",
+          "style": "bold",
+          "size": 168256,
+          "crc32": 2366973687
+        },
+        {
+          "name": "NV_Zilla_Slab-Italic.ttf",
+          "path": "NV_Zilla_Slab/NV_Zilla_Slab-Italic.ttf",
+          "style": "italic",
+          "size": 174680,
+          "crc32": 2133784871
+        },
+        {
+          "name": "NV_Zilla_Slab-BoldItalic.ttf",
+          "path": "NV_Zilla_Slab/NV_Zilla_Slab-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 175124,
+          "crc32": 3135494708
+        }
+      ]
+    },
+    {
+      "name": "PT Serif",
+      "type": "serif",
+      "description": "PT Serif",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "PT Serif Regular.ttf",
+          "path": "PTSerif/PT_Serif_Regular.ttf",
+          "style": "regular",
+          "size": 359048,
+          "crc32": 2271131267
+        },
+        {
+          "name": "PT Serif Bold.ttf",
+          "path": "PTSerif/PT_Serif_Bold.ttf",
+          "style": "bold",
+          "size": 339996,
+          "crc32": 320049563
+        },
+        {
+          "name": "PT Serif Italic.ttf",
+          "path": "PTSerif/PT_Serif_Italic.ttf",
+          "style": "italic",
+          "size": 375356,
+          "crc32": 566578255
+        },
+        {
+          "name": "PT Serif BoldItalic.ttf",
+          "path": "PTSerif/PT_Serif_BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 337580,
+          "crc32": 4081868694
+        }
+      ]
+    },
+    {
+      "name": "Readerly",
+      "type": "serif",
+      "description": "Reading-optimized serif for long sessions, e-ink hinted.",
+      "source": "nicoverbruggen/ebook-fonts (e-ink optimized)",
+      "license": "OFL",
+      "styles": [
+        "regular",
+        "bold",
+        "italic",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "Readerly-Regular.ttf",
+          "path": "Readerly/Readerly-Regular.ttf",
+          "style": "regular",
+          "size": 200336,
+          "crc32": 33018815
+        },
+        {
+          "name": "Readerly-Bold.ttf",
+          "path": "Readerly/Readerly-Bold.ttf",
+          "style": "bold",
+          "size": 198512,
+          "crc32": 692457985
+        },
+        {
+          "name": "Readerly-Italic.ttf",
+          "path": "Readerly/Readerly-Italic.ttf",
+          "style": "italic",
+          "size": 230924,
+          "crc32": 3958733296
+        },
+        {
+          "name": "Readerly-BoldItalic.ttf",
+          "path": "Readerly/Readerly-BoldItalic.ttf",
+          "style": "bolditalic",
+          "size": 226580,
+          "crc32": 3276949947
+        }
+      ]
+    },
+    {
+      "name": "Source Serif 4",
+      "type": "serif",
+      "description": "Source Serif 4",
+      "source": "nicoverbruggen/ebook-fonts",
+      "license": "OFL",
+      "preview": "https://pub-794e4fbb87c8444b952f6a2dd026c7b1.r2.dev/previews/preview_Source_Serif_4.png",
+      "styles": [
+        "italic",
+        "regular",
+        "bold",
+        "bolditalic"
+      ],
+      "files": [
+        {
+          "name": "SourceSerif4-It.ttf",
+          "path": "SourceSerif4/SourceSerif4-It.ttf",
+          "style": "italic",
+          "size": 187808,
+          "crc32": 2756640830
+        },
+        {
+          "name": "SourceSerif4-Regular.ttf",
+          "path": "SourceSerif4/SourceSerif4-Regular.ttf",
+          "style": "regular",
+          "size": 261868,
+          "crc32": 1989561168
+        },
+        {
+          "name": "SourceSerif4-Bold.ttf",
+          "path": "SourceSerif4/SourceSerif4-Bold.ttf",
+          "style": "bold",
+          "size": 271568,
+          "crc32": 1502692782
+        },
+        {
+          "name": "SourceSerif4-BoldIt.ttf",
+          "path": "SourceSerif4/SourceSerif4-BoldIt.ttf",
+          "style": "bolditalic",
+          "size": 191832,
+          "crc32": 3351126733
+        }
+      ]
+    }
+  ]
+}

@@ -55,6 +55,52 @@ bool FontInstaller::isValidCpfontFilename(const char* name) {
   return true;
 }
 
+bool FontInstaller::isValidTtfFilename(const char* name) {
+  if (name == nullptr || name[0] == '\0') return false;
+
+  if (strstr(name, "..") != nullptr) return false;
+  if (strchr(name, '/') != nullptr) return false;
+  if (strchr(name, '\\') != nullptr) return false;
+
+  const size_t nameLen = strlen(name);
+  bool hasFontExt = false;
+  for (const char* ext : {".ttf", ".otf", ".ttc"}) {
+    const size_t extLen = strlen(ext);
+    if (nameLen > extLen && strcmp(name + nameLen - extLen, ext) == 0) {
+      hasFontExt = true;
+      break;
+    }
+  }
+  if (!hasFontExt) return false;
+
+  // Everything before the 4-character extension must be alphanumeric + hyphen
+  // + underscore, so no stray dots can smuggle a second extension through.
+  constexpr size_t kFontExtLen = 4;
+  for (size_t i = 0; i < nameLen - kFontExtLen; ++i) {
+    const char c = name[i];
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool FontInstaller::isValidTtfFamilyName(const char* name) {
+  if (name == nullptr || name[0] == '\0') return false;
+
+  if (strstr(name, "..") != nullptr) return false;
+  if (strchr(name, '/') != nullptr) return false;
+  if (strchr(name, '\\') != nullptr) return false;
+
+  for (const char* p = name; *p != '\0'; ++p) {
+    const char c = *p;
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_' && c != ' ') {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool FontInstaller::ensureFamilyDir(const char* familyName) {
   // Reuse the family's existing root if installed; otherwise pick the
   // default-write root (hidden if no roots exist yet).
@@ -104,6 +150,39 @@ bool FontInstaller::validateCpfontFile(const char* path) {
   return true;
 }
 
+bool FontInstaller::validateTtfFile(const char* path) {
+  HalFile file;
+  if (!Storage.openFileForRead("FONT", path, file)) {
+    LOG_ERR("FONT", "Cannot open for validation: %s", path);
+    return false;
+  }
+
+  uint8_t sig[4];
+  const size_t bytesRead = file.read(sig, sizeof(sig));
+  file.close();
+
+  if (bytesRead < sizeof(sig)) {
+    LOG_ERR("FONT", "File too small: %s (%zu bytes)", path, bytesRead);
+    return false;
+  }
+
+  // sfnt version tags FreeType accepts: TrueType outlines, CFF ("OTTO"),
+  // Apple's "true", the legacy "typ1", and a collection container.
+  const uint32_t tag = (static_cast<uint32_t>(sig[0]) << 24) | (static_cast<uint32_t>(sig[1]) << 16) |
+                       (static_cast<uint32_t>(sig[2]) << 8) | static_cast<uint32_t>(sig[3]);
+  static constexpr uint32_t kSfntVersion = 0x00010000u;
+  static constexpr uint32_t kOtto = 0x4F54544Fu;  // 'O''T''T''O'
+  static constexpr uint32_t kTrue = 0x74727565u;  // 't''r''u''e'
+  static constexpr uint32_t kTyp1 = 0x74797031u;  // 't''y''p''1'
+  static constexpr uint32_t kTtcf = 0x74746366u;  // 't''t''c''f'
+  if (tag != kSfntVersion && tag != kOtto && tag != kTrue && tag != kTyp1 && tag != kTtcf) {
+    LOG_ERR("FONT", "Bad sfnt signature %08x in: %s", tag, path);
+    return false;
+  }
+
+  return true;
+}
+
 void FontInstaller::buildFontPath(const char* family, const char* filename, char* outBuf, size_t outBufSize) {
   // Use the same root selection as ensureFamilyDir: existing install dir wins,
   // otherwise the default-write root.
@@ -112,8 +191,17 @@ void FontInstaller::buildFontPath(const char* family, const char* filename, char
   snprintf(outBuf, outBufSize, "%s/%s/%s", root, family, filename);
 }
 
+FontInstaller::Error FontInstaller::deleteTtfFamily(const char* familyName) {
+  return deleteFamilyInternal(familyName, /*allowSpaceInName=*/true);
+}
+
 FontInstaller::Error FontInstaller::deleteFamily(const char* familyName) {
-  if (!isValidFamilyName(familyName)) {
+  return deleteFamilyInternal(familyName, /*allowSpaceInName=*/false);
+}
+
+FontInstaller::Error FontInstaller::deleteFamilyInternal(const char* familyName, const bool allowSpaceInName) {
+  const bool validName = allowSpaceInName ? isValidTtfFamilyName(familyName) : isValidFamilyName(familyName);
+  if (!validName) {
     return Error::INVALID_FAMILY_NAME;
   }
 

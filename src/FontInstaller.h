@@ -28,6 +28,16 @@ class FontInstaller {
   /// "evil/foo.cpfont".
   static bool isValidCpfontFilename(const char* name);
 
+  /// Validate a raw font filename (.ttf/.otf/.ttc): same traversal rules as
+  /// isValidCpfontFilename, only the extension differs.
+  static bool isValidTtfFilename(const char* name);
+
+  /// Validate a catalog family name. Identical to isValidFamilyName except
+  /// that spaces are allowed, because the font catalog's display names carry
+  /// them ("Atkinson Hyperlegible"). The on-SD folder is always the
+  /// manifest's slug, which stays alphanumeric.
+  static bool isValidTtfFamilyName(const char* name);
+
   /// Ensure /<root>/<family>/ exists, where <root> is /.fonts (preferred) or /fonts.
   /// Re-uses the existing root if the family is already installed; otherwise
   /// creates it under SdCardFontRegistry::defaultWriteRoot().
@@ -35,6 +45,9 @@ class FontInstaller {
 
   /// Validate a .cpfont file on disk (check magic bytes).
   bool validateCpfontFile(const char* path);
+
+  /// Validate a raw sfnt font file on disk (signature check).
+  bool validateTtfFile(const char* path);
 
   /// Build the full SD path for a font file.
   /// Writes "/<root>/<family>/<filename>" to outBuf, choosing <root> the same
@@ -45,6 +58,10 @@ class FontInstaller {
   /// If the deleted family is the active reader font, clears the setting.
   Error deleteFamily(const char* familyName);
 
+  /// Delete a catalog family's directory. Same as deleteFamily, but the name
+  /// may contain spaces.
+  Error deleteTtfFamily(const char* familyName);
+
   /// Re-run registry discovery to pick up new/removed fonts.
   void refreshRegistry();
 
@@ -53,6 +70,8 @@ class FontInstaller {
 
  private:
   SdCardFontRegistry& registry_;
+
+  Error deleteFamilyInternal(const char* familyName, bool allowSpaceInName);
 
   static constexpr const char* CPFONT_MAGIC = "CPFONT\0";
   static constexpr size_t CPFONT_MAGIC_LEN = 8;

@@ -1,5 +1,11 @@
 #pragma once
 
+// .cpfont downloader for the classic (non-PSRAM) device class. Where
+// CROSSPOINT_TTF_READER is set, TtfFontDownloadActivity takes over this Settings
+// row and this class is not compiled at all — the two catalogs ship different
+// payloads behind the same UI.
+#if !defined(CROSSPOINT_TTF_READER)
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -162,3 +168,5 @@ class FontDownloadActivity final : public UiListActivity {
   size_t totalUpdateSize() const;
   static std::string formatSize(size_t bytes);
 };
+
+#endif  // !CROSSPOINT_TTF_READER
