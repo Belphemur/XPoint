@@ -1163,6 +1163,9 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
+  // Shared by BOTH wake paths below (activity edge here, held contact in the
+  // idle trunk further down) so a stuck button cannot bypass the rate limit.
+  static unsigned long lastTouchWakeAttempt = 0;
   // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
   // consumed by the manager's snapshot — after update() that's always
   // nothing, and the inactivity timer would never reset on buttons.
@@ -1180,7 +1183,6 @@ void loop() {
     // A FAILED wake keeps retrying here whenever preventAutoSleep() keeps this
     // branch hot (kody PR #171: rate-limit, 1 s) — each attempt blocks ~200 ms
     // on the poll-task handshake, so per-iteration retries collapse the loop.
-    static unsigned long lastTouchWakeAttempt = 0;
     if (gpio.isTouchAsleep() && millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
       lastTouchWakeAttempt = millis();
       gpio.setTouchSleep(false);
@@ -1372,17 +1374,34 @@ void loop() {
       // InputManager commits a press only when two consecutive polls agree, so a
       // press shorter than one 50 ms sleep could land in a single sample and be lost.
       const unsigned long idleStart = millis();
+      bool sliceSawContact = false;
       while (millis() - idleStart < 50) {
         delay(10);
         if (gpio.rawInputActive()) {
-          // Button contact during the slice: leave the wake to the
-          // activity-edge branch at the TOP of the next loop iteration — it
-          // runs AFTER mappedInputManager.update() has committed the trigger
-          // press (kody PR #171 round 2), so the press that woke the device is
-          // sampled by the normal path, not blocked behind the ~200 ms wake
-          // handshake. No wake here: an unconditional post-slice wake would
-          // undo the park on every idle slice.
+          sliceSawContact = true;
+          // Button contact during the slice: break out so the trigger press is
+          // committed by the normal update() path at the TOP of the next
+          // iteration (kody PR #171 round 2), not blocked behind the ~200 ms
+          // wake handshake. The wake itself is the trunk block below.
           break;
+        }
+      }
+      // A contact that produces no fresh mapped edge — a button already held
+      // when the park fired, or a stuck one — never reaches the activity
+      // branch above, so it could not wake a parked controller and every touch
+      // would stay dead until release-and-press (kody PR #171 round 4). Wake
+      // here instead, gated on isTouchAsleep() so an awake device pays nothing
+      // per slice. The rate limit keeps a permanently stuck contact from
+      // paying the ~230 ms handshake on every iteration, and lastActivityTime
+      // is reset only once the controller ACKs — an unconfirmed wake must stay
+      // retryable, which needs the idle trunk to keep running.
+      if (sliceSawContact && gpio.isTouchAsleep() &&
+          millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
+        lastTouchWakeAttempt = millis();
+        gpio.setTouchSleep(false);
+        if (!gpio.isTouchAsleep()) {
+          lastActivityTime = millis();
+          powerManager.setPowerSaving(false);
         }
       }
     } else {
