@@ -38,7 +38,10 @@ class HalPowerManager {
 
  public:
 #if BOARD_HAS_PSRAM
-  static constexpr int LOW_POWER_FREQ = 80;  // MHz
+  // 40 MHz idle floor on PSRAM boards (owner directive, 2026-10): 80 was
+  // higher than the device needs at idle; 40 halves the low-power clock while
+  // staying in spec for the PSRAM bus.
+  static constexpr int LOW_POWER_FREQ = 40;  // MHz
 #else
   static constexpr int LOW_POWER_FREQ = 10;  // MHz
 #endif
