@@ -1399,7 +1399,7 @@ void loop() {
           // woken again on the next iteration and park/wake-thrash forever.
           // Mirrors the SDK's own refusal to park with a live contact
           // (InputManager::enterGt911Sleep, touchPressed/touchHomeKeyDown).
-          !gpio.rawInputActive() && millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
+          !gpio.anyPhysicalButtonHeld() && millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
         lastParkAttempt = millis();
         gpio.setTouchSleep(true);
       }
@@ -1409,12 +1409,14 @@ void loop() {
       const unsigned long idleStart = millis();
       while (millis() - idleStart < 50) {
         delay(10);
-        if (gpio.rawInputActive()) {
+        if (gpio.anyPhysicalButtonHeld()) {
           // Button contact during the slice: record it and break out so the
           // trigger press is committed by the normal update() path at the TOP
           // of the next iteration (kody PR #171 round 2), not blocked behind
           // the ~200 ms wake handshake. The wake is the post-update check
           // there; nothing blocks in the trunk itself.
+          // anyPhysicalButtonHeld(), not rawInputActive(): the X4 Pro is
+          // DigitalButtons, where rawInputActive() only sees the Power pin.
           sliceSawContact = true;
           break;
         }

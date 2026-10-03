@@ -86,7 +86,16 @@ class HalGPIO {
   // True when any button contact is closed right now, read straight from the
   // hardware (ADC ladder off its idle rail, or the power GPIO asserted), without
   // going through the debounced state. Cheap enough to call every few ms.
+  // Covers the ADC ladder and the power pin ONLY — on DigitalButtons boards
+  // (X4 Pro and friends) readButtonAdc() reports raw = -1, so the nav keys are
+  // invisible here. Use anyPhysicalButtonHeld() for "is some key down at all".
   bool rawInputActive();
+  // rawInputActive() OR the latched state of every physical button index, so a
+  // held nav key counts on DigitalButtons boards too (design
+  // 2026-09-24-gt911-idle-sleep.md §3 Tier B relies on side buttons staying
+  // live while the GT911 is parked). Latched state is one poll-task tick
+  // behind the pin, which is what "held" means here.
+  bool anyPhysicalButtonHeld() const;
   // GT911 Sleep-mode control (docs/design/2026-09-24-gt911-idle-sleep.md §3
   // Tier B). setTouchSleep(true) parks the controller (no scanning, ~70–120 µA
   // vs 8 mA active); wakeTouch() wakes it and returns only once the controller

@@ -153,6 +153,15 @@ bool HalGPIO::rawInputActive() {
   return (g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin);
 }
 
+bool HalGPIO::anyPhysicalButtonHeld() const {
+  // The latch covers every button index the board defines, so a digital nav key
+  // counts on DigitalButtons boards where rawInputActive() sees only Power.
+  for (uint8_t i = 0; i <= InputManager::BTN_POWER; ++i) {
+    if (inputMgr.isPressed(i)) return true;
+  }
+  return false;
+}
+
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
 
 bool HalGPIO::setTouchSleep(const bool asleep) { return inputMgr.setTouchSleep(asleep); }
