@@ -79,6 +79,14 @@ class HalStorage {
 
   static HalStorage& getInstance() { return instance; }
 
+  // Free space on the card in bytes. Returns false (and writes 0) when the
+  // capacity is unknowable — card not mounted, or its cluster count cannot be
+  // read — which is deliberately distinct from a readable 0 for a genuinely
+  // full card: a caller that treats both as "unknown" would skip its preflight
+  // exactly when the card is out of room. `used` is cached for 20 seconds
+  // upstream because the FAT scan is too slow for a per-frame query.
+  bool freeBytes(uint64_t* outFreeBytes);
+
   class StorageLock;  // private class, used internally
 
  private:

@@ -45,6 +45,21 @@ class HalStorage::StorageLock {
   ~StorageLock() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
 };
 
+bool HalStorage::freeBytes(uint64_t* outFreeBytes) {
+  StorageLock lock;
+  const uint64_t total = SDCard.sdTotalBytes();
+  const uint64_t used = SDCard.sdUsedBytes();
+  // Only an unreadable capacity counts as unknown. `used >= total` is a real
+  // reading of a full card and reports a genuine 0 so callers can refuse the
+  // work instead of discovering it halfway through a transfer.
+  if (total == 0) {
+    *outFreeBytes = 0;
+    return false;
+  }
+  *outFreeBytes = used >= total ? 0 : total - used;
+  return true;
+}
+
 void HalStorage::prepareForDeepSleep() {
   StorageLock lock;
   SDCard.shutdown();
