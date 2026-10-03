@@ -153,7 +153,39 @@ bool HalGPIO::rawInputActive() {
   return (g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin);
 }
 
+bool HalGPIO::anyPhysicalButtonHeld() {
+  // Fresh hardware read FIRST: on sync builds (beginAsync compiled out, no poll
+  // task) nothing commits currentState while the loop sits inside the 50 ms
+  // idle slice, so the latch alone is stale for the whole slice and a short tap
+  // would be dropped. The ADC ladder and the power pin are readable live; the
+  // latch is what adds the digital-only nav-key banks the ADC path cannot see.
+  if (rawInputActive()) return true;
+  for (uint8_t i = 0; i <= InputManager::BTN_POWER; ++i) {
+    if (inputMgr.isPressed(i)) return true;
+  }
+  // Sticky-style boards route the nav keys to plain GPIOs (INPUT_PULLUP) that
+  // rawInputActive()'s ADC read cannot see. Sample them live for every input
+  // style EXCEPT the pure ADC-ladder profiles: XteinkAdcLadder (X4/X3) wires
+  // input.up/down to display DC/RST output pins, so reading them spuriously
+  // breaks the idle slice (Kody PR #171 K2 on 90a84566). OnePageAdcLadder is
+  // NOT excluded — despite the name it still has GPIO side nav keys per its
+  // BoardConfig doc (InputStyle::OnePageAdcLadder, line 425), so it must be
+  // sampled too; the exclusion is precise to XteinkAdcLadder only.
+  if (BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::XteinkAdcLadder) {
+    const BoardConfig::InputPins& pins = BoardConfig::ACTIVE.input;
+    if (pins.up >= 0 && digitalRead(pins.up) == LOW) return true;
+    if (pins.down >= 0 && digitalRead(pins.down) == LOW) return true;
+  }
+  return false;
+}
+
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
+
+bool HalGPIO::setTouchSleep(const bool asleep) { return inputMgr.setTouchSleep(asleep); }
+
+bool HalGPIO::wakeTouch() { return inputMgr.wakeTouch(); }
+
+bool HalGPIO::isTouchAsleep() const { return inputMgr.isTouchAsleep(); }
 
 unsigned long HalGPIO::getPowerButtonHeldTime() const { return inputMgr.getPowerButtonHeldTime(); }
 

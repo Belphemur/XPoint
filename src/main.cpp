@@ -1163,13 +1163,58 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
+  // Shared by BOTH wake paths below (the mapped edge here, the held contact
+  // just after it) so one contact cannot bypass the rate limit.
+  static unsigned long lastTouchWakeAttempt = 0;
+  // Contact seen by the idle trunk's 50 ms slice on the PREVIOUS iteration.
+  // Consumed here, one iteration later, so the wake can never block ahead of
+  // the update() that samples the button edge.
+  static bool sliceSawContact = false;
   // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
   // consumed by the manager's snapshot — after update() that's always
   // nothing, and the inactivity timer would never reset on buttons.
-  if (mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased() || gpio.wasTouchActivity() ||
-      halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
+  const bool anyMappedEdge = mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased();
+  if (anyMappedEdge || gpio.wasTouchActivity() || halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
+    // GT911 idle sleep (design 2026-09-24-gt911-idle-sleep.md §3 Tier B): the
+    // controller is parked after GT911_IDLE_SLEEP_MS of silence; any activity
+    // wakes it. Blocks until the controller ACKs again (≤ ~230 ms once).
+    // isTouchAsleep() is the SDK's authoritative state — it also covers a
+    // failed earlier wake attempt, which retries on the next activity edge
+    // instead of leaving the chip parked forever. No-op on boards without a
+    // GT911 (SDK returns immediately).
+    // A FAILED wake keeps retrying here whenever preventAutoSleep() keeps this
+    // branch hot (kody PR #171: rate-limit, 1 s) — each attempt blocks ~200 ms
+    // on the poll-task handshake, so per-iteration retries collapse the loop.
+    if (gpio.isTouchAsleep() && millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
+      lastTouchWakeAttempt = millis();
+      gpio.setTouchSleep(false);
+    }
+  }
+
+  // A contact that broke the idle slice but produced no mapped edge — a button
+  // already held when the park fired, or a stuck one — never enters the branch
+  // above, so a parked controller would stay parked and every screen touch
+  // would stay dead until release-and-press (kody PR #171 rounds 4-5).
+  //
+  // Deliberately AFTER update() and NOT in the idle trunk: waking from the
+  // trunk blocks ~260 ms of handshake BEFORE update() samples the edge, which
+  // drops any tap shorter than that — the round-1 regression. By now a fresh
+  // press is already committed and owns its own wake above; only a contact
+  // that produced nothing reaches this.
+  //
+  // lastActivityTime is intentionally NOT reset: a permanently stuck contact
+  // would otherwise postpone the auto-sleep timeout forever. The inactivity
+  // timer belongs to the mapped-edge path only (kody PR #171 round 5). The
+  // contact therefore cannot re-park the controller either — the park side
+  // refuses to run under a live contact.
+  const bool heldContactPending = sliceSawContact;
+  sliceSawContact = false;
+  if (heldContactPending && !anyMappedEdge && gpio.isTouchAsleep() &&
+      millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
+    lastTouchWakeAttempt = millis();
+    gpio.setTouchSleep(false);
   }
 
   // Let wake continue as soon as its hold has been verified. The release can
@@ -1339,13 +1384,45 @@ void loop() {
     if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
       // If we've been inactive for a while, increase the delay to save power
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
+      // GT911 idle sleep rides this same idle trunk (DRY: one idle clock, no
+      // third timer). Design §3 Tier B entry window ≈3–5 min; skip while USB
+      // is attached (serial-monitor sessions must not fight sleep in the log)
+      // and when the user disabled the feature (SETTINGS.touchIdleSleep).
+      // Parked state comes straight from the SDK (isTouchAsleep), so a failed
+      // entry is retried after the backoff window instead of latched awake
+      // until the next activity edge.
+      static unsigned long lastParkAttempt = 0;
+      if (SETTINGS.touchIdleSleep && !gpio.isTouchAsleep() &&
+          millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && !gpio.isUsbConnected() &&
+          // Never park under a live contact: the held-contact wake above does
+          // not reset the inactivity timer, so a parked controller would be
+          // woken again on the next iteration and park/wake-thrash forever.
+          // Mirrors the SDK's own refusal to park with a live contact
+          // (InputManager::enterGt911Sleep, touchPressed/touchHomeKeyDown).
+          !gpio.anyPhysicalButtonHeld() && millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
+        lastParkAttempt = millis();
+        gpio.setTouchSleep(true);
+      }
       // Sleep in short slices and wake the poll as soon as a button contact closes.
       // InputManager commits a press only when two consecutive polls agree, so a
       // press shorter than one 50 ms sleep could land in a single sample and be lost.
       const unsigned long idleStart = millis();
       while (millis() - idleStart < 50) {
         delay(10);
-        if (gpio.rawInputActive()) break;
+        if (gpio.anyPhysicalButtonHeld()) {
+          // Button contact during the slice: record it and break out so the
+          // trigger press is committed by the normal update() path at the TOP
+          // of the next iteration (kody PR #171 round 2), not blocked behind
+          // the ~200 ms wake handshake. The wake is the post-update check
+          // there; nothing blocks in the trunk itself.
+          // anyPhysicalButtonHeld(), not rawInputActive() alone: rawInputActive()
+          // is the fresh hardware read (ADC ladder + power pin) so sync builds
+          // (no poll task) still see a live sample every slice, but it does not
+          // see digital-only nav-key banks that some variants expose via the
+          // debounce latch — anyPhysicalButtonHeld() ORs both.
+          sliceSawContact = true;
+          break;
+        }
       }
     } else {
       // Short delay to prevent tight loop while still being responsive

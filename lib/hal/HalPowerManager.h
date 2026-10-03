@@ -48,6 +48,20 @@ class HalPowerManager {
   static constexpr int LOW_POWER_FREQ = 10;  // MHz
 #endif
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 3000;  // ms
+  // Sustained-idle threshold at which the GT911 touch controller is parked in
+  // its datasheet Sleep mode (design 2026-09-24-gt911-idle-sleep.md §3 Tier
+  // B). Rides the same lastActivityTime idle trunk as IDLE_POWER_SAVING_MS —
+  // no separate timer. 0 touch input is accepted while parked (design
+  // trade-off §3); any button press or preventAutoSleep() wakes the chip.
+  static constexpr unsigned long GT911_IDLE_SLEEP_MS = 5UL * 60UL * 1000UL;  // 5 min
+  // Minimum spacing between wake attempts when a wake failed (dead bus): each
+  // call blocks on the poll task servicing the command, so an unresponsive
+  // controller must not be retried every loop iteration (kody PR #171).
+  static constexpr unsigned long GT911_WAKE_RETRY_MS = 1000UL;  // 1 s
+  // Backoff between park attempts after a failed entry (uncertainty path): a
+  // persistent failure costs one ~40 ms blocking attempt per window instead of
+  // every idle loop iteration.
+  static constexpr unsigned long GT911_PARK_RETRY_MS = 30UL * 1000UL;  // 30 s
   // Minimum dwell at full speed after the last normal-speed request before
   // low power may re-engage (see lastNormalMs).
   static constexpr unsigned long NORMAL_POWER_DWELL_MS = 2000;  // ms

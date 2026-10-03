@@ -86,7 +86,28 @@ class HalGPIO {
   // True when any button contact is closed right now, read straight from the
   // hardware (ADC ladder off its idle rail, or the power GPIO asserted), without
   // going through the debounced state. Cheap enough to call every few ms.
+  // Covers the ADC ladder and the power pin ONLY — on DigitalButtons boards
+  // (X4 Pro and friends) readButtonAdc() reports raw = -1, so the nav keys are
+  // invisible here. Use anyPhysicalButtonHeld() for "is some key down at all".
   bool rawInputActive();
+  // rawInputActive() OR the latched state of every physical button index, so a
+  // held nav key counts on DigitalButtons boards too (design
+  // 2026-09-24-gt911-idle-sleep.md §3 Tier B relies on side buttons staying
+  // live while the GT911 is parked). Non-const because the rawInputActive() half
+  // reads the ADC.
+  bool anyPhysicalButtonHeld();
+  // GT911 Sleep-mode control (docs/design/2026-09-24-gt911-idle-sleep.md §3
+  // Tier B). setTouchSleep(true) parks the controller (no scanning, ~70–120 µA
+  // vs 8 mA active); wakeTouch() wakes it and returns only once the controller
+  // ACKs again. While parked the capacitive home key is unreachable and touch
+  // polling no-ops; physical side buttons are unaffected. No-op on boards
+  // without a GT911 (gt911Addr == 0). Call sites gate on
+  // SETTINGS.touchIdleSleep. Both may block up to ~250 ms — call only from
+  // contexts that may stall (idle window, activity entry).
+  bool setTouchSleep(bool asleep);
+  bool wakeTouch();
+  // True while the GT911 is parked in Sleep mode.
+  bool isTouchAsleep() const;
   // True while a finger is in contact with the touch panel right now.
   bool isTouchContactActive() const;
   bool hasTouch() const;
