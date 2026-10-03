@@ -153,9 +153,13 @@ bool HalGPIO::rawInputActive() {
   return (g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin);
 }
 
-bool HalGPIO::anyPhysicalButtonHeld() const {
-  // The latch covers every button index the board defines, so a digital nav key
-  // counts on DigitalButtons boards where rawInputActive() sees only Power.
+bool HalGPIO::anyPhysicalButtonHeld() {
+  // Fresh hardware read FIRST: on sync builds (beginAsync compiled out, no poll
+  // task) nothing commits currentState while the loop sits inside the 50 ms
+  // idle slice, so the latch alone is stale for the whole slice and a short tap
+  // would be dropped. The ADC ladder and the power pin are readable live; the
+  // latch is what adds the digital nav keys the ADC path cannot see.
+  if (rawInputActive()) return true;
   for (uint8_t i = 0; i <= InputManager::BTN_POWER; ++i) {
     if (inputMgr.isPressed(i)) return true;
   }

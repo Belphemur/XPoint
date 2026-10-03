@@ -93,9 +93,9 @@ class HalGPIO {
   // rawInputActive() OR the latched state of every physical button index, so a
   // held nav key counts on DigitalButtons boards too (design
   // 2026-09-24-gt911-idle-sleep.md §3 Tier B relies on side buttons staying
-  // live while the GT911 is parked). Latched state is one poll-task tick
-  // behind the pin, which is what "held" means here.
-  bool anyPhysicalButtonHeld() const;
+  // live while the GT911 is parked). Non-const because the rawInputActive() half
+  // reads the ADC.
+  bool anyPhysicalButtonHeld();
   // GT911 Sleep-mode control (docs/design/2026-09-24-gt911-idle-sleep.md §3
   // Tier B). setTouchSleep(true) parks the controller (no scanning, ~70–120 µA
   // vs 8 mA active); wakeTouch() wakes it and returns only once the controller
