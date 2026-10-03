@@ -158,11 +158,18 @@ bool HalGPIO::anyPhysicalButtonHeld() {
   // task) nothing commits currentState while the loop sits inside the 50 ms
   // idle slice, so the latch alone is stale for the whole slice and a short tap
   // would be dropped. The ADC ladder and the power pin are readable live; the
-  // latch is what adds the digital nav keys the ADC path cannot see.
+  // latch is what adds the digital-only nav-key banks the ADC path cannot see.
   if (rawInputActive()) return true;
   for (uint8_t i = 0; i <= InputManager::BTN_POWER; ++i) {
     if (inputMgr.isPressed(i)) return true;
   }
+  // Sticky-style boards route the nav keys to plain GPIOs (INPUT_PULLUP) that
+  // rawInputActive()'s ADC read cannot see. Sample them live too, so a tap
+  // released inside the 50 ms idle slice still breaks it (CodeRabbit PR #171
+  // round 2 finding — a level-only read loses sub-10 ms taps between samples).
+  const BoardConfig::InputPins& pins = BoardConfig::ACTIVE.input;
+  if (pins.up >= 0 && digitalRead(pins.up) == LOW) return true;
+  if (pins.down >= 0 && digitalRead(pins.down) == LOW) return true;
   return false;
 }
 
