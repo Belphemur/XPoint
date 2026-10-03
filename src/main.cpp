@@ -1163,14 +1163,18 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  // Shared by BOTH wake paths below (activity edge here, held contact in the
-  // idle trunk further down) so a stuck button cannot bypass the rate limit.
+  // Shared by BOTH wake paths below (the mapped edge here, the held contact
+  // just after it) so one contact cannot bypass the rate limit.
   static unsigned long lastTouchWakeAttempt = 0;
+  // Contact seen by the idle trunk's 50 ms slice on the PREVIOUS iteration.
+  // Consumed here, one iteration later, so the wake can never block ahead of
+  // the update() that samples the button edge.
+  static bool sliceSawContact = false;
   // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
   // consumed by the manager's snapshot — after update() that's always
   // nothing, and the inactivity timer would never reset on buttons.
-  if (mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased() || gpio.wasTouchActivity() ||
-      halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
+  const bool anyMappedEdge = mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased();
+  if (anyMappedEdge || gpio.wasTouchActivity() || halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
     // GT911 idle sleep (design 2026-09-24-gt911-idle-sleep.md §3 Tier B): the
@@ -1187,6 +1191,30 @@ void loop() {
       lastTouchWakeAttempt = millis();
       gpio.setTouchSleep(false);
     }
+  }
+
+  // A contact that broke the idle slice but produced no mapped edge — a button
+  // already held when the park fired, or a stuck one — never enters the branch
+  // above, so a parked controller would stay parked and every screen touch
+  // would stay dead until release-and-press (kody PR #171 rounds 4-5).
+  //
+  // Deliberately AFTER update() and NOT in the idle trunk: waking from the
+  // trunk blocks ~260 ms of handshake BEFORE update() samples the edge, which
+  // drops any tap shorter than that — the round-1 regression. By now a fresh
+  // press is already committed and owns its own wake above; only a contact
+  // that produced nothing reaches this.
+  //
+  // lastActivityTime is intentionally NOT reset: a permanently stuck contact
+  // would otherwise postpone the auto-sleep timeout forever. The inactivity
+  // timer belongs to the mapped-edge path only (kody PR #171 round 5). The
+  // contact therefore cannot re-park the controller either — the park side
+  // refuses to run under a live contact.
+  const bool heldContactPending = sliceSawContact;
+  sliceSawContact = false;
+  if (heldContactPending && !anyMappedEdge && gpio.isTouchAsleep() &&
+      millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
+    lastTouchWakeAttempt = millis();
+    gpio.setTouchSleep(false);
   }
 
   // Let wake continue as soon as its hold has been verified. The release can
@@ -1366,7 +1394,12 @@ void loop() {
       static unsigned long lastParkAttempt = 0;
       if (SETTINGS.touchIdleSleep && !gpio.isTouchAsleep() &&
           millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && !gpio.isUsbConnected() &&
-          millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
+          // Never park under a live contact: the held-contact wake above does
+          // not reset the inactivity timer, so a parked controller would be
+          // woken again on the next iteration and park/wake-thrash forever.
+          // Mirrors the SDK's own refusal to park with a live contact
+          // (InputManager::enterGt911Sleep, touchPressed/touchHomeKeyDown).
+          !gpio.rawInputActive() && millis() - lastParkAttempt >= HalPowerManager::GT911_PARK_RETRY_MS) {
         lastParkAttempt = millis();
         gpio.setTouchSleep(true);
       }
@@ -1374,34 +1407,16 @@ void loop() {
       // InputManager commits a press only when two consecutive polls agree, so a
       // press shorter than one 50 ms sleep could land in a single sample and be lost.
       const unsigned long idleStart = millis();
-      bool sliceSawContact = false;
       while (millis() - idleStart < 50) {
         delay(10);
         if (gpio.rawInputActive()) {
+          // Button contact during the slice: record it and break out so the
+          // trigger press is committed by the normal update() path at the TOP
+          // of the next iteration (kody PR #171 round 2), not blocked behind
+          // the ~200 ms wake handshake. The wake is the post-update check
+          // there; nothing blocks in the trunk itself.
           sliceSawContact = true;
-          // Button contact during the slice: break out so the trigger press is
-          // committed by the normal update() path at the TOP of the next
-          // iteration (kody PR #171 round 2), not blocked behind the ~200 ms
-          // wake handshake. The wake itself is the trunk block below.
           break;
-        }
-      }
-      // A contact that produces no fresh mapped edge — a button already held
-      // when the park fired, or a stuck one — never reaches the activity
-      // branch above, so it could not wake a parked controller and every touch
-      // would stay dead until release-and-press (kody PR #171 round 4). Wake
-      // here instead, gated on isTouchAsleep() so an awake device pays nothing
-      // per slice. The rate limit keeps a permanently stuck contact from
-      // paying the ~230 ms handshake on every iteration, and lastActivityTime
-      // is reset only once the controller ACKs — an unconfirmed wake must stay
-      // retryable, which needs the idle trunk to keep running.
-      if (sliceSawContact && gpio.isTouchAsleep() &&
-          millis() - lastTouchWakeAttempt >= HalPowerManager::GT911_WAKE_RETRY_MS) {
-        lastTouchWakeAttempt = millis();
-        gpio.setTouchSleep(false);
-        if (!gpio.isTouchAsleep()) {
-          lastActivityTime = millis();
-          powerManager.setPowerSaving(false);
         }
       }
     } else {
