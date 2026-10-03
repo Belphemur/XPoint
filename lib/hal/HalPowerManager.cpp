@@ -87,8 +87,9 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     enabled = false;
   }
 
-  // Note: We don't use mutex here to avoid too much overhead,
-  // it's not very important if we read a slightly stale value for currentLockMode
+  // Held across the check and the switch: a Lock taken in between would find full speed, do
+  // nothing, and then run at LOW_POWER_FREQ until the next key press.
+  xSemaphoreTake(modeMutex, portMAX_DELAY);
   const LockMode mode = currentLockMode;
 
   // Any request for normal speed (render lock, user input, active build)
@@ -102,12 +103,14 @@ void HalPowerManager::setPowerSaving(bool enabled) {
 
   if (mode == None && enabled && !isLowPower) {
     if (millis() - lastNormalMs < NORMAL_POWER_DWELL_MS) {
+      xSemaphoreGive(modeMutex);
       return;  // recent full-speed work: stay at normal frequency
     }
     const int prev = getCpuFrequencyMhz();
     LOG_INF("PWR", "CPU freq %d->%d MHz [idle-enter]", prev, LOW_POWER_FREQ);
     if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
       LOG_ERR("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
+      xSemaphoreGive(modeMutex);
       return;
     }
     InputManager::setLowPowerPolling(true);
@@ -118,6 +121,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     LOG_INF("PWR", "CPU freq %d->%d MHz [normal-restore]", prev, normalFreq);
     if (!setCpuFrequencyMhz(normalFreq)) {
       LOG_ERR("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
+      xSemaphoreGive(modeMutex);
       return;
     }
     InputManager::setLowPowerPolling(false);
@@ -125,6 +129,7 @@ void HalPowerManager::setPowerSaving(bool enabled) {
   }
 
   // Otherwise, no change needed
+  xSemaphoreGive(modeMutex);
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio, const uint64_t autoPowerOffTimerUs) {
