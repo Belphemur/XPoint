@@ -18,7 +18,12 @@
 #include "ClearCacheActivity.h"
 #include "ClockSettingsActivity.h"
 #include "CrossPointSettings.h"
+// Only the catalog this build can actually fetch is compiled in; both headers
+// gate themselves on CROSSPOINT_TTF_READER.
 #include "FontDownloadActivity.h"
+#if defined(CROSSPOINT_TTF_READER)
+#include "TtfFontDownloadActivity.h"
+#endif
 #include "GlobalStatsActivity.h"
 #include "HomeButtonSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -431,12 +436,28 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::DownloadFonts:
+        // One Settings row, two catalogs: raw .ttf on the native-TTF device
+        // class, .cpfont on the classic one.
+#if defined(CROSSPOINT_TTF_READER)
+      {
+        auto activity = makeUniqueNoThrow<TtfFontDownloadActivity>(renderer, mappedInput);
+        if (!activity) {
+          LOG_ERR("SET", "OOM: TTF font download");
+          return;
+        }
+        startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+          SETTINGS.saveToFile();
+          rebuildSettingsLists();
+        });
+      }
+#else
         startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
                                [this](const ActivityResult&) {
                                  SETTINGS.saveToFile();
                                  rebuildSettingsLists();
                                });
-        break;
+#endif
+      break;
       case SettingAction::TextSettings:
         startActivityForResult(std::make_unique<TextSettingsActivity>(renderer, mappedInput, &sdFontSystem.registry(),
                                                                       TextSettingsActivity::Tab::Family),

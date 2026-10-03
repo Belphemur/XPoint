@@ -1,5 +1,10 @@
 #include "FontDownloadActivity.h"
 
+// On a native-TTF device class this catalog is not used at all
+// (TtfFontDownloadActivity takes the Settings row), and the header compiles to
+// nothing — so the translation unit does too.
+#if !defined(CROSSPOINT_TTF_READER)
+
 #include <ArduinoJson.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
@@ -1016,3 +1021,5 @@ void FontDownloadActivity::render(RenderLock&&) {
 
   renderer.displayBuffer();
 }
+
+#endif  // !CROSSPOINT_TTF_READER

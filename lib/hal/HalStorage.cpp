@@ -70,6 +70,21 @@ class HalStorage::StorageLock {
 
 bool HalStorage::transactionActive() { return g_sdTransactions.busy(); }
 
+bool HalStorage::freeBytes(uint64_t* outFreeBytes) {
+  StorageLock lock;
+  const uint64_t total = SDCard.sdTotalBytes();
+  const uint64_t used = SDCard.sdUsedBytes();
+  // Only an unreadable capacity counts as unknown. `used >= total` is a real
+  // reading of a full card and reports a genuine 0 so callers can refuse the
+  // work instead of discovering it halfway through a transfer.
+  if (total == 0) {
+    *outFreeBytes = 0;
+    return false;
+  }
+  *outFreeBytes = used >= total ? 0 : total - used;
+  return true;
+}
+
 HalStorage::BusGate::BusGate() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
 
 HalStorage::BusGate::~BusGate() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }

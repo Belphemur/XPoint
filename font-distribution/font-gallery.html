@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrossPoint Reader — Font Gallery</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           margin: 0; padding: 24px; background: #f8f9fa; color: #1a1a1a; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    .subtitle { color: #6c757d; font-size: 0.9rem; margin-bottom: 24px; }
+    .filter-bar { margin-bottom: 20px; display: flex; gap: 12px; flex-wrap: wrap; }
+    .filter-btn { padding: 6px 16px; border: 1px solid #dee2e6; border-radius: 20px;
+                   background: white; cursor: pointer; font-size: 0.85rem;
+                   font-family: inherit; color: inherit; }
+    .filter-btn.active { background: #0d6efd; color: white; border-color: #0d6efd; }
+    .font-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(480px, 100%), 1fr));
+                   gap: 20px; }
+    .font-card { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                  border: 1px solid #e9ecef; }
+    .font-card img { max-width: 100%; height: auto; border: 1px solid #dee2e6; border-radius: 6px; }
+    .font-name { font-weight: 700; font-size: 1.1rem; margin: 8px 0 4px; }
+    .font-meta { font-size: 0.85rem; color: #495057; margin-bottom: 4px; }
+    .font-desc { font-size: 0.85rem; color: #6c757d; line-height: 1.4; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem;
+              font-weight: 600; margin-right: 4px;
+              background: #e9ecef; color: #495057; }
+    .badge.eink { background: #e3f2fd; color: #1565c0; }
+    .badge.accessibility { background: #e8f5e9; color: #2e7d32; }
+    .badge.dyslexia { background: #fff3e0; color: #e65100; }
+    .badge.serif { background: #f3e5f5; color: #6a1b9a; }
+    .badge.sans { background: #e0f2f1; color: #00695c; }
+    .badge.slab { background: #fff8e1; color: #8d6e63; }
+  </style>
+</head>
+<body>
+  <h1>CrossPoint Reader Font Gallery</h1>
+  <div class="subtitle">Font previews for PSRAM-enabled devices (ESP32-S3). 
+Download the <a href="#local-manifest">manifest</a> or browse the <a href="../previews/">previews</a>.</div>
+  <div class="filter-bar">
+    <button type="button" class="filter-btn active" data-filter="all">All</button>
+    <button type="button" class="filter-btn" data-filter="eink">E-ink Optimized</button>
+    <button type="button" class="filter-btn" data-filter="accessibility">Accessibility</button>
+    <button type="button" class="filter-btn" data-filter="serif">Serif</button>
+    <button type="button" class="filter-btn" data-filter="sans">Sans-serif</button>
+    <button type="button" class="filter-btn" data-filter="slab">Slab-serif</button>
+  </div>
+  <div class="font-grid">
+    <div class="font-card" data-tags="accessibility sans">
+      <img src="../previews/preview_Atkinson_Hyperlegible.png" alt="Atkinson Hyperlegible preview" loading="lazy">
+      <div class="font-name">Atkinson Hyperlegible</div>
+      <div class="font-meta"><span class="badge accessibility">Accessibility</span> <span class="badge sans">Sans-serif</span></div>
+      <div class="font-desc">Accessibility font for low vision. Distinctive letter shapes to prevent confusion.</div>
+      <div class="font-meta">Source: googlefonts/atkinson-hyperlegible</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_Cardo.png" alt="Cardo preview" loading="lazy">
+      <div class="font-name">Cardo</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Scholarly serif with wide Unicode coverage. Designed for medievalists and classicists.</div>
+      <div class="font-meta">Source: davidshaner/cardo</div>
+    </div>
+    <div class="font-card" data-tags="eink serif">
+      <img src="../previews/preview_Cartisse_e-ink_opt.png" alt="Cartisse preview" loading="lazy">
+      <div class="font-name">Cartisse</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge serif">Serif</span></div>
+      <div class="font-desc">Calligraphic serif with distinctive stroke modulation, e-ink-hinted.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized)</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_Crimson_Pro.png" alt="Crimson Pro preview" loading="lazy">
+      <div class="font-name">Crimson Pro</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Classic old-style serif, traditional and scholarly.</div>
+      <div class="font-meta">Source: google/fonts (ofl/crimsonpro)</div>
+    </div>
+    <div class="font-card" data-tags="sans">
+      <img src="../previews/preview_Fira_Sans_sans.png" alt="Fira Sans preview" loading="lazy">
+      <div class="font-name">Fira Sans</div>
+      <div class="font-meta"><span class="badge sans">Sans-serif</span></div>
+      <div class="font-desc">Firefox's humanist sans-serif. Clean and modern.</div>
+      <div class="font-meta">Source: mozilla/fira (googlefonts/fira)</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_Literata.png" alt="Literata preview" loading="lazy">
+      <div class="font-name">Literata</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Google's purpose-designed e-reading font. Transitional serif optimized for long reading sessions on digital screens.</div>
+      <div class="font-meta">Source: googlefonts/literata</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_Lora.png" alt="Lora preview" loading="lazy">
+      <div class="font-name">Lora</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Calligraphic serif for literary reading. Elegant curves with excellent readability.</div>
+      <div class="font-meta">Source: cyrealtype/Lora-Cyrillic</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_Merriweather.png" alt="Merriweather preview" loading="lazy">
+      <div class="font-name">Merriweather</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Warm serif designed for screen reading. Generous x-height and soft contrast.</div>
+      <div class="font-meta">Source: SorkinType/Merriweather</div>
+    </div>
+    <div class="font-card" data-tags="eink slab">
+      <img src="../previews/preview_NV_Bitter_e-ink_opt.png" alt="NV Bitter preview" loading="lazy">
+      <div class="font-name">NV Bitter</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge slab">Slab-serif</span></div>
+      <div class="font-desc">Slab serif designed for screens, specially hinted for e-ink. Sturdy and readable.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized)</div>
+    </div>
+    <div class="font-card" data-tags="eink accessibility sans">
+      <img src="../previews/preview_NV_Disleksio_OpenDyslexic_opt.png" alt="NV Disleksio preview" loading="lazy">
+      <div class="font-name">NV Disleksio</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge dyslexia">Dyslexia</span> <span class="badge sans">Sans-serif</span></div>
+      <div class="font-desc">Dyslexia-friendly sans-serif adapted for e-ink. Weighted bottoms for letter orientation.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized)</div>
+    </div>
+    <div class="font-card" data-tags="eink sans">
+      <img src="../previews/preview_NV_Jost_sans.png" alt="NV Jost preview" loading="lazy">
+      <div class="font-name">NV Jost</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge sans">Sans-serif</span></div>
+      <div class="font-desc">Clean geometric sans-serif, e-ink-hinted. Modern and unobtrusive.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized, Sora/Jost)</div>
+    </div>
+    <div class="font-card" data-tags="eink accessibility sans">
+      <img src="../previews/preview_NV_Legible_Next_sans.png" alt="NV Legible Next preview" loading="lazy">
+      <div class="font-name">NV Legible Next</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge accessibility">Accessibility</span> <span class="badge sans">Sans-serif</span></div>
+      <div class="font-desc">Accessibility font for low vision, e-ink-hinted. Maximum legibility with generous spacing.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized, Atkinson Hyperlegible Next)</div>
+    </div>
+    <div class="font-card" data-tags="eink serif">
+      <img src="../previews/preview_Libron_e-ink_opt.png" alt="NV Libron preview" loading="lazy">
+      <div class="font-name">NV Libron</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge serif">Serif</span></div>
+      <div class="font-desc">e-ink-optimized serif derived from Source Serif Pro. Excellent readability on e-ink displays.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized, Source Serif Pro)</div>
+    </div>
+    <div class="font-card" data-tags="eink serif">
+      <img src="../previews/preview_Sourcerer_e-ink_opt.png" alt="NV Sourcerer preview" loading="lazy">
+      <div class="font-name">NV Sourcerer</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge serif">Serif</span></div>
+      <div class="font-desc">Serif with high-contrast strokes, specially hinted for crisp e-ink rendering.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized)</div>
+    </div>
+    <div class="font-card" data-tags="eink serif">
+      <img src="../previews/preview_NV_Tabula_IBM_Plex_Serif_opt.png" alt="NV Tabula preview" loading="lazy">
+      <div class="font-name">NV Tabula</div>
+      <div class="font-meta"><span class="badge eink">E-ink optimized</span> <span class="badge serif">Serif</span></div>
+      <div class="font-desc">e-ink-optimized serif, clean and traditional.</div>
+      <div class="font-meta">Source: nicoverbruggen/ebook-fonts (e-ink optimized, IBM Plex Serif)</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_PT_Serif.png" alt="PT Serif preview" loading="lazy">
+      <div class="font-name">PT Serif</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Classic serif by ParaType. Traditional and well-balanced for long reading.</div>
+      <div class="font-meta">Source: google/fonts (ofl/ptserif)</div>
+    </div>
+    <div class="font-card" data-tags="serif">
+      <img src="../previews/preview_Source_Serif_4.png" alt="Source Serif 4 preview" loading="lazy">
+      <div class="font-name">Source Serif 4</div>
+      <div class="font-meta"><span class="badge serif">Serif</span></div>
+      <div class="font-desc">Adobe's transitional serif with extensive language support. Well-proportioned and highly readable.</div>
+      <div class="font-meta">Source: adobe-fonts/source-serif</div>
+    </div>
+  </div>
+  <script>
+    document.querySelectorAll(".filter-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelector(".filter-btn.active").classList.remove("active");
+        btn.classList.add("active");
+        const filter = btn.dataset.filter;
+        document.querySelectorAll(".font-card").forEach(card => {
+          const tags = card.dataset.tags;
+          if (filter === "all" || tags.includes(filter)) {
+            card.style.display = "";
+          } else {
+            card.style.display = "none";
+          }
+        });
+      });
+    });
+  </script>
+</body>
+</html>
