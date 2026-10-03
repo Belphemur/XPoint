@@ -1415,8 +1415,11 @@ void loop() {
           // of the next iteration (kody PR #171 round 2), not blocked behind
           // the ~200 ms wake handshake. The wake is the post-update check
           // there; nothing blocks in the trunk itself.
-          // anyPhysicalButtonHeld(), not rawInputActive(): the X4 Pro is
-          // DigitalButtons, where rawInputActive() only sees the Power pin.
+          // anyPhysicalButtonHeld(), not rawInputActive() alone: rawInputActive()
+          // is the fresh hardware read (ADC ladder + power pin) so sync builds
+          // (no poll task) still see a live sample every slice, but it does not
+          // see digital-only nav-key banks that some variants expose via the
+          // debounce latch — anyPhysicalButtonHeld() ORs both.
           sliceSawContact = true;
           break;
         }
