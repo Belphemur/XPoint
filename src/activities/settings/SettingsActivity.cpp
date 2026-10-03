@@ -32,8 +32,6 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
-#include "PowerSettings.h"
-#include "PowerSettingsActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "SettingsList.h"
@@ -73,10 +71,7 @@ void SettingsActivity::rebuildSettingsLists() {
   DictionaryRegistry::discover(dictionaries);
 
   for (const auto& setting : getSettingsList(&sdFontSystem.registry(), &dictionaries)) {
-    if (setting.category == StrId::STR_NONE_OPT || home_button::isSetting(setting.valuePtr) ||
-        power_menu::isSetting(setting.valuePtr)) {
-      continue;
-    }
+    if (setting.category == StrId::STR_NONE_OPT || home_button::isSetting(setting.valuePtr)) continue;
     if (setting.category == StrId::STR_CAT_DISPLAY) {
       // The sunlight fading fix is a grayscale-waveform compensation that does
       // not apply on the X4 Pro / X4 Classic (plain OTP waveform, same panels).
@@ -111,7 +106,6 @@ void SettingsActivity::rebuildSettingsLists() {
                             SettingInfo::Action(StrId::STR_HOME_BUTTON, SettingAction::HomeButton));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_POWER, SettingAction::PowerSettings));
   // Clock configuration only exists where the RTC probe found hardware; on
   // clockless boards there is nothing to set.
   if (halClock.isAvailable()) {
@@ -375,16 +369,6 @@ void SettingsActivity::toggleCurrentSetting() {
         startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
         return;
       }
-      case SettingAction::PowerSettings: {
-        // Activities must outlive this call and are owned by the activity stack.
-        auto activity = makeUniqueNoThrow<PowerSettingsActivity>(renderer, mappedInput);
-        if (!activity) {
-          LOG_ERR("SET", "OOM: Power settings");
-          return;
-        }
-        startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
-        return;
-      }
       case SettingAction::RemapFrontButtons:
         startActivityForResult(std::make_unique<ButtonRemapActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -564,8 +548,7 @@ void SettingsActivity::openAutoPowerOffPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
-  if (setting.action == SettingAction::HomeButton || setting.action == SettingAction::PowerSettings)
-    return tr(STR_CONFIGURE);
+  if (setting.action == SettingAction::HomeButton) return tr(STR_CONFIGURE);
   if (setting.type == SettingType::ACTION) {
     return "";
   }

@@ -13,8 +13,6 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
-#include <PageTurnTimer.h>
-#include <PowerStatsOverlay.h>
 #include <SdCardFont.h>
 #include <TrustedTime.h>
 #include <WiFi.h>
@@ -973,12 +971,6 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin;
-  // Full telemetry is anchored at the top, so the content area starts below it.
-  // Mirrors how orientedMarginBottom below reserves the status bar: the layout
-  // viewport and the paint origin are shifted by the same amount, so no text is
-  // ever drawn under the block.
-  orientedMarginTop += PowerStatsOverlay::topReservePx(
-      renderer, PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   orientedMarginLeft += SETTINGS.screenMargin;
 
   auto selector = makeUniqueNoThrow<DictionaryWordSelectActivity>(
@@ -1010,10 +1002,6 @@ void EpubReaderActivity::openFootnoteSelect(const bool reopenMenuOnCancel) {
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin;
-  // Must match the layout origin used by renderBook(), or footnote taps land on
-  // the wrong line while the Full block is showing.
-  orientedMarginTop += PowerStatsOverlay::topReservePx(
-      renderer, PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   orientedMarginLeft += SETTINGS.screenMargin;
   auto selector = makeUniqueNoThrow<EpubReaderFootnoteSelectActivity>(renderer, mappedInput, std::move(page),
                                                                       orientedMarginLeft, orientedMarginTop);
@@ -2199,16 +2187,12 @@ bool EpubReaderActivity::skipLoopDelay() {
 void EpubReaderActivity::renderBook() {
 #if defined(CROSSPOINT_TTF_READER)
   // Native-TTF page source (design §3.5): a fully separate render path so the
-  // legacy Section pipeline below stays untouched. It installs its OWN timer in
-  // renderBookTtf(); starting one here as well made every TTF render report two
-  // samples and double the accumulated page time.
+  // legacy Section pipeline below stays untouched.
   if (ttf_) {
     renderBookTtf();
     return;
   }
 #endif
-  // Legacy (Section) path only.
-  PageTurnTimer pageTurnTimer;
 #ifdef BOOK_PROFILE
   uint32_t render_book_start_ms = millis();
   uint8_t core = xPortGetCoreID();
@@ -2248,15 +2232,6 @@ void EpubReaderActivity::renderBook() {
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
                                    &orientedMarginLeft);
   orientedMarginTop += SETTINGS.screenMargin;
-  // Full telemetry occupies the top of the screen, so the page layout viewport
-  // shrinks by exactly the block's height and the text begins below it. This is
-  // the same mechanism as the status-bar reserve on orientedMarginBottom just
-  // below: cache key and paint origin always agree, so a mode change re-lays out
-  // once (like a margin or font change does) and then stays stable, because
-  // PowerStatsOverlay::topReservePx() depends only on the mode, never on the
-  // telemetry values being displayed.
-  orientedMarginTop += PowerStatsOverlay::topReservePx(
-      renderer, PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode)));
   orientedMarginLeft += SETTINGS.screenMargin;
   orientedMarginRight += SETTINGS.screenMargin;
 
@@ -2992,14 +2967,7 @@ void EpubReaderActivity::renderBookTtf() {
     return;
   }
   if (isBufferDisplayPass) {
-    // The cached turn commits a displayed page through ttfCommitFrame(), but this
-    // branch returns long before the timer is declared below, so sequential fast
-    // turns recorded no sample at all and left the page count and average stale.
-    // Its own scope: a failed attempt falls through to the full render, which is
-    // timed separately and must not be double-counted.
-    PageTurnTimer fastDisplayTimer;
     if (ttfFastDisplayPass(params)) return;
-    fastDisplayTimer.cancel();
     // Page read failed or an image page slipped through: the framebuffer no
     // longer matches the reading position — full render below.
     ttfInvalidatePreRender("fast pass precondition");
@@ -3280,14 +3248,6 @@ void EpubReaderActivity::renderBookTtf() {
 
   updateBookmarkFlag();
 
-  // Declared here rather than at the top of the function: everything above is
-  // index-building or pre-render work that returns without committing a frame,
-  // and each of those exits would otherwise add a false sample to the page-turn
-  // average. Positioning the scope this way makes the guarantee structural --
-  // a future early return in the build block cannot regress it the way a
-  // per-branch cancel() list would.
-  PageTurnTimer pageTurnTimer;
-
   // 5) Read + rasterize the page. Run text lives in the runtime's scratch
   // arena for exactly this block. A failed read must not expose the prior
   // frame through overlay fast paths.
@@ -3297,8 +3257,7 @@ void EpubReaderActivity::renderBookTtf() {
   if (!ttf_->readPage(static_cast<uint16_t>(currentSpineIndex), static_cast<uint16_t>(ttfPage), &page)) {
     ttf_->scratch().release(scratchMark);
     LOG_ERR("ERS", "TTF page read failed (spine %d page %d)", currentSpineIndex, ttfPage);
-    pageTurnTimer.cancel();  // no frame committed, so no page-turn sample
-    requestUpdate();         // transient SD failure; retry on the next pass
+    requestUpdate();  // transient SD failure; retry on the next pass
     return;
   }
   ttfCurrentCharStart = page.charStart;
@@ -4706,27 +4665,8 @@ void EpubReaderActivity::renderStatusBar() const {
   const char* chapterTimeLeft = nullptr;
 #endif
 
-  // Power-stats overlay. No timer: renderStatusBar() already runs on every page
-  // turn and data refresh, which are the only moments the panel is being
-  // redrawn anyway. A periodic repaint would both wear the e-ink and undo the
-  // idle clock the governor just dropped.
-  //   Full    — a text block anchored at the TOP of the screen, drawn here. The
-  //             layout viewport already shrank by topReservePx() in renderBook(),
-  //             so the block lands in reserved space above the text.
-  //   Compact — only FORMATTED here; the theme lays it out as a status-bar
-  //             element, because it owns that baseline and the clusters already
-  //             painted on it.
-  const auto powerStatsMode = PowerStatsOverlay::clampMode(static_cast<uint8_t>(SETTINGS.powerStatsMode));
-  char compactBuf[PowerStatsOverlay::COMPACT_BYTES];
-  const char* powerStatsLine = nullptr;
-  if (powerStatsMode == PowerStatsOverlay::Mode::Compact) {
-    powerStatsLine = PowerStatsOverlay::buildCompact(compactBuf, sizeof(compactBuf));
-  } else if (powerStatsMode == PowerStatsOverlay::Mode::Full) {
-    PowerStatsOverlay::draw(renderer, powerStatsMode, powerManager.endurance());
-  }
-
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section ? section->isBuilding() : false, chapterTimeLeft, powerStatsLine);
+                    section ? section->isBuilding() : false, chapterTimeLeft);
 }
 
 // ---------------------------------------------------------------------------

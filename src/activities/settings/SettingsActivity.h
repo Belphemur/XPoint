@@ -28,7 +28,6 @@ enum class SettingAction {
   Plugins,
   KeyboardLayouts,
   HomeButton,
-  PowerSettings,
   TextSettings,
   About,
 };

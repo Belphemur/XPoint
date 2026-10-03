@@ -26,9 +26,8 @@ enum MenuItem {
   ITEM_TITLE,
   ITEM_BATTERY,
   ITEM_XTC_STATUS_BAR,
-  ITEM_CLOCK,  // every device, but only visible when _sdkRtc.begin() succeeds (onEnter() truncates
-               // visibleItemCount to BASE_MENU_ITEMS otherwise; zone/format/sync rows moved to
-               // ClockSettingsActivity)
+  ITEM_CLOCK,  // every device, but only visible when _sdkRtc.begin() succeeds (onEnter() truncates visibleItemCount to
+               // BASE_MENU_ITEMS otherwise; zone/format/sync rows moved to ClockSettingsActivity)
   ITEM_COUNT
 };
 

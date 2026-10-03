@@ -80,11 +80,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     STATUS_BAR_CHAPTER_TIME_LEFT_MODE_COUNT
   };
 
-  // Power-stats overlay visibility. COMPACT is the single status-bar line,
-  // FULL the telemetry block; OFF is the default so the feature costs nothing
-  // until the user opts in. Append-only: the persisted byte is this enum's value.
-  enum POWER_STATS_MODE { POWER_STATS_OFF = 0, POWER_STATS_COMPACT = 1, POWER_STATS_FULL = 2, POWER_STATS_MODE_COUNT };
-
   enum ORIENTATION {
     PORTRAIT = 0,       // 480x800 logical coordinates (current default)
     LANDSCAPE_CW = 1,   // 800x480 logical coordinates, rotated 180° (swap top/bottom)
@@ -258,15 +253,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t xtcStatusBarMode = XTC_STATUS_BAR_HIDE;
   // Clock display in status bar (X3 only, requires DS3231 RTC)
   uint8_t statusBarClock = STATUS_BAR_CLOCK_HIDE;
-  // Endurance-governor telemetry overlay (design doc 2026-10-01 §3.3).
-  uint8_t powerStatsMode = POWER_STATS_OFF;  // POWER_STATS_MODE
-  // Endurance governor profile. Values match endurance::Profile in
-  // lib/power/EnduranceLadder.h (0 Endurance, 1 Balanced, 2 Performance), which
-  // is kept free of Arduino includes so the ladder stays host-testable.
-  uint8_t powerProfile = 0;
-  // Hold the CPU at full speed while a heavy job (render, build, transfer) runs.
-  // Off lets the idle tick throttle a job mid-flight, so it defaults on.
-  uint8_t powerHeavyJobBoost = 1;
   // Auto-detected IANA time zone id, e.g. "America/Toronto". Empty = not detected (show UTC).
   char clockTimeZoneId[40] = "";
   // Detected current UTC offset in MINUTES (signed), e.g. -240 = UTC-4.
@@ -512,10 +498,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     uint8_t progressBarMode = HIDE_PROGRESS;                           // STATUS_BAR_PROGRESS_BAR
     uint8_t progressBarHeightPx = 0;                                   // (thickness+1)*2; 0 when the bar is hidden
     uint8_t xtcMode = XTC_STATUS_BAR_HIDE;                             // XTC_STATUS_BAR_MODE
-    // Compact power telemetry is drawn into the text lane, so it participates in
-    // the lane's visibility contract. Copied like every other field here: the spec
-    // is a value snapshot and cannot reach the enclosing class's members.
-    bool showPowerStatsCompact = false;
 
     bool showsProgressBar() const { return progressBarMode != HIDE_PROGRESS; }
     bool showsTitle() const { return titleMode != HIDE_TITLE; }
@@ -524,11 +506,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Visibility of the text lane. Clock hardware presence is the caller's
     // concern: pass halClock.isAvailable(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
-      // The Compact telemetry line lives in this lane. Omitting it left the lane
-      // unreserved when every other text element was hidden, so EPUB drew the
-      // line over unreserved space and XTC skipped the bar on zero height.
       return showChapterPageCount || showChapterTimeLeft || showBookProgressPercent || showsTitle() || showBattery ||
-             (showsClock() && clockAvailable) || showPowerStatsCompact;
+             (showsClock() && clockAvailable);
     }
   };
   StatusBarSpec statusBarSpec() const;

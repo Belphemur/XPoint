@@ -10,9 +10,6 @@
 
 #include <cassert>
 
-#include "HalPowerManager.h"
-#include "SdBusGuard.h"
-
 #define SDCard SDCardManager::getInstance()
 
 namespace {
@@ -42,52 +39,11 @@ bool HalStorage::ready() const { return SDCard.ready(); }
 
 // For the rest of the methods, we acquire the mutex to ensure thread safety
 
-namespace {
-// One counter for the whole process: every SD access in the firmware funnels
-// through StorageLock below, so this describes "an SD transaction is in flight".
-// Recursive-mutex-aware, because StorageLock nests (HAL_STORAGE_WRAPPED_CALL and
-// HalFile::Impl::~Impl both take it while an outer holder still has it).
-sd_bus::TransactionCounter g_sdTransactions;
-}  // namespace
-
 class HalStorage::StorageLock {
  public:
-  StorageLock() {
-    xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY);
-    // Mark the bus busy before touching the card, and make sure the clock is
-    // already at a safe frequency at that moment: the switch must never happen
-    // between the command being issued and its completion interrupt arriving.
-    // Only the 0 -> 1 edge acts, so a nested lock costs nothing.
-    if (g_sdTransactions.enter()) {
-      powerManager.setPowerSaving(false);
-    }
-  }
-  ~StorageLock() {
-    g_sdTransactions.leave();
-    xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex);
-  }
+  StorageLock() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
+  ~StorageLock() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
 };
-
-bool HalStorage::transactionActive() { return g_sdTransactions.busy(); }
-
-bool HalStorage::freeBytes(uint64_t* outFreeBytes) {
-  StorageLock lock;
-  const uint64_t total = SDCard.sdTotalBytes();
-  const uint64_t used = SDCard.sdUsedBytes();
-  // Only an unreadable capacity counts as unknown. `used >= total` is a real
-  // reading of a full card and reports a genuine 0 so callers can refuse the
-  // work instead of discovering it halfway through a transfer.
-  if (total == 0) {
-    *outFreeBytes = 0;
-    return false;
-  }
-  *outFreeBytes = used >= total ? 0 : total - used;
-  return true;
-}
-
-HalStorage::BusGate::BusGate() { xSemaphoreTakeRecursive(HalStorage::getInstance().storageMutex, portMAX_DELAY); }
-
-HalStorage::BusGate::~BusGate() { xSemaphoreGiveRecursive(HalStorage::getInstance().storageMutex); }
 
 void HalStorage::prepareForDeepSleep() {
   StorageLock lock;

@@ -12,7 +12,6 @@
 
 #include "HalFrontlight.h"
 #include "HalGPIO.h"
-#include "HalStorage.h"
 
 #if FREEINK_DEVICE_PAPERMONO
 #include <M5Pm1.h>
@@ -88,26 +87,9 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     enabled = false;
   }
 
-  // Same reasoning as Wi-Fi, for the card: the CPU/APB divider that this call
-  // reconfigures paces the SD host's register interface and ISR, so switching it
-  // while a command is outstanding loses the completion event and the driver
-  // cannot even recover with a status query (see SdBusGuard.h). StorageLock
-  // raises the clock before a transfer begins, so refusing this drop cannot
-  // strand the device at the low frequency.
-  if (enabled && HalStorage::transactionActive()) {
-    return;
-  }
-
   // Note: We don't use mutex here to avoid too much overhead,
   // it's not very important if we read a slightly stale value for currentLockMode
   const LockMode mode = currentLockMode;
-
-  // A heavy job holds the clock up for its whole duration. Without this the
-  // main loop's next idle tick can drop the CPU mid-render, because the job's
-  // Lock only ever raised the clock and nothing kept it raised.
-  if (endurance_.heavyJobActive() && endurance_.heavyJobHoldEnabled()) {
-    enabled = false;
-  }
 
   // Any request for normal speed (render lock, user input, active build)
   // refreshes the dwell window. Without this, the input-idle low-power entry
@@ -118,47 +100,26 @@ void HalPowerManager::setPowerSaving(bool enabled) {
     lastNormalMs = millis();
   }
 
-  if (mode == None && enabled && !isLowPower.load(std::memory_order_acquire)) {
+  if (mode == None && enabled && !isLowPower) {
     if (millis() - lastNormalMs < NORMAL_POWER_DWELL_MS) {
       return;  // recent full-speed work: stay at normal frequency
     }
-    // Close the window between "is the card busy?" and the divider actually
-    // moving. While this is held no task can start an SD transaction, so the
-    // check below cannot go stale before setCpuFrequencyMhz() runs.
-    HalStorage::BusGate sdQuiet;
-    if (HalStorage::transactionActive()) {
-      return;  // defensive: a transaction already owns the bus
-    }
-    // One acquire load: the clock and the polling policy below come from the
-    // same published rung.
-    const uint32_t target = governorTarget_.load(std::memory_order_acquire);
-    const uint32_t targetFreq = target & 0xFFFFu;
-    const int lowFreq = targetFreq > 0 ? static_cast<int>(targetFreq) : LOW_POWER_FREQ;
-    if (!setCpuFrequencyMhz(lowFreq)) {
-      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", lowFreq);
-      // A refused clock target IS the governor's instability signal: the ladder
-      // must ratchet to a rung this board can actually reach, or it will keep
-      // asking for a clock the hardware declines every idle tick.
-      endurance_.reportInstability(EnduranceGovernor::InstabilityReason::ClockSwitchFailure);
+    LOG_DBG("PWR", "Going to low-power mode");
+    if (!setCpuFrequencyMhz(LOW_POWER_FREQ)) {
+      LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", LOW_POWER_FREQ);
       return;
     }
-    // Reported after the switch, with the frequency that was actually applied:
-    // the ladder now spans 10/40/80 MHz, so a "low power" label cannot tell an
-    // idle rung from a demoted one.
-    LOG_DBG("PWR", "Going to low power: %d MHz", lowFreq);
-    // Poll slices are the idle-sleep class the governor's ladder toggles. A
-    // demoted device keeps the input manager at its tight cadence instead.
-    InputManager::setLowPowerPolling((target & kPollSlicesBit) != 0);
-    isLowPower.store(true, std::memory_order_release);
+    InputManager::setLowPowerPolling(true);
+    isLowPower = true;
 
-  } else if ((!enabled || mode != None) && isLowPower.load(std::memory_order_acquire)) {
-    LOG_DBG("PWR", "Restoring normal CPU frequency: %d MHz", normalFreq);
+  } else if ((!enabled || mode != None) && isLowPower) {
+    LOG_DBG("PWR", "Restoring normal CPU frequency");
     if (!setCpuFrequencyMhz(normalFreq)) {
       LOG_DBG("PWR", "Failed to set CPU frequency = %d MHz", normalFreq);
       return;
     }
     InputManager::setLowPowerPolling(false);
-    isLowPower.store(false, std::memory_order_release);
+    isLowPower = false;
   }
 
   // Otherwise, no change needed
@@ -361,21 +322,6 @@ bool HalPowerManager::isBatteryCharging() const {
   return battery.isCharging();
 }
 
-bool HalPowerManager::isExternalPowerPresent(bool* known) const {
-  static const BatteryMonitor battery;
-  return battery.isExternalPowerPresent(known);
-}
-
-bool HalPowerManager::getBatteryMillivolts(uint16_t& millivoltsOut) const {
-  static const BatteryMonitor battery;
-  const BatteryMonitor::Status status = battery.readStatus();
-  if (!status.millivoltsKnown) {
-    return false;
-  }
-  millivoltsOut = status.millivolts;
-  return true;
-}
-
 uint16_t HalPowerManager::getBatteryPercentage() const {
   static const BatteryMonitor battery;
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
@@ -456,12 +402,6 @@ HalPowerManager::Lock::Lock() {
   }
   xSemaphoreGive(powerManager.modeMutex);
   if (valid) {
-    // Register the scope as a governor heavy job. This Lock is what the firmware
-    // actually uses (rendering, sleep and shutdown preparation), so without the
-    // refcount here the governor's heavy-job state would never go non-zero and
-    // neither the hold in setPowerSaving() nor the "Heavy-Job Boost" setting
-    // could have any effect.
-    powerManager.endurance().beginHeavyJob();
     // Immediately restore normal CPU frequency if currently in low-power mode
     powerManager.setPowerSaving(false);
   }
@@ -471,7 +411,6 @@ HalPowerManager::Lock::~Lock() {
   xSemaphoreTake(powerManager.modeMutex, portMAX_DELAY);
   if (valid) {
     powerManager.currentLockMode = None;
-    powerManager.endurance().endHeavyJob();
   }
   xSemaphoreGive(powerManager.modeMutex);
 }
