@@ -2031,6 +2031,9 @@ bool EpubReaderActivity::skipPages(int amount) {
       nextPageNumber = 0;
       currentSpineIndex++;
       ttfRestoreLastPage = false;
+      // Drops any pending font-preview seed: it names a page in the chapter
+      // just left.
+      clearDeferredReposition();
       return true;
     }
     if (ttfPage > 0) {
@@ -2042,6 +2045,8 @@ bool EpubReaderActivity::skipPages(int amount) {
       nextPageNumber = 0;
       currentSpineIndex--;
       ttfRestoreLastPage = false;
+      // Same for the backward skip.
+      clearDeferredReposition();
       return true;
     }
     return false;
