@@ -2030,9 +2030,8 @@ bool EpubReaderActivity::skipPages(int amount) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
-      ttfRestoreLastPage = false;
-      // Drops any pending font-preview seed: it names a page in the chapter
-      // just left.
+      // Drops the chapter-scoped restore state, including any
+      // ttfRestoreLastPage left by a previous back-step.
       clearDeferredReposition();
       return true;
     }
@@ -2044,7 +2043,6 @@ bool EpubReaderActivity::skipPages(int amount) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex--;
-      ttfRestoreLastPage = false;
       // Same for the backward skip.
       clearDeferredReposition();
       return true;
@@ -4307,9 +4305,8 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       nextPageNumber = 0;
       currentSpineIndex++;
       ttfPage = 0;
-      ttfRestoreLastPage = false;
-      // Drops any pending font-preview seed: it names a page in the chapter
-      // just left, and would otherwise re-target the new one.
+      // Drops the chapter-scoped restore state, including any
+      // ttfRestoreLastPage left by a previous back-step.
       clearDeferredReposition();
       lastPageTurnTime = millis();
     } else {
@@ -4325,9 +4322,12 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       nextPageNumber = 0;
       currentSpineIndex--;
       ttfPage = 0;
-      ttfRestoreLastPage = true;
-      // Same for the backward turn across a chapter boundary.
+      // Clear the chapter-scoped restore state first, then arm the back-step:
+      // clearDeferredReposition() resets ttfRestoreLastPage, and the flag is
+      // what tells the next resolve to open the previous chapter's last page
+      // rather than its start.
       clearDeferredReposition();
+      ttfRestoreLastPage = true;
       lastPageTurnTime = millis();
     } else {
       return false;
