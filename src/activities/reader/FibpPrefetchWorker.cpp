@@ -307,13 +307,14 @@ bool FibpPrefetchWorker::begin(const BeginContext& ctx) {
   return true;
 }
 
-void FibpPrefetchWorker::notifyChapterProgress(const uint16_t spine, const uint16_t page, const uint16_t pageCount) {
+void FibpPrefetchWorker::notifyChapterProgress(const uint16_t spine, const uint16_t page, const uint16_t pageCount,
+                                               const bool lengthFinal) {
   // Position mirror first: the run loop's skip logic (the reader owns the
   // entered chapter) and its change detection see the fresh position even
   // when the trigger has not fired yet.
   notifiedSpine_.store(spine, std::memory_order_release);
   // The worker applies the policy — the reader passes raw progress only.
-  if (!fibp::shouldPrefetchNext(page, pageCount)) return;
+  if (!fibp::shouldPrefetchNext(page, pageCount, lengthFinal)) return;
   // Dedup the spawn: notifyChapterProgress fires on every reader render once
   // the position is inside the window, and an already-exited worker would
   // otherwise run a full task create/destroy cycle (32 KB stack + TCB churn)

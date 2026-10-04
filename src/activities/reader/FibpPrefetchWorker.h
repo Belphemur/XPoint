@@ -84,7 +84,9 @@ class FibpPrefetchWorker {
   // the 10%-remaining policy (fibp::shouldPrefetchNext): the next chapter is
   // enqueued only when the position crosses the threshold — page turns
   // inside the same spine store the position but never rebuild the queue.
-  void notifyChapterProgress(uint16_t spine, uint16_t page, uint16_t pageCount);
+  // `lengthFinal` is false while a build still owns the chapter, so a
+  // growing page watermark is never mistaken for a short chapter.
+  void notifyChapterProgress(uint16_t spine, uint16_t page, uint16_t pageCount, bool lengthFinal = true);
   // Main thread. Settings/geometry changed: the worker aborts any in-flight
   // session at the next chunk boundary and re-seeds the queue under the new
   // generation (scalar params are swapped under paramsMux_).
@@ -226,7 +228,7 @@ class FibpPrefetchWorker {
 #else
   // Inert stub (single-core / PSRAM-less / stb-rollback builds).
   bool begin(const BeginContext&) { return false; }
-  void notifyChapterProgress(uint16_t spine, uint16_t page, uint16_t pageCount) {}
+  void notifyChapterProgress(uint16_t, uint16_t, uint16_t, bool) {}
   void notifyGeneration(uint32_t, const LayoutParams&) {}
   void requestResumeClaim(uint16_t) {}
   bool cancel() { return true; }

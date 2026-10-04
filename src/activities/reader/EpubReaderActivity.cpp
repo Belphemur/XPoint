@@ -898,6 +898,7 @@ void EpubReaderActivity::prefetchNextChapterDuringDisplay() {
 void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFullRefresh) {
   if (!buildPopupPending || !renderer.hasFrameBuffer()) return;
   GUI.drawPopup(renderer, tr(STR_INDEXING));
+  indexingPopupShown = true;
   pagesUntilFullRefresh = 1;
   buildPopupPending = false;
 }
@@ -2336,6 +2337,7 @@ void EpubReaderActivity::renderBook() {
           }
           if (showPopup) {
             GUI.drawPopup(renderer, tr(STR_INDEXING));
+            indexingPopupShown = true;
             pagesUntilFullRefresh = 1;
           }
           buildPopupPending = !showPopup;
@@ -2363,22 +2365,26 @@ void EpubReaderActivity::renderBook() {
               LOG_ERR("ERS", "Failed during incremental section build");
               section.reset();
               buildPopupPending = false;
+              indexingPopupShown = false;
               showBuildError();
               return;
             }
             // Enough pages are built to read: dismiss the Indexing popup so the
             // reader can turn while the rest drains in the background (font-change
             // open, and the short-chapter next-chapter case). The popup is
-            // stateless paint, so clearing buildPopupPending stops the redraw and
-            // handing pagesUntilFullRefresh back to the refresh cadence keeps the
-            // e-ink cycle sane. (2026-10-04.)
-            if (buildPopupPending && shouldClearBuildPopup(static_cast<int>(section->pageCount))) {
+            // stateless paint, so clearing the latch stops the redraw and handing
+            // pagesUntilFullRefresh back to the refresh cadence keeps the e-ink
+            // cycle sane. Keyed on indexingPopupShown, not buildPopupPending —
+            // the latter is already false once the popup is painted.
+            // (2026-10-04.)
+            if (indexingPopupShown && shouldClearBuildPopup(static_cast<int>(section->pageCount))) {
               LOG_DBG("ERS", "Indexing popup cleared after %d pages built", section->pageCount);
-              buildPopupPending = false;
+              indexingPopupShown = false;
               pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
             }
           }
           buildPopupPending = false;
+          indexingPopupShown = false;
         }
       }
     } else {
@@ -3968,8 +3974,17 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
     // the refreshed mirrors.
     if (ttfSpine != currentSpineIndex) return;
     const uint16_t page = ttfPage >= 0 ? static_cast<uint16_t>(ttfPage) : 0;
+    // ttfPageCount mirrors availablePageCount(), which answers the live writer's
+    // pageCount while a session is open or a partial cache is being extended —
+    // a still-climbing watermark, not the chapter's settled length. The
+    // short-chapter branch must not read that as "this chapter is short" (it
+    // would fire the prefetch during the very first cold-start build of a long
+    // chapter, the premature-indexing case the percentage rule prevents), so
+    // report the length as final only when no build owns the chapter.
+    const bool lengthFinal =
+        !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && !(ttf_->cacheReady() && ttf_->cachePartial());
     fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), page,
-                                       static_cast<uint16_t>(ttfPageCount));
+                                       static_cast<uint16_t>(ttfPageCount), lengthFinal);
   }
 }
 

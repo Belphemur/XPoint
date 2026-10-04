@@ -166,6 +166,23 @@ TEST(ShouldPrefetchNextTest, ShortChapterNeverFiresOnUnknownLength) {
   EXPECT_FALSE(fibp::shouldPrefetchNext(0, 0));
 }
 
+TEST(ShouldPrefetchNextTest, GrowingWatermarkIsNeverTreatedAsShortChapter) {
+  // The reader reports the pages written SO FAR while a build owns the chapter,
+  // so a long chapter's first cold-start pass reports a 1..9 watermark at page 0.
+  // Reading that as "short chapter" would fire the prefetch during the very
+  // first build — the premature-indexing case the percentage rule prevents.
+  // (A watermark of 1 still fires via the pre-existing ceil rule; that is
+  // unchanged behaviour and is not what this test is about.)
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 8, /*lengthFinal=*/false));
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 9, /*lengthFinal=*/false));
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 5, /*lengthFinal=*/false));
+  // The SAME watermark with a finalized length does take the short-chapter branch.
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 8, /*lengthFinal=*/true));
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 5, /*lengthFinal=*/true));
+  // An unknown length never triggers, final or not.
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 0, /*lengthFinal=*/false));
+}
+
 TEST(ShouldPrefetchNextTest, LongChapterStillWaitsForTenPercentRemaining) {
   // The SD-wear/battery protection from the whole-book-prefetch revert is intact:
   // a long chapter does NOT fire on entry, only inside its last 10%

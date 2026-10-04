@@ -42,9 +42,16 @@ constexpr uint8_t kPrefetchRemainingPercent = 10;
 // page == the 0-based current page inside the chapter; pageCount == 0 (unknown)
 // never triggers. The remaining-threshold uses ceil so the 1-page-remaining edge
 // fires even for tiny page counts.
-inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount) {
-  if (pageCount == 0) return false;                                  // unknown length: never treat as short
-  if (pageCount < kShortChapterImmediatePrefetchPages) return true;  // short: fire at entry
+//
+// `lengthFinal` says whether pageCount is the chapter's SETTLED length or a
+// still-growing build watermark: the reader reports the pages written so far, so
+// a long chapter's first cold-start pass reports a 1..9 watermark. Treating that
+// as a short chapter would fire the prefetch mid-build and reintroduce the
+// premature SD-write pressure the percentage rule exists to prevent, so the
+// short-chapter branch requires a finalized length.
+inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount, const bool lengthFinal = true) {
+  if (pageCount == 0) return false;  // unknown length: never treat as short
+  if (lengthFinal && pageCount < kShortChapterImmediatePrefetchPages) return true;  // short: fire at entry
   const uint32_t thresholdPages = (static_cast<uint32_t>(pageCount) * kPrefetchRemainingPercent + 99) / 100;
   const uint32_t remaining = pageCount > page ? static_cast<uint32_t>(pageCount - page) : 0;
   return remaining <= thresholdPages;  // long: 10%-remaining rule
