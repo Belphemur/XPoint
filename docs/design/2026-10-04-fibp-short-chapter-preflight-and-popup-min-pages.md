@@ -276,3 +276,25 @@ over) the §7 prose that states the trigger is purely percentage-based.
   turn. Reproduce: a 2-page chapter, turn past its end.
 - (B): on font change (cache-miss chapter), the Indexing popup should clear
   after ~5 pages build (a few seconds) and let the page render.
+
+## 11. Decision log (append-only)
+
+| Date | Decision | Rationale |
+|---|---|---|
+| 2026-09-19 | Prefetch plan capped to the NEXT chapter (`kPrefetchLookaheadSpines = 1`), triggered at the last 10% of the current chapter. | Whole-book prefetch measured as device-soak pathology (SD-write pressure, task-WDT abort at spine 65 of a 177-spine run); the percentage trigger keeps indexing out of chapters the reader may never open. Recorded in `2026-09-18-freetype-backend-as-built.md` §7. |
+| 2026-10-04 | Chapters **under 10 pages** request the prefetch on **entry**; chapters of 10+ keep the last-10% trigger. `pageCount == 0` still never triggers. | Owner device repro: a 2-page chapter blocked on the Indexing popup for the next chapter; the 10% threshold fires at page 1 of 2, one turn from the boundary, and the worker cannot index a multi-second chapter in one page-turn of wall clock. Reopening the book masked it by letting the idle worker drain. Short chapters have no reading time left to hide the index behind, so the SD-wear argument behind the percentage rule does not apply to them. |
+| 2026-10-04 | The Indexing popup clears once **5 pages** of the current chapter's cache-miss rebuild are laid out. | Owner: "it's okay to see the indexing message but it should let me read after reaching the minimum of pages. Like when opening the book after changing the font." The popup was dismissed only by the e-ink refresh cadence, never by build progress, so a font-change reopen blocked for the whole chapter. Remaining pages keep building via the existing async-display overlap. |
+
+### Implementation-time notes
+
+- The rebuild loop already tracks build progress in `section->pageCount`, so the
+  min-pages gate reuses it plus the existing `buildPopupPending` latch — no new
+  field and no parallel state. The popup is stateless paint (`BaseTheme::drawPopup`
+  draws, nothing tracks it), so clearing the latch stops the redraw and
+  `pagesUntilFullRefresh` goes back to the refresh cadence.
+- The ceil-threshold host test had to move: its `pageCount` values of 5 and 3 are
+  short chapters under the new rule, so they now fire at entry. Ceil is still
+  asserted, on long chapters where the remaining-page branch is reachable.
+- Not changed: `kPrefetchLookaheadSpines`, the single-writer claim/resume handoff,
+  the takeover grace, and the worker's dedup — an entry-time fire on a short
+  chapter still enqueues exactly once.
