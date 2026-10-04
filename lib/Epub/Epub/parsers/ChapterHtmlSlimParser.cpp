@@ -1033,7 +1033,12 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   HalFile cachedImageFile;
                   bool extractSuccess = false;
                   if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
-                    extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
+                    {
+                      // Same 32 KB inflate window as the probe; the popup is already up.
+                      // Framebuffer scratch when the heap cannot fit the inflate window.
+                      GfxRenderer::FrameBufferLoan extractLoan(self->renderer);
+                      extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
+                    }
                     cachedImageFile.flush();
                     cachedImageFile.close();
                   }

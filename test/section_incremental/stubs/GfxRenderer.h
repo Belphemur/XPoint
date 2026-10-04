@@ -12,6 +12,12 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 class GfxRenderer {
  public:
   enum class TextMeasureMode { Layout, Rendered };
+  // The fixture has no framebuffer to lend; image probes run as without a loan.
+  class FrameBufferLoan {
+   public:
+    explicit FrameBufferLoan(GfxRenderer&) {}
+    void end() {}
+  };
   int getScreenWidth() const { return 480; }
   int getScreenHeight() const { return 800; }
   // Stub font cache: Section::startBuild null-checks then releases caches;
