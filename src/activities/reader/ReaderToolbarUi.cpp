@@ -149,10 +149,8 @@ void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {
   // from clipping once rows are added.
   const char* const rowLabels[] = {model_.sizeText, model_.familyText, model_.lineSpacingText, model_.wordSpacingText,
                                    model_.characterSpacingText};
-  int16_t rowCount = 0;
-  for (const char* label : rowLabels) {
-    if (label != nullptr) ++rowCount;
-  }
+  const int16_t rowCount = static_cast<int16_t>(
+      std::count_if(std::begin(rowLabels), std::end(rowLabels), [](const char* label) { return label != nullptr; }));
   const int16_t contentH = static_cast<int16_t>(tokens.spaceMd + titleH + tokens.spaceSm + rowCount * kQuickFontRowH +
                                                 tokens.spaceSm + bottomReserve);
   screen.sheet(sheetProps, static_cast<int16_t>(contentH + grabberBand));
