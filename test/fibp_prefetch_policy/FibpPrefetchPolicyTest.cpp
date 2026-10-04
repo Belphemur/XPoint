@@ -120,13 +120,17 @@ TEST(ShouldPrefetchNextTest, TriggersExactlyAtTenPercent) {
   EXPECT_TRUE(fibp::shouldPrefetchNext(90, 100));
 }
 
-TEST(ShouldPrefetchNextTest, CeilKeepsOnePageRemainingFiringOnTinyChapters) {
-  // ceil keeps small chapters usable: any pageCount with a single page left
-  // triggers, even where 10% < 1 page.
-  EXPECT_TRUE(fibp::shouldPrefetchNext(4, 5));   // remaining 1; ceil(0.5)=1
-  EXPECT_FALSE(fibp::shouldPrefetchNext(3, 5));  // remaining 2 > 1
-  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));   // single-page chapter: fires at entry
-  EXPECT_TRUE(fibp::shouldPrefetchNext(2, 3));   // remaining 1; ceil(0.3)=1
+TEST(ShouldPrefetchNextTest, CeilRoundsTheThresholdUpOnLongChapters) {
+  // The remaining-threshold uses ceil, so the "1 page left" edge fires on every
+  // chapter length — including where 10% rounds below the actual page count.
+  // (Chapters under kShortChapterImmediatePrefetchPages no longer reach this
+  // branch — they fire at entry — so ceil is asserted on long chapters.)
+  EXPECT_TRUE(fibp::shouldPrefetchNext(13, 15));  // remaining 2; ceil(1.5)=2
+  EXPECT_FALSE(fibp::shouldPrefetchNext(12, 15)); // remaining 3 > 2
+  EXPECT_TRUE(fibp::shouldPrefetchNext(14, 15));  // remaining 1
+  EXPECT_TRUE(fibp::shouldPrefetchNext(9, 10));   // remaining 1; ceil(1.0)=1
+  EXPECT_FALSE(fibp::shouldPrefetchNext(8, 10));  // remaining 2 > 1
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));    // single-page chapter: fires at entry
 }
 
 TEST(ShouldPrefetchNextTest, EnterPastThresholdFiresImmediately) {
@@ -134,6 +138,42 @@ TEST(ShouldPrefetchNextTest, EnterPastThresholdFiresImmediately) {
   // triggers at page 0 of the position report — page here is the entry page.
   EXPECT_TRUE(fibp::shouldPrefetchNext(95, 100));
   EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));
+}
+
+// ── Short-chapter immediate fire (owner repro 2026-10-04) ─────────────────
+// A 2-page chapter blocked on the Indexing popup for the next chapter: the
+// 10%-remaining trigger fires at page 1 of 2 — one turn from the spine boundary
+// — leaving the worker no time to index before the reader turns in. Short
+// chapters now fire at ENTRY so the index gets the whole chapter to complete.
+
+TEST(ShouldPrefetchNextTest, ShortChapterFiresAtEntry) {
+  // The 2-page repro: prefetch must be requested on entering the chapter, not
+  // one turn before the boundary.
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 2));
+  EXPECT_TRUE(fibp::shouldPrefetchNext(1, 2));  // stays true on later turns (dedup is the worker's job)
+}
+
+TEST(ShouldPrefetchNextTest, ShortChapterBoundaryIsNineVersusTen) {
+  // The constant is exclusive: < 10 pages fires at entry, >= 10 keeps the
+  // 10%-remaining rule. 10 is "long enough to read for a while first".
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, fibp::kShortChapterImmediatePrefetchPages - 1));
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, fibp::kShortChapterImmediatePrefetchPages));
+}
+
+TEST(ShouldPrefetchNextTest, ShortChapterNeverFiresOnUnknownLength) {
+  // pageCount == 0 (chapter not yet laid out) must stay false — an unknown
+  // length is never treated as short.
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 0));
+}
+
+TEST(ShouldPrefetchNextTest, LongChapterStillWaitsForTenPercentRemaining) {
+  // The SD-wear/battery protection from the whole-book-prefetch revert is intact:
+  // a long chapter does NOT fire on entry, only inside its last 10%
+  // (ceil(200*10/100) = 20 pages of headroom).
+  EXPECT_FALSE(fibp::shouldPrefetchNext(0, 200));    // entry: 200 remaining
+  EXPECT_FALSE(fibp::shouldPrefetchNext(179, 200));  // 21 remaining: just outside
+  EXPECT_TRUE(fibp::shouldPrefetchNext(180, 200));   // 20 remaining: threshold met
+  EXPECT_TRUE(fibp::shouldPrefetchNext(199, 200));   // 1 remaining
 }
 
 // ── Reader-side single-writer rule (resume-claim churn fix, 2026-09-27) ─────
