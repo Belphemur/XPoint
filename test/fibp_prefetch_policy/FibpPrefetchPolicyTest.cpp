@@ -125,12 +125,12 @@ TEST(ShouldPrefetchNextTest, CeilRoundsTheThresholdUpOnLongChapters) {
   // chapter length — including where 10% rounds below the actual page count.
   // (Chapters under kShortChapterImmediatePrefetchPages no longer reach this
   // branch — they fire at entry — so ceil is asserted on long chapters.)
-  EXPECT_TRUE(fibp::shouldPrefetchNext(13, 15));  // remaining 2; ceil(1.5)=2
-  EXPECT_FALSE(fibp::shouldPrefetchNext(12, 15)); // remaining 3 > 2
-  EXPECT_TRUE(fibp::shouldPrefetchNext(14, 15));  // remaining 1
-  EXPECT_TRUE(fibp::shouldPrefetchNext(9, 10));   // remaining 1; ceil(1.0)=1
-  EXPECT_FALSE(fibp::shouldPrefetchNext(8, 10));  // remaining 2 > 1
-  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));    // single-page chapter: fires at entry
+  EXPECT_TRUE(fibp::shouldPrefetchNext(13, 15));   // remaining 2; ceil(1.5)=2
+  EXPECT_FALSE(fibp::shouldPrefetchNext(12, 15));  // remaining 3 > 2
+  EXPECT_TRUE(fibp::shouldPrefetchNext(14, 15));   // remaining 1
+  EXPECT_TRUE(fibp::shouldPrefetchNext(9, 10));    // remaining 1; ceil(1.0)=1
+  EXPECT_FALSE(fibp::shouldPrefetchNext(8, 10));   // remaining 2 > 1
+  EXPECT_TRUE(fibp::shouldPrefetchNext(0, 1));     // single-page chapter: fires at entry
 }
 
 TEST(ShouldPrefetchNextTest, EnterPastThresholdFiresImmediately) {

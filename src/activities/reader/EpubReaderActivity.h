@@ -366,9 +366,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // (which decides whether to SHOW the popup at all) and from the refresh
   // cadence that drives pagesUntilFullRefresh. (2026-10-04.)
   static constexpr int MIN_PAGES_TO_CLEAR_POPUP = 5;
-  static constexpr bool shouldClearBuildPopup(const int pagesBuilt) {
-    return pagesBuilt >= MIN_PAGES_TO_CLEAR_POPUP;
-  }
+  static constexpr bool shouldClearBuildPopup(const int pagesBuilt) { return pagesBuilt >= MIN_PAGES_TO_CLEAR_POPUP; }
   bool buildPopupPending = false;
   void showBuildPopup(GfxRenderer& renderer, int& pagesUntilFullRefresh);
   bool applyDeferredReposition();

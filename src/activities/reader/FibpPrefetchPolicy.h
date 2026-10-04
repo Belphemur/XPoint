@@ -43,7 +43,7 @@ constexpr uint8_t kPrefetchRemainingPercent = 10;
 // never triggers. The remaining-threshold uses ceil so the 1-page-remaining edge
 // fires even for tiny page counts.
 inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount) {
-  if (pageCount == 0) return false;  // unknown length: never treat as short
+  if (pageCount == 0) return false;                                  // unknown length: never treat as short
   if (pageCount < kShortChapterImmediatePrefetchPages) return true;  // short: fire at entry
   const uint32_t thresholdPages = (static_cast<uint32_t>(pageCount) * kPrefetchRemainingPercent + 99) / 100;
   const uint32_t remaining = pageCount > page ? static_cast<uint32_t>(pageCount - page) : 0;
