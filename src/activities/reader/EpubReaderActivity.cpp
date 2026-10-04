@@ -2369,18 +2369,19 @@ void EpubReaderActivity::renderBook() {
               showBuildError();
               return;
             }
-            // Enough pages are built to read: dismiss the Indexing popup so the
-            // reader can turn while the rest drains in the background (font-change
-            // open, and the short-chapter next-chapter case). The popup is
-            // stateless paint, so clearing the latch stops the redraw and handing
-            // pagesUntilFullRefresh back to the refresh cadence keeps the e-ink
-            // cycle sane. Keyed on indexingPopupShown, not buildPopupPending —
-            // the latter is already false once the popup is painted.
-            // (2026-10-04.)
+            // Enough pages are built to read: dismiss the Indexing popup AND stop waiting
+            // on a target the partial index cannot satisfy yet. Clearing only
+            // the latch is not enough — staying in this loop keeps building
+            // synchronously, so the pass never paints a page. Breaking out
+            // lets the caller paint an available page while
+            // buildSomeMore() in the display-time overlap drains the rest.
+            // Keyed on indexingPopupShown, not buildPopupPending — the latter
+            // is already false once the popup is painted. (2026-10-04.)
             if (indexingPopupShown && shouldClearBuildPopup(static_cast<int>(section->pageCount))) {
               LOG_DBG("ERS", "Indexing popup cleared after %d pages built", section->pageCount);
               indexingPopupShown = false;
               pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+              break;
             }
           }
           buildPopupPending = false;
@@ -2427,11 +2428,16 @@ void EpubReaderActivity::renderBook() {
     }
   }
 
-  if (section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount)) {
+  // A partial that already holds MIN_PAGES_TO_CLEAR_POPUP pages is readable: the
+  // extension drains in the display-time overlap (buildSomeMore() after
+  // displayBuffer), so painting Indexing and blocking here would only repeat
+  // the wait the render pass just yielded.
+  const bool partialReadable = shouldClearBuildPopup(static_cast<int>(section->pageCount));
+  if (section->isPartial() && !partialReadable && section->currentPage >= static_cast<int>(section->pageCount)) {
     GUI.drawPopup(renderer, tr(STR_INDEXING));
     pagesUntilFullRefresh = 1;
   }
-  while (section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount)) {
+  while (!partialReadable && section->isPartial() && section->currentPage >= static_cast<int>(section->pageCount)) {
     if (!section->isBuilding() && !section->startBuild(renderSpec)) {
       LOG_ERR("ERS", "Failed to start partial extension build");
       section.reset();
@@ -2447,7 +2453,7 @@ void EpubReaderActivity::renderBook() {
       }
     }
   }
-  if (section->isBuilding()) {
+  if (section->isBuilding() && !partialReadable) {
     while (!section->isBuildComplete() && section->currentPage >= static_cast<int>(section->pageCount)) {
       if (!section->buildSomeMore(BUILD_PAGES_PER_CHUNK)) {
         LOG_ERR("ERS", "Failed during incremental section build");
@@ -2458,8 +2464,11 @@ void EpubReaderActivity::renderBook() {
     }
   }
 
-  if (!section->isBuilding() && section->pageCount > 0 &&
-      section->currentPage >= static_cast<int>(section->pageCount)) {
+  // Clamp to the built range whenever the requested page is past the watermark.
+  // The clamp used to require !isBuilding(), which left a still-building
+  // section pointing past its last page — the render pass now yields while the
+  // build continues, so the page to paint is the last BUILT one.
+  if (section->pageCount > 0 && section->currentPage >= static_cast<int>(section->pageCount)) {
     section->currentPage = section->pageCount - 1;
   }
 
@@ -2696,6 +2705,7 @@ void EpubReaderActivity::ttfInvalidateCaches() {
 void EpubReaderActivity::ttfShowIndexingPopup() {
   GUI.drawPopup(renderer, tr(STR_INDEXING));
   pagesUntilFullRefresh = 1;
+  indexingPopupShown = true;
 }
 
 // Resolves the pending navigation state into a chapter-local target page.
@@ -2934,6 +2944,11 @@ void EpubReaderActivity::renderBookTtf() {
   // Any render attempt makes the previous framebuffer state provisional: only
   // a successful page+status render below may restore the fast-open flag.
   ttfFrameRenderComplete.store(false, std::memory_order_release);
+  // The Indexing popup is per-pass paint, not sticky state: each pass decides
+  // afresh whether the chapter is still too thin to read (see the !resolved
+  // gate in renderBookTtf). Clearing the latch here is what lets a pass that
+  // can serve pages paint the page instead of the popup.
+  indexingPopupShown = false;
 
   const auto showPendingSyncSaveError = [this]() {
     if (!pendingSyncSaveError) return;
@@ -3067,7 +3082,10 @@ void EpubReaderActivity::renderBookTtf() {
       fibpDeferred_ = true;
       fibpDeferStartMs_ = millis();
       LOG_DBG("ERS", "Chapter %d build delegated to prefetch worker", currentSpineIndex);
-      ttfShowIndexingPopup();
+      // Same readability rule as the inline build below: a chapter already
+      // past MIN_PAGES_TO_CLEAR_POPUP should not be parked on Indexing while
+      // the worker finishes it.
+      if (!shouldClearBuildPopup(static_cast<int>(ttfPageCount))) ttfShowIndexingPopup();
     }
     // The worker owns this build; re-polling with full renders every loop
     // tick flip-flops the power governor and burns the CPU. Re-check at a
@@ -3090,7 +3108,14 @@ void EpubReaderActivity::renderBookTtf() {
       fibpDeferred_ = false;
       requestUpdate();
     }
-    return;
+    // Past the readability threshold, stop deferring: fall through and serve an
+    // available page instead of parking the reader on the popup for the rest of
+    // the worker's build. The worker keeps draining the chapter off-task.
+    if (shouldClearBuildPopup(static_cast<int>(ttfPageCount))) {
+      fibpDeferred_ = false;
+    } else {
+      return;
+    }
   }
   if (fibpDeferred_) {
     // The delegated build finished (or failed): pick up the committed cache.
@@ -3172,7 +3197,10 @@ void EpubReaderActivity::renderBookTtf() {
     const bool partialCache = ttf_->cacheReady() && ttf_->cachePartial();
     if (!ttf_->cacheReady() || ttfReflowJumpPending || needFullBuild ||
         (partialCache && (spineBytes > BUILD_POPUP_BYTE_THRESHOLD || target > BUILD_POPUP_PAGE_THRESHOLD))) {
-      ttfShowIndexingPopup();
+      // A chapter that already has MIN_PAGES_TO_CLEAR_POPUP pages is readable,
+      // so painting Indexing over it would be a lie — the reader gets the page
+      // and the remainder drains in the background ticks.
+      if (!shouldClearBuildPopup(static_cast<int>(ttfPageCount))) ttfShowIndexingPopup();
     }
     const freeink::book::BookStatus st =
         freeink::book::ensureChapterSession(*ttf_, static_cast<uint16_t>(currentSpineIndex), params, generation);
@@ -3234,14 +3262,25 @@ void EpubReaderActivity::renderBookTtf() {
   }
 
   if (!resolved) {
-    // Target not derivable yet — the worker owns the build now (or the
-    // background tick pump on non-worker builds). Re-check at a slow
-    // cadence instead of spinning full render passes.
-    if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
-      fibpDeferPollMs_ = millis();
-      requestUpdate();
+    // The target is not derivable from the current index — a reflow position
+    // only maps once the chapter index is COMPLETE, and a jump may need pages
+    // past the watermark. Once MIN_PAGES_TO_CLEAR_POPUP pages exist there is
+    // something worth reading, so serve the best available page rather than
+    // holding the whole chapter on the Indexing popup; the background ticks
+    // (ttfBackgroundBuildTick) keep draining the session and requestUpdate()
+    // re-enters here when it lands. Below that threshold the popup is correct:
+    // a one-page chapter gives the reader nothing to turn to.
+    if (shouldClearBuildPopup(static_cast<int>(ttfPageCount))) {
+      target = ttfPage >= 0 ? ttfPage : 0;
+      LOG_INF("ERS", "Serving page %d of %u mid-index (target not resolvable yet)", target,
+              static_cast<unsigned>(ttfPageCount));
+    } else {
+      if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
+        fibpDeferPollMs_ = millis();
+        requestUpdate();
+      }
+      return;
     }
-    return;
   }
 
   if (ttfPageCount == 0) {
