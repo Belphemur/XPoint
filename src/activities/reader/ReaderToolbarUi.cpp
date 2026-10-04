@@ -144,8 +144,18 @@ void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {
       static_cast<int16_t>(sheetProps.grabberMargin + sheetProps.grabberHeight + sheetProps.grabberInset);
   const int16_t titleH = screen.target().lineHeight(tokens.smallText.font);
   const int16_t bottomReserve = static_cast<int16_t>(std::max(0, model_.bottomReserve));
-  const int16_t contentH = static_cast<int16_t>(tokens.spaceMd + titleH + tokens.spaceSm + 2 * kQuickFontRowH +
-                                                tokens.spaceSm + bottomReserve);
+  // One row per populated quick-font label (Size, Family, Line spacing, Word
+  // spacing, Character spacing). Sizing the sheet from the count keeps it
+  // from clipping once rows are added.
+  const char* const rowLabels[] = {model_.sizeText, model_.familyText, model_.lineSpacingText, model_.wordSpacingText,
+                                   model_.characterSpacingText};
+  const int16_t rowCount = static_cast<int16_t>(
+      std::count_if(std::begin(rowLabels), std::end(rowLabels), [](const char* label) { return label != nullptr; }));
+  // One spaceSm per drawn row: the loop below lays each row out with
+  // takeTop(kQuickFontRowH, gap), so the budget must carry a gap for every
+  // row or the last is clamped against the height that is left.
+  const int16_t contentH =
+      static_cast<int16_t>(tokens.spaceMd + titleH + bottomReserve + rowCount * (kQuickFontRowH + tokens.spaceSm));
   screen.sheet(sheetProps, static_cast<int16_t>(contentH + grabberBand));
   screen.insetContent(fui::Insets{0, tokens.spaceLg, 0, tokens.spaceLg});
 
@@ -154,10 +164,21 @@ void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {
   titleStyle.bold = true;
   if (model_.panelTitle) screen.target().text(title, model_.panelTitle, titleStyle);
 
-  const fui::Rect sizeRow = screen.takeTop(kQuickFontRowH, tokens.spaceSm);
-  buildQuickFontRow(screen, sizeRow, 0, model_.sizeText ? model_.sizeText : "");
-  const fui::Rect familyRow = screen.takeTop(kQuickFontRowH, static_cast<int16_t>(tokens.spaceSm + bottomReserve));
-  buildQuickFontRow(screen, familyRow, 1, model_.familyText ? model_.familyText : "");
+  // Rows 0..4, in sheet order. A row with no label is skipped rather than
+  // drawn blank, so a caller that only fills the font rows still lays out
+  // compactly.
+  const char* const labels[] = {model_.sizeText, model_.familyText, model_.lineSpacingText, model_.wordSpacingText,
+                                model_.characterSpacingText};
+  constexpr int16_t kQuickFontRows = static_cast<int16_t>(std::size(labels));
+  for (int16_t i = 0; i < kQuickFontRows; ++i) {
+    if (labels[i] == nullptr) continue;
+    // The last drawn row carries the bottom reserve (button hints) so the
+    // sheet never overlaps them.
+    const bool last = (i + 1 == kQuickFontRows) || labels[i + 1] == nullptr;
+    const int16_t gap = static_cast<int16_t>(tokens.spaceSm + (last ? bottomReserve : 0));
+    const fui::Rect row = screen.takeTop(kQuickFontRowH, gap);
+    buildQuickFontRow(screen, row, i, labels[i]);
+  }
 }
 
 // The Contents / Text / More row: three equal slots, an icon centred in each,

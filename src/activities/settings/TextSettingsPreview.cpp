@@ -124,6 +124,8 @@ class RunCollector final : public freeink::book::PageSink {
 bool relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHeight) {
   std::vector<PreviewRun> collected;
   bool ok = false;
+  int16_t charSpacingPx = 0;
+  int16_t wordSpacingPx = 0;
   do {
     // Sample text twice: the engine splits paragraphs on blank lines, so the
     // pane shows the real paragraph gap (the legacy preview drew twice).
@@ -179,6 +181,14 @@ bool relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
     // preview renders with the same chapter CSS policy.
     params.embeddedStyles = SETTINGS.embeddedStyle != 0;
     params.hyphenator = nullptr;
+    // Same spacing resolution as applyReaderLayoutParams, so the sample tracks
+    // the reader when either spacing control changes.
+    const int16_t bodySpacePx = static_cast<int16_t>(params.baseSizePx / 4);
+    params.wordSpacingPx = static_cast<int16_t>(
+        (static_cast<int32_t>(bodySpacePx) * static_cast<int32_t>(SETTINGS.wordSpacing)) / 100 - bodySpacePx);
+    params.characterSpacingPx = SETTINGS.getCharacterSpacing();
+    charSpacingPx = params.characterSpacingPx;
+    wordSpacingPx = params.wordSpacingPx;
     freeink::book::FontChain* chain = freeink::book::fontLoader.getReaderFont();
     if (chain == nullptr || chain->styleCoverage() == 0) break;
     params.font = chain;
@@ -203,6 +213,8 @@ bool relayoutTtf(PreviewLayout& layout, const int textWidth, const int previewHe
   // instead of blanking the preview.
   if (ok) {
     layout.ttfRuns = std::move(collected);
+    layout.characterSpacingPx = charSpacingPx;
+    layout.wordSpacingPx = wordSpacingPx;
   }
   return ok;
 }
@@ -236,9 +248,15 @@ uint32_t decodeUtf8(const char* text, const uint32_t len, uint32_t& i) {
 // double-strike), but coverage lands through GfxRenderer::drawPixel so the
 // renderer's orientation transform applies — a Phase 3.5 PagePaint preview.
 void drawTtfRuns(const GfxRenderer& renderer, const std::vector<PreviewRun>& runs, const int textLeft, const int top,
-                 const int bottom, const int right) {
+                 const int bottom, const int right, const int16_t characterSpacingPx = 0,
+                 const int16_t wordSpacingPx = 0) {
   freeink::book::FontChain* fonts = freeink::book::fontLoader.getReaderFont();
   if (fonts == nullptr) return;
+  // The engine charges these on every advance; replay them or the sample paints
+  // tighter than the text it is previewing.
+  const auto spacingFor = [characterSpacingPx, wordSpacingPx](const uint32_t cp) {
+    return cp == ' ' ? wordSpacingPx : characterSpacingPx;
+  };
   for (const auto& run : runs) {
     // run.x is pane-relative (layout used pageWidth=textWidth, margins 0).
     int32_t penX = textLeft + run.x;
@@ -268,7 +286,7 @@ void drawTtfRuns(const GfxRenderer& renderer, const std::vector<PreviewRun>& run
           }
         }
       }
-      penX += fonts->advance(cp, run.sizePx, run.styleFlags);
+      penX += fonts->advance(cp, run.sizePx, run.styleFlags) + spacingFor(cp);
       prev = cp;
     }
   }
@@ -311,6 +329,8 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
                          .lineCompression = SETTINGS.getReaderLineCompression(),
                          .alignment = SETTINGS.paragraphAlignment,
                          .extraParagraphSpacing = SETTINGS.extraParagraphSpacing != 0,
+                         .characterSpacing = SETTINGS.getCharacterSpacing(),
+                         .wordSpacingPercent = SETTINGS.wordSpacing,
                          .focusReading = SETTINGS.focusReadingEnabled != 0,
                          .hyphenation = SETTINGS.hyphenationEnabled != 0,
                          .embeddedStyle = SETTINGS.embeddedStyle != 0,
@@ -328,7 +348,8 @@ void renderPreview(const GfxRenderer& renderer, PreviewLayout& layout, int previ
     }
     const int top2 = top + previewPadding;
     const int bottom = top + height - labelReserved;
-    drawTtfRuns(renderer, layout.ttfRuns, textLeft, top2, bottom, textLeft + textWidth);
+    drawTtfRuns(renderer, layout.ttfRuns, textLeft, top2, bottom, textLeft + textWidth, layout.characterSpacingPx,
+                layout.wordSpacingPx);
     return;
   }
 #endif

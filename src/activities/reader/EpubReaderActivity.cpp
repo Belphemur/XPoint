@@ -1886,7 +1886,10 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     // Geometry change -> new generation -> new caches; the position rides the
-    // chapter char offset (design section 3.5).
+    // chapter char offset (design section 3.5). A font-preview seed is scoped to
+    // the settings generation it was resolved for, so it must not carry into
+    // this unrelated reflow.
+    ttfReflowSeedPage = -1;
     ttfInvalidateCaches();
   }
 #endif
@@ -1913,6 +1916,7 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_ && automaticPageTurnActive != wasActive) {
     RenderLock lock;
+    ttfReflowSeedPage = -1;
     ttfInvalidateCaches();
   }
 #endif
@@ -2026,7 +2030,9 @@ bool EpubReaderActivity::skipPages(int amount) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex++;
-      ttfRestoreLastPage = false;
+      // Drops the chapter-scoped restore state, including any
+      // ttfRestoreLastPage left by a previous back-step.
+      clearDeferredReposition();
       return true;
     }
     if (ttfPage > 0) {
@@ -2037,7 +2043,8 @@ bool EpubReaderActivity::skipPages(int amount) {
       RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex--;
-      ttfRestoreLastPage = false;
+      // Same for the backward skip.
+      clearDeferredReposition();
       return true;
     }
     return false;
@@ -2829,6 +2836,42 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     return false;
   }
 
+  // The font preview resolved this page under the settings being committed
+  // (same engine, same LayoutParams), so it IS the rebuild's target — take it
+  // and let the pass build incrementally to it. The char-offset path below
+  // would instead demand a complete index before it can map, which is what
+  // sent the reader to the chapter start.
+  //
+  // Checked ahead of the reflow gate because a seed is set even when
+  // ttfCurrentCharStart is 0 (reader on the chapter's first page), where
+  // ttfReflowJumpPending never latches. Reading it inside that branch would
+  // leave the seed set with no pass able to consume it.
+  if (ttfReflowSeedPage >= 0) {
+    const int seed = ttfReflowSeedPage;
+    // The build advances one chunk per render pass, so a target past the first
+    // chunk is not servable yet. Leave the seed in place and keep resolving it
+    // on the next pass; consuming it here would hand later passes the default
+    // page and land the reader near the start of the chapter — the very
+    // regression this seed exists to fix.
+    if (seed >= available) {
+      // A chapter that ends before the seed can never serve it: the build is
+      // done and the index is complete, so clamp to the last page and drop the
+      // seed rather than leave it pending forever.
+      if (haveTotal) {
+        ttfReflowSeedPage = -1;
+        ttfReflowJumpPending = false;
+        targetOut = std::max(0, available - 1);
+        return true;
+      }
+      targetOut = seed;
+      return true;
+    }
+    ttfReflowSeedPage = -1;
+    ttfReflowJumpPending = false;
+    targetOut = seed;
+    return true;
+  }
+
   if (ttfReflowJumpPending) {
     // Settings/orientation reflow: restore the position through the character
     // offset of the page that was shown before the caches were dropped. The
@@ -3407,14 +3450,17 @@ void EpubReaderActivity::renderBookTtf() {
   // provisional position to disk. Preserve the real offset until the target
   // resolves. (The fast-display path at ~3710 never serves a placeholder: it
   // only runs from a page the reader already turned to.)
-  if (!servedPlaceholderPage) ttfCurrentCharStart = page.charStart;
+  // A still-pending preview seed counts as unresolved for the same reason: the
+  // page served is a clamp to the last built page, not the reader's position,
+  // so its charStart must not overwrite the real offset either.
+  if (!servedPlaceholderPage && ttfReflowSeedPage < 0) ttfCurrentCharStart = page.charStart;
 
   // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
   // (resolvable) targets only — external URLs never enter the reader flow.
   ttfExtractFootnotes(page);
 
   renderer.clearScreen(0xFF);
-  paintTtfPage(page, params.font);
+  paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
 #ifdef READING_STATS_ENABLED
   // Engine-computed word count (ChapterLayout counts over the paragraph text
   // before run segmentation; justified runs carry no spaces — counting run
@@ -3689,11 +3735,11 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
   ttfPreRendered.slicesUsed++;
   bool complete = true;
   if (grayParity) {
-    complete = freeink::book::PagePaint::paintTextSliced(page, *chain, renderer, ttfPreRendered.nextRun,
-                                                         ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
-                                                         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs);
+    complete = freeink::book::PagePaint::paintTextSliced(
+        page, *chain, renderer, ttfPreRendered.nextRun, ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
+        &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs, params.characterSpacingPx, params.wordSpacingPx);
   } else {
-    paintTtfPage(page, params.font);
+    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
   ttf_->scratch().release(scratchMark);
 
@@ -3864,7 +3910,8 @@ void EpubReaderActivity::renderTtfGrayStrips(const freeink::book::Page& page, co
     const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
     renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
     renderer.clearScreen(0x00);
-    freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+    freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer,
+                                          params.characterSpacingPx, params.wordSpacingPx);
     renderer.endStripTarget();
     renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
     renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
@@ -3927,7 +3974,8 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
   // each tone's plane bits in the two private buffers, orientation-aware.
   renderer.beginStripTarget(lsbPlane.get(), 0, gh, msbPlane.get());
   renderer.clearScreen(0x00);
-  freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+  freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer,
+                                        params.characterSpacingPx, params.wordSpacingPx);
   renderer.endStripTarget();
 #ifdef BOOK_PROFILE
   const unsigned long tPlanesMs = millis();
@@ -3946,9 +3994,10 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
 #endif
 }
 
-void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
+void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font, const int16_t characterSpacingPx,
+                                      const int16_t wordSpacingPx) {
   if (!ttf_) return;
-  paintCapturedPage(page, font, renderer, *ttf_);
+  paintCapturedPage(page, font, renderer, *ttf_, characterSpacingPx, wordSpacingPx);
 }
 
 void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer) {
@@ -3965,7 +4014,7 @@ void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer)
   freeink::book::LayoutParams params;
   self->ttf_->makeLayoutParams(renderer, params, false);
   if (params.font != nullptr) {
-    self->paintTtfPage(page, params.font);
+    self->paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
   self->ttf_->scratch().release(scratchMark);
 }
@@ -4212,6 +4261,14 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // Validation is spine+page exact PLUS the full validity axes (generation,
   // orientation, raster mode); anything else falls to the slow path, with
   // the miss reason logged once per distinct reason for soak triage.
+  // A forward turn abandons any pending back-step: ttfResolveTargetPage()
+  // consumes ttfRestoreLastPage ahead of every other target and can return
+  // without clearing it when needFullBuild is set, so a flag left by an
+  // earlier back-turn would silently redirect this forward turn to the
+  // previous chapter's last page. Cleared here so it covers the prerender
+  // fast path and the slow branch alike.
+  if (isForwardTurn) ttfRestoreLastPage = false;
+
   if (isForwardTurn && ttfPreRendered.ready && ttfPage + 1 < static_cast<int>(ttfPageCount)) {
     if (ttfPreRendered.spineIndex != currentSpineIndex) {
       ttfLogPrerenderMiss("spine changed");
@@ -4256,7 +4313,9 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       nextPageNumber = 0;
       currentSpineIndex++;
       ttfPage = 0;
-      ttfRestoreLastPage = false;
+      // Drops the chapter-scoped restore state, including any
+      // ttfRestoreLastPage left by a previous back-step.
+      clearDeferredReposition();
       lastPageTurnTime = millis();
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
@@ -4271,6 +4330,11 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       nextPageNumber = 0;
       currentSpineIndex--;
       ttfPage = 0;
+      // Clear the chapter-scoped restore state first, then arm the back-step:
+      // clearDeferredReposition() resets ttfRestoreLastPage, and the flag is
+      // what tells the next resolve to open the previous chapter's last page
+      // rather than its start.
+      clearDeferredReposition();
       ttfRestoreLastPage = true;
       lastPageTurnTime = millis();
     } else {
@@ -4329,6 +4393,21 @@ bool EpubReaderActivity::applyDeferredReposition() {
 void EpubReaderActivity::clearDeferredReposition() {
   cachedChapterTotalPageCount = 0;
   cachedVisibleTextOffset.reset();
+#if defined(CROSSPOINT_TTF_READER)
+  // Every spine transition and deferred reposition lands here, so this is where
+  // the chapter-scoped restore state dies. All four values describe the chapter
+  // being left: the seed names a page in it, ttfCurrentCharStart is a
+  // chapter-relative offset that renderBookTtf retains while
+  // ttfReflowJumpPending is set (:3114), and ttfRestoreLastPage sends the
+  // reader to the previous chapter's end, which is only meaningful when
+  // stepping back into that chapter. Carrying any of them into a different
+  // spine resolves against the wrong chapter — the position loss #195
+  // describes.
+  ttfReflowSeedPage = -1;
+  ttfReflowJumpPending = false;
+  ttfCurrentCharStart = 0;
+  ttfRestoreLastPage = false;
+#endif
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {
@@ -4965,10 +5044,25 @@ void EpubReaderActivity::openFontPreview() {
   discardOverlayPage();
   startActivityForResult(std::move(preview), [this](const ActivityResult& result) {
     if (!result.isCancelled && std::holds_alternative<QuickFontPreviewResult>(result.data)) {
-      // The preview persisted the settings; this is the settings-driven clean
-      // reindex a Text-settings font change lands (full rebuild, position
-      // preserved through the page's char offset).
-      applyReaderTextSettings();
+      const auto& previewResult = std::get<QuickFontPreviewResult>(result.data);
+      // The preview's transient layout pass already resolved the page holding
+      // the entry anchor under the settings now in SETTINGS. Seed it before the
+      // invalidation so the rebuild targets the reader's position and builds
+      // incrementally to it, instead of re-deriving the position from a char
+      // offset that cannot map until the chapter is fully indexed (which sent
+      // the reader back to the chapter start).
+      if (previewResult.changed && previewResult.hasPosition) {
+        // Arming happens inside applyReaderTextSettings() under the render
+        // lock; the rebuild then targets the reader's position and builds
+        // incrementally to it, instead of re-deriving the position from a char
+        // offset that cannot map until the chapter is fully indexed (which
+        // sent the reader back to the chapter start).
+        applyReaderTextSettings(static_cast<int32_t>(previewResult.pageIndex));
+      } else {
+        // The preview persisted the settings; this is the settings-driven
+        // clean reindex a Text-settings font change lands.
+        applyReaderTextSettings();
+      }
       pagesUntilFullRefresh = 1;
     }
     // Both close branches pop straight back to the book page; the chrome
@@ -5714,7 +5808,7 @@ void EpubReaderActivity::paintOverlayPopup() {
   pushOverlayRefresh();
 }
 
-void EpubReaderActivity::applyReaderTextSettings() {
+void EpubReaderActivity::applyReaderTextSettings(const int32_t seedPage) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     SETTINGS.saveToFile();
@@ -5726,6 +5820,13 @@ void EpubReaderActivity::applyReaderTextSettings() {
     freeink::book::ttfUiFallback.release(renderer);
 #endif
     RenderLock lock;
+    // Armed under the lock: a render pass that slipped in before this one
+    // would otherwise read the seed against the old-generation cache, clear
+    // it, and leave the rebuild with no target. The default -1 clears any seed
+    // a previous apply left behind — ttfInvalidateCaches() below then latches
+    // ttfReflowJumpPending, so the position restores through the char offset
+    // instead of a page index from an older settings generation.
+    ttfReflowSeedPage = seedPage;
     freeink::book::fontLoader.markDirty();
     // Reflow in place: drop the caches; the new generation produces a fresh
     // build and the position restores through the page's char offset.

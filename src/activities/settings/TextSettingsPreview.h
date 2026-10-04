@@ -58,6 +58,9 @@ struct PreviewLayout {
   std::vector<std::unique_ptr<TextBlock>> lines;
   // Native-TTF path: runs laid out by ChapterLayout over the sample source.
   std::vector<PreviewRun> ttfRuns;
+  // Spacing the runs were laid out with; the glyph walk must replay them.
+  int16_t characterSpacingPx = 0;
+  int16_t wordSpacingPx = 0;
   PreviewKey key;
 };
 
