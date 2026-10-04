@@ -1101,8 +1101,20 @@ void EpubReaderActivity::loop() {
         LOG_ERR("ERS", "Background section build failed");
         section.reset();
         requestUpdate();
-      } else if (section->isBuildComplete() && applyDeferredReposition()) {
-        requestUpdate();
+      } else if (section->isBuildComplete()) {
+        // A target the render pass left pending because the index was still
+        // partial (the readable-page yield) is applied now that the finished
+        // index can satisfy it; applyDeferredReposition() otherwise only guesses
+        // a proportional page from the clamped one.
+        bool repositioned = false;
+        if (pendingPageJump.has_value()) {
+          section->currentPage = *pendingPageJump == std::numeric_limits<uint16_t>::max()
+                                     ? section->pageCount - 1
+                                     : static_cast<int>(*pendingPageJump);
+          pendingPageJump.reset();
+          repositioned = true;
+        }
+        if (applyDeferredReposition() || repositioned) requestUpdate();
       }
     }
   }
@@ -2396,6 +2408,12 @@ void EpubReaderActivity::renderBook() {
       LOG_DBG("ERS", "Cache found, skipping build...");
     }
 
+    // A readable partial must not consume a pending numeric target: painting an
+    // available page leaves currentPage clamped to the last built page, and
+    // later passes reuse this section without re-reading nextPageNumber, so the
+    // real target would never be applied (applyDeferredReposition() only guesses
+    // proportionally from cachedChapterTotalPageCount). Keep the target pending
+    // for the build-completion tick to apply against the finished index.
     if (pendingPageJump.has_value()) {
       // UINT16_MAX is the "land on the chapter's last page" sentinel (set when
       // turning back from the first page, and at end-of-book). While the index
@@ -3142,16 +3160,15 @@ void EpubReaderActivity::renderBookTtf() {
     }
     // Past the readability threshold, stop deferring so the reader gets a page
     // instead of the popup for the rest of the worker's build. The worker keeps
-    // draining the chapter off-task, so this must NOT fall through into the
-    // inline build below: while the worker holds this spine, ensureChapterSession
-    // would put a second writer on the same FIBP file. Serve only what is
-    // already committed and keep waiting for the target otherwise.
-    // Re-check ownership here: the takeover above may have just stopped the
-    // worker, and a stale true would suppress the inline build the reader now
-    // owns, pinning it to the last committed page.
-    if (shouldClearBuildPopup(static_cast<int>(ttfPageCount)) && fibpWorker_ != nullptr && fibpWorker_->active() &&
-        fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
-      workerOwnsSpine = true;
+    // draining the chapter off-task, so while it still holds this spine we must
+    // NOT fall through into the inline build below: ensureChapterSession would
+    // put a second writer on the same FIBP file. Ownership is re-checked here
+    // because the takeover above may have just stopped the worker — when it
+    // did, the reader owns the spine and must fall through to build it inline
+    // rather than return and wait on a requestUpdate that may be coalesced.
+    if (shouldClearBuildPopup(static_cast<int>(ttfPageCount))) {
+      workerOwnsSpine = fibpWorker_ != nullptr && fibpWorker_->active() &&
+                        fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
     } else {
       return;
     }
@@ -3373,7 +3390,13 @@ void EpubReaderActivity::renderBookTtf() {
     requestUpdate();  // transient SD failure; retry on the next pass
     return;
   }
-  ttfCurrentCharStart = page.charStart;
+  // A placeholder page's charStart is not the reader's position: it is merely
+  // where the partial index happened to start. Keeping it would corrupt a later
+  // reflow restore, and ttfCommitFrame() saves it on close — flushing a
+  // provisional position to disk. Preserve the real offset until the target
+  // resolves. (The fast-display path at ~3710 never serves a placeholder: it
+  // only runs from a page the reader already turned to.)
+  if (!servedPlaceholderPage) ttfCurrentCharStart = page.charStart;
 
   // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
   // (resolvable) targets only — external URLs never enter the reader flow.
