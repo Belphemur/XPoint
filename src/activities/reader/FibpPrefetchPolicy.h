@@ -23,19 +23,38 @@ constexpr uint16_t kNoChapter = 0xFFFF;
 // the position trigger below fires for a new spine.
 constexpr uint16_t kPrefetchLookaheadSpines = 1;
 
-// Position trigger (owner directive, 2026-09-19): the next chapter is
-// enqueued only once the reader has consumed all but the last
-// ceil(pageCount * kPrefetchRemainingPercent / 100) pages of the CURRENT
-// chapter — building chapters that may never be read wastes SD writes and
-// battery. page is the 0-based current page inside the chapter; the ceil
-// keeps the 1-page-remaining edge firing even for tiny page counts.
-// pageCount == 0 (unknown) never triggers.
+// Prefilter thresholds for the next-chapter prefetch trigger.
+//
+// Long chapters: fire only once inside the last kPrefetchRemainingPercent of the
+// chapter — building chapters the user may never reach wastes SD writes and
+// battery (whole-book prefetch was the device-soak pathology PR #153 reverted).
+//
+// Short chapters: a chapter with fewer than kShortChapterImmediatePrefetchPages
+// pages has no reading-time budget to hide the next chapter's index behind — the
+// %-trigger fires too late (for a 2-page chapter it fires at page 1 of 2, one
+// turn from the spine boundary, so the worker cannot finish indexing before the
+// reader turns in and hits the Indexing popup). Short chapters therefore fire at
+// ENTRY (page 0) so the index has the whole chapter to complete.
+// (Owner repro: 2-page chapter → Indexing popup on the turn into the next
+// chapter; closing/reopening let the idle worker drain. 2026-10-04.)
+constexpr uint16_t kShortChapterImmediatePrefetchPages = 10;
 constexpr uint8_t kPrefetchRemainingPercent = 10;
-inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount) {
-  if (pageCount == 0) return false;
+// page == the 0-based current page inside the chapter; pageCount == 0 (unknown)
+// never triggers. The remaining-threshold uses ceil so the 1-page-remaining edge
+// fires even for tiny page counts.
+//
+// `lengthFinal` says whether pageCount is the chapter's SETTLED length or a
+// still-growing build watermark: the reader reports the pages written so far, so
+// a long chapter's first cold-start pass reports a 1..9 watermark. Treating that
+// as a short chapter would fire the prefetch mid-build and reintroduce the
+// premature SD-write pressure the percentage rule exists to prevent, so the
+// short-chapter branch requires a finalized length.
+inline bool shouldPrefetchNext(const uint16_t page, const uint16_t pageCount, const bool lengthFinal = true) {
+  if (pageCount == 0) return false;  // unknown length: never treat as short
+  if (lengthFinal && pageCount < kShortChapterImmediatePrefetchPages) return true;  // short: fire at entry
   const uint32_t thresholdPages = (static_cast<uint32_t>(pageCount) * kPrefetchRemainingPercent + 99) / 100;
   const uint32_t remaining = pageCount > page ? static_cast<uint32_t>(pageCount - page) : 0;
-  return remaining <= thresholdPages;
+  return remaining <= thresholdPages;  // long: 10%-remaining rule
 }
 
 // R4 queue order: the chapter AFTER the entered one first, then onward
