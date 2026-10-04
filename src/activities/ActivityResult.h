@@ -75,12 +75,23 @@ struct FilePathResult {
 // the reader (owner of the authoritative per-book record) applies the clear.
 struct ClearPaceResult {};
 
-// Sent by FontPreviewActivity when the user closes it after changing the font
-// family or point size: the reader (owner of the caches and the reading
+// Sent by FontPreviewActivity when the user closes it after changing a
+// rendering setting: the reader (owner of the caches and the reading
 // position) runs its settings-driven clean reindex. A close with no changes
 // pops as cancelled (silent return, zero reflow, zero SD writes).
+//
+// pageIndex is the page the preview's transient layout pass resolved for the
+// page holding the entry anchor, under the settings being committed. That pass
+// runs the same ChapterLayout::layout() with the same LayoutParams the
+// committed build uses, so the index is the reindex's own target page — the
+// reader seeds the rebuild with it instead of re-deriving the position from a
+// char offset that cannot map until the chapter is fully indexed.
+// hasPosition is false when the preview never confirmed the anchor (scan budget
+// or layout failure), in which case the reader keeps its offset-derived path.
 struct QuickFontPreviewResult {
   bool changed = false;
+  bool hasPosition = false;
+  uint32_t pageIndex = 0;
 };
 
 using ResultVariant =

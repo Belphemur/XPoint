@@ -65,6 +65,11 @@ void FontPreviewActivity::relayout() {
   // must not be displayed as if it were the current page: drop it and let the
   // render keep the frame the preview opened over until close reflows.
   if (!out.reachedAnchor) preview_.reset();
+  // Only a confirmed pass yields a usable target: an unconfirmed one may have
+  // stopped at the scan budget, where pageIndex is the last page scanned
+  // rather than the page holding the anchor.
+  resolvedAnchor_ = out.reachedAnchor;
+  resolvedPage_ = out.pageIndex;
 }
 
 void FontPreviewActivity::applySize(const uint32_t value) {
@@ -145,7 +150,7 @@ void FontPreviewActivity::close() {
                        strncmp(SETTINGS.ttfFontFamilyName, entryFamily_, sizeof(entryFamily_)) != 0;
   ActivityResult result;
   if (changed) {
-    result = QuickFontPreviewResult{true};
+    result = QuickFontPreviewResult{true, resolvedAnchor_, resolvedPage_};
   } else {
     result.isCancelled = true;
   }

@@ -2830,6 +2830,18 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   }
 
   if (ttfReflowJumpPending) {
+    // The font preview resolved this page under the settings being committed
+    // (same engine, same LayoutParams), so it IS the rebuild's target — take it
+    // and let the pass build incrementally to it. The char-offset path below
+    // would instead demand a complete index before it can map, which is what
+    // sent the reader to the chapter start.
+    if (ttfReflowSeedPage >= 0) {
+      const int seed = ttfReflowSeedPage;
+      ttfReflowSeedPage = -1;
+      ttfReflowJumpPending = false;
+      targetOut = seed;
+      return true;
+    }
     // Settings/orientation reflow: restore the position through the character
     // offset of the page that was shown before the caches were dropped. The
     // offset only maps once the chapter's page index is COMPLETE — a partial
@@ -4965,9 +4977,18 @@ void EpubReaderActivity::openFontPreview() {
   discardOverlayPage();
   startActivityForResult(std::move(preview), [this](const ActivityResult& result) {
     if (!result.isCancelled && std::holds_alternative<QuickFontPreviewResult>(result.data)) {
+      const auto& previewResult = std::get<QuickFontPreviewResult>(result.data);
+      // The preview's transient layout pass already resolved the page holding
+      // the entry anchor under the settings now in SETTINGS. Seed it before the
+      // invalidation so the rebuild targets the reader's position and builds
+      // incrementally to it, instead of re-deriving the position from a char
+      // offset that cannot map until the chapter is fully indexed (which sent
+      // the reader back to the chapter start).
+      if (previewResult.changed && previewResult.hasPosition) {
+        ttfReflowSeedPage = static_cast<int32_t>(previewResult.pageIndex);
+      }
       // The preview persisted the settings; this is the settings-driven clean
-      // reindex a Text-settings font change lands (full rebuild, position
-      // preserved through the page's char offset).
+      // reindex a Text-settings font change lands.
       applyReaderTextSettings();
       pagesUntilFullRefresh = 1;
     }

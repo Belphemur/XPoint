@@ -82,5 +82,11 @@ class FontPreviewActivity final : public Activity {
   bool needsRelayout_ = false;
   uint8_t entrySize_ = 0;
   char entryFamily_[48] = "";
+  // The page the last confirmed relayout resolved for the entry anchor, under
+  // the settings now in SETTINGS. Handed to the reader so its reindex starts
+  // from this page instead of re-deriving the position from a char offset that
+  // cannot map until the chapter is fully indexed.
+  uint32_t resolvedPage_ = 0;
+  bool resolvedAnchor_ = false;
 };
 #endif  // CROSSPOINT_TTF_READER

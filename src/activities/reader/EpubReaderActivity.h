@@ -245,6 +245,12 @@ class EpubReaderActivity final : public ReaderActivity {
   uint32_t ttfSavedGeneration = 0;
   bool ttfPrefetchActive = false;     // session building the NEXT spine
   bool ttfReflowJumpPending = false;  // position restore via char offset
+  // Page the font preview resolved for the current spine under the settings
+  // being committed. Its transient layout pass runs the same engine and
+  // LayoutParams as the rebuild, so this is the rebuild's own target page:
+  // consuming it lets the pass build incrementally up to the reader's position
+  // instead of demanding a complete index before the char offset can map.
+  int32_t ttfReflowSeedPage = -1;
   void renderBookTtf();
   // Grayscale base refresh shared by both TTF gray transports: cleanup cycle
   // when due, otherwise the grayscale base waveform (§11 Q7).
