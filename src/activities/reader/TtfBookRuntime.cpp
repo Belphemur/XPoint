@@ -444,6 +444,14 @@ void TtfBookRuntime::applyReaderLayoutParams(LayoutParams& params) {
   params.embeddedStyles = SETTINGS.embeddedStyle != 0;
   params.hyphenator = nullptr;  // Phase 2b
   params.baseSizePx = static_cast<uint16_t>(lroundf(static_cast<float>(SETTINGS.ttfFontPointSize) * 150.0f / 72.0f));
+  // Reader typography controls, in pixels. Word spacing is stored as a
+  // percentage (WORD_SPACING_MIN..MAX in 25% steps) and resolved against the
+  // body's own space width, so 100% is the font's natural gap. After
+  // baseSizePx: the ratio needs the real body size, not the struct default.
+  const int16_t bodySpacePx = static_cast<int16_t>(params.baseSizePx / 4);
+  params.wordSpacingPx = static_cast<int16_t>(
+      (static_cast<int32_t>(bodySpacePx) * static_cast<int32_t>(SETTINGS.wordSpacing)) / 100 - bodySpacePx);
+  params.characterSpacingPx = SETTINGS.getCharacterSpacing();
 }
 
 void TtfBookRuntime::makeLayoutParams(GfxRenderer& renderer, LayoutParams& out, const bool autoTurnActive) const {

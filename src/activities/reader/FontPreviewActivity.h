@@ -62,8 +62,12 @@ class FontPreviewActivity final : public Activity {
   void applySize(uint32_t value);
   void openSizeSlider();
   void openFamilyPicker();
+  void openLineSpacingPicker();
+  void openWordSpacingSlider();
+  void openCharacterSpacingPicker();
   void relayout();
   void close();
+  void openRow(int row);
 
   freeink::book::TtfBookRuntime* ttf_;
   const uint16_t spineIndex_;
@@ -73,15 +77,25 @@ class FontPreviewActivity final : public Activity {
 
   std::unique_ptr<ReaderToolbarUi> chrome_;
   OptionPopup<33, 8> familyPopup_;
+  // The spacing rows share one modal: only one can be open at a time, and the
+  // loop() input branch treats any active popup the same way.
+  OptionPopup<8, 4> popup_;
   // One capture buffer per preview session (PSRAM), freed in onExit.
   QuickPageCapture preview_;
   PoolBytes previewBuf_;
   void* relayoutFont_ = nullptr;
 
-  int cursorRow_ = 0;  // 0 = Size, 1 = Family
+  // Rows: 0 = Size, 1 = Family, 2 = Line spacing, 3 = Word spacing,
+  // 4 = Character spacing. Every row re-lays the page live.
+  int cursorRow_ = 0;
   bool needsRelayout_ = false;
+  // Entry snapshots of every row: a net-zero session closes silently (zero
+  // reflow, zero SD writes) however many rows the user visited.
   uint8_t entrySize_ = 0;
   char entryFamily_[48] = "";
+  uint8_t entryLineSpacing_ = 0;
+  uint8_t entryWordSpacing_ = 0;
+  uint8_t entryCharacterSpacing_ = 0;
   // The page the last confirmed relayout resolved for the entry anchor, under
   // the settings now in SETTINGS. Handed to the reader so its reindex starts
   // from this page instead of re-deriving the position from a char offset that

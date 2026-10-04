@@ -35,6 +35,9 @@ void FontPreviewActivity::onEnter() {
   Activity::onEnter();
   snprintf(entryFamily_, sizeof(entryFamily_), "%s", SETTINGS.ttfFontFamilyName);
   entrySize_ = SETTINGS.ttfFontPointSize;
+  entryLineSpacing_ = SETTINGS.lineSpacing;
+  entryWordSpacing_ = SETTINGS.wordSpacing;
+  entryCharacterSpacing_ = SETTINGS.characterSpacing;
   chrome_ = makeUniqueNoThrow<ReaderToolbarUi>(renderer);
   if (chrome_) {
     chrome_->begin();
@@ -49,6 +52,7 @@ void FontPreviewActivity::onEnter() {
 
 void FontPreviewActivity::onExit() {
   familyPopup_.dismiss();
+  popup_.dismiss();
   chrome_.reset();
   preview_.attach(nullptr, 0);  // buffer freed below
   previewBuf_.reset();
@@ -142,12 +146,74 @@ void FontPreviewActivity::openFamilyPicker() {
   requestUpdate();
 }
 
+// Spacing rows. Each re-lays the captured page live through the same
+// makeLayoutParams() the committed build reads, so the preview reflects the
+// setting exactly as the book will after the close reindex.
+void FontPreviewActivity::openLineSpacingPicker() {
+  static constexpr StrId kSpacingIds[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE, StrId::STR_EXTRA_WIDE};
+  static_assert(std::size(kSpacingIds) == CrossPointSettings::LINE_COMPRESSION_COUNT, "line spacing labels");
+  popup_.show(StrId::STR_LINE_SPACING, kSpacingIds, static_cast<int>(std::size(kSpacingIds)),
+              SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT, [this](const int idx) {
+                if (idx < 0 || idx >= CrossPointSettings::LINE_COMPRESSION_COUNT) return;
+                SETTINGS.lineSpacing = static_cast<uint8_t>(idx);
+                if (!SETTINGS.saveToFile()) {
+                  LOG_ERR("FPR", "font preview: settings save failed");
+                }
+                needsRelayout_ = true;
+              });
+}
+
+void FontPreviewActivity::openWordSpacingSlider() {
+  // Indexed picker over the same discrete steps the Text panel uses, so both
+  // surfaces offer identical choices.
+  static constexpr StrId kWordIds[] = {StrId::STR_SPACING_50_PERCENT,  StrId::STR_SPACING_75_PERCENT,
+                                       StrId::STR_SPACING_100_PERCENT, StrId::STR_SPACING_125_PERCENT,
+                                       StrId::STR_SPACING_150_PERCENT, StrId::STR_SPACING_175_PERCENT,
+                                       StrId::STR_SPACING_200_PERCENT};
+  static_assert(std::size(kWordIds) == (CrossPointSettings::WORD_SPACING_MAX - CrossPointSettings::WORD_SPACING_MIN) /
+                                               CrossPointSettings::WORD_SPACING_STEP +
+                                           1,
+                "word spacing steps");
+  const int current = (std::clamp<int>(SETTINGS.wordSpacing, CrossPointSettings::WORD_SPACING_MIN,
+                                       CrossPointSettings::WORD_SPACING_MAX) -
+                       CrossPointSettings::WORD_SPACING_MIN) /
+                      CrossPointSettings::WORD_SPACING_STEP;
+  const std::vector<StrId> options(std::begin(kWordIds), std::end(kWordIds));
+  popup_.show(StrId::STR_WORD_SPACING, kWordIds, static_cast<int>(std::size(kWordIds)), current, [this](const int idx) {
+    if (idx < 0 || idx >= static_cast<int>(std::size(kWordIds))) return;
+    SETTINGS.wordSpacing =
+        static_cast<uint8_t>(CrossPointSettings::WORD_SPACING_MIN + idx * CrossPointSettings::WORD_SPACING_STEP);
+    if (!SETTINGS.saveToFile()) {
+      LOG_ERR("FPR", "font preview: settings save failed");
+    }
+    needsRelayout_ = true;
+  });
+}
+
+void FontPreviewActivity::openCharacterSpacingPicker() {
+  static constexpr StrId kSpacingIds[] = {StrId::STR_SPACING_MINUS_2, StrId::STR_SPACING_MINUS_1,
+                                          StrId::STR_SPACING_ZERO, StrId::STR_SPACING_PLUS_1,
+                                          StrId::STR_SPACING_PLUS_2};
+  popup_.show(StrId::STR_CHARACTER_SPACING, kSpacingIds, static_cast<int>(std::size(kSpacingIds)),
+              static_cast<int>(SETTINGS.characterSpacing) - CrossPointSettings::CHARACTER_SPACING_OFFSET,
+              [this](const int idx) {
+                if (idx < 0 || idx >= static_cast<int>(std::size(kSpacingIds))) return;
+                SETTINGS.characterSpacing = static_cast<uint8_t>(idx + CrossPointSettings::CHARACTER_SPACING_OFFSET);
+                if (!SETTINGS.saveToFile()) {
+                  LOG_ERR("FPR", "font preview: settings save failed");
+                }
+                needsRelayout_ = true;
+              });
+}
+
 void FontPreviewActivity::close() {
   // Net-effect close contract (design decision log): compare the final values
-  // with the entry snapshots, so a bounced change (A→B→A) closes silently —
-  // zero reflow, zero further SD writes.
+  // with the entry snapshots, so a bounced change (A→B→A) on ANY row closes
+  // silently — zero reflow, zero further SD writes.
   const bool changed = SETTINGS.ttfFontPointSize != entrySize_ ||
-                       strncmp(SETTINGS.ttfFontFamilyName, entryFamily_, sizeof(entryFamily_)) != 0;
+                       strncmp(SETTINGS.ttfFontFamilyName, entryFamily_, sizeof(entryFamily_)) != 0 ||
+                       SETTINGS.lineSpacing != entryLineSpacing_ || SETTINGS.wordSpacing != entryWordSpacing_ ||
+                       SETTINGS.characterSpacing != entryCharacterSpacing_;
   ActivityResult result;
   if (changed) {
     result = QuickFontPreviewResult{true, resolvedAnchor_, resolvedPage_};
@@ -159,17 +225,25 @@ void FontPreviewActivity::close() {
 }
 
 void FontPreviewActivity::loop() {
-  // Family modal owns all input while open (same shape as the reader's
-  // overlayPopup branch). The selection callback applies the family; the
-  // dismiss callback repaints so the relayout runs exactly once.
-  if (familyPopup_.isActive()) {
-    familyPopup_.handleInput(mappedInput, [this] {
-      if (familyPopup_.isActive()) {
+  // An open modal owns all input (same shape as the reader's overlayPopup
+  // branch). The selection callback applies the setting; the dismiss callback
+  // repaints so the relayout runs exactly once.
+  if (familyPopup_.isActive() || popup_.isActive()) {
+    const bool family = familyPopup_.isActive();
+    const auto done = [this, family] {
+      if (family ? familyPopup_.isActive() : popup_.isActive()) {
         requestUpdate();  // highlight moved
         return;
       }
       requestUpdate();  // selected or dismissed: render() re-lays if pending
-    });
+    };
+    // Dispatch to the popup that is actually open — handleInput() on an
+    // inactive popup would swallow the input.
+    if (family) {
+      familyPopup_.handleInput(mappedInput, done);
+    } else {
+      popup_.handleInput(mappedInput, done);
+    }
     return;
   }
 
@@ -180,13 +254,8 @@ void FontPreviewActivity::loop() {
         close();
         return;
       case ReaderToolbarUi::Event::FontRow:
-        if (routed.value == 1) {
-          cursorRow_ = 1;
-          openFamilyPicker();
-        } else {
-          cursorRow_ = 0;
-          openSizeSlider();
-        }
+        cursorRow_ = routed.value;
+        openRow(routed.value);
         return;
       default:
         break;
@@ -194,27 +263,46 @@ void FontPreviewActivity::loop() {
     if (routed.routed) return;
   }
 
+  constexpr int kLastRow = 4;
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     close();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-    cursorRow_ = 0;
+    cursorRow_ = cursorRow_ <= 0 ? kLastRow : cursorRow_ - 1;
     requestUpdate();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    cursorRow_ = 1;
+    cursorRow_ = cursorRow_ >= kLastRow ? 0 : cursorRow_ + 1;
     requestUpdate();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (cursorRow_ == 1) {
-      openFamilyPicker();
-    } else {
-      openSizeSlider();
-    }
+    openRow(cursorRow_);
     return;
+  }
+}
+
+void FontPreviewActivity::openRow(const int row) {
+  switch (row) {
+    case 0:
+      openSizeSlider();
+      return;
+    case 1:
+      openFamilyPicker();
+      return;
+    case 2:
+      openLineSpacingPicker();
+      return;
+    case 3:
+      openWordSpacingSlider();
+      return;
+    case 4:
+      openCharacterSpacingPicker();
+      return;
+    default:
+      return;
   }
 }
 
@@ -249,6 +337,27 @@ void FontPreviewActivity::render(RenderLock&&) {
     std::string familyText = SETTINGS.ttfFontFamilyName[0] != '\0' ? SETTINGS.ttfFontFamilyName : tr(STR_BUILTIN_FONT);
     model.sizeText = sizeText.c_str();
     model.familyText = familyText.c_str();
+    static constexpr StrId kSpacingIds[] = {StrId::STR_TIGHT, StrId::STR_NORMAL, StrId::STR_WIDE,
+                                            StrId::STR_EXTRA_WIDE};
+    static constexpr StrId kCharIds[] = {StrId::STR_SPACING_MINUS_2, StrId::STR_SPACING_MINUS_1,
+                                         StrId::STR_SPACING_ZERO, StrId::STR_SPACING_PLUS_1, StrId::STR_SPACING_PLUS_2};
+    static constexpr StrId kWordIds[] = {StrId::STR_SPACING_50_PERCENT,  StrId::STR_SPACING_75_PERCENT,
+                                         StrId::STR_SPACING_100_PERCENT, StrId::STR_SPACING_125_PERCENT,
+                                         StrId::STR_SPACING_150_PERCENT, StrId::STR_SPACING_175_PERCENT,
+                                         StrId::STR_SPACING_200_PERCENT};
+    const std::string lineText =
+        I18N.get(kSpacingIds[SETTINGS.lineSpacing % CrossPointSettings::LINE_COMPRESSION_COUNT]);
+    const int wordIndex = (std::clamp<int>(SETTINGS.wordSpacing, CrossPointSettings::WORD_SPACING_MIN,
+                                           CrossPointSettings::WORD_SPACING_MAX) -
+                           CrossPointSettings::WORD_SPACING_MIN) /
+                          CrossPointSettings::WORD_SPACING_STEP;
+    const std::string wordText =
+        I18N.get(kWordIds[wordIndex >= 0 && wordIndex < static_cast<int>(std::size(kWordIds)) ? wordIndex : 2]);
+    const std::string charText =
+        I18N.get(kCharIds[static_cast<int>(SETTINGS.characterSpacing) - CrossPointSettings::CHARACTER_SPACING_OFFSET]);
+    model.lineSpacingText = lineText.c_str();
+    model.wordSpacingText = wordText.c_str();
+    model.characterSpacingText = charText.c_str();
     chrome_->setModel(model);
     chrome_->render();
     if (!mappedInput.hasTouch()) {
@@ -258,6 +367,9 @@ void FontPreviewActivity::render(RenderLock&&) {
   }
   if (familyPopup_.isActive()) {
     familyPopup_.render(renderer);
+  }
+  if (popup_.isActive()) {
+    popup_.render(renderer);
   }
   renderer.displayBuffer();
 }

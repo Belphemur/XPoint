@@ -47,11 +47,16 @@ class ReaderToolbarUi : public UiAppHost {
     int selectedIndex = -1;  // row the buttons' cursor sits on; -1 = none shown
     std::function<std::string(int)> rowText;
     std::function<std::string(int)> rowValue;
-    // Quick font sheet: two compact +/- rows over the still-visible page.
+    // Quick font sheet: compact chooser rows over the still-visible page.
+    // 0 = Size, 1 = Family, 2 = Line spacing, 3 = Word spacing,
+    // 4 = Character spacing.
     bool quickFont = false;
-    int quickSelected = 0;  // 0 = Size, 1 = Family
+    int quickSelected = 0;
     const char* sizeText = nullptr;
     const char* familyText = nullptr;
+    const char* lineSpacingText = nullptr;
+    const char* wordSpacingText = nullptr;
+    const char* characterSpacingText = nullptr;
     void (*rowCheckbox)(void* ctx, int index, freeink::ui::ListItem& item) = nullptr;
     void* rowCheckboxContext = nullptr;
     // Tile row: the tool in focus (toolbar) / the open panel (panel). 0..2.
