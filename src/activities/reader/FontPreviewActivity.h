@@ -84,6 +84,9 @@ class FontPreviewActivity final : public Activity {
   QuickPageCapture preview_;
   PoolBytes previewBuf_;
   void* relayoutFont_ = nullptr;
+  // Spacing the captured page was laid out with; the paint pass replays them.
+  int16_t relayoutCharSpacingPx_ = 0;
+  int16_t relayoutWordSpacingPx_ = 0;
 
   // Rows: 0 = Size, 1 = Family, 2 = Line spacing, 3 = Word spacing,
   // 4 = Character spacing. Every row re-lays the page live.

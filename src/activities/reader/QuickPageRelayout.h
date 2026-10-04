@@ -31,6 +31,10 @@ struct QuickRelayoutResult {
   bool captured = false;       // a candidate page was deep-copied (ready to paint)
   uint32_t pageIndex = 0;
   void* font = nullptr;  // the FontChain the layout ran with (loader-owned; valid until a reload)
+  // Spacing the capture was laid out with; the paint pass must replay them or
+  // the painted glyphs drift from the stored run geometry.
+  int16_t characterSpacingPx = 0;
+  int16_t wordSpacingPx = 0;
 };
 
 // Relayout the page containing `anchorChar` in `spineIndex` at the CURRENT

@@ -3447,7 +3447,10 @@ void EpubReaderActivity::renderBookTtf() {
   // provisional position to disk. Preserve the real offset until the target
   // resolves. (The fast-display path at ~3710 never serves a placeholder: it
   // only runs from a page the reader already turned to.)
-  if (!servedPlaceholderPage) ttfCurrentCharStart = page.charStart;
+  // A still-pending preview seed counts as unresolved for the same reason: the
+  // page served is a clamp to the last built page, not the reader's position,
+  // so its charStart must not overwrite the real offset either.
+  if (!servedPlaceholderPage && ttfReflowSeedPage < 0) ttfCurrentCharStart = page.charStart;
 
   // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
   // (resolvable) targets only — external URLs never enter the reader flow.

@@ -65,6 +65,8 @@ void FontPreviewActivity::relayout() {
   if (ttf_ == nullptr) return;
   const auto out = quickRelayoutPage(*ttf_, renderer, spineIndex_, anchorChar_, autoPageTurn_, preview_, previewBuf_);
   relayoutFont_ = out.font;
+  relayoutCharSpacingPx_ = out.characterSpacingPx;
+  relayoutWordSpacingPx_ = out.wordSpacingPx;
   // An unconfirmed capture (anchor beyond the scan budget, layout failure)
   // must not be displayed as if it were the current page: drop it and let the
   // render keep the frame the preview opened over until close reflows.
@@ -225,7 +227,7 @@ void FontPreviewActivity::close() {
     // in force when it was laid out, so its page index does not describe the
     // layout the reader is about to rebuild. Report no position and let the
     // reader fall back rather than opening at a page from the old settings.
-    result = QuickFontPreviewResult{true, resolvedAnchor_, !needsRelayout_ && resolvedPage_};
+    result = QuickFontPreviewResult{true, resolvedAnchor_ && !needsRelayout_, resolvedPage_};
   } else {
     result.isCancelled = true;
   }
@@ -329,7 +331,7 @@ void FontPreviewActivity::render(RenderLock&&) {
 #endif
   if (preview_.ready() && relayoutFont_ != nullptr) {
     renderer.clearScreen(0xFF);
-    paintCapturedPage(preview_.page(), relayoutFont_, renderer, *ttf_);
+    paintCapturedPage(preview_.page(), relayoutFont_, renderer, *ttf_, relayoutCharSpacingPx_, relayoutWordSpacingPx_);
   } else {
     // No confirmed capture (scan failed / anchor out of reach): keep the
     // frame the preview opened over rather than showing a wrong page.

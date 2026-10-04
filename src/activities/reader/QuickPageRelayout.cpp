@@ -74,6 +74,8 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
     return out;
   }
   out.font = params.font;
+  out.characterSpacingPx = params.characterSpacingPx;
+  out.wordSpacingPx = params.wordSpacingPx;
 
   // One backing buffer per surface session: allocated on the first relayout,
   // freed when the owning surface closes, so changes never churn the PSRAM
