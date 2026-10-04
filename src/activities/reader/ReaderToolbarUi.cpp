@@ -151,8 +151,11 @@ void ReaderToolbarUi::buildQuickFont(UiScreen& screen) {
                                    model_.characterSpacingText};
   const int16_t rowCount = static_cast<int16_t>(
       std::count_if(std::begin(rowLabels), std::end(rowLabels), [](const char* label) { return label != nullptr; }));
-  const int16_t contentH = static_cast<int16_t>(tokens.spaceMd + titleH + tokens.spaceSm + rowCount * kQuickFontRowH +
-                                                tokens.spaceSm + bottomReserve);
+  // One spaceSm per drawn row: the loop below lays each row out with
+  // takeTop(kQuickFontRowH, gap), so the budget must carry a gap for every
+  // row or the last is clamped against the height that is left.
+  const int16_t contentH =
+      static_cast<int16_t>(tokens.spaceMd + titleH + bottomReserve + rowCount * (kQuickFontRowH + tokens.spaceSm));
   screen.sheet(sheetProps, static_cast<int16_t>(contentH + grabberBand));
   screen.insetContent(fui::Insets{0, tokens.spaceLg, 0, tokens.spaceLg});
 

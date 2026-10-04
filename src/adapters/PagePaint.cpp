@@ -50,7 +50,14 @@ using GlyphFilter = bool (*)(void* ctx, int32_t x0, int32_t y0, int32_t x1, int3
 // caller's tone sink instead of writing into a FrameTarget.
 void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink, const GlyphFilter glyphFilter,
               const uint16_t startRun = 0, const uint32_t startChar = 0, uint16_t* nextRunOut = nullptr,
-              uint32_t* nextCharOut = nullptr, const uint32_t budgetMs = 0) {
+              uint32_t* nextCharOut = nullptr, const uint32_t budgetMs = 0, const int16_t characterSpacingPx = 0,
+              const int16_t wordSpacingPx = 0) {
+  // ChapterLayout::advanceFor() charges these on top of the font advance, so
+  // the walk must replay them or painted glyphs drift left of the run geometry
+  // the layout stored. Word spacing rides the space glyph, matching the engine.
+  const auto spacingFor = [characterSpacingPx, wordSpacingPx](const uint32_t cp) {
+    return cp == ' ' ? wordSpacingPx : characterSpacingPx;
+  };
   const uint32_t start = budgetMs ? millis() : 0;
   for (uint16_t r = startRun; r < page.runCount; ++r) {
     const PageTextRun& run = page.runs[r];
@@ -67,7 +74,7 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
       if (prev != 0) penX += fonts.kerning(prev, cp, run.sizePx, run.styleFlags);
       if (isCursorRun && painted < startChar) {
         // Resume replay: advance-only, no rasterize, no pixel writes.
-        penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+        penX += fonts.advance(cp, run.sizePx, run.styleFlags) + spacingFor(cp);
         prev = cp;
         ++painted;
         continue;
@@ -85,7 +92,7 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
         uint16_t bh = 0;
         if (font->glyphBounds(cp, run.sizePx, bx, by, bw, bh) &&
             !glyphFilter(ctx, penX + bx, run.baselineY + by, penX + bx + bw, run.baselineY + by + bh)) {
-          penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+          penX += fonts.advance(cp, run.sizePx, run.styleFlags) + spacingFor(cp);
           prev = cp;
           continue;
         }
@@ -96,7 +103,7 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
             !glyphFilter(ctx, penX + glyph->xoff, run.baselineY + glyph->yoff, penX + glyph->xoff + glyph->width,
                          run.baselineY + glyph->yoff + glyph->height)) {
           // Outside the active plane band: skip the pixel walk, keep metrics.
-          penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+          penX += fonts.advance(cp, run.sizePx, run.styleFlags) + spacingFor(cp);
           prev = cp;
           continue;
         }
@@ -113,7 +120,7 @@ void walkText(const Page& page, FontChain& fonts, void* ctx, const ToneSink sink
           }
         }
       }
-      penX += fonts.advance(cp, run.sizePx, run.styleFlags);
+      penX += fonts.advance(cp, run.sizePx, run.styleFlags) + spacingFor(cp);
       prev = cp;
       ++painted;
       // Intra-run yield (review r5): a long line must not blow the slice
@@ -233,18 +240,21 @@ void plotPlanes(void* ctx, const int32_t x, const int32_t y, const uint8_t cover
 
 }  // namespace
 
-void PagePaint::paintText(const Page& page, FontChain& fonts, const GfxRenderer& renderer) {
+void PagePaint::paintText(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
+                          const int16_t characterSpacingPx, const int16_t wordSpacingPx) {
   BaseCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight()};
-  walkText(page, fonts, &ctx, plotBase, nullptr);
+  walkText(page, fonts, &ctx, plotBase, nullptr, 0, 0, nullptr, nullptr, 0, characterSpacingPx, wordSpacingPx);
   walkRubies(page, fonts, &ctx, plotBase, nullptr);
 }
 
 bool PagePaint::paintTextSliced(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
                                 const uint16_t firstRun, const uint32_t firstChar, uint16_t* nextRunOut,
-                                uint32_t* nextCharOut, const uint32_t budgetMs) {
+                                uint32_t* nextCharOut, const uint32_t budgetMs, const int16_t characterSpacingPx,
+                                const int16_t wordSpacingPx) {
   BaseCtx ctx{&renderer, renderer.getScreenWidth(), renderer.getScreenHeight()};
   if (firstRun < page.runCount) {
-    walkText(page, fonts, &ctx, plotBase, nullptr, firstRun, firstChar, nextRunOut, nextCharOut, budgetMs);
+    walkText(page, fonts, &ctx, plotBase, nullptr, firstRun, firstChar, nextRunOut, nextCharOut, budgetMs,
+             characterSpacingPx, wordSpacingPx);
     if (*nextRunOut < page.runCount) return false;  // budget spent mid-page: resume later
   }
   // Runs complete — rubies phase: the ruby index encodes as cursor run ≥
@@ -260,7 +270,8 @@ bool PagePaint::paintTextSliced(const Page& page, FontChain& fonts, const GfxRen
   return true;
 }
 
-void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer) {
+void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
+                            const int16_t characterSpacingPx, const int16_t wordSpacingPx) {
   PlaneCtx ctx{&renderer};
   // Band culling mirrors the legacy tiled walk (GfxRenderer.cpp): glyphs
   // entirely outside the active strip skip their rasterize entirely.
@@ -269,7 +280,7 @@ void PagePaint::paintPlanes(const Page& page, FontChain& fonts, const GfxRendere
     return self->renderer->glyphIntersectsStrip(static_cast<int>(x0), static_cast<int>(y0), static_cast<int>(x1),
                                                 static_cast<int>(y1));
   };
-  walkText(page, fonts, &ctx, plotPlanes, filter);
+  walkText(page, fonts, &ctx, plotPlanes, filter, 0, 0, nullptr, nullptr, 0, characterSpacingPx, wordSpacingPx);
   walkRubies(page, fonts, &ctx, plotPlanes, filter);
 }
 

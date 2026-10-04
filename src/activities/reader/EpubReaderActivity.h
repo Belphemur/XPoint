@@ -265,7 +265,8 @@ class EpubReaderActivity final : public ReaderActivity {
   // Rasterizes an engine page through the active render mode (gray parity or
   // 1bpp): text + rubies + rules + images/placeholder. Shared by the reader's
   // own page render and the TTF dictionary selector's repaint hook.
-  void paintTtfPage(const freeink::book::Page& page, void* font);
+  void paintTtfPage(const freeink::book::Page& page, void* font, int16_t characterSpacingPx = 0,
+                    int16_t wordSpacingPx = 0);
   // Render hook handed to DictionaryWordSelectActivity: repaints the page the
   // selector was opened on (same spine/page members, reader frozen beneath).
   static void renderTtfSelectorPage(void* ctx, GfxRenderer& renderer);
@@ -420,7 +421,9 @@ class EpubReaderActivity final : public ReaderActivity {
   void paintOverlayPopup();
   // Persist the reader text settings, (re)load the selected SD font, and
   // re-paginate the current chapter so changes apply without re-opening the book.
-  void applyReaderTextSettings();
+  // seedPage >= 0 arms the font-preview reindex seed under the same
+  // RenderLock as the invalidation; -1 leaves any existing seed alone.
+  void applyReaderTextSettings(int32_t seedPage = -1);
   // More panel rows.
   void buildMoreActions();
   std::string moreRowName(int row) const;

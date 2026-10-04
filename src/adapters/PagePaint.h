@@ -45,7 +45,11 @@ class PagePaint {
   // logical coordinates (offset applied by the caller's own layout — engine
   // pages already carry reader-viewport coordinates). Replaces
   // PageRenderer::renderText when the dual-plane parity pass follows.
-  static void paintText(const Page& page, FontChain& fonts, const GfxRenderer& renderer);
+  // Spacing values must be those the page was laid out with; the engine's
+  // advanceFor() adds them to every glyph advance. Defaults suit pages
+  // laid out without spacing.
+  static void paintText(const Page& page, FontChain& fonts, const GfxRenderer& renderer, int16_t characterSpacingPx = 0,
+                        int16_t wordSpacingPx = 0);
 
   // Sliced variant of paintText for the cooperative prerender pump: paints
   // from (firstRun, firstChar) and yields once `budgetMs` elapsed — the
@@ -58,12 +62,14 @@ class PagePaint {
   // the caller's job); the caller then owns a complete base pass. NOT for
   // the plane pass — the prerender paints the base only.
   static bool paintTextSliced(const Page& page, FontChain& fonts, const GfxRenderer& renderer, uint16_t firstRun,
-                              uint32_t firstChar, uint16_t* nextRunOut, uint32_t* nextCharOut, uint32_t budgetMs);
+                              uint32_t firstChar, uint16_t* nextRunOut, uint32_t* nextCharOut, uint32_t budgetMs,
+                              int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
 
   // Dual-plane pass: call INSIDE a GRAYSCALE_DUAL beginStripTarget band.
   // Flags MSB/LSB plane bits per pixel; solid ink (tone 3) is skipped —
   // the base carries it, and plotting in the shared strip would corrupt it.
-  static void paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer);
+  static void paintPlanes(const Page& page, FontChain& fonts, const GfxRenderer& renderer,
+                          int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
 };
 
 }  // namespace book

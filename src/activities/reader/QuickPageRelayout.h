@@ -50,7 +50,9 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
 // parity holds, 1bpp engine path otherwise; images per the user's display
 // policy. Extracted from EpubReaderActivity::paintTtfPage — keep this body
 // and the reader member in lockstep (the member now delegates here).
+// spacingPx are the values the page was laid out with; the engine charges them
+// to every glyph advance, so the paint pass must replay them.
 void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer& renderer,
-                       freeink::book::TtfBookRuntime& ttf);
+                       freeink::book::TtfBookRuntime& ttf, int16_t characterSpacingPx = 0, int16_t wordSpacingPx = 0);
 
 #endif  // CROSSPOINT_TTF_READER

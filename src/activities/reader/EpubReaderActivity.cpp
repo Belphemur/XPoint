@@ -2845,6 +2845,24 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   // leave the seed set with no pass able to consume it.
   if (ttfReflowSeedPage >= 0) {
     const int seed = ttfReflowSeedPage;
+    // The build advances one chunk per render pass, so a target past the first
+    // chunk is not servable yet. Leave the seed in place and keep resolving it
+    // on the next pass; consuming it here would hand later passes the default
+    // page and land the reader near the start of the chapter — the very
+    // regression this seed exists to fix.
+    if (seed >= available) {
+      // A chapter that ends before the seed can never serve it: the build is
+      // done and the index is complete, so clamp to the last page and drop the
+      // seed rather than leave it pending forever.
+      if (haveTotal) {
+        ttfReflowSeedPage = -1;
+        ttfReflowJumpPending = false;
+        targetOut = std::max(0, available - 1);
+        return true;
+      }
+      targetOut = seed;
+      return true;
+    }
     ttfReflowSeedPage = -1;
     ttfReflowJumpPending = false;
     targetOut = seed;
@@ -3436,7 +3454,7 @@ void EpubReaderActivity::renderBookTtf() {
   ttfExtractFootnotes(page);
 
   renderer.clearScreen(0xFF);
-  paintTtfPage(page, params.font);
+  paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
 #ifdef READING_STATS_ENABLED
   // Engine-computed word count (ChapterLayout counts over the paragraph text
   // before run segmentation; justified runs carry no spaces — counting run
@@ -3711,11 +3729,11 @@ void EpubReaderActivity::ttfRunPreRenderPass(const freeink::book::LayoutParams& 
   ttfPreRendered.slicesUsed++;
   bool complete = true;
   if (grayParity) {
-    complete = freeink::book::PagePaint::paintTextSliced(page, *chain, renderer, ttfPreRendered.nextRun,
-                                                         ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
-                                                         &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs);
+    complete = freeink::book::PagePaint::paintTextSliced(
+        page, *chain, renderer, ttfPreRendered.nextRun, ttfPreRendered.nextChar, &ttfPreRendered.nextRun,
+        &ttfPreRendered.nextChar, kPreRenderSliceBudgetMs, params.characterSpacingPx, params.wordSpacingPx);
   } else {
-    paintTtfPage(page, params.font);
+    paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
   ttf_->scratch().release(scratchMark);
 
@@ -3886,7 +3904,8 @@ void EpubReaderActivity::renderTtfGrayStrips(const freeink::book::Page& page, co
     const int rows = (gh - y < STRIP_ROWS) ? (gh - y) : STRIP_ROWS;
     renderer.beginStripTarget(scratch.get(), y, rows, msbScratch.get());
     renderer.clearScreen(0x00);
-    freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+    freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer,
+                                          params.characterSpacingPx, params.wordSpacingPx);
     renderer.endStripTarget();
     renderer.writeGrayscalePlaneStrip(true, scratch.get(), y, rows);
     renderer.writeGrayscalePlaneStrip(false, msbScratch.get(), y, rows);
@@ -3949,7 +3968,8 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
   // each tone's plane bits in the two private buffers, orientation-aware.
   renderer.beginStripTarget(lsbPlane.get(), 0, gh, msbPlane.get());
   renderer.clearScreen(0x00);
-  freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer);
+  freeink::book::PagePaint::paintPlanes(page, *static_cast<freeink::book::FontChain*>(params.font), renderer,
+                                        params.characterSpacingPx, params.wordSpacingPx);
   renderer.endStripTarget();
 #ifdef BOOK_PROFILE
   const unsigned long tPlanesMs = millis();
@@ -3968,9 +3988,10 @@ void EpubReaderActivity::renderTtfGrayFullFrame(const freeink::book::Page& page,
 #endif
 }
 
-void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font) {
+void EpubReaderActivity::paintTtfPage(const freeink::book::Page& page, void* font, const int16_t characterSpacingPx,
+                                      const int16_t wordSpacingPx) {
   if (!ttf_) return;
-  paintCapturedPage(page, font, renderer, *ttf_);
+  paintCapturedPage(page, font, renderer, *ttf_, characterSpacingPx, wordSpacingPx);
 }
 
 void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer) {
@@ -4995,11 +5016,17 @@ void EpubReaderActivity::openFontPreview() {
       // offset that cannot map until the chapter is fully indexed (which sent
       // the reader back to the chapter start).
       if (previewResult.changed && previewResult.hasPosition) {
-        ttfReflowSeedPage = static_cast<int32_t>(previewResult.pageIndex);
+        // Arming happens inside applyReaderTextSettings() under the render
+        // lock; the rebuild then targets the reader's position and builds
+        // incrementally to it, instead of re-deriving the position from a char
+        // offset that cannot map until the chapter is fully indexed (which
+        // sent the reader back to the chapter start).
+        applyReaderTextSettings(static_cast<int32_t>(previewResult.pageIndex));
+      } else {
+        // The preview persisted the settings; this is the settings-driven
+        // clean reindex a Text-settings font change lands.
+        applyReaderTextSettings();
       }
-      // The preview persisted the settings; this is the settings-driven clean
-      // reindex a Text-settings font change lands.
-      applyReaderTextSettings();
       pagesUntilFullRefresh = 1;
     }
     // Both close branches pop straight back to the book page; the chrome
@@ -5745,7 +5772,7 @@ void EpubReaderActivity::paintOverlayPopup() {
   pushOverlayRefresh();
 }
 
-void EpubReaderActivity::applyReaderTextSettings() {
+void EpubReaderActivity::applyReaderTextSettings(const int32_t seedPage) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     SETTINGS.saveToFile();
@@ -5757,6 +5784,10 @@ void EpubReaderActivity::applyReaderTextSettings() {
     freeink::book::ttfUiFallback.release(renderer);
 #endif
     RenderLock lock;
+    // Armed under the lock: a render pass that slipped in before this one
+    // would otherwise read the seed against the old-generation cache, clear
+    // it, and leave the rebuild with no target.
+    if (seedPage >= 0) ttfReflowSeedPage = seedPage;
     freeink::book::fontLoader.markDirty();
     // Reflow in place: drop the caches; the new generation produces a fresh
     // build and the position restores through the page's char offset.

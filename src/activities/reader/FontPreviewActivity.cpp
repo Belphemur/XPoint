@@ -161,6 +161,7 @@ void FontPreviewActivity::openLineSpacingPicker() {
                 }
                 needsRelayout_ = true;
               });
+  requestUpdate();
 }
 
 void FontPreviewActivity::openWordSpacingSlider() {
@@ -178,7 +179,6 @@ void FontPreviewActivity::openWordSpacingSlider() {
                                        CrossPointSettings::WORD_SPACING_MAX) -
                        CrossPointSettings::WORD_SPACING_MIN) /
                       CrossPointSettings::WORD_SPACING_STEP;
-  const std::vector<StrId> options(std::begin(kWordIds), std::end(kWordIds));
   popup_.show(StrId::STR_WORD_SPACING, kWordIds, static_cast<int>(std::size(kWordIds)), current, [this](const int idx) {
     if (idx < 0 || idx >= static_cast<int>(std::size(kWordIds))) return;
     SETTINGS.wordSpacing =
@@ -188,22 +188,27 @@ void FontPreviewActivity::openWordSpacingSlider() {
     }
     needsRelayout_ = true;
   });
+  requestUpdate();
 }
 
 void FontPreviewActivity::openCharacterSpacingPicker() {
   static constexpr StrId kSpacingIds[] = {StrId::STR_SPACING_MINUS_2, StrId::STR_SPACING_MINUS_1,
                                           StrId::STR_SPACING_ZERO, StrId::STR_SPACING_PLUS_1,
                                           StrId::STR_SPACING_PLUS_2};
+  // characterSpacing is stored as the raw 0..4 picker index; the -2 px offset
+  // lives in getCharacterSpacing(). TextSettingsActivity indexes the picker the
+  // same way, so applying the offset here would shift every label and store
+  // values outside the enum.
   popup_.show(StrId::STR_CHARACTER_SPACING, kSpacingIds, static_cast<int>(std::size(kSpacingIds)),
-              static_cast<int>(SETTINGS.characterSpacing) - CrossPointSettings::CHARACTER_SPACING_OFFSET,
-              [this](const int idx) {
+              static_cast<int>(SETTINGS.characterSpacing), [this](const int idx) {
                 if (idx < 0 || idx >= static_cast<int>(std::size(kSpacingIds))) return;
-                SETTINGS.characterSpacing = static_cast<uint8_t>(idx + CrossPointSettings::CHARACTER_SPACING_OFFSET);
+                SETTINGS.characterSpacing = static_cast<uint8_t>(idx);
                 if (!SETTINGS.saveToFile()) {
                   LOG_ERR("FPR", "font preview: settings save failed");
                 }
                 needsRelayout_ = true;
               });
+  requestUpdate();
 }
 
 void FontPreviewActivity::close() {
@@ -216,7 +221,11 @@ void FontPreviewActivity::close() {
                        SETTINGS.characterSpacing != entryCharacterSpacing_;
   ActivityResult result;
   if (changed) {
-    result = QuickFontPreviewResult{true, resolvedAnchor_, resolvedPage_};
+    // A pending relayout means the captured page still reflects the settings
+    // in force when it was laid out, so its page index does not describe the
+    // layout the reader is about to rebuild. Report no position and let the
+    // reader fall back rather than opening at a page from the old settings.
+    result = QuickFontPreviewResult{true, resolvedAnchor_, !needsRelayout_ && resolvedPage_};
   } else {
     result.isCancelled = true;
   }
@@ -353,8 +362,8 @@ void FontPreviewActivity::render(RenderLock&&) {
                           CrossPointSettings::WORD_SPACING_STEP;
     const std::string wordText =
         I18N.get(kWordIds[wordIndex >= 0 && wordIndex < static_cast<int>(std::size(kWordIds)) ? wordIndex : 2]);
-    const std::string charText =
-        I18N.get(kCharIds[static_cast<int>(SETTINGS.characterSpacing) - CrossPointSettings::CHARACTER_SPACING_OFFSET]);
+    const int charIndex = std::clamp<int>(SETTINGS.characterSpacing, 0, static_cast<int>(std::size(kCharIds)) - 1);
+    const std::string charText = I18N.get(kCharIds[charIndex]);
     model.lineSpacingText = lineText.c_str();
     model.wordSpacingText = wordText.c_str();
     model.characterSpacingText = charText.c_str();

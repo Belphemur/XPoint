@@ -109,7 +109,8 @@ QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRen
 }
 
 void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer& renderer,
-                       freeink::book::TtfBookRuntime& ttf) {
+                       freeink::book::TtfBookRuntime& ttf, const int16_t characterSpacingPx,
+                       const int16_t wordSpacingPx) {
   // §11 Q7 construction (a): with text AA engaged the paint goes via PagePaint
   // (the tone-1 boundary of the shared uniform quantizer) and a dual plane
   // walk supplies the two gray tones through the panel's AA waveform — the
@@ -124,10 +125,10 @@ void paintCapturedPage(const freeink::book::Page& page, void* font, GfxRenderer&
   const bool grayParity = smoothText && !pageHasImages && renderer.grayscaleCapabilities().supported();
   auto* chain = static_cast<freeink::book::FontChain*>(font);
   if (grayParity) {
-    freeink::book::PagePaint::paintText(page, *chain, renderer);
+    freeink::book::PagePaint::paintText(page, *chain, renderer, characterSpacingPx, wordSpacingPx);
   } else {
     const freeink::book::FrameTarget frameTarget = makeFrameTarget(renderer);
-    freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr);
+    freeink::book::PageRenderer::renderText(page, *chain, frameTarget, nullptr, characterSpacingPx, wordSpacingPx);
     // Ruby annotations are engine records — the same pass the engine's own
     // render() runs; no CrossPoint layout involvement.
     if (page.rubyCount > 0) {
