@@ -1886,7 +1886,10 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     // Geometry change -> new generation -> new caches; the position rides the
-    // chapter char offset (design section 3.5).
+    // chapter char offset (design section 3.5). A font-preview seed is scoped to
+    // the settings generation it was resolved for, so it must not carry into
+    // this unrelated reflow.
+    ttfReflowSeedPage = -1;
     ttfInvalidateCaches();
   }
 #endif
@@ -1913,6 +1916,7 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_ && automaticPageTurnActive != wasActive) {
     RenderLock lock;
+    ttfReflowSeedPage = -1;
     ttfInvalidateCaches();
   }
 #endif
@@ -2829,19 +2833,25 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     return false;
   }
 
+  // The font preview resolved this page under the settings being committed
+  // (same engine, same LayoutParams), so it IS the rebuild's target — take it
+  // and let the pass build incrementally to it. The char-offset path below
+  // would instead demand a complete index before it can map, which is what
+  // sent the reader to the chapter start.
+  //
+  // Checked ahead of the reflow gate because a seed is set even when
+  // ttfCurrentCharStart is 0 (reader on the chapter's first page), where
+  // ttfReflowJumpPending never latches. Reading it inside that branch would
+  // leave the seed set with no pass able to consume it.
+  if (ttfReflowSeedPage >= 0) {
+    const int seed = ttfReflowSeedPage;
+    ttfReflowSeedPage = -1;
+    ttfReflowJumpPending = false;
+    targetOut = seed;
+    return true;
+  }
+
   if (ttfReflowJumpPending) {
-    // The font preview resolved this page under the settings being committed
-    // (same engine, same LayoutParams), so it IS the rebuild's target — take it
-    // and let the pass build incrementally to it. The char-offset path below
-    // would instead demand a complete index before it can map, which is what
-    // sent the reader to the chapter start.
-    if (ttfReflowSeedPage >= 0) {
-      const int seed = ttfReflowSeedPage;
-      ttfReflowSeedPage = -1;
-      ttfReflowJumpPending = false;
-      targetOut = seed;
-      return true;
-    }
     // Settings/orientation reflow: restore the position through the character
     // offset of the page that was shown before the caches were dropped. The
     // offset only maps once the chapter's page index is COMPLETE — a partial
