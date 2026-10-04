@@ -50,6 +50,8 @@ jobs:
             device: papermono
           - pio_env: x4c-gh_release
             device: x4c
+          - pio_env: metalio_eink4-gh_release
+            device: metalio_eink4
     steps:
       - uses: actions/checkout@v7
         with:
@@ -173,6 +175,7 @@ jobs:
               "x4pro": "x4pro",
               "papermono": "papermono",
               "x4c": "x4c",
+              "metalio_eink4": "metalio_eink4",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
           # Sign both asset families. Crosspoint entries MUST come first:

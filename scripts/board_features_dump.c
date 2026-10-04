@@ -41,7 +41,7 @@ struct BoardEntry {
   const BoardConfig::BoardProfile* profileRef;
 };
 
-// Board → device mapping. The SDK's Board enum has 16 values but 15 device
+// Board → device mapping. The SDK's Board enum has 17 values but 16 device
 // flags: XteinkX3 and XteinkX3Uc8279 are two profiles of the FREEINK_DEVICE_X3
 // binary (mirroring BoardConfig.h's selectDevice(), which selects both under
 // FREEINK_DEVICE_X3). Device flags for a shared key are OR'd.
@@ -62,6 +62,7 @@ constexpr BoardEntry ENTRIES[] = {
     {BoardConfig::Board::M5PaperS3, "PAPERS3", "M5PAPER_S3", &BoardConfig::M5PAPER_S3},
     {BoardConfig::Board::EegoA4, "EEGO_A4", "EEGO_A4", &BoardConfig::EEGO_A4},
     {BoardConfig::Board::OnePage, "ONEPAGE", "ONEPAGE", &BoardConfig::ONEPAGE},
+    {BoardConfig::Board::MetalioEInk4, "METALIO_EINK4", "METALIO_EINK4", &BoardConfig::METALIO_EINK4},
 };
 
 struct DeviceFlags {
@@ -71,7 +72,7 @@ struct DeviceFlags {
 };
 
 constexpr size_t ENTRY_COUNT = sizeof(ENTRIES) / sizeof(ENTRIES[0]);
-constexpr size_t DEVICE_COUNT = 15;  // 16 boards, X3's two profiles share a device key
+constexpr size_t DEVICE_COUNT = 16;  // 17 boards, X3's two profiles share a device key
 
 bool menuButton(const BoardConfig::BoardProfile& profile) {
   return profile.input.confirm != BoardConfig::PIN_UNASSIGNED || profile.touch.synthesizeConfirm;

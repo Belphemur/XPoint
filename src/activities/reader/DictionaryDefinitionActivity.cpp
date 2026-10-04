@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "HapticFeedback.h"
 #include "ReaderUtils.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -297,11 +298,13 @@ void DictionaryDefinitionActivity::loop() {
   const ReaderUtils::TouchPageTurn turn = ReaderUtils::detectTouchPageTurn(renderer, mappedInput);
   if (turn.prev) {
     if (currentPage > 0) {
+      haptic_feedback::touchAction();
       currentPage--;
       requestUpdate();
     }
   } else if (turn.next) {
     if (currentPage + 1 < totalPages) {
+      haptic_feedback::touchAction();
       currentPage++;
       requestUpdate();
     }

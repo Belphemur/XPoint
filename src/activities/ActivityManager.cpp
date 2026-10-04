@@ -14,6 +14,7 @@
 #include <ctime>
 
 #include "CrossPointSettings.h"
+#include "HapticFeedback.h"
 #include "MemSentinel.h"
 #include "OpdsServerStore.h"
 #ifdef READING_STATS_ENABLED
@@ -112,6 +113,7 @@ void ActivityManager::loop() {
       statusBarTap = mappedInput.wasScreenTapped(tx, ty) && ty < 44 && !HeaderBackTapTarget::contains(tx, ty);
     }
     if (currentActivity->name != "FrontlightPanel" && (statusBarTap || mappedInput.wasLightPanelGesture())) {
+      haptic_feedback::touchAction();
       pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
       return;
     }
