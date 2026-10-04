@@ -4011,7 +4011,7 @@ void EpubReaderActivity::renderTtfSelectorPage(void* ctx, GfxRenderer& renderer)
   freeink::book::LayoutParams params;
   self->ttf_->makeLayoutParams(renderer, params, false);
   if (params.font != nullptr) {
-    self->paintTtfPage(page, params.font);
+    self->paintTtfPage(page, params.font, params.characterSpacingPx, params.wordSpacingPx);
   }
   self->ttf_->scratch().release(scratchMark);
 }
@@ -4375,6 +4375,12 @@ bool EpubReaderActivity::applyDeferredReposition() {
 void EpubReaderActivity::clearDeferredReposition() {
   cachedChapterTotalPageCount = 0;
   cachedVisibleTextOffset.reset();
+  // A preview seed describes a page in the chapter it was resolved in. Every
+  // spine transition and deferred reposition lands here, so dropping it here
+  // keeps it from outliving that chapter — a stale seed would both re-target
+  // the next chapter and hold ttfCurrentCharStart at the previous chapter's
+  // offset, which is the position loss issue #195 describes.
+  ttfReflowSeedPage = -1;
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {
@@ -5789,8 +5795,11 @@ void EpubReaderActivity::applyReaderTextSettings(const int32_t seedPage) {
     RenderLock lock;
     // Armed under the lock: a render pass that slipped in before this one
     // would otherwise read the seed against the old-generation cache, clear
-    // it, and leave the rebuild with no target.
-    if (seedPage >= 0) ttfReflowSeedPage = seedPage;
+    // it, and leave the rebuild with no target. The default -1 clears any seed
+    // a previous apply left behind — ttfInvalidateCaches() below then latches
+    // ttfReflowJumpPending, so the position restores through the char offset
+    // instead of a page index from an older settings generation.
+    ttfReflowSeedPage = seedPage;
     freeink::book::fontLoader.markDirty();
     // Reflow in place: drop the caches; the new generation produces a fresh
     // build and the position restores through the page's char offset.
