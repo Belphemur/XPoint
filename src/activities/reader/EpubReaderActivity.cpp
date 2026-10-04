@@ -4387,15 +4387,18 @@ void EpubReaderActivity::clearDeferredReposition() {
   cachedVisibleTextOffset.reset();
 #if defined(CROSSPOINT_TTF_READER)
   // Every spine transition and deferred reposition lands here, so this is where
-  // the chapter-scoped restore state dies. The seed names a page in the chapter
-  // it was resolved in, and ttfCurrentCharStart is a chapter-relative offset —
-  // neither may outlive that chapter. renderBookTtf retains the offset while
-  // ttfReflowJumpPending is set (:3114), and ttfResolveTargetPage would then map
-  // it against the new spine. Carrying either over is the position loss #195
+  // the chapter-scoped restore state dies. All four values describe the chapter
+  // being left: the seed names a page in it, ttfCurrentCharStart is a
+  // chapter-relative offset that renderBookTtf retains while
+  // ttfReflowJumpPending is set (:3114), and ttfRestoreLastPage sends the
+  // reader to the previous chapter's end, which is only meaningful when
+  // stepping back into that chapter. Carrying any of them into a different
+  // spine resolves against the wrong chapter — the position loss #195
   // describes.
   ttfReflowSeedPage = -1;
   ttfReflowJumpPending = false;
   ttfCurrentCharStart = 0;
+  ttfRestoreLastPage = false;
 #endif
 }
 
