@@ -3057,9 +3057,18 @@ void EpubReaderActivity::renderBookTtf() {
   // block and its notifyChapterProgress guard skipped the stale spine — and an
   // idle reader produces no further renders, so without this the entry trigger
   // for a short chapter would never fire at all.
-  if (ttfSpine == currentSpineIndex && fibpWorker_ != nullptr) {
+  // fibpBegun_ mirrors updateFibpWorker's guard: a worker whose begin() failed
+  // is non-null but unarmed (runtime_ null), and spawning its task would fault.
+  if (ttfSpine == currentSpineIndex && fibpWorker_ != nullptr && fibpBegun_) {
+    // Same settled-length test updateFibpWorker uses: while a session or a
+    // partial cache owns the chapter the count is a watermark, and reporting it
+    // as final would fire the short-chapter branch on a long chapter's first
+    // cold-start pass. A committed complete cache IS the settled length, which
+    // is the case this entry report exists to catch.
+    const bool lengthFinal =
+        !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && !(ttf_->cacheReady() && ttf_->cachePartial());
     fibpWorker_->notifyChapterProgress(static_cast<uint16_t>(currentSpineIndex), 0, static_cast<uint16_t>(ttfPageCount),
-                                       /*lengthFinal=*/false);
+                                       lengthFinal);
   }
 
   // 2b) Soak addendum: a PARTIAL current chapter whose target page is already
@@ -3137,7 +3146,11 @@ void EpubReaderActivity::renderBookTtf() {
     // inline build below: while the worker holds this spine, ensureChapterSession
     // would put a second writer on the same FIBP file. Serve only what is
     // already committed and keep waiting for the target otherwise.
-    if (shouldClearBuildPopup(static_cast<int>(ttfPageCount))) {
+    // Re-check ownership here: the takeover above may have just stopped the
+    // worker, and a stale true would suppress the inline build the reader now
+    // owns, pinning it to the last committed page.
+    if (shouldClearBuildPopup(static_cast<int>(ttfPageCount)) && fibpWorker_ != nullptr && fibpWorker_->active() &&
+        fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex)) {
       workerOwnsSpine = true;
     } else {
       return;
