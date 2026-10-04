@@ -359,6 +359,16 @@ class EpubReaderActivity final : public ReaderActivity {
   static constexpr int BUILD_POPUP_PAGE_THRESHOLD = 20;
   static constexpr size_t BUILD_POPUP_BYTE_THRESHOLD = 96 * 1024;
   static constexpr unsigned long BUILD_POPUP_DEADLINE_MS = 1000;
+  // Once the Inline build (TTF cache-miss path) has laid out this many pages,
+  // the Indexing popup must clear so the reader can start reading while the
+  // rest of the chapter drains in the background (font-change open, and the
+  // short-chapter next-chapter case). Distinct from BUILD_POPUP_PAGE_THRESHOLD
+  // (which decides whether to SHOW the popup at all) and from the refresh
+  // cadence that drives pagesUntilFullRefresh. (2026-10-04.)
+  static constexpr int MIN_PAGES_TO_CLEAR_POPUP = 5;
+  static constexpr bool shouldClearBuildPopup(const int pagesBuilt) {
+    return pagesBuilt >= MIN_PAGES_TO_CLEAR_POPUP;
+  }
   bool buildPopupPending = false;
   void showBuildPopup(GfxRenderer& renderer, int& pagesUntilFullRefresh);
   bool applyDeferredReposition();

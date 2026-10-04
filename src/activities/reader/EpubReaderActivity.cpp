@@ -2366,6 +2366,17 @@ void EpubReaderActivity::renderBook() {
               showBuildError();
               return;
             }
+            // Enough pages are built to read: dismiss the Indexing popup so the
+            // reader can turn while the rest drains in the background (font-change
+            // open, and the short-chapter next-chapter case). The popup is
+            // stateless paint, so clearing buildPopupPending stops the redraw and
+            // handing pagesUntilFullRefresh back to the refresh cadence keeps the
+            // e-ink cycle sane. (2026-10-04.)
+            if (buildPopupPending && shouldClearBuildPopup(static_cast<int>(section->pageCount))) {
+              LOG_DBG("ERS", "Indexing popup cleared after %d pages built", section->pageCount);
+              buildPopupPending = false;
+              pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+            }
           }
           buildPopupPending = false;
         }
