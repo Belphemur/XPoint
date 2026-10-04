@@ -4303,6 +4303,9 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       currentSpineIndex++;
       ttfPage = 0;
       ttfRestoreLastPage = false;
+      // Drops any pending font-preview seed: it names a page in the chapter
+      // just left, and would otherwise re-target the new one.
+      clearDeferredReposition();
       lastPageTurnTime = millis();
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
@@ -4318,6 +4321,8 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       currentSpineIndex--;
       ttfPage = 0;
       ttfRestoreLastPage = true;
+      // Same for the backward turn across a chapter boundary.
+      clearDeferredReposition();
       lastPageTurnTime = millis();
     } else {
       return false;
@@ -4380,7 +4385,9 @@ void EpubReaderActivity::clearDeferredReposition() {
   // keeps it from outliving that chapter — a stale seed would both re-target
   // the next chapter and hold ttfCurrentCharStart at the previous chapter's
   // offset, which is the position loss issue #195 describes.
+#if defined(CROSSPOINT_TTF_READER)
   ttfReflowSeedPage = -1;
+#endif
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {
