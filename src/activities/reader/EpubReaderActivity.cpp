@@ -4261,6 +4261,14 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // Validation is spine+page exact PLUS the full validity axes (generation,
   // orientation, raster mode); anything else falls to the slow path, with
   // the miss reason logged once per distinct reason for soak triage.
+  // A forward turn abandons any pending back-step: ttfResolveTargetPage()
+  // consumes ttfRestoreLastPage ahead of every other target and can return
+  // without clearing it when needFullBuild is set, so a flag left by an
+  // earlier back-turn would silently redirect this forward turn to the
+  // previous chapter's last page. Cleared here so it covers the prerender
+  // fast path and the slow branch alike.
+  if (isForwardTurn) ttfRestoreLastPage = false;
+
   if (isForwardTurn && ttfPreRendered.ready && ttfPage + 1 < static_cast<int>(ttfPageCount)) {
     if (ttfPreRendered.spineIndex != currentSpineIndex) {
       ttfLogPrerenderMiss("spine changed");
