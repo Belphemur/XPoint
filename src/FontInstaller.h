@@ -28,8 +28,13 @@ class FontInstaller {
   /// "evil/foo.cpfont".
   static bool isValidCpfontFilename(const char* name);
 
-  /// Validate a raw font filename (.ttf/.otf/.ttc): same traversal rules as
-  /// isValidCpfontFilename, only the extension differs.
+  /// Validate a vector font filename (.ttf/.otf, case-insensitive extension)
+  /// with the same path-traversal and basename rules as isValidCpfontFilename.
+  static bool isValidVectorFontFilename(const char* name);
+
+  /// Validate a raw font filename (.ttf/.otf/.ttc, case-insensitive extension):
+  /// same traversal rules as isValidCpfontFilename, only the extension set is
+  /// wider (.ttc collections allowed for catalog downloads).
   static bool isValidTtfFilename(const char* name);
 
   /// Validate a catalog family name. Identical to isValidFamilyName except
