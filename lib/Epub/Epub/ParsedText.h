@@ -80,6 +80,7 @@ class ParsedText {
   // allocate. The section build must fail instead of committing a cache with
   // holes in the text.
   bool droppedWords = false;
+  bool firstLineConsumed = false;
   std::vector<std::string> reorderedWordsScratch;
   std::vector<EpdFontFamily::Style> reorderedStylesScratch;
   std::vector<uint16_t> reorderedWidthsScratch;

@@ -72,7 +72,9 @@ namespace {
 // v50: Paragraph indentation width in the header for cache validation (upstream #3727).
 //      Both parents' v49 caches are invalidated (upstream's own v49 was a pre-release
 //      header layout and is skipped).
-constexpr uint8_t SECTION_FILE_VERSION = 50;
+// v51: Preserve paragraph continuity and top spacing across soft flushes (upstream
+//      #3875); invalidates both parents' v50 caches.
+constexpr uint8_t SECTION_FILE_VERSION = 51;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
