@@ -81,6 +81,10 @@ class HalDisplay {
 
   // Power management
   void deepSleep();
+  // Idle-hold POF: shuts the EPD booster down between refreshes while the
+  // panel retains its image. Drains any in-flight async refresh first.
+  // Returns true when a POF was actually issued (panel was on).
+  bool powerOffScreen();
 
   // Access to frame buffer
   uint8_t* getFrameBuffer() const;
