@@ -1196,20 +1196,12 @@ void loop() {
   // Consumed here, one iteration later, so the wake can never block ahead of
   // the update() that samples the button edge.
   static bool sliceSawContact = false;
-  // One-shot latch for the idle POF (EPD_IDLE_POF_MS): stops repeat POF
-  // calls once the panel is off (the driver no-ops, but the INFO log must
-  // stay one per idle window). Re-armed by user activity below AND by any
-  // observed paint in the trunk, so a self-initiated repaint (e.g. the
-  // 60 s header-clock tick — it does NOT reset lastActivityTime, Activity-
-  // Manager.cpp:136-146) re-powers the panel and POFs again after it.
-  static bool epdIdlePofDone = false;
   // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
   // consumed by the manager's snapshot — after update() that's always
   // nothing, and the inactivity timer would never reset on buttons.
   const bool anyMappedEdge = mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased();
   if (anyMappedEdge || gpio.wasTouchActivity() || halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
-    epdIdlePofDone = false;              // Re-arm the idle POF window
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
     // GT911 idle sleep (design 2026-09-24-gt911-idle-sleep.md §3 Tier B): the
     // controller is parked after GT911_IDLE_SLEEP_MS of silence; any activity
@@ -1427,15 +1419,21 @@ void loop() {
       // every paint anyway, so no user-visible latency is added; the next
       // refresh's powerOnIfNeeded re-powers on both the sync and async
       // paths (single _isScreenOn guard, Uc8279X4Driver.cpp:400).
-      // refreshBusy() first: never POF mid-refresh; between the check and
-      // the call no refresh can start — every paint runs on this loop task
-      // (the FIBP worker builds layouts, it never paints). Not USB-gated:
-      // USB power is the owner's bench condition (see the park's
+      // No latch: while the panel is off, powerOffScreen() is a cheap no-op
+      // (the _isScreenOn guard short-circuits before any bus traffic), so
+      // repeating it per idle iteration is harmless AND self-healing — any
+      // paint (sync or async) re-powers the panel, and the next iteration
+      // POFs again (kody: a refreshBusy()-observed re-arm misses sync
+      // paints, which FreeInkDisplay::refreshBusy() never reports).
+      // INFO 'power off (POF, idle hold)' logs only on an actual POF, so
+      // the transition stays one line per idle window. refreshBusy()
+      // first: never POF mid-refresh; between the check and the call no
+      // refresh can start — every paint runs on this loop task (the FIBP
+      // worker builds layouts, it never paints). Not USB-gated: USB power
+      // is the owner's bench condition (see the park's
       // XPOINT_BENCH_TOUCH_PARK escape for the GT911 equivalent).
-      if (display.refreshBusy()) {
-        epdIdlePofDone = false;  // paint in flight: re-arm for the post-paint POF
-      } else if (!epdIdlePofDone && millis() - lastActivityTime >= HalPowerManager::EPD_IDLE_POF_MS) {
-        epdIdlePofDone = display.powerOffScreen();
+      if (!display.refreshBusy() && millis() - lastActivityTime >= HalPowerManager::EPD_IDLE_POF_MS) {
+        display.powerOffScreen();
       }
       // GT911 idle sleep rides this same idle trunk (DRY: one idle clock, no
       // third timer). Design §3 Tier B entry window ≈3–5 min; skip while USB
