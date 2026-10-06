@@ -69,7 +69,7 @@ class HalPowerManager {
   // non-zero an RTC timer is armed so the device wakes after that many
   // microseconds of dwell (auto power off).
   // Should be called inside main loop() to handle the currentLockMode
-  void startDeepSleep(HalGPIO& gpio, uint64_t autoPowerOffTimerUs = 0);
+  void startDeepSleep(HalGPIO& gpio, uint64_t autoPowerOffTimerUs = 0) const;
 
   // Final software power-off for auto power off: drives the master rail
   // latches LOW (held through sleep), disarms any RTC timer and re-enters

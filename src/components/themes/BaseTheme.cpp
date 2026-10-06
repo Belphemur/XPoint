@@ -405,7 +405,13 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   // subtitles.
   ui.target.setFont(fui::GfxRendererTarget::FONT_SMALL, SMALL_FONT_ID);
   ui.target.setFont(fui::GfxRendererTarget::FONT_LABEL, SMALL_FONT_ID);
-  const fui::Rect band{static_cast<int16_t>(rect.x), static_cast<int16_t>(rect.y), static_cast<int16_t>(rect.width),
+  // Callers pass a full-width header rect, so the battery/title would sit at the
+  // true screen edges — clipped on rounded-corner panels (EEGO A4). Inset the band
+  // horizontally by the board's viewable insets so header chrome clears the bezel.
+  int hMarginTop, hMarginRight, hMarginBottom, hMarginLeft;
+  renderer.getOrientedViewableTRBL(&hMarginTop, &hMarginRight, &hMarginBottom, &hMarginLeft);
+  const fui::Rect band{static_cast<int16_t>(rect.x + hMarginLeft), static_cast<int16_t>(rect.y),
+                       static_cast<int16_t>(rect.width - hMarginLeft - hMarginRight),
                        static_cast<int16_t>(rect.height)};
 
   fui::HeaderProps props;
