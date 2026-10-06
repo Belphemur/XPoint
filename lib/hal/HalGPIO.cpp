@@ -157,7 +157,18 @@ bool HalGPIO::rawInputActive() {
   inputMgr.readButtonAdc(g1, g2);
   // The Xteink ladder idles at the ADC full-scale rail (~4095); every button band sits below 3900.
   constexpr int kIdleRailMin = 4000;
-  return (g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin);
+  if ((g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin)) return true;
+  // OnePageAdcLadder: the 4 front keys ride the GPIO4 ladder, but readButtonAdc()
+  // is Xteink-only (InputManager.cpp early-return), so sample it here or front-key
+  // taps stay invisible to the idle slice (kody PR #171). getState() bands top out
+  // at 2800 mV; the unpressed rail sits at full scale.
+  if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::OnePageAdcLadder &&
+      BoardConfig::ACTIVE.input.adcLadderPin >= 0) {
+    const int mv = analogReadMilliVolts(BoardConfig::ACTIVE.input.adcLadderPin);
+    constexpr int kOnePageIdleMinMv = 2900;
+    if (mv >= 0 && mv < kOnePageIdleMinMv) return true;
+  }
+  return false;
 }
 
 bool HalGPIO::anyPhysicalButtonHeld() {
