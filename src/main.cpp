@@ -1062,6 +1062,22 @@ void setup() {
   allowSleepAt = millis() + 2000;
 }
 
+// True when the board can wake the parked GT911 through something other than
+// the touch panel itself: any configured physical button GPIO or ADC ladder
+// (edges + held-contact paths stay live while the controller sleeps), or an
+// IMU tilt source (polled independently of the GT911, resets the same
+// inactivity timer via hadActivity). Boards with neither — touch-only
+// profiles like M5PaperS3 — must never park or their only input dies until
+// a power cycle (kody/coderabbit PR #171).
+static bool hasTouchIndependentWakeSource() {
+  const BoardConfig::InputPins& in = BoardConfig::ACTIVE.input;
+  if (in.up >= 0 || in.down >= 0 || in.power >= 0 || in.back >= 0 || in.confirm >= 0 || in.left >= 0 || in.right >= 0 ||
+      in.adcLadderPin >= 0) {
+    return true;
+  }
+  return halTiltSensor.isAvailable() && SETTINGS.tiltPageTurn != CrossPointTiltPageTurn::TILT_OFF;
+}
+
 void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
@@ -1398,13 +1414,15 @@ void loop() {
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
       // GT911 idle sleep rides this same idle trunk (DRY: one idle clock, no
       // third timer). Design §3 Tier B entry window ≈3–5 min; skip while USB
-      // is attached (serial-monitor sessions must not fight sleep in the log)
-      // and when the user disabled the feature (SETTINGS.touchIdleSleep).
+      // is attached (serial-monitor sessions must not fight sleep in the log),
+      // when the user disabled the feature (SETTINGS.touchIdleSleep), and on
+      // boards with no touch-independent wake source — parking those would
+      // leave their only input unreachable until a power cycle.
       // Parked state comes straight from the SDK (isTouchAsleep), so a failed
       // entry is retried after the backoff window instead of latched awake
       // until the next activity edge.
       static unsigned long lastParkAttempt = 0;
-      if (SETTINGS.touchIdleSleep && !gpio.isTouchAsleep() &&
+      if (SETTINGS.touchIdleSleep && hasTouchIndependentWakeSource() && !gpio.isTouchAsleep() &&
           millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && !gpio.isUsbConnected() &&
           // Never park under a live contact: the held-contact wake above does
           // not reset the inactivity timer, so a parked controller would be
