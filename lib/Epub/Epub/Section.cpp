@@ -74,7 +74,9 @@ namespace {
 //      header layout and is skipped).
 // v51: Preserve paragraph continuity and top spacing across soft flushes (upstream
 //      #3875); invalidates both parents' v50 caches.
-constexpr uint8_t SECTION_FILE_VERSION = 51;
+// v52: Missing full-block and black-square symbols now have visible widths (upstream
+//      #3882); invalidates both parents' v51 caches.
+constexpr uint8_t SECTION_FILE_VERSION = 52;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
