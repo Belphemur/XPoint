@@ -129,6 +129,16 @@ void HalDisplay::deepSleep() {
   einkDisplay.deepSleep();
 }
 
+bool HalDisplay::powerOffScreen() {
+  // UC8279 POF (cmd 0x02): the panel keeps the last frame at zero power; the
+  // next refresh re-powers via powerOnIfNeeded's PON (~40 ms), which precedes
+  // every paint anyway — no wake latency is added. The facade drains any
+  // in-flight async refresh first, so this can never POF mid-refresh.
+  if (!einkDisplay.powerOffScreen()) return false;
+  LOG_INF("EPD", "power off (POF, idle hold)");
+  return true;
+}
+
 uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(); }
 
 uint8_t* HalDisplay::lendFrameBufferStorage(uint32_t* sizeOut) { return einkDisplay.lendBuildStorage(sizeOut); }
