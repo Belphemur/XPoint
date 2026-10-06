@@ -86,6 +86,9 @@ void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
   }
 
   einkDisplay.displayBufferAsyncNoShadow(convertRefreshMode(mode));
+  // Async refreshes never power off the panel (no turnOff parameter), so only
+  // the PON half of the booster cycle happens here.
+  LOG_DBG("EPD", "async refresh mode=%d (booster PON for paint)", static_cast<int>(mode));
 }
 
 void HalDisplay::waitRefreshComplete() { einkDisplay.waitRefreshComplete(); }
