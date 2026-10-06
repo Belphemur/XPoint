@@ -1,5 +1,7 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <Logging.h>
+#include <esp_system.h>  // esp_reset_reason: distinguishes a deep-sleep wake reset from a cold boot
 
 // Global HalDisplay instance
 HalDisplay display;
@@ -13,6 +15,13 @@ HalDisplay::~HalDisplay() {}
 HalDisplay::Controller HalDisplay::getController() const { return BoardConfig::ACTIVE.displayController; }
 
 void HalDisplay::begin(bool seamless) {
+  // ESP_RST_DEEPSLEEP means the chip just left deep sleep, so the panel spent
+  // the sleep window in DSLP; einkDisplay.begin()'s controller reset is what
+  // releases it (DSLP ignores bus commands).
+  if (esp_reset_reason() == ESP_RST_DEEPSLEEP) {
+    LOG_INF("EPD", "wake from deep sleep (DSLP released by controller reset)");
+  }
+
   // Set X3-specific panel mode before initializing.
   if (gpio.deviceIsX3()) {
     einkDisplay.setDisplayX3();
@@ -65,6 +74,10 @@ void HalDisplay::displayBuffer(HalDisplay::RefreshMode mode, bool turnOffScreen)
   }
 
   einkDisplay.displayBuffer(convertRefreshMode(mode), turnOffScreen);
+  // Per-refresh booster cycle: PON before paint, POF (zero-power image hold)
+  // after when turnOff — DEBUG so page-turn cadence does not drown the INFO lines.
+  LOG_DBG("EPD", "refresh mode=%d turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)",
+          static_cast<int>(mode), turnOffScreen);
 }
 
 void HalDisplay::displayBufferAsync(HalDisplay::RefreshMode mode) {
@@ -95,6 +108,8 @@ void HalDisplay::refreshDisplay(HalDisplay::RefreshMode mode, bool turnOffScreen
   }
 
   einkDisplay.refreshDisplay(convertRefreshMode(mode), turnOffScreen);
+  LOG_DBG("EPD", "refresh mode=%d turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)",
+          static_cast<int>(mode), turnOffScreen);
 }
 
 void HalDisplay::setInverted(bool inverted) { einkDisplay.setInverted(inverted); }
@@ -103,7 +118,13 @@ bool HalDisplay::toggleInverted() { return einkDisplay.toggleInverted(); }
 
 bool HalDisplay::isInverted() const { return einkDisplay.isInverted(); }
 
-void HalDisplay::deepSleep() { einkDisplay.deepSleep(); }
+void HalDisplay::deepSleep() {
+  // UC8279 DSLP (cmd 0x07 + 0xA5 check code): the panel keeps the last frame
+  // at zero power until the next controller reset. Covers deep sleep AND the
+  // power-off teardown (both paths funnel here).
+  LOG_INF("EPD", "deep sleep entered (DSLP, image retained)");
+  einkDisplay.deepSleep();
+}
 
 uint8_t* HalDisplay::getFrameBuffer() const { return einkDisplay.getFrameBuffer(); }
 
@@ -113,7 +134,11 @@ void HalDisplay::returnFrameBufferStorage() { einkDisplay.returnBuildStorage(); 
 
 bool HalDisplay::displayGrayscaleBase(GrayscaleMode mode, RefreshMode fallback, bool turnOffScreen) {
   if (gpio.deviceIsX3() && fallback == HALF_REFRESH) einkDisplay.requestResync();
-  return einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
+  const bool ok =
+      einkDisplay.displayGrayscaleBase(mode, static_cast<EInkDisplay::RefreshMode>(fallback), turnOffScreen);
+  LOG_DBG("EPD", "gray refresh mode=%d turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)",
+          static_cast<int>(fallback), turnOffScreen);
+  return ok;
 }
 
 void HalDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
@@ -133,6 +158,8 @@ void HalDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScreen) 
   }
 
   einkDisplay.displayGrayscaleBase(convertRefreshMode(fallback), turnOffScreen);
+  LOG_DBG("EPD", "gray refresh mode=%d turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)",
+          static_cast<int>(fallback), turnOffScreen);
 }
 
 void HalDisplay::preconditionGrayscale() { einkDisplay.preconditionGrayscale(); }
@@ -147,7 +174,10 @@ void HalDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) { einkDisplay
 
 void HalDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) { einkDisplay.cleanupGrayscaleBuffers(bwBuffer); }
 
-void HalDisplay::displayGrayBuffer(bool turnOffScreen) { einkDisplay.displayGrayBuffer(turnOffScreen); }
+void HalDisplay::displayGrayBuffer(bool turnOffScreen) {
+  einkDisplay.displayGrayBuffer(turnOffScreen);
+  LOG_DBG("EPD", "gray refresh turnOff=%d (booster PON for paint; POF idle-hold after when turnOff=1)", turnOffScreen);
+}
 
 void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, uint16_t yStart, uint16_t numRows) {
   einkDisplay.writeGrayscalePlaneStrip(lsbPlane ? EInkDisplay::GRAY_PLANE_LSB : EInkDisplay::GRAY_PLANE_MSB, rows,
