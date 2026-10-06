@@ -1064,18 +1064,16 @@ void setup() {
 
 // True when the board can wake the parked GT911 through something other than
 // the touch panel itself: any configured physical button GPIO or ADC ladder
-// (edges + held-contact paths stay live while the controller sleeps), or an
-// IMU tilt source (polled independently of the GT911, resets the same
-// inactivity timer via hadActivity). Boards with neither — touch-only
-// profiles like M5PaperS3 — must never park or their only input dies until
-// a power cycle (kody/coderabbit PR #171).
+// (edges + held-contact paths stay live while the controller sleeps). The
+// IMU does NOT qualify: HalTiltSensor::update() early-returns outside the
+// reader, so tilt activity cannot reset the idle timer (let alone wake)
+// while the device idles on Home. Boards with no button/ladder pins —
+// touch-only profiles like M5PaperS3 — must never park or their only input
+// dies until a power cycle (kody/coderabbit PR #171).
 static bool hasTouchIndependentWakeSource() {
   const BoardConfig::InputPins& in = BoardConfig::ACTIVE.input;
-  if (in.up >= 0 || in.down >= 0 || in.power >= 0 || in.back >= 0 || in.confirm >= 0 || in.left >= 0 || in.right >= 0 ||
-      in.adcLadderPin >= 0) {
-    return true;
-  }
-  return halTiltSensor.isAvailable() && SETTINGS.tiltPageTurn != CrossPointTiltPageTurn::TILT_OFF;
+  return in.up >= 0 || in.down >= 0 || in.power >= 0 || in.back >= 0 || in.confirm >= 0 || in.left >= 0 ||
+         in.right >= 0 || in.adcLadderPin >= 0;
 }
 
 void loop() {
@@ -1198,12 +1196,20 @@ void loop() {
   // Consumed here, one iteration later, so the wake can never block ahead of
   // the update() that samples the button edge.
   static bool sliceSawContact = false;
+  // One-shot latch for the idle POF (EPD_IDLE_POF_MS): stops repeat POF
+  // calls once the panel is off (the driver no-ops, but the INFO log must
+  // stay one per idle window). Re-armed by user activity below AND by any
+  // observed paint in the trunk, so a self-initiated repaint (e.g. the
+  // 60 s header-clock tick — it does NOT reset lastActivityTime, Activity-
+  // Manager.cpp:136-146) re-powers the panel and POFs again after it.
+  static bool epdIdlePofDone = false;
   // Snapshot masks (soak-fix7): gpio.wasAny* reports only edges NOT yet
   // consumed by the manager's snapshot — after update() that's always
   // nothing, and the inactivity timer would never reset on buttons.
   const bool anyMappedEdge = mappedInputManager.wasAnyPressed() || mappedInputManager.wasAnyReleased();
   if (anyMappedEdge || gpio.wasTouchActivity() || halTiltSensor.hadActivity() || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
+    epdIdlePofDone = false;              // Re-arm the idle POF window
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
     // GT911 idle sleep (design 2026-09-24-gt911-idle-sleep.md §3 Tier B): the
     // controller is parked after GT911_IDLE_SLEEP_MS of silence; any activity
@@ -1412,18 +1418,48 @@ void loop() {
     if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS) {
       // If we've been inactive for a while, increase the delay to save power
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
+      // Idle POF (EPD_IDLE_POF_MS, same lastActivityTime clock as the rest
+      // of the trunk): after 30 s without input the EPD booster is powered
+      // off while the panel retains its image (e-ink is bistable at zero
+      // power) — nothing ever passes turnOffScreen=true today, so the
+      // booster otherwise idles on through every pause. Waking costs only
+      // the PON (~40 ms, owner trace "8279x4_PON (40 ms)") that precedes
+      // every paint anyway, so no user-visible latency is added; the next
+      // refresh's powerOnIfNeeded re-powers on both the sync and async
+      // paths (single _isScreenOn guard, Uc8279X4Driver.cpp:400).
+      // refreshBusy() first: never POF mid-refresh; between the check and
+      // the call no refresh can start — every paint runs on this loop task
+      // (the FIBP worker builds layouts, it never paints). Not USB-gated:
+      // USB power is the owner's bench condition (see the park's
+      // XPOINT_BENCH_TOUCH_PARK escape for the GT911 equivalent).
+      if (display.refreshBusy()) {
+        epdIdlePofDone = false;  // paint in flight: re-arm for the post-paint POF
+      } else if (!epdIdlePofDone && millis() - lastActivityTime >= HalPowerManager::EPD_IDLE_POF_MS) {
+        epdIdlePofDone = display.powerOffScreen();
+      }
       // GT911 idle sleep rides this same idle trunk (DRY: one idle clock, no
       // third timer). Design §3 Tier B entry window ≈3–5 min; skip while USB
       // is attached (serial-monitor sessions must not fight sleep in the log),
       // when the user disabled the feature (SETTINGS.touchIdleSleep), and on
       // boards with no touch-independent wake source — parking those would
       // leave their only input unreachable until a power cycle.
+      // BENCH ESCAPE (XPOINT_BENCH_TOUCH_PARK): the USB gate makes the park
+      // unobservable over serial — the owner's only verification path is the
+      // serial monitor on USB power. Define the flag in a gitignored
+      // platformio.local.ini to bypass JUST the USB gate on bench builds:
+      //   [env:x4pro]
+      //   build_flags = -DXPOINT_BENCH_TOUCH_PARK=1
+      // then `pio run -e x4pro -t upload`. Battery behaviour is unchanged.
+#ifndef XPOINT_BENCH_TOUCH_PARK
+#define XPOINT_BENCH_TOUCH_PARK 0
+#endif
+      const bool usbGate = !gpio.isUsbConnected() || XPOINT_BENCH_TOUCH_PARK;
       // Parked state comes straight from the SDK (isTouchAsleep), so a failed
       // entry is retried after the backoff window instead of latched awake
       // until the next activity edge.
       static unsigned long lastParkAttempt = 0;
       if (SETTINGS.touchIdleSleep && hasTouchIndependentWakeSource() && !gpio.isTouchAsleep() &&
-          millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && !gpio.isUsbConnected() &&
+          millis() - lastActivityTime >= HalPowerManager::GT911_IDLE_SLEEP_MS && usbGate &&
           // Never park under a live contact: the held-contact wake above does
           // not reset the inactivity timer, so a parked controller would be
           // woken again on the next iteration and park/wake-thrash forever.
