@@ -1107,7 +1107,10 @@ void loop() {
       for (UBaseType_t i = 0; i < got; ++i) {
         const UBaseType_t hwm = snapshot[i].usStackHighWaterMark;
         const char* name = snapshot[i].pcTaskName;
-        if (hwm < 256) {
+        // IDLE tasks sit near their small stack by design: a constant low HWM
+        // is the steady-state baseline, not a leak — the DBG series below
+        // tracks it, and a real smash trips the IDLE0 canary instead.
+        if (hwm < 256 && (name == nullptr || strncmp(name, "IDLE", 4) != 0)) {
           LOG_ERR("SENT", "Task %s stack HWM=%u (overflow suspect)", name, static_cast<unsigned>(hwm));
         }
         // Victim-stack time series: IDLE0 (core 0) and the render task have
