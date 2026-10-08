@@ -19,18 +19,21 @@ struct PendingTarget {
   enum Kind : uint8_t { None, CharOffset, AnchorHash, Percent, LastPage } kind;
   uint32_t charOffset;  // CharOffset / AnchorHash-resolved
   uint32_t idHash;      // AnchorHash
-  uint8_t  percent;     // Percent
+  uint8_t percent;      // Percent
 };
 
 // Resolver outcome (one pass).
 struct ResolveOutcome {
-  bool resolved;      // target was resolved (covered or terminal)
-  int  page;          // resolved page index (valid when resolved)
-  bool needFullBuild; // full build required (Percent/LastPage kinds, or not yet covered)
+  bool resolved;       // target was resolved (covered or terminal)
+  int page;            // resolved page index (valid when resolved)
+  bool needFullBuild;  // full build required (Percent/LastPage kinds, or not yet covered)
 };
 
 // Cover check result (§3.3).
-struct CoverResult { bool covered; uint32_t page; };
+struct CoverResult {
+  bool covered;
+  uint32_t page;
+};
 
 // Cover check (§3.3). Returns {covered, page} or {false, 0} (not covered).
 // pageForChar: maps a char offset → page index (returns 0 if no pages built).
@@ -60,10 +63,7 @@ CoverResult coverCheck(uint32_t target, uint32_t available, bool haveTotal,
 // Returns the outcome for this pass.
 ResolveOutcome evaluate(const PendingTarget& target, uint32_t available,
                         const std::function<bool(uint32_t charOffset, uint32_t& pageOut)>& pageForChar,
-                        const std::function<uint32_t(uint16_t pageIndex)>& pageCharStart,
-                        bool haveTotal,
-                        bool& hasSavedPosition,
-                        std::optional<uint32_t>& offsetJump,
-                        std::string& pendingAnchor);
+                        const std::function<uint32_t(uint16_t pageIndex)>& pageCharStart, bool haveTotal,
+                        bool& hasSavedPosition, std::optional<uint32_t>& offsetJump, std::string& pendingAnchor);
 
 }  // namespace ttf_resolve

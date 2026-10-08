@@ -24,25 +24,29 @@ CoverResult coverCheck(uint32_t target, uint32_t available, bool haveTotal,
     if (p < available) return {true, p};
     return {false, 0};  // beyond text: terminal (handled as clamp in evaluate)
   }
-  if (p < last) { return {true, p}; }                          // within prefix: exact
+  if (p < last) {
+    return {true, p};
+  }  // within prefix: exact
   if (p == last) {
     const uint32_t lastCharStart = pageCharStart(static_cast<uint16_t>(last));
-    if (target == lastCharStart) { return {true, p}; }         // exactly on last page
+    if (target == lastCharStart) {
+      return {true, p};
+    }  // exactly on last page
   }
   return {false, 0};  // p == last && target > charStart(last): clamped watermark hit — peek, don't consume
 }
 
 ResolveOutcome evaluate(const PendingTarget& target, uint32_t available,
                         const std::function<bool(uint32_t charOffset, uint32_t& pageOut)>& pageForChar,
-                        const std::function<uint32_t(uint16_t pageIndex)>& pageCharStart,
-                        bool haveTotal, bool& hasSavedPosition,
-                        std::optional<uint32_t>& offsetJump, std::string& pendingAnchor) {
+                        const std::function<uint32_t(uint16_t pageIndex)>& pageCharStart, bool haveTotal,
+                        bool& hasSavedPosition, std::optional<uint32_t>& offsetJump, std::string& pendingAnchor) {
   // Percent and LastPage kinds cannot resolve from a partial prefix (§3.2 case 3).
   // They always need a full build (wait for total). Skip cover check entirely.
   if (target.kind == PendingTarget::Percent || target.kind == PendingTarget::LastPage) {
     if (haveTotal) {
       // Terminal: even Percent/LastPage clamp to last page when complete.
-      if (target.kind == PendingTarget::AnchorHash) pendingAnchor.clear();
+      if (target.kind == PendingTarget::AnchorHash)
+        pendingAnchor.clear();
       else {
         if (target.charOffset == 0 && hasSavedPosition) hasSavedPosition = false;
         if (offsetJump.has_value() && target.charOffset == *offsetJump) offsetJump.reset();
@@ -53,13 +57,14 @@ ResolveOutcome evaluate(const PendingTarget& target, uint32_t available,
   }
 
   // Policy per pass, in priority order (§3.2):
-  CoverResult cover = coverCheck(target.charOffset, available, haveTotal,
-                                 [&](uint32_t offset) -> uint32_t {
-                                   uint32_t p = 0;
-                                   if (!pageForChar(offset, p)) return UINT32_MAX;  // not built: signal failure
-                                   return p;
-                                 },
-                                 pageCharStart);
+  CoverResult cover = coverCheck(
+      target.charOffset, available, haveTotal,
+      [&](uint32_t offset) -> uint32_t {
+        uint32_t p = 0;
+        if (!pageForChar(offset, p)) return UINT32_MAX;  // not built: signal failure
+        return p;
+      },
+      pageCharStart);
 
   if (cover.covered) {
     // 1. Covered: resolve to pageForChar(target), clear pending.

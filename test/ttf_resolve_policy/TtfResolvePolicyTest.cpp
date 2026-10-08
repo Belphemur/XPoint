@@ -27,7 +27,7 @@ ttf_resolve::PendingTarget charOffsetTarget(uint32_t offset) {
 TEST(CoverCheckTest, WithinPrefixResolves) {
   // 5 pages built; target is on page 3 (within prefix).
   auto pageForChar = [](uint32_t offset) -> uint32_t { return offset / 2; };  // 0→0, 2→1, 4→2, ...
-  auto pageCharStart = [](uint16_t page) -> uint32_t { return page * 2; };   // page 0: chars 0-1, page 1: chars 2-3, ...
+  auto pageCharStart = [](uint16_t page) -> uint32_t { return page * 2; };  // page 0: chars 0-1, page 1: chars 2-3, ...
   auto result = ttf_resolve::coverCheck(3, 5, false, pageForChar, pageCharStart);
   EXPECT_TRUE(result.covered);
   EXPECT_EQ(result.page, 1);  // char 3 → page 1
@@ -84,8 +84,8 @@ TEST(EvaluateTest, TargetWithinBuiltPrefixResolves) {
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = charOffsetTarget(3);
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, false,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, false, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 1);  // char 3 → page 1
   EXPECT_FALSE(result.needFullBuild);
@@ -103,8 +103,8 @@ TEST(EvaluateTest, NotCoveredKeepsPending) {
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = charOffsetTarget(5);
-  auto result = ttf_resolve::evaluate(target, 3, pageForChar, pageCharStart, false,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 3, pageForChar, pageCharStart, false, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_FALSE(result.resolved);
   EXPECT_EQ(result.needFullBuild, false);  // CharOffset kind → no full build
 }
@@ -120,8 +120,8 @@ TEST(EvaluateTest, CompleteIndexBeyondTotalClamps) {
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = charOffsetTarget(50);
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 4);  // available=5, last page=4
   EXPECT_FALSE(result.needFullBuild);
@@ -135,8 +135,8 @@ TEST(EvaluateTest, PercentKindNeedsFullBuild) {
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = {ttf_resolve::PendingTarget::Percent, 50, 0, 50};
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, false,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, false, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_FALSE(result.resolved);
   EXPECT_TRUE(result.needFullBuild);
 }
@@ -149,8 +149,8 @@ TEST(EvaluateTest, LastPageKindNeedsFullBuild) {
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = {ttf_resolve::PendingTarget::LastPage, 0, 0, 0};
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, false,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, false, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_FALSE(result.resolved);
   EXPECT_TRUE(result.needFullBuild);
 }
@@ -166,8 +166,8 @@ TEST(EvaluateTest, CharOffsetKindNoFullBuild) {
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = charOffsetTarget(7);  // 7→3 (last page on 3 pages)
-  auto result = ttf_resolve::evaluate(target, 4, pageForChar, pageCharStart, false,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 4, pageForChar, pageCharStart, false, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_FALSE(result.resolved);
   EXPECT_FALSE(result.needFullBuild);  // CharOffset kind → chunk build, not full
 }
@@ -183,8 +183,8 @@ TEST(EvaluateTest, AnchorHashClearsPendingAnchorOnResolve) {
   std::string pendingAnchor = "#chapter3";
   bool hasSavedPosition = false;
   ttf_resolve::PendingTarget target = {ttf_resolve::PendingTarget::AnchorHash, 3, 12345, 0};
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 3);
   EXPECT_TRUE(pendingAnchor.empty());  // cleared on resolve
@@ -201,8 +201,8 @@ TEST(EvaluateTest, AnchorHashClampsOnTerminal) {
   std::string pendingAnchor = "#chapter99";
   bool hasSavedPosition = false;
   ttf_resolve::PendingTarget target = {ttf_resolve::PendingTarget::AnchorHash, 99, 12345, 0};
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 4);  // clamped to last page
   EXPECT_TRUE(pendingAnchor.empty());
@@ -228,8 +228,8 @@ TEST(SequenceTest, SaveRestoreViaCharOffsetAfterGenerationMismatch) {
   // path directly: charOffset=10, no mismatch.
   bool hasSavedPosition = false;  // not consumed by evaluate (mismatch handled by caller)
   ttf_resolve::PendingTarget target = charOffsetTarget(10);
-  auto result = ttf_resolve::evaluate(target, 10, pageForChar, pageCharStart, true,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 10, pageForChar, pageCharStart, true, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 5);  // 10/2 = 5
   EXPECT_FALSE(result.needFullBuild);
@@ -253,15 +253,15 @@ TEST(SequenceTest, NotCoveredThenCoveredAfterBuild) {
 
   // First resolve: target=6, only 2 pages built (covers chars 0-3). 6 > 3.
   ttf_resolve::PendingTarget target = charOffsetTarget(6);
-  auto result1 = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart, false,
-                                        hasSavedPosition, offsetJump, pendingAnchor);
+  auto result1 = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart, false, hasSavedPosition,
+                                       offsetJump, pendingAnchor);
   EXPECT_FALSE(result1.resolved);
   EXPECT_FALSE(result1.needFullBuild);
 
   // Build advances: now 4 pages built (covers chars 0-7). Target 6 is within.
   builtPages = 4;
-  auto result2 = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart, false,
-                                        hasSavedPosition, offsetJump, pendingAnchor);
+  auto result2 = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart, false, hasSavedPosition,
+                                       offsetJump, pendingAnchor);
   EXPECT_TRUE(result2.resolved);
   EXPECT_EQ(result2.page, 3);  // 6/2 = 3
   EXPECT_FALSE(result2.needFullBuild);
@@ -284,8 +284,8 @@ TEST(SequenceTest, SpineMismatchDegradesToChapterStart) {
   std::string pendingAnchor;
   bool hasSavedPosition = false;
   ttf_resolve::PendingTarget target = charOffsetTarget(4);
-  auto result = ttf_resolve::evaluate(target, 3, pageForChar, pageCharStart, false,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 3, pageForChar, pageCharStart, false, hasSavedPosition, offsetJump, pendingAnchor);
   // evaluate() resolves valid CharOffset targets; spine mismatch is upstream.
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 2);  // 4/2 = 2
@@ -296,14 +296,17 @@ TEST(SequenceTest, SpineMismatchDegradesToChapterStart) {
 TEST(EvaluateTest, CharOffsetZeroClearsSavedPosition) {
   // When a CharOffset target with charOffset=0 is resolved, the funnel clears
   // ttfHasSavedPosition. evaluate() documents this contract.
-  auto pageForChar = [](uint32_t, uint32_t& pageOut) -> bool { pageOut = 0; return true; };
+  auto pageForChar = [](uint32_t, uint32_t& pageOut) -> bool {
+    pageOut = 0;
+    return true;
+  };
   auto pageCharStart = [](uint16_t) -> uint32_t { return 0; };
   std::optional<uint32_t> offsetJump;
   std::string pendingAnchor;
   bool hasSavedPosition = true;
   ttf_resolve::PendingTarget target = charOffsetTarget(0);  // charOffset 0 → page 0
-  auto result = ttf_resolve::evaluate(target, 3, pageForChar, pageCharStart, true,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 3, pageForChar, pageCharStart, true, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 0);
   // hasSavedPosition is consumed (funnel clears it when charOffset == ttfSavedCharOffset
@@ -325,8 +328,8 @@ TEST(EvaluateTest, OffsetJumpMatchClearsOffsetJump) {
   std::string pendingAnchor;
   bool hasSavedPosition = false;
   ttf_resolve::PendingTarget target = charOffsetTarget(8);  // matches offsetJump
-  auto result = ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true,
-                                      hasSavedPosition, offsetJump, pendingAnchor);
+  auto result =
+      ttf_resolve::evaluate(target, 5, pageForChar, pageCharStart, true, hasSavedPosition, offsetJump, pendingAnchor);
   EXPECT_TRUE(result.resolved);
   EXPECT_EQ(result.page, 4);  // 8/2 = 4
   // Funnel clears offsetJump when active.charOffset == *pendingOffsetJump && resolved.
