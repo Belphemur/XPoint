@@ -2741,7 +2741,7 @@ void EpubReaderActivity::ttfInvalidateCaches() {
   if (ttfCurrentCharStart > 0) {
     // Settings/orientation reflow: the anchor (ttfCurrentCharStart) is preserved
     // across the generation bump and resolved by the unified funnel (design §3.2).
-    pendingRestoreTarget_ = {PendingTarget::CharOffset, ttfCurrentCharStart, 0, 0};
+    pendingRestoreTarget_ = {PendingTarget::CharOffset, ttfCurrentCharStart, 0, 0, PendingTarget::Origin::Reflow};
   }
   ttf_->abortSession();
   ttf_->dropPrefetch();
@@ -2768,7 +2768,7 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
   const uint32_t total = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
                              ? ttf_->sessionBytesTotal()
                              : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
-  const int percent = total > 0 ? static_cast<int>(consumed * 100 / total) : 0;
+  const int percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
   GUI.fillPopupProgress(renderer, popupRect, percent);
   pagesUntilFullRefresh = 1;
   indexingPopupShown = true;
@@ -2837,41 +2837,56 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
 
   // ── Unified resolver funnel (design §3.2) ─────────────────────────────
   // Replaces four near-duplicate mapping blocks (anchor :2821, reflow :2877,
-  // saved position :2901, offset jump :2959). Delegates the three-case policy
-  // (covered/terminal/pending) to ttf_resolve::evaluate(); this function handles
-  // anchor resolution, spine/generation checks, and source-latch clearing.
+  // saved position :2901, offset jump :2959). Latch derivation and the
+  // three-case policy (covered/terminal/pending) are delegated to the pure
+  // ttf_resolve helpers; this function handles anchor resolution (SDK call)
+  // and the origin-aware source-latch side effects.
   PendingTarget active = pendingRestoreTarget_;
   if (active.kind == PendingTarget::None) {
-    // Determine the active pending target from source latches (§3.2).
-    if (ttfReflowSeedPage >= 0) {
-      active = {PendingTarget::CharOffset, static_cast<uint32_t>(ttfReflowSeedPage), 0, 0};
-    } else if (ttfCurrentCharStart > 0) {
-      active = {PendingTarget::CharOffset, ttfCurrentCharStart, 0, 0};
-    } else if (ttfHasSavedPosition) {
-      if (currentSpineIndex == ttfSavedSpine && ttfSavedGeneration == ttfGeneration) {
-        active = {PendingTarget::CharOffset, ttfSavedCharOffset, 0, 0};
-      }
-    } else if (pendingOffsetJump.has_value()) {
-      active = {PendingTarget::CharOffset, *pendingOffsetJump, 0, 0};
-    } else if (!pendingAnchor.empty()) {
-      active = {PendingTarget::AnchorHash, 0, freeink::book::ZipCatalog::hashPath(pendingAnchor.c_str()), 0};
+    const ttf_resolve::LatchState latches{
+        .reflowSeedPage = ttfReflowSeedPage,
+        .hasSavedPosition = ttfHasSavedPosition,
+        .savedSpine = ttfSavedSpine,
+        .savedCharOffset = ttfSavedCharOffset,
+        .savedGeneration = ttfSavedGeneration,
+        .generation = ttfGeneration,
+        .currentSpine = currentSpine,
+        .savedPage = nextPageNumber > 0 ? static_cast<uint16_t>(nextPageNumber) : uint16_t{0},
+        .offsetJump = pendingOffsetJump,
+        .hasAnchor = !pendingAnchor.empty(),
+        .anchorHash = pendingAnchor.empty() ? 0 : freeink::book::ZipCatalog::hashPath(pendingAnchor.c_str()),
+    };
+    const ttf_resolve::DerivedTarget derived = ttf_resolve::deriveTarget(latches);
+    if (derived.degrade == ttf_resolve::Degrade::ChapterStart) {
+      // §7: a saved record bound to another spine or a stale generation
+      // cannot map — clear the latch and open at the chapter start.
+      ttfHasSavedPosition = false;
+      pendingRestoreTarget_ = {};
+      targetOut = 0;
+      return true;
+    }
+    if (derived.target.kind != PendingTarget::None) {
+      active = derived.target;
+      // Store the derived target: pendingRestoreTarget_ is the single source
+      // of truth the §5.1/§5.2/§3.5 gates read, so a restore derived from a
+      // source latch opens the gates exactly like one set by invalidation.
+      pendingRestoreTarget_ = active;
     }
   }
 
   if (active.kind != PendingTarget::None) {
-    // Remember the original target kind before anchor resolution (for source
-    // latch clearing after evaluate()).
-    PendingTarget::Kind originalKind = active.kind;
-
-    // AnchorHash: resolve to char offset first, then apply CharOffset policy.
+    // AnchorHash: resolve to char offset first (SDK call stays here), then
+    // the CharOffset policy applies.
     if (active.kind == PendingTarget::AnchorHash) {
       uint32_t charOffset = 0;
       if (ttf_->charForAnchor(currentSpine, active.idHash, &charOffset)) {
         active.kind = PendingTarget::CharOffset;
         active.charOffset = charOffset;
         active.idHash = 0;
+        pendingRestoreTarget_ = active;  // keep the stored target in sync
       } else if (completeCache) {
         pendingAnchor.clear();
+        pendingRestoreTarget_ = {};
         LOG_DBG("ERS", "Anchor not found in built TTF chapter, opening at page 0");
         targetOut = 0;
         return true;
@@ -2881,41 +2896,38 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
       }
     }
 
-    // Spine/generation mismatch for saved position: chapter-start degrade (§7).
-    if (active.kind == PendingTarget::CharOffset && active.charOffset == ttfSavedCharOffset &&
-        ttfSavedCharOffset != 0 && ttfHasSavedPosition) {
-      if (currentSpineIndex != ttfSavedSpine || ttfSavedGeneration != ttfGeneration) {
-        ttfHasSavedPosition = false;
-        pendingRestoreTarget_ = {PendingTarget::None, 0, 0, 0};
-        targetOut = 0;
-        return true;
-      }
-    }
-
-    // Delegate the three-case policy to the testable policy function.
+    // Delegate the three-case policy to the pure policy function.
     auto pageForChar = [this, currentSpine](uint32_t offset, uint32_t& pageOut) -> bool {
       return ttf_->pageForChar(currentSpine, offset, &pageOut);
     };
     auto pageCharStart = [this, currentSpine](uint16_t pageIndex) -> uint32_t {
       return ttf_->pageCharStart(currentSpine, pageIndex);
     };
-    ttf_resolve::PendingTarget ttfTarget = {static_cast<ttf_resolve::PendingTarget::Kind>(active.kind),
-                                            active.charOffset, active.idHash, active.percent};
     ttf_resolve::ResolveOutcome outcome =
-        ttf_resolve::evaluate(ttfTarget, static_cast<uint32_t>(available), pageForChar, pageCharStart, haveTotal,
-                              ttfHasSavedPosition, pendingOffsetJump, pendingAnchor);
+        ttf_resolve::evaluate(active, static_cast<uint32_t>(available), pageForChar, pageCharStart, haveTotal);
     targetOut = outcome.page;
     needFullBuild = outcome.needFullBuild;
     if (outcome.resolved) {
-      // Source latch clearing (§3.2): consumed when resolved/terminal.
-      // originalKind is the pre-resolution kind (AnchorHash vs CharOffset).
-      if (originalKind == PendingTarget::AnchorHash) {
-        pendingAnchor.clear();
-      } else {
-        pendingRestoreTarget_ = {PendingTarget::None, 0, 0, 0};
-        if (active.charOffset == 0 && ttfHasSavedPosition) ttfHasSavedPosition = false;
-        if (pendingOffsetJump.has_value() && active.charOffset == *pendingOffsetJump) pendingOffsetJump.reset();
+      // Origin-aware source-latch consumption (§3.2): the caller owns the
+      // latches, so it clears exactly the one that produced the target.
+      switch (active.origin) {
+        case PendingTarget::Origin::Anchor:
+          pendingAnchor.clear();
+          break;
+        case PendingTarget::Origin::Saved:
+          ttfHasSavedPosition = false;
+          break;
+        case PendingTarget::Origin::OffsetJump:
+          pendingOffsetJump.reset();
+          break;
+        default:
+          break;  // Reflow / Seed targets have no extra latch beyond the target itself
       }
+      // Any resolution supersedes a pending preview/reflow seed hint: the
+      // seed names a page of an older layout generation and must not redirect
+      // later passes.
+      ttfReflowSeedPage = -1;
+      pendingRestoreTarget_ = {};
       return true;
     }
     return false;
@@ -3053,6 +3065,12 @@ void EpubReaderActivity::renderBookTtf() {
     ttfSpine = currentSpineIndex;
     ttfPage = -1;
     ttfPageCount = 0;
+    if (pendingRestoreTarget_.origin != PendingTarget::Origin::Reflow) {
+      // Position targets (saved record, jump, anchor, seed) are bound to the
+      // chapter they were derived in; a reflow target survives the transition
+      // because the char anchor below still maps in the rebuilt chapter.
+      pendingRestoreTarget_ = {};
+    }
     if (pendingRestoreTarget_.kind != PendingTarget::CharOffset) {
       // A settings/orientation reflow still needs the displayed page's char
       // anchor — dropping it here would resolve the reflow to offset 0.
@@ -3353,6 +3371,11 @@ void EpubReaderActivity::renderBookTtf() {
     // position loss even though the resolve later corrects it. Normal forward
     // reading indexing keeps today's yield behavior unchanged.
     if (pendingRestoreTarget_.kind != PendingTarget::None) {
+      // §3.4: the popup IS the painted content while a restore owns the pass —
+      // redraw it on EVERY blocked pass so the progress bar tracks the build
+      // (a restore starting from a substantial partial cache never took the
+      // session-start branch, and a shown popup must not freeze its bar).
+      ttfShowIndexingPopup();
       if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
         fibpDeferPollMs_ = millis();
         requestUpdate();
@@ -4211,7 +4234,7 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // the ENTRY of the superseding path so the fast/slow render branches cannot
   // drift. (reader-position-and-reindex.md: a superseding navigation must
   // cancel a pending one-shot.)
-  pendingRestoreTarget_ = {PendingTarget::None, 0, 0, 0};
+  pendingRestoreTarget_ = {};
   // Input-first rule (soak finding #5): a turn aborts any mid-pump prerender
   // immediately — the framebuffer holds a PARTIAL page that must neither be
   // consumed nor snapshot. The press is served within one slice of landing.
@@ -4388,7 +4411,7 @@ void EpubReaderActivity::clearDeferredReposition() {
   // position loss #195 describes. Saved-position fields (ttfSaved*) are NOT
   // cleared here — they are consumed by the funnel when resolved or unmappable,
   // not by the chokepoint (they describe the RECORD, consumed once).
-  pendingRestoreTarget_ = {PendingTarget::None, 0, 0, 0};
+  pendingRestoreTarget_ = {};
   ttfReflowSeedPage = -1;
   ttfCurrentCharStart = 0;
   ttfRestoreLastPage = false;

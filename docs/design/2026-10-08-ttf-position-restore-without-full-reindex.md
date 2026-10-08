@@ -326,3 +326,44 @@ Serial via `scripts/debugging_monitor.py`; X4 Pro soak:
   restores correctly in the common case.
 - Sub-page scroll restoration — page granularity is the ceiling (unchanged).
 - Prefetch policy changes (#193 machinery reused as-is).
+
+## 10. Amendments (review round, PR #203)
+
+Qodo/Kody/CodeRabbit review findings and their resolutions:
+
+1. **Page target kind added.** Page-anchored records (charOffset 0, e.g. KOReader
+   remote-accept) and the preview seed are page numbers, not char offsets. The
+   old funnel cast them to `CharOffset`, mapping page N as character N (page 0
+   for every offset-0 record). `PendingTarget::Kind::Page` resolves directly
+   once that many pages exist; terminal-clamps when the index is complete.
+2. **Target origin recorded.** `PendingTarget.origin` (Reflow/Seed/Saved/
+   OffsetJump/Anchor) replaces numeric-equality latch matching, which conflated
+   a link resolving to the saved offset with the saved record itself.
+3. **Derived targets are stored.** The funnel writes every latch-derived target
+   into `pendingRestoreTarget_`, so the §5.1/§5.2/§3.5 gates open for
+   saved-position/offset/anchor restores — previously only invalidation-seeded
+   targets pumped the build; others served placeholder pages without building.
+4. **evaluate() is pure.** Latch clearing moved to the caller, which owns the
+   latches and reads the origin; the `charOffset == 0` clearing contract is gone
+   (a nonzero saved anchor never cleared the latch before).
+5. **§7 degrade at derivation.** A saved record bound to another spine or a
+   stale generation degrades to the chapter start inside `deriveTarget()`. The
+   old numeric check could never fire for the reopen-with-mismatch case
+   (derivation required a generation match first) and left the latch set,
+   shadowing later jumps.
+6. **Seed consumed on any resolution.** `ttfReflowSeedPage` was never cleared,
+   so every later pass re-derived the seed target and froze the position
+   mirror. Any resolution now clears it (a resolution supersedes the hint).
+7. **Stale charStart fallback removed.** The funnel no longer re-derives a
+   target from `ttfCurrentCharStart` (the last rendered page's charStart), which
+   snapped slow page turns back to the current page and shadowed jumps;
+   `ttfInvalidateCaches()` already stores the reflow anchor explicitly.
+8. **Single struct.** `EpubReaderActivity::PendingTarget` aliases
+   `ttf_resolve::PendingTarget` (no two-struct `static_cast` drift), and all
+   members are value-initialized (no garbage `kind` on first pass).
+9. **Popup on every blocked pass; 64-bit percent.** `ttfShowIndexingPopup()`
+   redraws on each pass that blocks painting (a restore from a substantial
+   partial cache never took the session-start branch); the percent math is
+   64-bit (consumed > ~42.9 MiB wrapped `consumed * 100`).
+10. **coverCheck refuses page counts beyond the uint16 page-index domain**
+    instead of truncating the `pageCharStart` cast.
