@@ -10,9 +10,8 @@
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
 #endif
-#include <new>
-
 #include <algorithm>
+#include <new>
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"

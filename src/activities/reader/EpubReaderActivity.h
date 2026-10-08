@@ -24,6 +24,7 @@
 #include "FibpPrefetchWorker.h"
 #include "QuickPageCapture.h"
 #include "TtfBookRuntime.h"
+#include "TtfResolvePolicy.h"
 #endif
 #ifdef READING_STATS_ENABLED
 #include "BookReadingStats.h"
@@ -243,8 +244,19 @@ class EpubReaderActivity final : public ReaderActivity {
   uint16_t ttfSavedSpine = 0;
   uint32_t ttfSavedCharOffset = 0;
   uint32_t ttfSavedGeneration = 0;
-  bool ttfPrefetchActive = false;     // session building the NEXT spine
-  bool ttfReflowJumpPending = false;  // position restore via char offset
+  bool ttfPrefetchActive = false;  // session building the NEXT spine
+  // Unified pending target for the resolver funnel (design §3.2). Single
+  // definition lives in TtfResolvePolicy.h (ttf_resolve::PendingTarget) —
+  // aliased here so the funnel and the policy share one struct and one
+  // Kind/Origin enum (no cross-type static_cast to drift). CharOffset targets
+  // come from reflow (ttfCurrentCharStart), saved position, and KOReader
+  // offset jumps; Page targets from page-anchored records and the preview
+  // seed; AnchorHash targets resolve to a char offset via charForAnchor first.
+  // The origin records which latch produced the target so the funnel clears
+  // exactly that latch when the target resolves.
+  using PendingTarget = ttf_resolve::PendingTarget;
+  PendingTarget pendingRestoreTarget_{};
+
   // Page the font preview resolved for the current spine under the settings
   // being committed. Its transient layout pass runs the same engine and
   // LayoutParams as the rebuild, so this is the rebuild's own target page:
