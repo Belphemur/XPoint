@@ -13,6 +13,9 @@ class JpegToFramebufferConverter final : public ImageToFramebufferDecoder {
   static bool getDimensionsStatic(const uint8_t* data, size_t size, ImageDimensions& out);
 
   bool decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer, const RenderConfig& config) override;
+  // Reports successful cache writes separately from framebuffer rendering.
+  bool decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer, const RenderConfig& config,
+                           bool& cacheWritten);
   bool decodeToFramebuffer(uint8_t* data, size_t size, GfxRenderer& renderer, const RenderConfig& config) override;
 
   bool getDimensions(const std::string& imagePath, ImageDimensions& dims) const override {

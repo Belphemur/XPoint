@@ -8,6 +8,7 @@
 #include <Logging.h>
 #include <Memory.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -28,9 +29,11 @@ struct JpegContext {
   int screenWidth{0};
   int screenHeight{0};
 
-  // Source dimensions after JPEGDEC's built-in scaling
+  // Visible source dimensions after JPEGDEC's built-in scaling
   int scaledSrcWidth{0};
   int scaledSrcHeight{0};
+  int cropLeft{0};
+  int cropTop{0};
 
   // Final output dimensions
   int dstWidth{0};
@@ -55,7 +58,12 @@ struct JpegContext {
 // File I/O callbacks use pFile->fHandle to access the HalFile*,
 // avoiding the need for global file state.
 void* jpegOpen(const char* filename, int32_t* size) {
-  HalFile* f = new HalFile();
+  // JPEGDEC releases this handle through jpegClose().
+  HalFile* f = new (std::nothrow) HalFile();
+  if (!f) {
+    LOG_ERR("JPG", "OOM: JPEG file handle");
+    return nullptr;
+  }
   if (!Storage.openFileForRead("JPG", std::string(filename), *f)) {
     delete f;
     return nullptr;
@@ -146,8 +154,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
   GfxRenderer& renderer = *ctx->renderer;
   const int cfgX = ctx->config->x;
   const int cfgY = ctx->config->y;
-  const int blockX = pDraw->x;
-  const int blockY = pDraw->y;
+  const int blockX = pDraw->x - ctx->cropLeft;
+  const int blockY = pDraw->y - ctx->cropTop;
 
   // Determine destination pixel range covered by this source block
   const int srcYEnd = blockY + blockH;
@@ -362,7 +370,8 @@ int jpegDrawCallback(JPEGDRAW* pDraw) {
 
 // Core decode path shared by the file-backed and memory-backed sources.
 // `jpeg` must already be open; the caller owns the ScopedCleanup close.
-static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, const RenderConfig& config);
+static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, const RenderConfig& config,
+                                        bool& cacheWritten);
 
 bool JpegToFramebufferConverter::getDimensionsStatic(const std::string& imagePath, ImageDimensions& out) {
   size_t freeHeap = ESP.getFreeHeap();
@@ -422,6 +431,13 @@ bool JpegToFramebufferConverter::getDimensionsStatic(const uint8_t* data, size_t
 
 bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
                                                      const RenderConfig& config) {
+  bool cacheWritten;
+  return decodeToFramebuffer(imagePath, renderer, config, cacheWritten);
+}
+
+bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePath, GfxRenderer& renderer,
+                                                     const RenderConfig& config, bool& cacheWritten) {
+  cacheWritten = false;
   LOG_DBG("JPG", "Decoding JPEG: %s", imagePath.c_str());
 
   size_t freeHeap = ESP.getFreeHeap();
@@ -443,7 +459,7 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(const std::string& imagePat
     return false;
   }
 
-  return decodeToFramebufferFromOpen(*jpeg, renderer, config);
+  return decodeToFramebufferFromOpen(*jpeg, renderer, config, cacheWritten);
 }
 
 bool JpegToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size, GfxRenderer& renderer,
@@ -475,10 +491,14 @@ bool JpegToFramebufferConverter::decodeToFramebuffer(uint8_t* data, size_t size,
     return false;
   }
 
-  return decodeToFramebufferFromOpen(*jpeg, renderer, config);
+  // The memory path cannot report the cache outcome to its callers (the
+  // decoder interface has no cacheWritten variant for in-memory sources).
+  bool cacheWritten = false;
+  return decodeToFramebufferFromOpen(*jpeg, renderer, config, cacheWritten);
 }
 
-static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, const RenderConfig& config) {
+static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, const RenderConfig& config,
+                                        bool& cacheWritten) {
   JpegContext ctx;
   ctx.renderer = &renderer;
   ctx.config = &config;
@@ -491,6 +511,10 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
     return false;
   const int srcWidth = sourceDimensions.width;
   const int srcHeight = sourceDimensions.height;
+  const float cropX = std::clamp(config.sourceCropX, 0.0f, 0.99f);
+  const float cropY = std::clamp(config.sourceCropY, 0.0f, 0.99f);
+  const int visibleWidth = srcWidth - 2 * static_cast<int>(srcWidth * cropX / 2);
+  const int visibleHeight = srcHeight - 2 * static_cast<int>(srcHeight * cropY / 2);
 
   bool isProgressive = jpeg.getJPEGType() == JPEG_MODE_PROGRESSIVE;
   if (isProgressive) {
@@ -504,15 +528,17 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   if (config.useExactDimensions && config.maxWidth > 0 && config.maxHeight > 0) {
     destWidth = config.maxWidth;
     destHeight = config.maxHeight;
-    targetScale = (float)destWidth / srcWidth;
+    targetScale = (float)destWidth / visibleWidth;
   } else {
-    float scaleX = (config.maxWidth > 0 && srcWidth > config.maxWidth) ? (float)config.maxWidth / srcWidth : 1.0f;
-    float scaleY = (config.maxHeight > 0 && srcHeight > config.maxHeight) ? (float)config.maxHeight / srcHeight : 1.0f;
+    float scaleX =
+        (config.maxWidth > 0 && visibleWidth > config.maxWidth) ? (float)config.maxWidth / visibleWidth : 1.0f;
+    float scaleY =
+        (config.maxHeight > 0 && visibleHeight > config.maxHeight) ? (float)config.maxHeight / visibleHeight : 1.0f;
     targetScale = (scaleX < scaleY) ? scaleX : scaleY;
     if (targetScale > 1.0f) targetScale = 1.0f;
 
-    destWidth = (int)(srcWidth * targetScale);
-    destHeight = (int)(srcHeight * targetScale);
+    destWidth = (int)(visibleWidth * targetScale);
+    destHeight = (int)(visibleHeight * targetScale);
   }
 
   // Choose JPEGDEC built-in scaling for coarse downscaling.
@@ -535,6 +561,10 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
 
   ctx.scaledSrcWidth = (srcWidth + jpegScaleDenom - 1) / jpegScaleDenom;
   ctx.scaledSrcHeight = (srcHeight + jpegScaleDenom - 1) / jpegScaleDenom;
+  ctx.cropLeft = static_cast<int>(ctx.scaledSrcWidth * cropX / 2);
+  ctx.cropTop = static_cast<int>(ctx.scaledSrcHeight * cropY / 2);
+  ctx.scaledSrcWidth -= 2 * ctx.cropLeft;
+  ctx.scaledSrcHeight -= 2 * ctx.cropTop;
   ctx.dstWidth = destWidth;
   ctx.dstHeight = destHeight;
   ctx.fineScaleFPX = (int32_t)((int64_t)destWidth * FP_ONE / ctx.scaledSrcWidth);
@@ -578,7 +608,7 @@ static bool decodeToFramebufferFromOpen(JPEGDEC& jpeg, GfxRenderer& renderer, co
   // Finalize the streamed cache file. Note: a flush failure mid-decode clears
   // ctx.caching (the partial file is dropped), so re-read the flag here.
   if (ctx.caching) {
-    ctx.cache.finalize();
+    cacheWritten = ctx.cache.finalize();
   }
 
   return true;
