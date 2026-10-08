@@ -243,8 +243,20 @@ class EpubReaderActivity final : public ReaderActivity {
   uint16_t ttfSavedSpine = 0;
   uint32_t ttfSavedCharOffset = 0;
   uint32_t ttfSavedGeneration = 0;
-  bool ttfPrefetchActive = false;     // session building the NEXT spine
-  bool ttfReflowJumpPending = false;  // position restore via char offset
+  bool ttfPrefetchActive = false;  // session building the NEXT spine
+  // Unified pending target for the resolver funnel (design §3.2). Replaces the
+  // per-kind latches ttfReflowJumpPending / pendingOffsetJump as the funnel's
+  // input: the funnel evaluates this single state instead of four near-duplicate
+  // mapping blocks. CharOffset targets come from reflow (ttfCurrentCharStart),
+  // saved position (ttfSavedCharOffset), and KOReader offset jumps;
+  // AnchorHash targets resolve to a char offset via charForAnchor first.
+  struct PendingTarget {
+    enum Kind : uint8_t { None, CharOffset, AnchorHash, Percent, LastPage } kind;
+    uint32_t charOffset;  // CharOffset / AnchorHash-resolved
+    uint32_t idHash;      // AnchorHash
+    uint8_t percent;      // Percent
+  } pendingRestoreTarget_;
+
   // Page the font preview resolved for the current spine under the settings
   // being committed. Its transient layout pass runs the same engine and
   // LayoutParams as the rebuild, so this is the rebuild's own target page:

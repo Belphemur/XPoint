@@ -1,6 +1,6 @@
 # Preserve the reading position across a reindex (font change / cache invalidation)
 
-Status: design — not yet implemented
+Status: SUPERSEDED by `2026-10-08-ttf-position-restore-without-full-reindex.md` — the TTF changes are subsumed there; Changes 3/4 (legacy path) are re-scoped as a follow-up.
 Date: 2026-10-04
 Relates to: #193 (short-chapter prefetch), `2026-09-18-freetype-backend-as-built.md` §3.5
 
