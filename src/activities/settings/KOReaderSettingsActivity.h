@@ -18,7 +18,7 @@ class KOReaderSettingsActivity final : public UiListActivity {
   void render(RenderLock&&) override;
 
  private:
-  OptionPopup optionPopup;
+  OptionPopup<> optionPopup;
 
   int listCount() const override;
   void buildScreen(UiScreen& screen) override;
