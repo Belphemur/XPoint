@@ -86,6 +86,14 @@ TEST_F(HomeButtonInputTest, SeparatedTapsEachProduceOneAction) {
   EXPECT_EQ(tick(7000, true), A::Ignore);
   EXPECT_EQ(tick(7400, true), A::Home);
   EXPECT_EQ(tick(7751), A::Home);
+  // Disabling double tap removes the single-tap delay.
+  EXPECT_EQ(input.update(8000, true, false, false, false, A::Bookmark, A::Ignore, A::ReaderMenu), A::Bookmark);
+  // Every Home gesture can launch clipping selection without changing persisted action IDs.
+  static_assert(static_cast<uint8_t>(A::ToggleFrontlight) == 10);
+  EXPECT_EQ(input.update(9000, true, false, false, false, A::CreateClipping, A::Ignore, A::Home), A::CreateClipping);
+  EXPECT_EQ(input.update(10000, true, false, false, false, A::Home, A::CreateClipping, A::Ignore), A::Ignore);
+  EXPECT_EQ(input.update(10100, true, false, false, false, A::Home, A::CreateClipping, A::Ignore), A::CreateClipping);
+  EXPECT_EQ(input.update(11000, false, true, false, false, A::Home, A::Ignore, A::CreateClipping), A::CreateClipping);
 }
 
 TEST_F(HomeButtonInputTest, DisabledDoubleTapRemovesDelay) {
@@ -164,7 +172,10 @@ TEST(HomeButtonValues, UpstreamAndForkIndicesAreStable) {
   EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Sleep), 11);
   EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Screenshot), 12);
   EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::GoBack), 13);
-  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Count), 14);
+  // CreateClipping appends after every pre-existing value: saved settings.json
+  // indices keep their meaning, only Count moves.
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::CreateClipping), 14);
+  EXPECT_EQ(static_cast<uint8_t>(HomeButtonAction::Count), 15);
 }
 
 }  // namespace

@@ -19,6 +19,7 @@ enum class HomeButtonAction : uint8_t {
   Sleep,
   Screenshot,
   GoBack,
+  CreateClipping,
   Count
 };
 

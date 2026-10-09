@@ -18,9 +18,10 @@
 // vector-of-string layout cost ~250 throwing allocations per page load, which
 // was the primary driver of heap fragmentation on the ESP32-C3.
 //
-// Arena layout, in order (2-byte alignment holds by construction: all 16-bit
-// arrays come first and the arena base is allocator-aligned; RISC-V faults on
+// Arena layout, in order (4-byte alignment holds by construction: source ranges come first, then 16-bit
+// arrays and the arena base is allocator-aligned; RISC-V faults on
 // unaligned multi-byte access):
+//   SourceRange sourceRanges[wordCount]  chapter codepoint offsets, [start, end)
 //   uint16_t textOff[wordCount]        byte offset of word i's text in text[]
 //   int16_t  xpos[wordCount]
 //   uint32_t selectionGroup[wordCount] source visible-text offset of the
@@ -28,8 +29,6 @@
 //   uint16_t focusSuffixX[wordCount]   present only when focusPresent
 //   uint8_t  styles[wordCount]
 //   uint8_t  focusBoundary[wordCount]  present only when focusPresent
-//   uint8_t  syntheticHyphen[wordCount] true when layout appended '-' at a
-//                                      line-break opportunity
 //   char     text[textBytes]           all words back to back, NUL-terminated
 //
 // Each word is stored NUL-terminated so render() can hand `text + textOff[i]`
@@ -44,6 +43,13 @@
 // focus reading is disabled).
 class TextBlock final : public Block {
  public:
+  // The unused high bit of the cached style byte carries clipping metadata.
+  static constexpr uint8_t DISCRETIONARY_HYPHEN_FLAG = 0x80;
+  struct SourceRange {
+    uint32_t start = UINT32_MAX;
+    uint32_t end = UINT32_MAX;
+  };
+
   struct LinkSpan {
     char href[FOOTNOTE_HREF_LEN];
     int16_t x;
@@ -54,7 +60,8 @@ class TextBlock final : public Block {
  private:
   BlockStyle blockStyle;
   uint16_t numWords = 0;
-  uint16_t textBytes = 0;  // total size of the text region, including NULs
+  uint16_t paragraphStartWord = UINT16_MAX;  // Visual index of the paragraph's first logical word.
+  uint16_t textBytes = 0;                    // total size of the text region, including NULs
   bool focusPresent = false;
   bool isValid = true;
   // The ONLY allocation: makeUniqueNoThrow, so OOM yields an invalid block
@@ -62,13 +69,13 @@ class TextBlock final : public Block {
   std::unique_ptr<uint8_t[]> arena;
   // Typed views into the arena, bound once after the arena is filled. All
   // 16-bit bases sit at even offsets, so direct dereference is alignment-safe.
+  const SourceRange* sourceRanges = nullptr;
   const uint16_t* textOffArr = nullptr;
   const int16_t* xposArr = nullptr;
   const uint32_t* selectionGroupArr = nullptr;
   const uint16_t* focusSuffixXArr = nullptr;  // null when !focusPresent
   const uint8_t* stylesArr = nullptr;
   const uint8_t* focusBoundaryArr = nullptr;  // null when !focusPresent
-  const uint8_t* syntheticHyphenArr = nullptr;
   const char* textArr = nullptr;
   std::vector<std::string> rubyTexts;
   // Layout-only metadata. ChapterHtmlSlimParser moves it into Page::links
@@ -86,8 +93,9 @@ class TextBlock final : public Block {
   explicit TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
                      const std::vector<uint16_t>& focusSuffixX, const std::vector<uint32_t>& selectionGroups,
-                     const std::vector<uint8_t>& syntheticHyphens, const BlockStyle& blockStyle = BlockStyle(),
-                     std::vector<std::string> rubyTexts = {}, std::vector<LinkSpan> linkSpans = {});
+                     const BlockStyle& blockStyle = BlockStyle(), std::vector<std::string> rubyTexts = {},
+                     std::vector<LinkSpan> linkSpans = {}, const std::vector<SourceRange>& ranges = {},
+                     uint16_t paragraphStartWord = UINT16_MAX);
   ~TextBlock() override = default;
   TextBlock(const TextBlock&) = delete;
   TextBlock& operator=(const TextBlock&) = delete;
@@ -103,12 +111,17 @@ class TextBlock final : public Block {
     const uint16_t end = (i + 1 < numWords) ? textOffArr[i + 1] : textBytes;
     return end - textOffArr[i] - 1;  // exclude the NUL
   }
+  SourceRange wordSourceRange(const uint16_t i) const { return sourceRanges[i]; }
+  bool wordStartsParagraph(const uint16_t i) const { return i == paragraphStartWord; }
   int16_t wordXpos(const uint16_t i) const { return xposArr[i]; }
   uint32_t selectionGroup(const uint16_t i) const { return selectionGroupArr[i]; }
-  EpdFontFamily::Style wordStyle(const uint16_t i) const { return static_cast<EpdFontFamily::Style>(stylesArr[i]); }
+  EpdFontFamily::Style wordStyle(const uint16_t i) const {
+    return static_cast<EpdFontFamily::Style>(stylesArr[i] & ~DISCRETIONARY_HYPHEN_FLAG);
+  }
+  bool wordHasDiscretionaryHyphen(const uint16_t i) const { return (stylesArr[i] & DISCRETIONARY_HYPHEN_FLAG) != 0; }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }
-  bool hasSyntheticHyphen(const uint16_t i) const { return syntheticHyphenArr[i] != 0; }
+  bool hasSyntheticHyphen(const uint16_t i) const { return wordHasDiscretionaryHyphen(i); }
   bool hasRuby() const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }

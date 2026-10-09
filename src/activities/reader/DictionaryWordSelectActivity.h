@@ -22,14 +22,16 @@ class DictionaryWordSelectActivity final : public Activity {
  public:
   explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                         std::unique_ptr<Page> page, int marginLeft, int marginTop, int initialX = -1,
-                                        int initialY = -1, TouchLongPressMode mode = TouchLongPressMode::Dictionary)
+                                        int initialY = -1, TouchLongPressMode mode = TouchLongPressMode::Dictionary,
+                                        std::string lookupText = {})
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         page(std::move(page)),
         marginLeft(marginLeft),
         marginTop(marginTop),
         initialX(initialX),
         initialY(initialY),
-        mode(mode) {}
+        mode(mode),
+        lookupText(std::move(lookupText)) {}
 
 #if defined(CROSSPOINT_TTF_READER)
   // TTF path: word boxes come prebuilt from engine run geometry
@@ -43,7 +45,8 @@ class DictionaryWordSelectActivity final : public Activity {
   explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                         freeink::book::TtfWordSelectData&& ttfData, PageRenderFn renderPage,
                                         int initialX = -1, int initialY = -1,
-                                        TouchLongPressMode mode = TouchLongPressMode::Dictionary)
+                                        TouchLongPressMode mode = TouchLongPressMode::Dictionary,
+                                        std::string lookupText = {})
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         marginLeft(0),
         marginTop(0),
@@ -52,7 +55,8 @@ class DictionaryWordSelectActivity final : public Activity {
         mode(mode),
         ttfMode(true),
         ttfData(std::move(ttfData)),
-        ttfRender(renderPage) {}
+        ttfRender(renderPage),
+        lookupText(std::move(lookupText)) {}
 #endif
 
   void onEnter() override;
@@ -124,6 +128,11 @@ class DictionaryWordSelectActivity final : public Activity {
   const int initialX;
   const int initialY;
   const TouchLongPressMode mode;
+  // Direct-lookup mode (upstream #3589): when set on construction the activity
+  // skips the selection UI, resolves this text against the dictionary, and
+  // finishes back to the reader.
+  std::string lookupText;
+  bool lookupPending = false;
   int fontId = 0;
   int lineHeight = 0;
 

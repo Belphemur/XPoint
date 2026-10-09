@@ -89,6 +89,15 @@ void DictionaryWordSelectActivity::onEnter() {
   LOG_DBG("DICT", "Selector onEnter start");
   fontId = SETTINGS.getReaderFontId();
   lineHeight = renderer.getLineHeight(fontId);
+  if (!lookupText.empty()) {
+    // Direct lookup (clip-selection Lookup action): skip the selection UI and
+    // resolve the preselected text immediately, then hand back to the reader.
+    lookupPending = true;
+    popupMsg = StrId::STR_DICT_LOOKING_UP;
+    popup = Popup::Busy;
+    requestUpdate();
+    return;
+  }
   // No null check: a failed allocation just disables the differential
   // fast path (drawHighlightWithSnapshot skips the read), keeping the
   // full-repaint path as the fallback.
@@ -447,7 +456,11 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   if (mode == TouchLongPressMode::Footnote && resolveFootnoteOrFinish(raw.c_str(), trimmed.c_str())) {
     return;
   }
-  popup = Popup::Busy;
+  {
+    RenderLock lock;
+    popupMsg = StrId::STR_DICT_LOOKING_UP;
+    popup = Popup::Busy;
+  }
   if (!dictOpenAttempted) {
     dictOpenAttempted = true;
     dictOpenOk = dict.open(SETTINGS.dictionaryName);
@@ -456,7 +469,10 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
     // the sidecar ourselves, which is handled below.
     dictNeedsIndex = dictOpenOk && dict.needsIndex();
   }
-  popupMsg = dictNeedsIndex ? StrId::STR_DICT_INDEXING : StrId::STR_DICT_LOOKING_UP;
+  {
+    RenderLock lock;
+    popupMsg = dictNeedsIndex ? StrId::STR_DICT_INDEXING : StrId::STR_DICT_LOOKING_UP;
+  }
   requestUpdateAndWait();  // paint the page + busy popup before blocking on SD
 
   bool ok = dictOpenOk;
@@ -469,17 +485,23 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   std::string definition;
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  const bool found = ok && dict.lookup(trimmed.c_str(), definition, headword, &result);
+  const bool found =
+      ok && dict.lookup(lookupText.empty() ? trimmed.c_str() : lookupText.c_str(), definition, headword, &result);
 
   if (found) {
-    popup = Popup::None;
+    {
+      RenderLock lock;
+      popup = Popup::None;
+      // Direct lookup returns to the reader; this page is no longer needed.
+      if (!lookupText.empty()) page.reset();
+    }
     startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(
                                renderer, mappedInput, std::move(headword), std::move(definition),
                                SETTINGS.dictionaryName, dict.definitionsAreHtml()),
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
                                performLookup(std::get<DictionarySearchResult>(result.data).text);
-                             } else if (initialX >= 0 && initialY >= 0) {
+                             } else if (!lookupText.empty() || (initialX >= 0 && initialY >= 0)) {
                                finish();
                              } else {
                                requestUpdate();
@@ -552,9 +574,14 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
 }
 
 void DictionaryWordSelectActivity::loop() {
+  if (lookupPending) {
+    lookupPending = false;
+    performLookup(lookupText);
+    return;
+  }
   if (popup == Popup::NotFound || popup == Popup::Error) {
     if (millis() - popupTime >= POPUP_DURATION_MS) {
-      if (initialX >= 0 && initialY >= 0) {
+      if (!lookupText.empty() || (initialX >= 0 && initialY >= 0)) {
         finish();
       } else {
         popup = Popup::None;
@@ -766,11 +793,11 @@ void DictionaryWordSelectActivity::render(RenderLock&&) {
     // the in-RAM glyph cache during the real draw.
     auto* fcm = renderer.getFontCacheManager();
     auto scope = fcm->createPrewarmScope();
-    page->render(renderer, fontId, marginLeft, marginTop);
+    if (page) page->render(renderer, fontId, marginLeft, marginTop);
     LOG_DBG("DICT", "Selector render first page pass complete in %lums", millis() - renderStart);
     scope.endScanAndPrewarm();
     LOG_DBG("DICT", "Selector render font prewarm complete in %lums", millis() - renderStart);
-    page->render(renderer, fontId, marginLeft, marginTop);
+    if (page) page->render(renderer, fontId, marginLeft, marginTop);
     LOG_DBG("DICT", "Selector render second page pass complete in %lums", millis() - renderStart);
   }
 

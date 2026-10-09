@@ -3,6 +3,7 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Logging.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -22,6 +23,7 @@ namespace {
 // Longest measurable/drawable span. Wrapped lines stay under the screen width
 // (far below this); only pathological unbreakable tokens are split at this cap.
 constexpr size_t MAX_LINE_BYTES = 191;
+constexpr float PLAIN_TEXT_LINE_SPACING = 1.5f;
 
 // Body text left/right inset, matching the reader's default feel.
 constexpr int SIDE_PADDING = 20;
@@ -43,9 +45,20 @@ void DictionaryDefinitionActivity::onEnter() {
   // Normalize StarDict multi-type separators so the wrap loop and the
   // C-string font APIs below both see the whole definition.
   std::replace(definition.begin(), definition.end(), '\0', '\n');
-  if (!(htmlDefinition && definition.size() <= MAX_STYLED_HTML_BYTES && layoutHtmlPages())) {
-    definition = htmlToPlainText(definition);
+  const char* plainTextReason = nullptr;
+  if (!htmlDefinition) {
+    plainTextReason = "dictionary format is not HTML";
+  } else if (definition.size() > MAX_STYLED_HTML_BYTES) {
+    plainTextReason = "HTML exceeds 16 KiB limit";
+  } else if (!layoutHtmlPages()) {
+    plainTextReason = "HTML layout failed; see DHTML/EHP error";
+  }
+  if (plainTextReason) {
+    LOG_INF("DICT", "Plain-text definition: %s (bytes=%u)", plainTextReason, static_cast<unsigned>(definition.size()));
+    if (htmlDefinition) definition = htmlToPlainText(definition);
     wrapText();
+  } else {
+    LOG_INF("DICT", "Styled definition: %u pages", static_cast<unsigned>(pages.size()));
   }
   requestUpdate();
 }
@@ -138,7 +151,10 @@ void DictionaryDefinitionActivity::openSearch() {
 // own the text); any failure leaves state untouched for the plain-text path.
 bool DictionaryDefinitionActivity::layoutHtmlPages() {
   const BodyArea body = bodyArea();
-  if (body.width <= 0 || body.height <= 0) return false;
+  if (body.width <= 0 || body.height <= 0) {
+    LOG_ERR("DHTML", "Invalid definition viewport: %dx%d", body.width, body.height);
+    return false;
+  }
   if (!buildDictionaryHtmlPages(renderer, definition, static_cast<uint16_t>(body.width),
                                 static_cast<uint16_t>(body.height), pages)) {
     return false;
@@ -175,7 +191,7 @@ void DictionaryDefinitionActivity::wrapText() {
   const BodyArea body = bodyArea();
   const int maxWidth = body.width;
   const int spaceWidth = renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR);
-  const int lineHeight = renderer.getLineHeight(fontId);
+  const int lineHeight = renderer.getLineHeight(fontId, PLAIN_TEXT_LINE_SPACING);
   linesPerPage = std::max(1, body.height / lineHeight);
 
   const char* text = definition.c_str();
@@ -334,7 +350,7 @@ void DictionaryDefinitionActivity::drawBody(const int fontId, const int x, const
     pages[currentPage]->render(renderer, fontId, x, startY);
     return;
   }
-  const int lineHeight = renderer.getLineHeight(fontId);
+  const int lineHeight = renderer.getLineHeight(fontId, PLAIN_TEXT_LINE_SPACING);
   char buf[MAX_LINE_BYTES + 1];
   const int firstLine = currentPage * linesPerPage;
   const int lastLine = std::min(firstLine + linesPerPage, static_cast<int>(lines.size()));

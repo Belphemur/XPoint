@@ -19,7 +19,8 @@ inline constexpr StrId ACTION_LABELS[] = {StrId::STR_HOME_SHORTCUT,
                                           StrId::STR_TOGGLE_FRONTLIGHT,
                                           StrId::STR_SLEEP,
                                           StrId::STR_SCREENSHOT_BUTTON,
-                                          StrId::STR_GO_BACK};
+                                          StrId::STR_GO_BACK,
+                                          StrId::STR_SAVE_CLIPPING};
 static_assert(sizeof(ACTION_LABELS) / sizeof(ACTION_LABELS[0]) == static_cast<unsigned>(HomeButtonAction::Count));
 inline constexpr StrId GESTURE_LABELS[] = {StrId::STR_HOME_BUTTON_TAP, StrId::STR_HOME_BUTTON_DOUBLE_TAP,
                                            StrId::STR_HOME_BUTTON_LONG_PRESS};

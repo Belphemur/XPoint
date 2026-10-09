@@ -6,6 +6,8 @@
 #include <Logging.h>
 #include <Xtc.h>
 
+#include "ClippingStore.h"
+
 bool isBookCacheDirectoryName(const char* name) {
   if (!name) {
     return false;
@@ -40,4 +42,10 @@ void clearBookCache(const std::string& path) {
     return;
   }
   LOG_DBG("BookCache", "Done checking metadata cache for: %s", path.c_str());
+}
+
+bool removeBookFile(const std::string& path) {
+  if (!Storage.remove(path.c_str())) return false;
+  clearBookCache(path);
+  return ClippingStore::deleteForFilePath(path, "epub");
 }

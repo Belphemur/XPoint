@@ -138,6 +138,8 @@ add_subdirectory(ttf_resolve_policy)
 add_subdirectory(font_backend)
 add_subdirectory(ui_app_handlers)
 add_subdirectory(activity_result)
+add_subdirectory(clipping_preview)
+add_subdirectory(clipping_store)
 add_subdirectory(glyph_bitmap)
 
 add_subdirectory(reader_session)
