@@ -3450,7 +3450,13 @@ void EpubReaderActivity::renderBookTtf() {
 
   if (ttfPageCount == 0) {
     const bool buildInFlight = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
-    const bool cacheComplete = ttf_->cacheReady() && !ttf_->cachePartial() && !buildInFlight;
+    // Same spine/generation match the resolver's own cache checks use
+    // (availablePageCount answers only the cache's own chapter,
+    // TtfBookRuntime.cpp:176): a ready-but-stale or foreign-spine cache must
+    // not count as complete, or a pending restore would be consumed as
+    // terminal while the real chapter has not been built yet.
+    const bool cacheComplete = ttf_->cacheReady() && ttf_->cacheSpine() == static_cast<uint16_t>(currentSpineIndex) &&
+                               ttf_->cacheGeneration() == ttfGeneration && !ttf_->cachePartial() && !buildInFlight;
     const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
     if (buildInFlight || (restorePending && !cacheComplete)) {
       // A build is in flight (or the index can still grow) with nothing
@@ -4317,12 +4323,13 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // drift. (reader-position-and-reindex.md: a superseding navigation must
   // cancel a pending one-shot.)
   pendingRestoreTarget_ = {};
-  // The implicit source latches die with the target: consume-on-paint leaves
-  // them armed until a paint, so the next render would re-derive the cancelled
-  // restore and override this turn. Explicit latches (offset jump / anchor)
-  // keep the current behavior — they still apply after the turn.
-  ttfHasSavedPosition = false;
-  ttfReflowSeedPage = -1;
+  // The implicit source latches are cleared below on every path that actually
+  // navigates (consume-on-paint leaves them armed until a paint, so the next
+  // render would otherwise re-derive the cancelled restore and override the
+  // turn). A backward-at-start no-op returns false WITHOUT clearing them: the
+  // turn changed nothing, so a pending restore must still re-derive on the
+  // next render. Explicit latches (offset jump / anchor) keep the current
+  // behavior — they still apply after the turn.
   // Input-first rule (soak finding #5): a turn aborts any mid-pump prerender
   // immediately — the framebuffer holds a PARTIAL page that must neither be
   // consumed nor snapshot. The press is served within one slice of landing.
@@ -4382,6 +4389,8 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       // the next page's prerender.
       ttfUsePreRenderedBuffer = true;
       lastPageTurnTime = millis();
+      ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
+      ttfReflowSeedPage = -1;
 #ifdef READING_STATS_ENABLED
       pageShownAtMs = millis();
 #endif
@@ -4439,6 +4448,8 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   pageShownAtMs = millis();
 #endif
   logMemAt("page_turn");
+  ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
+  ttfReflowSeedPage = -1;
   return true;
 }
 
