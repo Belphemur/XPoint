@@ -2792,8 +2792,12 @@ void EpubReaderActivity::consumeRestoreTarget() {
     case PendingTarget::Origin::OffsetJump:
       pendingOffsetJump.reset();
       break;
+    case PendingTarget::Origin::Reflow:
+    case PendingTarget::Origin::Seed:
+      break;  // no extra latch: the seed latch is cleared below for every origin
+    case PendingTarget::Origin::OriginNone:
     default:
-      break;  // Reflow / Seed targets have no extra latch beyond the target itself
+      break;  // no source latch (unexpected for a stored target)
   }
   LOG_INF("ERS", "TTF restore consumed: spine %d page %d origin %u", currentSpineIndex, ttfPage,
           static_cast<unsigned>(pendingRestoreTarget_.origin));
@@ -2869,11 +2873,18 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   // seed): drop the stored implicit target so the derivation below sees only
   // the explicit latch. Implicit latches are cleared with it — the position
   // they point at is re-saved from the new location on close.
+  // The stored origin alone is not enough: the implicit restore can also exist
+  // only as a raw latch (pendingRestoreTarget_ still None), and deriveTarget()
+  // ranks hasSavedPosition ahead of the explicit jump/anchor — the surviving
+  // latch would win the pass. Supersede on the stored implicit target OR either
+  // implicit latch, then clear BOTH latches unconditionally (a Reflow/Seed
+  // stored target can coexist with an armed saved-position latch).
   if ((pendingOffsetJump.has_value() || !pendingAnchor.empty()) &&
       (active.origin == PendingTarget::Origin::Saved || active.origin == PendingTarget::Origin::Reflow ||
-       active.origin == PendingTarget::Origin::Seed)) {
-    LOG_DBG("ERS", "Restore superseded by explicit navigation (stored origin %u)", active.origin);
-    if (active.origin == PendingTarget::Origin::Saved) ttfHasSavedPosition = false;
+       active.origin == PendingTarget::Origin::Seed || ttfHasSavedPosition || ttfReflowSeedPage >= 0)) {
+    LOG_DBG("ERS", "Restore superseded by explicit navigation (stored origin %u)",
+            static_cast<unsigned>(active.origin));
+    ttfHasSavedPosition = false;
     ttfReflowSeedPage = -1;
     pendingRestoreTarget_ = {};
     active = {};
@@ -3438,22 +3449,28 @@ void EpubReaderActivity::renderBookTtf() {
   if (ttfPageCount == 0) {
     const bool buildInFlight = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
     const bool cacheComplete = ttf_->cacheReady() && !ttf_->cachePartial() && !buildInFlight;
-    if (pendingRestoreTarget_.kind != PendingTarget::None && !cacheComplete) {
+    const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
+    if (buildInFlight || (restorePending && !cacheComplete)) {
       // A build is in flight (or the index can still grow) with nothing
-      // committed yet: that is Indexing, not an empty chapter. Painting Empty
-      // here would reset nextPageNumber and send the reader to the chapter
-      // start once the rebuild lands.
+      // committed yet: that is Indexing, not an empty chapter — with or
+      // without a pending restore. Painting Empty here would reset
+      // nextPageNumber and send the reader to the chapter start once the
+      // rebuild lands. (cacheComplete already implies !buildInFlight, so the
+      // terminal branch below only runs when no build can add pages.)
       LOG_INF("ERS", "Spine %d has no pages yet — restore pending=%d build active=%d, showing Indexing",
-              currentSpineIndex, pendingRestoreTarget_.kind != PendingTarget::None, buildInFlight);
+              currentSpineIndex, restorePending, buildInFlight);
       ttfShowIndexingPopup();
       requestUpdate();
       return;
     }
-    if (pendingRestoreTarget_.kind != PendingTarget::None) {
+    if (restorePending) {
       // Terminal: the chapter is complete with zero pages, so the restore
-      // target can never map. Drop it and paint the empty chapter.
+      // target can never map. Consume it through the origin-aware path so the
+      // source latch that produced it dies too — the funnel would otherwise
+      // re-derive it on every later render (an offset jump can leak into
+      // another chapter).
       LOG_INF("ERS", "Spine %d complete with 0 pages — restore cannot map, opening empty", currentSpineIndex);
-      pendingRestoreTarget_ = {};
+      consumeRestoreTarget();
     }
     LOG_INF("ERS", "TTF: empty chapter (spine %d, no pages, no pending restore/build)", currentSpineIndex);
     renderer.clearScreen();
@@ -4298,6 +4315,12 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // drift. (reader-position-and-reindex.md: a superseding navigation must
   // cancel a pending one-shot.)
   pendingRestoreTarget_ = {};
+  // The implicit source latches die with the target: consume-on-paint leaves
+  // them armed until a paint, so the next render would re-derive the cancelled
+  // restore and override this turn. Explicit latches (offset jump / anchor)
+  // keep the current behavior — they still apply after the turn.
+  ttfHasSavedPosition = false;
+  ttfReflowSeedPage = -1;
   // Input-first rule (soak finding #5): a turn aborts any mid-pump prerender
   // immediately — the framebuffer holds a PARTIAL page that must neither be
   // consumed nor snapshot. The press is served within one slice of landing.
