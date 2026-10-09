@@ -319,8 +319,11 @@ void TtfBookRuntime::abortSession() {
   if (session_.active()) {
     const uint64_t consumed = session_.bytesConsumed();
     const uint64_t total = session_.bytesTotal();
+    LOG_INF("TTFB", "Suspending build spine %u: %u pages (%u/%u bytes)", static_cast<unsigned>(sessionSpine_),
+            static_cast<unsigned>(writer_.pageCount()), static_cast<unsigned>(consumed), static_cast<unsigned>(total));
     if (!writer_.suspend(static_cast<uint32_t>(consumed), static_cast<uint32_t>(total))) {
-      LOG_ERR("TTFB", "Writer suspend failed — partial build not committed");
+      LOG_ERR("TTFB", "Writer suspend failed — partial build not committed (%u pages lost, spine %u)",
+              static_cast<unsigned>(writer_.pageCount()), static_cast<unsigned>(sessionSpine_));
       writer_.finish();  // Close/remove the active .tmp after a failed suspend.
     } else {
       LOG_DBG("TTFB", "Partial build suspended: %u pages (%u/%u bytes)", static_cast<unsigned>(writer_.pageCount()),
