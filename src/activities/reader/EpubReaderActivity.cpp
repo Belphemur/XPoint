@@ -2769,6 +2769,8 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
                              ? ttf_->sessionBytesTotal()
                              : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
   const int percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
+  LOG_INF("ERS", "Indexing popup: spine %d consumed %lu/%lu bytes (%d%%)", currentSpineIndex,
+          static_cast<unsigned long>(consumed), static_cast<unsigned long>(total), percent);
   GUI.fillPopupProgress(renderer, popupRect, percent);
   pagesUntilFullRefresh = 1;
   indexingPopupShown = true;
