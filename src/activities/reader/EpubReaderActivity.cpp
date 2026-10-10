@@ -97,6 +97,9 @@ bool xteinkClassPanel() {
 }
 
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+// Indeterminate fill steps for the Indexing popup bar while a cover-driven
+// restore is pending (see ttfShowIndexingPopup): visible motion, no percent.
+constexpr int INDEX_BAR_INDETERMINATE[] = {20, 45, 70, 95};
 // Cadence for re-rendering while a chapter build is delegated to the FIBP
 // prefetch worker (worker owns the build; the reader just polls for commit).
 constexpr unsigned long fibpDeferPollMs = 250;
@@ -2755,22 +2758,42 @@ void EpubReaderActivity::ttfInvalidateCaches() {
 }
 
 void EpubReaderActivity::ttfShowIndexingPopup() {
-  // §3.4: Indexing popup + the theme's small progress bar. The popup rect is
-  // kept for the pass; fillPopupProgress feeds the metric-driven bar INSIDE
-  // the popup frame (BaseTheme::popupProgressBarHeight, optional outline,
+  // §3.4 (amended): Indexing popup + the theme's small progress bar. The popup
+  // rect is kept for the pass; fillPopupProgress feeds the bar INSIDE the
+  // popup frame (BaseTheme::popupProgressBarHeight, optional outline,
   // popupProgressClampPercent) and issues its own FAST_REFRESH. No percent
-  // text, no separate rect math. Progress basis is input-side build progress
-  // (sessionBytesConsumed/cacheBuildBytesConsumed) per design §3.4.
+  // text, no separate rect math.
+  //
+  // Bar honesty: the byte metric (sessionBytesConsumed/Total) is only
+  // truthful when the wait really is the whole chapter — normal forward
+  // indexing, and Reflow/Seed/Percent/LastPage restores, which resolve only
+  // from a COMPLETE index. A cover-driven restore (Saved/OffsetJump/Anchor:
+  // a char offset or anchor maps as soon as pageForChar covers it) finishes
+  // at an arbitrary fraction of the chapter, so the same metric can read 25%
+  // one frame and 100% the next right before the page paints. Those get a
+  // stepped indeterminate fill instead of a number that lies.
   const Rect popupRect = GUI.drawPopup(renderer, tr(STR_INDEXING));
-  const uint32_t consumed = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
-                                ? ttf_->sessionBytesConsumed()
-                                : (ttf_->cacheReady() ? ttf_->cacheBuildBytesConsumed() : 0);
-  const uint32_t total = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
-                             ? ttf_->sessionBytesTotal()
-                             : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
-  const int percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
-  LOG_INF("ERS", "Indexing popup: spine %d consumed %lu/%lu bytes (%d%%)", currentSpineIndex,
-          static_cast<unsigned long>(consumed), static_cast<unsigned long>(total), percent);
+  const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
+  const bool restoreNeedsComplete = restorePending && (pendingRestoreTarget_.origin == PendingTarget::Origin::Reflow ||
+                                                       pendingRestoreTarget_.origin == PendingTarget::Origin::Seed ||
+                                                       pendingRestoreTarget_.kind == PendingTarget::Percent ||
+                                                       pendingRestoreTarget_.kind == PendingTarget::LastPage);
+  int percent;
+  if (restorePending && !restoreNeedsComplete) {
+    percent = INDEX_BAR_INDETERMINATE[indexingBarStep_ % 4];
+    ++indexingBarStep_;
+    LOG_INF("ERS", "Indexing popup: cover-driven restore, indeterminate bar step %d", percent);
+  } else {
+    const uint32_t consumed = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
+                                  ? ttf_->sessionBytesConsumed()
+                                  : (ttf_->cacheReady() ? ttf_->cacheBuildBytesConsumed() : 0);
+    const uint32_t total = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
+                               ? ttf_->sessionBytesTotal()
+                               : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
+    percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
+    LOG_INF("ERS", "Indexing popup: restore=%d completeGated=%d consumed %lu/%lu bytes (%d%%)", restorePending,
+            restoreNeedsComplete, static_cast<unsigned long>(consumed), static_cast<unsigned long>(total), percent);
+  }
   GUI.fillPopupProgress(renderer, popupRect, percent);
   pagesUntilFullRefresh = 1;
   indexingPopupShown = true;

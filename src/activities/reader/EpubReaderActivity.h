@@ -256,6 +256,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // exactly that latch when the target resolves.
   using PendingTarget = ttf_resolve::PendingTarget;
   PendingTarget pendingRestoreTarget_{};
+  // Cycles the Indexing popup's indeterminate fill while a cover-driven
+  // restore is pending (see ttfShowIndexingPopup) — one step per drawn pass.
+  uint8_t indexingBarStep_ = 0;
 
   // Page the font preview resolved for the current spine under the settings
   // being committed. Its transient layout pass runs the same engine and
