@@ -4356,11 +4356,14 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // §5.4: Superseding navigation cancels the restore. A navigation press
   // processed between restore passes clears the pending restore and takes
   // effect as a normal navigation — the anchor no longer describes where the
-  // user wants to be; their explicit navigation wins. The cancel happens at
-  // the ENTRY of the superseding path so the fast/slow render branches cannot
-  // drift. (reader-position-and-reindex.md: a superseding navigation must
-  // cancel a pending one-shot.)
-  pendingRestoreTarget_ = {};
+  // user wants to be; their explicit navigation wins. The stored target is
+  // cleared WITH the implicit source latches on every path that actually
+  // navigates (below), never at entry: a backward-at-start no-op returns
+  // false without navigating, and Reflow has no raw latch to re-derive from,
+  // so an entry-level clear would lose the restore and drop the next render
+  // at the chapter start. (reader-position-and-reindex.md: a superseding
+  // navigation must cancel a pending one-shot — every cancel site is a
+  // success path, so the fast/slow render branches cannot drift.)
   // The implicit source latches are cleared below on every path that actually
   // navigates (consume-on-paint leaves them armed until a paint, so the next
   // render would otherwise re-derive the cancelled restore and override the
@@ -4429,6 +4432,7 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       lastPageTurnTime = millis();
       ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
       ttfReflowSeedPage = -1;
+      pendingRestoreTarget_ = {};
 #ifdef READING_STATS_ENABLED
       pageShownAtMs = millis();
 #endif
@@ -4488,6 +4492,7 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   logMemAt("page_turn");
   ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
   ttfReflowSeedPage = -1;
+  pendingRestoreTarget_ = {};
   return true;
 }
 
