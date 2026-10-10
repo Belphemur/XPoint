@@ -713,6 +713,10 @@ bool EpubReaderActivity::loadBook() {
         const uint16_t clampedPage = static_cast<uint16_t>(savedPageCount - 1);
         LOG_DBG("ERS", "Clamping stale TTF page hint: page=%u -> %u/%u", savedPage, clampedPage, savedPageCount);
         savedPage = clampedPage;
+        // The count mirror lagged the build: publish "unknown" (0) instead of
+        // the stale total, or the status bar / KOReader sync would report a
+        // wrong chapter length until the rebuild overwrites the mirror.
+        savedPageCount = 0;
       }
       currentSpineIndex = savedSpine;
       nextPageNumber = savedPage == UINT16_MAX ? 0 : savedPage;

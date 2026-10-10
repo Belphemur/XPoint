@@ -51,8 +51,10 @@ struct LatchState {
 // charOffset + generation anchor is authoritative, the page hint advisory).
 // Reject = spine checks failed (unrecoverable) or a legacy-shape record has a
 // stale page hint. ClampPageHint = stale page hint on a record with a valid
-// anchor — keep the anchor, clamp the advisory page to the last built page
-// (the count mirror can lag a partial build).
+// anchor — keep the anchor, clamp the advisory page to the last built page.
+// On ClampPageHint the COUNT is untrustworthy too (the same mirror lagged the
+// build): the caller must publish the chapter length as unknown (0), never
+// the stale total.
 enum class ProgressVerdict : uint8_t { Accept, ClampPageHint, Reject };
 
 // Judge a record read by openBookTtf() before it seeds the reader latches.
