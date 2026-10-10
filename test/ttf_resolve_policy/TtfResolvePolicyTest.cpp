@@ -96,6 +96,26 @@ TEST(EvaluateTest, TargetWithinBuiltPrefixResolves) {
   EXPECT_FALSE(result.needFullBuild);
 }
 
+TEST(EvaluateTest, RestoreCoveredByTwoPagePartialResolvesWithoutBuild) {
+  // Owner rule (v2.6.0 Indexing-flash regression): a restore the built prefix
+  // already covers resolves immediately with no build required — the render
+  // layer keys its park/popup decision on exactly (resolved && page <
+  // available && !needFullBuild) so a covered open paints the page instead of
+  // flashing Indexing while the worker finishes the chapter in background.
+  // Saved-position restore (char offset on page 1 of a 2-page partial).
+  auto result = ttf_resolve::evaluate(charOffsetTarget(2), 2, pageForChar2PerPage, pageCharStart2PerPage, false);
+  EXPECT_TRUE(result.resolved);
+  EXPECT_EQ(result.page, 1);
+  EXPECT_FALSE(result.needFullBuild);
+  // Page-anchored restore (page hint / reflow seed) on the same partial.
+  ttf_resolve::PendingTarget pageTarget = {ttf_resolve::PendingTarget::Page, 1, 0, 0,
+                                           ttf_resolve::PendingTarget::Origin::Saved};
+  auto pageResult = ttf_resolve::evaluate(pageTarget, 2, pageForChar2PerPage, pageCharStart2PerPage, false);
+  EXPECT_TRUE(pageResult.resolved);
+  EXPECT_EQ(pageResult.page, 1);
+  EXPECT_FALSE(pageResult.needFullBuild);
+}
+
 TEST(EvaluateTest, NotCoveredKeepsPending) {
   // Case 3: target past watermark on partial → pending kept, no page served.
   auto result = ttf_resolve::evaluate(charOffsetTarget(5), 3, pageForChar2PerPage, pageCharStart2PerPage, false);

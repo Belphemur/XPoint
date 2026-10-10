@@ -223,6 +223,7 @@ class EpubReaderActivity final : public ReaderActivity {
   char fibpFamily_[48] = {};  // family the worker's faces were built for
   uint32_t fibpNotifiedGen_ = 0;
   bool fibpDeferred_ = false;           // a build is delegated to the worker
+  bool fibpDeferParkLatched_ = false;   // the delegation ever parked the reader
   unsigned long fibpDeferPollMs_ = 0;   // last deferred-build poll (throttle)
   unsigned long fibpDeferStartMs_ = 0;  // when the current delegation began
   // Soak addendum: the opened chapter's partial completion handed to the
