@@ -2779,18 +2779,18 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
   //
   // Bar honesty: the byte metric (sessionBytesConsumed/Total) is only
   // truthful when the wait really is the whole chapter — normal forward
-  // indexing, and Reflow/Seed/Percent/LastPage restores, which resolve only
-  // from a COMPLETE index. A cover-driven restore (Saved/OffsetJump/Anchor:
-  // a char offset or anchor maps as soon as pageForChar covers it) finishes
-  // at an arbitrary fraction of the chapter, so the same metric can read 25%
-  // one frame and 100% the next right before the page paints. Those get a
-  // stepped indeterminate fill instead of a number that lies.
+  // indexing, and Percent/LastPage restores, which resolve only from a
+  // COMPLETE index. A cover-driven restore (CharOffset/Page kinds: Saved,
+  // Reflow, Seed, OffsetJump, Anchor — an offset or page target maps as soon
+  // as the built prefix covers it) finishes at an arbitrary fraction of the
+  // chapter, so the same metric can read 25% one frame and 100% the next
+  // right before the page paints. Those get a stepped indeterminate fill
+  // instead of a number that lies.
   const Rect popupRect = GUI.drawPopup(renderer, tr(STR_INDEXING));
   const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
-  const bool restoreNeedsComplete = restorePending && (pendingRestoreTarget_.origin == PendingTarget::Origin::Reflow ||
-                                                       pendingRestoreTarget_.origin == PendingTarget::Origin::Seed ||
-                                                       pendingRestoreTarget_.kind == PendingTarget::Percent ||
-                                                       pendingRestoreTarget_.kind == PendingTarget::LastPage);
+  const bool restoreNeedsComplete =
+      restorePending && (pendingRestoreTarget_.kind == PendingTarget::Percent ||
+                         pendingRestoreTarget_.kind == PendingTarget::LastPage);
   int percent;
   if (restorePending && !restoreNeedsComplete) {
     percent = INDEX_BAR_INDETERMINATE[indexingBarStep_ % 4];
