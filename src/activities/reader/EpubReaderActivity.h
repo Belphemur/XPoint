@@ -13,6 +13,7 @@
 
 #include "BookmarkEntry.h"
 #include "ChapterPosition.h"
+#include "ClipSelectionActivity.h"
 #include "EpubReaderMenuActivity.h"
 #include "ProgressManager.h"
 #include "ProgressMapper.h"
@@ -457,7 +458,8 @@ class EpubReaderActivity final : public ReaderActivity {
   // SETTINGS.touchLongPressAction global.
   void openDictionaryWordSelect(int touchX = -1, int touchY = -1,
                                 TouchLongPressMode mode = TouchLongPressMode::Dictionary);
-  void startClipSelection(int initialX = -1, int initialY = -1);
+  void startClipSelection(int initialX = -1, int initialY = -1,
+                          ClipSelectionActivity::Mode mode = ClipSelectionActivity::Mode::Clip);
   int clippingAtPoint(const Page& page, int x, int y) const;
   void openClippings();
   void applyProgressChange(const ProgressChangeResult& progress);

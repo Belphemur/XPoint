@@ -1035,7 +1035,8 @@ void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchL
   });
 }
 
-void EpubReaderActivity::startClipSelection(const int initialX, const int initialY) {
+void EpubReaderActivity::startClipSelection(const int initialX, const int initialY,
+                                            const ClipSelectionActivity::Mode mode) {
   if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return;
 
   const int pageNumber = section->currentPage;
@@ -1088,7 +1089,7 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
   std::string author = epub->getAuthor();
 
   auto activity = makeUniqueNoThrow<ClipSelectionActivity>(renderer, mappedInput, std::move(pages), marginLeft,
-                                                           marginTop, initialX, initialY);
+                                                           marginTop, initialX, initialY, mode);
   if (!activity) {
     LOG_ERR("CLIP", "Failed to allocate clipping selection activity");
     requestUpdate();
