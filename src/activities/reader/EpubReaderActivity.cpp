@@ -2792,9 +2792,8 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
   // instead of a number that lies.
   const Rect popupRect = GUI.drawPopup(renderer, tr(STR_INDEXING));
   const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
-  const bool restoreNeedsComplete =
-      restorePending && (pendingRestoreTarget_.kind == PendingTarget::Percent ||
-                         pendingRestoreTarget_.kind == PendingTarget::LastPage);
+  const bool restoreNeedsComplete = restorePending && (pendingRestoreTarget_.kind == PendingTarget::Percent ||
+                                                       pendingRestoreTarget_.kind == PendingTarget::LastPage);
   int percent;
   if (restorePending && !restoreNeedsComplete) {
     percent = INDEX_BAR_INDETERMINATE[indexingBarStep_ % 4];
