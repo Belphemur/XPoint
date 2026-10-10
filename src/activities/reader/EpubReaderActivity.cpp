@@ -3430,57 +3430,99 @@ void EpubReaderActivity::renderBookTtf() {
   // Set when the chapter is readable and the worker still owns this spine:
   // the reader may paint committed pages but must not open an inline session.
   bool workerOwnsSpine = false;
-  if (fibpWorker_ != nullptr && fibpWorker_->active() &&
-      fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex) &&
-      fibpResumeClaimedSpine_ != currentSpineIndex) {
+  // Park-decision inputs. The park/popup decision below runs AFTER the
+  // resolver funnel because a restore the worker's partial already covers
+  // must paint immediately — no Indexing popup, regardless of chapter size
+  // (v2.6.0 regression owner rule). The funnel may already have run in the
+  // park stage; its outcome is reused at the resolve site below (the resolver
+  // clears source latches on resolve, so it must not run twice in one pass).
+  bool needFullBuild = false;
+  int target = -1;
+  bool deferredProbed = false;      // park stage ran the funnel this pass
+  bool deferredResolved = false;    // its outcome (valid when deferredProbed)
+  bool deferredPopupArmed = false;  // this pass entered the delegation state
+  const bool workerOnSpine = fibpWorker_ != nullptr && fibpWorker_->active() &&
+                             fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
+  if (workerOnSpine && fibpResumeClaimedSpine_ != currentSpineIndex) {
     if (!fibpDeferred_) {
       fibpDeferred_ = true;
       fibpDeferStartMs_ = millis();
+      deferredPopupArmed = true;
       LOG_DBG("ERS", "Chapter %d build delegated to prefetch worker", currentSpineIndex);
-      // Same readability rule as the inline build below: a chapter already
-      // past MIN_PAGES_TO_CLEAR_POPUP should not be parked on Indexing while
-      // the worker finishes it.
-      if (!shouldClearBuildPopup(static_cast<int>(ttfPageCount))) ttfShowIndexingPopup();
     }
     // The worker owns this build; re-polling with full renders every loop
     // tick flip-flops the power governor and burns the CPU. Re-check at a
-    // slow cadence — the commit pickup below runs on the next poll.
+    // slow cadence.
     if (millis() - fibpDeferPollMs_ >= fibpDeferPollMs) {
       fibpDeferPollMs_ = millis();
       requestUpdate();
     }
-    // A long delegated build parks the user on the Indexing popup for the
-    // whole spine (the plan builds the entered chapter last, and a claim
-    // that landed right before the page turn makes the wait the full build).
-    // After a short grace period the reader takes the spine over: stop the
-    // worker (it aborts at the next page boundary), then the normal path
-    // below resumes the worker's partial and builds only up to the target
-    // page at full speed. updateFibpWorker() respawns the worker once the
-    // session drains; it skips this spine (partial/complete now exists).
-    if (millis() - fibpDeferStartMs_ >= fibpDeferTakeoverMs) {
-      LOG_DBG("ERS", "Delegated build too slow — taking over spine %d", currentSpineIndex);
-      stopFibpWorker();
-      fibpDeferred_ = false;
-      requestUpdate();
-    }
+    // The worker commits pages while the reader is delegated here: reopen so
+    // the park decision, the coverage probe and edge turns see its latest
+    // partial (the readable-continue passes of the old flag toggle did this).
+    ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
+    ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
     // Past the readability threshold, stop deferring so the reader gets a page
     // instead of the popup for the rest of the worker's build. The worker keeps
     // draining the chapter off-task, so while it still holds this spine we must
     // NOT fall through into the inline build below: ensureChapterSession would
-    // put a second writer on the same FIBP file. Ownership is re-checked here
-    // because the takeover above may have just stopped the worker — when it
-    // did, the reader owns the spine and must fall through to build it inline
-    // rather than return and wait on a requestUpdate that may be coalesced.
+    // put a second writer on the same FIBP file.
     if (shouldClearBuildPopup(static_cast<int>(ttfPageCount))) {
-      workerOwnsSpine = fibpWorker_ != nullptr && fibpWorker_->active() &&
-                        fibpWorker_->buildingSpine() == static_cast<uint16_t>(currentSpineIndex);
+      workerOwnsSpine = true;
     } else {
-      return;
+      // Park candidate. A restore the partial already covers is served right
+      // now instead. Only restores probe: the resolver's shortcut kinds
+      // (page jump, percent, last page) clear their latches on resolve, and a
+      // probe-resolved jump would be lost to the default path on the next
+      // pass. Explicit anchors and offset jumps keep the park behavior.
+      const bool restoreLikely =
+          pendingRestoreTarget_.kind != PendingTarget::None || ttfHasSavedPosition || ttfReflowSeedPage >= 0;
+      if (restoreLikely) {
+        deferredProbed = true;
+        deferredResolved = ttfResolveTargetPage(target, params, needFullBuild);
+      }
+      const bool restoreCovered =
+          deferredProbed && deferredResolved && target >= 0 && target < static_cast<int>(ttfPageCount);
+      if (restoreCovered) {
+        // Owner rule: the partial holds the restore target — paint it now and
+        // let the worker finish the chapter in the background. No popup.
+        workerOwnsSpine = true;
+      } else if ((deferredPopupArmed || restoreLikely || fibpDeferParkLatched_) &&
+                 millis() - fibpDeferStartMs_ >= fibpDeferTakeoverMs) {
+        // A long delegated build parks the user on the Indexing popup for the
+        // whole spine (the plan builds the entered chapter last, and a claim
+        // that landed right before the page turn makes the wait the full
+        // build). After a short grace period the reader takes the spine over:
+        // stop the worker (it aborts at the next page boundary and commits
+        // its partial), then the normal path below builds only up to the
+        // target page at full speed. updateFibpWorker() respawns the worker
+        // once the session drains; it skips this spine (partial/complete now
+        // exists). The escape only fires for states that actually block the
+        // reader — a restore pending since before the pass, or the popup this
+        // episode armed. A reader already reading a committed page must never
+        // kill the worker: a respawn skips a spine that has a partial, so the
+        // chapter would then never finish in the background.
+        LOG_DBG("ERS", "Delegated build too slow — taking over spine %d", currentSpineIndex);
+        stopFibpWorker();
+        fibpDeferred_ = false;
+        requestUpdate();
+      } else {
+        // Park on the popup. Shown once per delegation episode (at the entry
+        // transition); later parked passes leave the frame as painted. The
+        // parked latch keeps the takeover escape reachable on later passes of
+        // an episode that blocked the reader at its entry.
+        fibpDeferParkLatched_ = true;
+        if (deferredPopupArmed) ttfShowIndexingPopup();
+        return;
+      }
     }
   }
-  if (fibpDeferred_) {
-    // The delegated build finished (or failed): pick up the committed cache.
+  if (fibpDeferred_ && (!workerOnSpine || fibpResumeClaimedSpine_ == currentSpineIndex)) {
+    // The delegated build finished (or failed) — or a resume claim took the
+    // spine over (its lifecycle reopens the cache below anyway): pick up the
+    // committed cache so the resolve sees the worker's pages.
     fibpDeferred_ = false;
+    fibpDeferParkLatched_ = false;
     ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     ttfPageCount = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
   }
@@ -3528,10 +3570,15 @@ void EpubReaderActivity::renderBookTtf() {
     }
   }
 
-  // 4) Resolve the target page (jump states may need more build first).
-  bool needFullBuild = false;
-  int target = -1;
-  const bool resolved = ttfResolveTargetPage(target, params, needFullBuild);
+  // 4) Resolve the target page (jump states may need more build first). The
+  // deferred-park stage may have already run the funnel this pass — reuse
+  // that outcome instead of resolving twice.
+  bool resolved = false;
+  if (deferredProbed) {
+    resolved = deferredResolved;
+  } else {
+    resolved = ttfResolveTargetPage(target, params, needFullBuild);
+  }
 
   // §5.1: Session-begin gate must open for a pending restore. With a pending
   // unresolved restore (not covered yet), neither needFullBuild nor
@@ -4530,6 +4577,7 @@ void EpubReaderActivity::stopFibpWorker() {
   fibpBegun_ = false;
   fibpFamily_[0] = '\0';
   fibpDeferred_ = false;
+  fibpDeferParkLatched_ = false;
   fibpResumeClaimedSpine_ = -1;
   fibpResumeSeenBuilding_ = false;
 }
