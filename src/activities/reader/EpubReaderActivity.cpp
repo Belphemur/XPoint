@@ -103,6 +103,9 @@ bool xteinkClassPanel() {
 }
 
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
+// Indeterminate fill steps for the Indexing popup bar while a cover-driven
+// restore is pending (see ttfShowIndexingPopup): visible motion, no percent.
+constexpr int INDEX_BAR_INDETERMINATE[] = {20, 45, 70, 95};
 // Cadence for re-rendering while a chapter build is delegated to the FIBP
 // prefetch worker (worker owns the build; the reader just polls for commit).
 constexpr unsigned long fibpDeferPollMs = 250;
@@ -720,13 +723,25 @@ bool EpubReaderActivity::loadBook() {
                                     ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
-      if (spineCount <= 0 || savedSpine >= static_cast<uint16_t>(spineCount) ||
-          (savedPageCount > 0 && savedPage >= savedPageCount && savedPage != UINT16_MAX)) {
+      // Design §3: charOffset + generation are the authoritative anchors, the
+      // page hint advisory. A stale hint on a record with a valid anchor is
+      // clamped, not dropped — the count mirror can lag a partial build.
+      const auto verdict = ttf_resolve::judgeSavedTtfRecord(spineCount, savedSpine, savedPage, savedPageCount,
+                                                            ttfHasGeneration, ttfSavedCharOffset);
+      if (verdict == ttf_resolve::ProgressVerdict::Reject) {
         LOG_DBG("ERS", "Ignoring corrupt TTF progress: spine=%u page=%u/%u", savedSpine, savedPage, savedPageCount);
         savedSpine = 0;
         savedPage = 0;
         savedPageCount = 0;
         ttfHasGeneration = false;
+      } else if (verdict == ttf_resolve::ProgressVerdict::ClampPageHint) {
+        const uint16_t clampedPage = static_cast<uint16_t>(savedPageCount - 1);
+        LOG_DBG("ERS", "Clamping stale TTF page hint: page=%u -> %u/%u", savedPage, clampedPage, savedPageCount);
+        savedPage = clampedPage;
+        // The count mirror lagged the build: publish "unknown" (0) instead of
+        // the stale total, or the status bar / KOReader sync would report a
+        // wrong chapter length until the rebuild overwrites the mirror.
+        savedPageCount = 0;
       }
       currentSpineIndex = savedSpine;
       nextPageNumber = savedPage == UINT16_MAX ? 0 : savedPage;
@@ -1871,6 +1886,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             backupPageCount = static_cast<uint16_t>(ttfPageCount);
             ttfCharOffset = ttfCurrentCharStart;
             ttfGen = ttfGeneration;
+            if (backupPageCount > 0 && backupPage >= backupPageCount) {
+              // Count mirror can lag a partial build: never write an
+              // internally inconsistent record.
+              backupPage = static_cast<uint16_t>(backupPageCount - 1);
+            }
           }
 #endif
           if (section) {
@@ -2970,20 +2990,41 @@ void EpubReaderActivity::ttfInvalidateCaches() {
 }
 
 void EpubReaderActivity::ttfShowIndexingPopup() {
-  // §3.4: Indexing popup + the theme's small progress bar. The popup rect is
-  // kept for the pass; fillPopupProgress feeds the metric-driven bar INSIDE
-  // the popup frame (BaseTheme::popupProgressBarHeight, optional outline,
+  // §3.4 (amended): Indexing popup + the theme's small progress bar. The popup
+  // rect is kept for the pass; fillPopupProgress feeds the bar INSIDE the
+  // popup frame (BaseTheme::popupProgressBarHeight, optional outline,
   // popupProgressClampPercent) and issues its own FAST_REFRESH. No percent
-  // text, no separate rect math. Progress basis is input-side build progress
-  // (sessionBytesConsumed/cacheBuildBytesConsumed) per design §3.4.
+  // text, no separate rect math.
+  //
+  // Bar honesty: the byte metric (sessionBytesConsumed/Total) is only
+  // truthful when the wait really is the whole chapter — normal forward
+  // indexing, and Percent/LastPage restores, which resolve only from a
+  // COMPLETE index. A cover-driven restore (CharOffset/Page kinds: Saved,
+  // Reflow, Seed, OffsetJump, Anchor — an offset or page target maps as soon
+  // as the built prefix covers it) finishes at an arbitrary fraction of the
+  // chapter, so the same metric can read 25% one frame and 100% the next
+  // right before the page paints. Those get a stepped indeterminate fill
+  // instead of a number that lies.
   const Rect popupRect = GUI.drawPopup(renderer, tr(STR_INDEXING));
-  const uint32_t consumed = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
-                                ? ttf_->sessionBytesConsumed()
-                                : (ttf_->cacheReady() ? ttf_->cacheBuildBytesConsumed() : 0);
-  const uint32_t total = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
-                             ? ttf_->sessionBytesTotal()
-                             : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
-  const int percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
+  const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
+  const bool restoreNeedsComplete = restorePending && (pendingRestoreTarget_.kind == PendingTarget::Percent ||
+                                                       pendingRestoreTarget_.kind == PendingTarget::LastPage);
+  int percent;
+  if (restorePending && !restoreNeedsComplete) {
+    percent = INDEX_BAR_INDETERMINATE[indexingBarStep_ % 4];
+    ++indexingBarStep_;
+    LOG_INF("ERS", "Indexing popup: cover-driven restore, indeterminate bar step %d", percent);
+  } else {
+    const uint32_t consumed = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
+                                  ? ttf_->sessionBytesConsumed()
+                                  : (ttf_->cacheReady() ? ttf_->cacheBuildBytesConsumed() : 0);
+    const uint32_t total = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
+                               ? ttf_->sessionBytesTotal()
+                               : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
+    percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
+    LOG_INF("ERS", "Indexing popup: restore=%d completeGated=%d consumed %lu/%lu bytes (%d%%)", restorePending,
+            restoreNeedsComplete, static_cast<unsigned long>(consumed), static_cast<unsigned long>(total), percent);
+  }
   GUI.fillPopupProgress(renderer, popupRect, percent);
   pagesUntilFullRefresh = 1;
   indexingPopupShown = true;
@@ -2994,6 +3035,32 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
 // pending and are retried on the next render pass). `needFullBuild` asks for
 // a complete build (percent jumps / last-page sentinels), not just enough
 // pages to cover the target.
+void EpubReaderActivity::consumeRestoreTarget() {
+  // Origin-aware source-latch consumption (§3.2): the caller owns the
+  // latches, so it clears exactly the one that produced the target.
+  switch (pendingRestoreTarget_.origin) {
+    case PendingTarget::Origin::Anchor:
+      pendingAnchor.clear();
+      break;
+    case PendingTarget::Origin::Saved:
+      ttfHasSavedPosition = false;
+      break;
+    case PendingTarget::Origin::OffsetJump:
+      pendingOffsetJump.reset();
+      break;
+    case PendingTarget::Origin::Reflow:
+    case PendingTarget::Origin::Seed:
+      break;  // no extra latch: the seed latch is cleared below for every origin
+    case PendingTarget::Origin::OriginNone:
+    default:
+      break;  // no source latch (unexpected for a stored target)
+  }
+  LOG_INF("ERS", "TTF restore consumed: spine %d page %d origin %u", currentSpineIndex, ttfPage,
+          static_cast<unsigned>(pendingRestoreTarget_.origin));
+  ttfReflowSeedPage = -1;
+  pendingRestoreTarget_ = {};
+}
+
 bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params,
                                               bool& needFullBuild) {
   (void)params;
@@ -3057,6 +3124,27 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   // ttf_resolve helpers; this function handles anchor resolution (SDK call)
   // and the origin-aware source-latch side effects.
   PendingTarget active = pendingRestoreTarget_;
+  // An explicit navigation request (KOReader offset jump, TOC/footnote anchor)
+  // supersedes an implicit restore target (saved record, reflow, preview
+  // seed): drop the stored implicit target so the derivation below sees only
+  // the explicit latch. Implicit latches are cleared with it — the position
+  // they point at is re-saved from the new location on close.
+  // The stored origin alone is not enough: the implicit restore can also exist
+  // only as a raw latch (pendingRestoreTarget_ still None), and deriveTarget()
+  // ranks hasSavedPosition ahead of the explicit jump/anchor — the surviving
+  // latch would win the pass. Supersede on the stored implicit target OR either
+  // implicit latch, then clear BOTH latches unconditionally (a Reflow/Seed
+  // stored target can coexist with an armed saved-position latch).
+  if ((pendingOffsetJump.has_value() || !pendingAnchor.empty()) &&
+      (active.origin == PendingTarget::Origin::Saved || active.origin == PendingTarget::Origin::Reflow ||
+       active.origin == PendingTarget::Origin::Seed || ttfHasSavedPosition || ttfReflowSeedPage >= 0)) {
+    LOG_DBG("ERS", "Restore superseded by explicit navigation (stored origin %u)",
+            static_cast<unsigned>(active.origin));
+    ttfHasSavedPosition = false;
+    ttfReflowSeedPage = -1;
+    pendingRestoreTarget_ = {};
+    active = {};
+  }
   if (active.kind == PendingTarget::None) {
     const ttf_resolve::LatchState latches{
         .reflowSeedPage = ttfReflowSeedPage,
@@ -3123,26 +3211,11 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     targetOut = outcome.page;
     needFullBuild = outcome.needFullBuild;
     if (outcome.resolved) {
-      // Origin-aware source-latch consumption (§3.2): the caller owns the
-      // latches, so it clears exactly the one that produced the target.
-      switch (active.origin) {
-        case PendingTarget::Origin::Anchor:
-          pendingAnchor.clear();
-          break;
-        case PendingTarget::Origin::Saved:
-          ttfHasSavedPosition = false;
-          break;
-        case PendingTarget::Origin::OffsetJump:
-          pendingOffsetJump.reset();
-          break;
-        default:
-          break;  // Reflow / Seed targets have no extra latch beyond the target itself
-      }
-      // Any resolution supersedes a pending preview/reflow seed hint: the
-      // seed names a page of an older layout generation and must not redirect
-      // later passes.
-      ttfReflowSeedPage = -1;
-      pendingRestoreTarget_ = {};
+      // Consume-on-paint (§3.2): the source latches and the stored target stay
+      // set until the target page is actually on screen (see the consume in
+      // renderBookTtf after readPage). A resolve alone is not durable — the
+      // partial build behind it can still be lost to a failed suspend/commit,
+      // and the funnel must be able to re-derive the same target and rebuild.
       return true;
     }
     return false;
@@ -3470,8 +3543,11 @@ void EpubReaderActivity::renderBookTtf() {
   // commits its partial), then build inline to the target.
   if (fibpResumeClaimedSpine_ == currentSpineIndex &&
       (pendingRestore || needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount)))) {
-    LOG_INF("ERS", "Reader takes resume claim over: spine %d", currentSpineIndex);
+    LOG_INF("ERS", "Reader takes resume claim over: spine %d (pending=%d needFull=%d target=%d pages=%u)",
+            currentSpineIndex, pendingRestore, needFullBuild, target, static_cast<unsigned>(ttfPageCount));
+    const unsigned long joinStartMs = millis();
     stopFibpWorker();
+    LOG_INF("ERS", "Resume claim: worker stopped in %lu ms", millis() - joinStartMs);
     fibpResumeClaimedSpine_ = -1;
     fibpResumeSeenBuilding_ = false;
     ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
@@ -3563,7 +3639,14 @@ void EpubReaderActivity::renderBookTtf() {
     // handoff (2b) picks it up next pass and the reader reads while the
     // chapter finishes off-task. Non-worker builds keep the session (the
     // background tick pump drives it with per-page progress logs).
-    if (ttf_->sessionActive() && fibpWorker_ != nullptr) {
+    // Guards: only an ARMED worker may take over (an allocated-but-unbegun
+    // worker object here would abort a healthy inline build), and a pending
+    // restore is never handed off — the target page must be painted from this
+    // build before the position can be consumed.
+    if (ttf_->sessionActive() && fibpWorker_ != nullptr && fibpBegun_ &&
+        pendingRestoreTarget_.kind == PendingTarget::None) {
+      LOG_INF("ERS", "Owner steer: spine %d to worker at %u pages", currentSpineIndex,
+              static_cast<unsigned>(ttfPageCount));
       ttf_->abortSession();
     }
   }
@@ -3620,7 +3703,38 @@ void EpubReaderActivity::renderBookTtf() {
   }
 
   if (ttfPageCount == 0) {
-    LOG_DBG("ERS", "TTF: no pages in chapter");
+    const bool buildInFlight = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex));
+    // Same spine/generation match the resolver's own cache checks use
+    // (availablePageCount answers only the cache's own chapter,
+    // TtfBookRuntime.cpp:176): a ready-but-stale or foreign-spine cache must
+    // not count as complete, or a pending restore would be consumed as
+    // terminal while the real chapter has not been built yet.
+    const bool cacheComplete = ttf_->cacheReady() && ttf_->cacheSpine() == static_cast<uint16_t>(currentSpineIndex) &&
+                               ttf_->cacheGeneration() == ttfGeneration && !ttf_->cachePartial() && !buildInFlight;
+    const bool restorePending = pendingRestoreTarget_.kind != PendingTarget::None;
+    if (buildInFlight || (restorePending && !cacheComplete)) {
+      // A build is in flight (or the index can still grow) with nothing
+      // committed yet: that is Indexing, not an empty chapter — with or
+      // without a pending restore. Painting Empty here would reset
+      // nextPageNumber and send the reader to the chapter start once the
+      // rebuild lands. (cacheComplete already implies !buildInFlight, so the
+      // terminal branch below only runs when no build can add pages.)
+      LOG_INF("ERS", "Spine %d has no pages yet — restore pending=%d build active=%d, showing Indexing",
+              currentSpineIndex, restorePending, buildInFlight);
+      ttfShowIndexingPopup();
+      requestUpdate();
+      return;
+    }
+    if (restorePending) {
+      // Terminal: the chapter is complete with zero pages, so the restore
+      // target can never map. Consume it through the origin-aware path so the
+      // source latch that produced it dies too — the funnel would otherwise
+      // re-derive it on every later render (an offset jump can leak into
+      // another chapter).
+      LOG_INF("ERS", "Spine %d complete with 0 pages — restore cannot map, opening empty", currentSpineIndex);
+      consumeRestoreTarget();
+    }
+    LOG_INF("ERS", "TTF: empty chapter (spine %d, no pages, no pending restore/build)", currentSpineIndex);
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_CHAPTER), true, EpdFontFamily::BOLD);
     nextPageNumber = 0;
@@ -3665,6 +3779,16 @@ void EpubReaderActivity::renderBookTtf() {
   // A still-pending preview seed counts as unresolved for the same reason: the
   // page served is a clamp to the last built page, not the reader's position,
   // so its charStart must not overwrite the real offset either.
+  // Consume-on-paint (§3.2): the restore target is only consumed once its
+  // page is actually on screen. A resolver "resolve" alone is not durable —
+  // the partial build behind it can be lost to a failed suspend/commit (the
+  // funnel then re-derives the still-set latches and rebuilds). Placeholder
+  // paints are not the reader's position, so they consume nothing. Consuming
+  // BEFORE the mirror lets a seed target's own paint clear the seed guard and
+  // establish the position in the same pass.
+  const bool consumeRestore =
+      !servedPlaceholderPage && resolved && ttfPage == target && pendingRestoreTarget_.kind != PendingTarget::None;
+  if (consumeRestore) consumeRestoreTarget();
   if (!servedPlaceholderPage && ttfReflowSeedPage < 0) ttfCurrentCharStart = page.charStart;
 
   // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
@@ -4248,7 +4372,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     // undiagnosable — every pump tick now names the spine, pages done, and
     // the tick cost so a soak log separates progress from a hang.
     const uint16_t after = ttf_->availablePageCount(spine);
-    LOG_INF("ERS", "bg build spine %u: %u pages (+%u, %lu ms)", spine, after, after - before,
+    LOG_INF("ERS", "bg build spine %u: %u pages (%+d, %lu ms)", spine, after,
+            static_cast<int32_t>(after) - static_cast<int32_t>(before),
             static_cast<unsigned long>(millis() - tickStart));
     powerManager.pokeNormalSpeed();
     if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
@@ -4303,7 +4428,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       const freeink::book::ChapterPump pump =
           freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), 1, &st);
       const uint16_t after = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
-      LOG_INF("ERS", "resume build spine %d: %u pages (+%u, %lu ms)", currentSpineIndex, after, after - before,
+      LOG_INF("ERS", "resume build spine %d: %u pages (%+d, %lu ms)", currentSpineIndex, after,
+              static_cast<int32_t>(after) - static_cast<int32_t>(before),
               static_cast<unsigned long>(millis() - tickStart));
       powerManager.pokeNormalSpeed();
       if (pump == freeink::book::ChapterPump::Complete) {
@@ -4331,7 +4457,10 @@ void EpubReaderActivity::updateFibpWorker(const uint32_t generation, const freei
   if (!fibpBegun_) {
     // Single-writer: a legacy prefetch/sync session in flight owns its spine
     // — wait for it to drain before spawning the worker.
-    if (ttf_->sessionActive()) return;
+    if (ttf_->sessionActive()) {
+      LOG_DBG("ERS", "Worker begin deferred: reader session active");
+      return;
+    }
     freeink::book::FibpPrefetchWorker::BeginContext ctx;
     snprintf(ctx.epubPath, sizeof(ctx.epubPath), "%s", bookPath.c_str());
     snprintf(ctx.cacheDir, sizeof(ctx.cacheDir), "%s/ficache", epub->getCachePath().c_str());
@@ -4445,11 +4574,21 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   // §5.4: Superseding navigation cancels the restore. A navigation press
   // processed between restore passes clears the pending restore and takes
   // effect as a normal navigation — the anchor no longer describes where the
-  // user wants to be; their explicit navigation wins. The cancel happens at
-  // the ENTRY of the superseding path so the fast/slow render branches cannot
-  // drift. (reader-position-and-reindex.md: a superseding navigation must
-  // cancel a pending one-shot.)
-  pendingRestoreTarget_ = {};
+  // user wants to be; their explicit navigation wins. The stored target is
+  // cleared WITH the implicit source latches on every path that actually
+  // navigates (below), never at entry: a backward-at-start no-op returns
+  // false without navigating, and Reflow has no raw latch to re-derive from,
+  // so an entry-level clear would lose the restore and drop the next render
+  // at the chapter start. (reader-position-and-reindex.md: a superseding
+  // navigation must cancel a pending one-shot — every cancel site is a
+  // success path, so the fast/slow render branches cannot drift.)
+  // The implicit source latches are cleared below on every path that actually
+  // navigates (consume-on-paint leaves them armed until a paint, so the next
+  // render would otherwise re-derive the cancelled restore and override the
+  // turn). A backward-at-start no-op returns false WITHOUT clearing them: the
+  // turn changed nothing, so a pending restore must still re-derive on the
+  // next render. Explicit latches (offset jump / anchor) keep the current
+  // behavior — they still apply after the turn.
   // Input-first rule (soak finding #5): a turn aborts any mid-pump prerender
   // immediately — the framebuffer holds a PARTIAL page that must neither be
   // consumed nor snapshot. The press is served within one slice of landing.
@@ -4509,6 +4648,9 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       // the next page's prerender.
       ttfUsePreRenderedBuffer = true;
       lastPageTurnTime = millis();
+      ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
+      ttfReflowSeedPage = -1;
+      pendingRestoreTarget_ = {};
 #ifdef READING_STATS_ENABLED
       pageShownAtMs = millis();
 #endif
@@ -4566,6 +4708,9 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
   pageShownAtMs = millis();
 #endif
   logMemAt("page_turn");
+  ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
+  ttfReflowSeedPage = -1;
+  pendingRestoreTarget_ = {};
   return true;
 }
 

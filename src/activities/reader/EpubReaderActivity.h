@@ -259,6 +259,9 @@ class EpubReaderActivity final : public ReaderActivity {
   // exactly that latch when the target resolves.
   using PendingTarget = ttf_resolve::PendingTarget;
   PendingTarget pendingRestoreTarget_{};
+  // Cycles the Indexing popup's indeterminate fill while a cover-driven
+  // restore is pending (see ttfShowIndexingPopup) — one step per drawn pass.
+  uint8_t indexingBarStep_ = 0;
 
   // Page the font preview resolved for the current spine under the settings
   // being committed. Its transient layout pass runs the same engine and
@@ -286,6 +289,10 @@ class EpubReaderActivity final : public ReaderActivity {
   // selector was opened on (same spine/page members, reader frozen beneath).
   static void renderTtfSelectorPage(void* ctx, GfxRenderer& renderer);
   bool ttfResolveTargetPage(int& targetOut, const freeink::book::LayoutParams& params, bool& needFullBuild);
+  // Consume-on-paint (§3.2): clears the restore target and exactly the source
+  // latch its origin names, plus any pending preview seed. Runs only after the
+  // target page was actually read for paint (see renderBookTtf).
+  void consumeRestoreTarget();
   void ttfBackgroundBuildTick();
   void ttfPrefetchTick();
   // Index-ahead worker wiring (R3/R4): (re)spawn/notify on the current

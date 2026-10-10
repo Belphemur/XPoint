@@ -366,3 +366,47 @@ TEST(SequenceTest, DerivedRestoreTargetIsStoredAndPumps) {
   EXPECT_FALSE(result.resolved);
   EXPECT_FALSE(result.needFullBuild);  // the pump loop keeps running across passes
 }
+
+// ── Saved-record load guard (design §3: anchor authoritative, page advisory) ──
+
+TEST(JudgeSavedTtfRecordTest, ConsistentRecordAccepted) {
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(24, 6, 9, 24, true, 3600), ttf_resolve::ProgressVerdict::Accept);
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(24, 6, 0, 0, true, 0), ttf_resolve::ProgressVerdict::Accept);
+}
+
+TEST(JudgeSavedTtfRecordTest, LastPageHintAccepted) {
+  // page == count-1 is the boundary, not stale.
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(24, 6, 23, 24, true, 3600), ttf_resolve::ProgressVerdict::Accept);
+}
+
+TEST(JudgeSavedTtfRecordTest, NoPageHintSentinelAccepted) {
+  // UINT16_MAX is the "no page hint" sentinel, never treated as stale.
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(24, 6, UINT16_MAX, 3, true, 3600), ttf_resolve::ProgressVerdict::Accept);
+}
+
+TEST(JudgeSavedTtfRecordTest, StaleHintWithValidAnchorClamped) {
+  // Soak 2026-10-09: DELETE-Cache mid-partial-build wrote page=9/3 with a
+  // valid charOffset+generation anchor. Must clamp, not drop.
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 6, 9, 3, true, 3600), ttf_resolve::ProgressVerdict::ClampPageHint);
+}
+
+TEST(JudgeSavedTtfRecordTest, StaleHintLegacyShapeRejected) {
+  // Legacy-shape record (no generation) has no anchor: strict reject.
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 6, 9, 3, false, 0), ttf_resolve::ProgressVerdict::Reject);
+}
+
+TEST(JudgeSavedTtfRecordTest, StaleHintWithoutCharOffsetRejected) {
+  // Generation present but no char offset anchor: nothing to restore from.
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 6, 9, 3, true, 0), ttf_resolve::ProgressVerdict::Reject);
+}
+
+TEST(JudgeSavedTtfRecordTest, BadSpineRejectedEvenWithAnchor) {
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 12, 9, 3, true, 3600), ttf_resolve::ProgressVerdict::Reject);
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(0, 0, 9, 3, true, 3600), ttf_resolve::ProgressVerdict::Reject);
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(-1, 0, 9, 3, true, 3600), ttf_resolve::ProgressVerdict::Reject);
+}
+
+TEST(JudgeSavedTtfRecordTest, StaleHintOnCountZeroAccepted) {
+  // count == 0 means no page hint; the page>=count clause never fires.
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 6, 9, 0, true, 3600), ttf_resolve::ProgressVerdict::Accept);
+}

@@ -153,7 +153,7 @@ bool SdCardCacheStorage::endWrite() {
     return false;
   }
   if (!writeHandle_.sync()) {
-    LOG_ERR("TTFB", "endWrite: sync failed");
+    LOG_ERR("TTFB", "endWrite: sync failed (%s)", writeTmpPath_);
     // Mark the write failed BEFORE closing: PageCacheWriter's failure cleanup
     // calls remove() once the handle is closed, and remove() only retains the
     // last good final while a failed write is visible. Without this flag a
