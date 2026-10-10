@@ -698,13 +698,21 @@ bool EpubReaderActivity::loadBook() {
                                     ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
-      if (spineCount <= 0 || savedSpine >= static_cast<uint16_t>(spineCount) ||
-          (savedPageCount > 0 && savedPage >= savedPageCount && savedPage != UINT16_MAX)) {
+      // Design §3: charOffset + generation are the authoritative anchors, the
+      // page hint advisory. A stale hint on a record with a valid anchor is
+      // clamped, not dropped — the count mirror can lag a partial build.
+      const auto verdict = ttf_resolve::judgeSavedTtfRecord(spineCount, savedSpine, savedPage, savedPageCount,
+                                                            ttfHasGeneration, ttfSavedCharOffset);
+      if (verdict == ttf_resolve::ProgressVerdict::Reject) {
         LOG_DBG("ERS", "Ignoring corrupt TTF progress: spine=%u page=%u/%u", savedSpine, savedPage, savedPageCount);
         savedSpine = 0;
         savedPage = 0;
         savedPageCount = 0;
         ttfHasGeneration = false;
+      } else if (verdict == ttf_resolve::ProgressVerdict::ClampPageHint) {
+        const uint16_t clampedPage = static_cast<uint16_t>(savedPageCount - 1);
+        LOG_DBG("ERS", "Clamping stale TTF page hint: page=%u -> %u/%u", savedPage, clampedPage, savedPageCount);
+        savedPage = clampedPage;
       }
       currentSpineIndex = savedSpine;
       nextPageNumber = savedPage == UINT16_MAX ? 0 : savedPage;
@@ -1672,6 +1680,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
             backupPageCount = static_cast<uint16_t>(ttfPageCount);
             ttfCharOffset = ttfCurrentCharStart;
             ttfGen = ttfGeneration;
+            if (backupPageCount > 0 && backupPage >= backupPageCount) {
+              // Count mirror can lag a partial build: never write an
+              // internally inconsistent record.
+              backupPage = static_cast<uint16_t>(backupPageCount - 1);
+            }
           }
 #endif
           if (section) {

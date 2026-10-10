@@ -47,6 +47,26 @@ struct LatchState {
   uint32_t anchorHash = 0;
 };
 
+// Load-time verdict for a saved TTF progress record (design §3: the
+// charOffset + generation anchor is authoritative, the page hint advisory).
+// Reject = spine checks failed (unrecoverable) or a legacy-shape record has a
+// stale page hint. ClampPageHint = stale page hint on a record with a valid
+// anchor — keep the anchor, clamp the advisory page to the last built page
+// (the count mirror can lag a partial build).
+enum class ProgressVerdict : uint8_t { Accept, ClampPageHint, Reject };
+
+// Judge a record read by openBookTtf() before it seeds the reader latches.
+// spineCount <= 0 or a bad spine is a hard reject: an anchor cannot recover a
+// spine that does not exist. page == UINT16_MAX is the "no page hint" sentinel.
+inline ProgressVerdict judgeSavedTtfRecord(int spineCount, uint16_t savedSpine, uint16_t savedPage,
+                                           uint16_t savedPageCount, bool hasGeneration,
+                                           uint32_t savedCharOffset) {
+  if (spineCount <= 0 || savedSpine >= static_cast<uint16_t>(spineCount)) return ProgressVerdict::Reject;
+  const bool pageHintStale = savedPageCount > 0 && savedPage >= savedPageCount && savedPage != UINT16_MAX;
+  if (!pageHintStale) return ProgressVerdict::Accept;
+  return (hasGeneration && savedCharOffset != 0) ? ProgressVerdict::ClampPageHint : ProgressVerdict::Reject;
+}
+
 // Saved-record degradation (§7): the record cannot map in this chapter.
 enum class Degrade : uint8_t { None, ChapterStart };
 
