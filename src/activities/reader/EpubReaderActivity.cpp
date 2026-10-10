@@ -1469,6 +1469,9 @@ void EpubReaderActivity::loop() {
       !showDictionaryMessage && !automaticPageTurnActive) {
     int lx = 0, ly = 0;
     if (mappedInput.wasScreenLongPress(lx, ly)) {
+      // Match the clip branch: a manual turn queued while the turn guard was
+      // busy must not fire on the page left behind after the selector closes.
+      pendingManualTurn = 0;
       const auto mode = (longPressRoute == TouchLongPressRoute::Footnote) ? TouchLongPressMode::Footnote
                                                                           : TouchLongPressMode::Dictionary;
       openDictionaryWordSelect(lx, ly, mode);
