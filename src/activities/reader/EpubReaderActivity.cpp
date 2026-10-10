@@ -4154,7 +4154,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
     // undiagnosable — every pump tick now names the spine, pages done, and
     // the tick cost so a soak log separates progress from a hang.
     const uint16_t after = ttf_->availablePageCount(spine);
-    LOG_INF("ERS", "bg build spine %u: %u pages (+%u, %lu ms)", spine, after, after - before,
+    LOG_INF("ERS", "bg build spine %u: %u pages (%+d, %lu ms)", spine, after,
+            static_cast<int32_t>(after) - static_cast<int32_t>(before),
             static_cast<unsigned long>(millis() - tickStart));
     powerManager.pokeNormalSpeed();
     if (!ttf_->sessionActive()) {  // finished (or failed) in this tick
@@ -4209,7 +4210,8 @@ void EpubReaderActivity::ttfBackgroundBuildTick() {
       const freeink::book::ChapterPump pump =
           freeink::book::pumpChapterChunk(*ttf_, static_cast<uint16_t>(currentSpineIndex), 1, &st);
       const uint16_t after = ttf_->availablePageCount(static_cast<uint16_t>(currentSpineIndex));
-      LOG_INF("ERS", "resume build spine %d: %u pages (+%u, %lu ms)", currentSpineIndex, after, after - before,
+      LOG_INF("ERS", "resume build spine %d: %u pages (%+d, %lu ms)", currentSpineIndex, after,
+              static_cast<int32_t>(after) - static_cast<int32_t>(before),
               static_cast<unsigned long>(millis() - tickStart));
       powerManager.pokeNormalSpeed();
       if (pump == freeink::book::ChapterPump::Complete) {
