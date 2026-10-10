@@ -3538,12 +3538,20 @@ void EpubReaderActivity::renderBookTtf() {
   // (resolved && target >= ttfPageCount) holds — the first pass after reopen
   // would build nothing and paint the popup forever.
   const bool pendingRestore = pendingRestoreTarget_.kind != PendingTarget::None;
+  // Consume-on-paint (§3.2) keeps pendingRestoreTarget_ set until the target
+  // page paints, so a raw pendingRestore no longer means "a build is needed":
+  // a restore the current index already covers (complete cache, or a partial
+  // holding the anchor) resolves in the funnel and paints in THIS pass.
+  // Gating the session/popup on the raw flag opened a fresh layout session
+  // OVER a complete cache and flashed Indexing on every reopen — the v2.6.0
+  // regression. Gate on "restore still uncovered" instead.
+  const bool restoreNeedsBuild = pendingRestore && !resolved;
 
   // Reader needs pages the partial lacks while the worker holds the resume
   // claim: take the spine back (worker aborts at the next page boundary and
   // commits its partial), then build inline to the target.
   if (fibpResumeClaimedSpine_ == currentSpineIndex &&
-      (pendingRestore || needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount)))) {
+      (restoreNeedsBuild || needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount)))) {
     LOG_INF("ERS", "Reader takes resume claim over: spine %d (pending=%d needFull=%d target=%d pages=%u)",
             currentSpineIndex, pendingRestore, needFullBuild, target, static_cast<unsigned>(ttfPageCount));
     const unsigned long joinStartMs = millis();
@@ -3561,17 +3569,18 @@ void EpubReaderActivity::renderBookTtf() {
   // workerOwnsSpine: the worker is mid-build on this spine. Opening an inline
   // session here would be a second writer on the same FIBP file — serve the
   // pages it has already committed and let it finish.
-  if (!workerOwnsSpine && (pendingRestore || needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount))) &&
+  if (!workerOwnsSpine &&
+      (restoreNeedsBuild || needFullBuild || (resolved && target >= static_cast<int>(ttfPageCount))) &&
       !ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))) {
     const uint32_t spineBytes = ttf_->catalog().spineSize(static_cast<size_t>(currentSpineIndex));
     // §3.4 / §3.5: Show Indexing while a pending restore owns the pass —
     // a cold or stale cache and a settings-driven reflow always rebuild
     // across render passes, so show it; a warm top-up of a partial cache
     // stays threshold-gated to avoid a flash. No page is painted while the
-    // restore is pending (§3.5).
-    const bool pendingRestore = pendingRestoreTarget_.kind != PendingTarget::None;
+    // restore is pending (§3.5). A restore the index already covers
+    // (restoreNeedsBuild false) paints directly — see the gate above.
     const bool partialCache = ttf_->cacheReady() && ttf_->cachePartial();
-    if (!ttf_->cacheReady() || pendingRestore || needFullBuild ||
+    if (!ttf_->cacheReady() || restoreNeedsBuild || needFullBuild ||
         (partialCache && (spineBytes > BUILD_POPUP_BYTE_THRESHOLD || target > BUILD_POPUP_PAGE_THRESHOLD))) {
       // A chapter that already has MIN_PAGES_TO_CLEAR_POPUP pages is readable,
       // so painting Indexing over it would be a lie — the reader gets the page
