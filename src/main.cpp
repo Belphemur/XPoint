@@ -804,8 +804,9 @@ void setup() {
   // begin() work delay) — so a held-stability check would eat every short click
   // wake. Only the post-power-off (cold-boot) path actually has a held button to
   // verify, and that's the ghost-wake debounce the SETTINGS check covers.
-  const bool wakeHoldVerified =
-      wakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.wokeFromDeepSleep() || gpio.verifyPowerButtonWakeup();
+  // The Metalio boots after the button is released, so it skips the check.
+  const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || gpio.wokeFromDeepSleep() ||
+                                BoardConfig::isMetalioEInk4() || gpio.verifyPowerButtonWakeup();
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
