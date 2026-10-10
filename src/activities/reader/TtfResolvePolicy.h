@@ -59,8 +59,7 @@ enum class ProgressVerdict : uint8_t { Accept, ClampPageHint, Reject };
 // spineCount <= 0 or a bad spine is a hard reject: an anchor cannot recover a
 // spine that does not exist. page == UINT16_MAX is the "no page hint" sentinel.
 inline ProgressVerdict judgeSavedTtfRecord(int spineCount, uint16_t savedSpine, uint16_t savedPage,
-                                           uint16_t savedPageCount, bool hasGeneration,
-                                           uint32_t savedCharOffset) {
+                                           uint16_t savedPageCount, bool hasGeneration, uint32_t savedCharOffset) {
   if (spineCount <= 0 || savedSpine >= static_cast<uint16_t>(spineCount)) return ProgressVerdict::Reject;
   const bool pageHintStale = savedPageCount > 0 && savedPage >= savedPageCount && savedPage != UINT16_MAX;
   if (!pageHintStale) return ProgressVerdict::Accept;

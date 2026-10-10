@@ -381,15 +381,13 @@ TEST(JudgeSavedTtfRecordTest, LastPageHintAccepted) {
 
 TEST(JudgeSavedTtfRecordTest, NoPageHintSentinelAccepted) {
   // UINT16_MAX is the "no page hint" sentinel, never treated as stale.
-  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(24, 6, UINT16_MAX, 3, true, 3600),
-            ttf_resolve::ProgressVerdict::Accept);
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(24, 6, UINT16_MAX, 3, true, 3600), ttf_resolve::ProgressVerdict::Accept);
 }
 
 TEST(JudgeSavedTtfRecordTest, StaleHintWithValidAnchorClamped) {
   // Soak 2026-10-09: DELETE-Cache mid-partial-build wrote page=9/3 with a
   // valid charOffset+generation anchor. Must clamp, not drop.
-  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 6, 9, 3, true, 3600),
-            ttf_resolve::ProgressVerdict::ClampPageHint);
+  EXPECT_EQ(ttf_resolve::judgeSavedTtfRecord(12, 6, 9, 3, true, 3600), ttf_resolve::ProgressVerdict::ClampPageHint);
 }
 
 TEST(JudgeSavedTtfRecordTest, StaleHintLegacyShapeRejected) {
