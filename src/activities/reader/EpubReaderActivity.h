@@ -415,6 +415,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void rememberCurrentContentOffset();
   void jumpToPercent(int percent);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  int currentTocIndex() const;
   // Live section position, or the values cached before a child screen
   // released the section.
   ChapterPosition chapterPosition() const;
