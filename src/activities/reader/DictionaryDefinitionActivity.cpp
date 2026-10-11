@@ -89,7 +89,12 @@ DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() 
   const int topArea = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing + headwordHeight;
   const int bottomArea =
       metrics.buttonHintsHeight + metrics.verticalSpacing + SEARCH_BUTTON_HEIGHT + metrics.verticalSpacing;
-  return {overlayWidth - 2 * SIDE_PADDING, overlayHeight - topArea - bottomArea};
+  // BodyArea is {x, y, width, height}: a partial brace-init here zeroed
+  // width/height, collapsing the viewport to 0x0 — every definition then
+  // "wrapped" into one near-empty page per character (serial: 1632 bytes ->
+  // 1522 pages, body=0x0). Fill all four fields.
+  return {overlayX + SIDE_PADDING, overlayY + topArea, overlayWidth - 2 * SIDE_PADDING,
+          overlayHeight - topArea - bottomArea};
 }
 
 void DictionaryDefinitionActivity::overlayBounds(int& x, int& y, int& width, int& height) const {
