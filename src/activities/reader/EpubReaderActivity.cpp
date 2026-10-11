@@ -36,6 +36,7 @@
 #include "DictionaryWordSelectActivity.h"
 #include "FrontlightControl.h"
 #include "MemSentinel.h"
+#include "TouchLongPressRoute.h"
 #if defined(CROSSPOINT_TTF_READER)
 #include "FontPreviewActivity.h"
 #include "QuickPageRelayout.h"
@@ -1384,9 +1385,19 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // One setting decides the long-press route and only the matching consumer
+  // reads wasScreenLongPress() (it suppresses the touch contact and stays true
+  // for the rest of the frame -- InputManager clears the event next update).
+  // Without this, upstream's clip gate shadowed the dictionary branch since
+  // v2.6.0 because it ran first and returned after consuming the event.
+  const auto longPressRoute = resolveTouchLongPressRoute(SETTINGS.touchLongPressAction);
+  static_assert(CrossPointSettings::TOUCH_LP_DICTIONARY == 0 && CrossPointSettings::TOUCH_LP_IGNORE == 1 &&
+                    CrossPointSettings::TOUCH_LP_FOOTNOTE == 2,
+                "TouchLongPressRoute.h maps these persisted menu indexes");
   int selectionX = 0;
   int selectionY = 0;
-  if (!atEndOfBook && SETTINGS.touchReaderControls && mappedInput.wasScreenLongPress(selectionX, selectionY)) {
+  if (!atEndOfBook && SETTINGS.touchReaderControls && longPressRoute == TouchLongPressRoute::ClipSelection &&
+      mappedInput.wasScreenLongPress(selectionX, selectionY)) {
     automaticPageTurnActive = false;
     pendingManualTurn = 0;
     startClipSelection(selectionX, selectionY);
@@ -1454,13 +1465,15 @@ void EpubReaderActivity::loop() {
   }
 
   if (SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF && mappedInput.hasTouch() &&
-      SETTINGS.touchLongPressAction != CrossPointSettings::TOUCH_LP_IGNORE && !showDictionaryMessage &&
-      !automaticPageTurnActive) {
+      (longPressRoute == TouchLongPressRoute::Dictionary || longPressRoute == TouchLongPressRoute::Footnote) &&
+      !showDictionaryMessage && !automaticPageTurnActive) {
     int lx = 0, ly = 0;
     if (mappedInput.wasScreenLongPress(lx, ly)) {
-      const auto mode = (SETTINGS.touchLongPressAction == CrossPointSettings::TOUCH_LP_FOOTNOTE)
-                            ? TouchLongPressMode::Footnote
-                            : TouchLongPressMode::Dictionary;
+      // Match the clip branch: a manual turn queued while the turn guard was
+      // busy must not fire on the page left behind after the selector closes.
+      pendingManualTurn = 0;
+      const auto mode = (longPressRoute == TouchLongPressRoute::Footnote) ? TouchLongPressMode::Footnote
+                                                                          : TouchLongPressMode::Dictionary;
       openDictionaryWordSelect(lx, ly, mode);
       return;
     }
