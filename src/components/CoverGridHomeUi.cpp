@@ -12,6 +12,7 @@
 #include "UITheme.h"
 #include "icons/blocks.h"
 #include "icons/book.h"
+#include "icons/chartbar.h"
 #include "icons/folder.h"
 #include "icons/library.h"
 #include "icons/settings2.h"
@@ -266,16 +267,28 @@ void CoverGridHomeUi::drawGrid(UiScreen& screen) {
 }
 
 void CoverGridHomeUi::drawTabs(UiScreen& screen, fui::Rect rect) {
-  static constexpr const uint8_t* ICONS[] = {FolderIcon, LibraryIcon, BlocksIcon, TransferIcon, Settings2Icon};
+  // Tab slots mirror HomeActivity's menu model — see HomeActivity::indexToMenuItem()
+  // (coupling point: keep the two orders in sync). Emitted values stay menu-model
+  // indices offset by the book count so HomeActivity::loop resolves them.
   int count = 0;
-  for (int i = 0; i < 5; ++i) {
-    if (i == 2 && !hasOpds) continue;
+  int modelIndex = 0;
+  const auto addTab = [&](const uint8_t* icon) {
+    tabIcons[count] = icon;
     auto& tab = tabItems[count];
-    tab.value = books->size() + count;
+    tab.value = books->size() + modelIndex;
     tab.selected = selected == tab.value;
     tab.label = nullptr;
     ++count;
-  }
+    ++modelIndex;
+  };
+  addTab(FolderIcon);
+  addTab(LibraryIcon);
+  if (hasOpds) addTab(BlocksIcon);  // the OPDS/Plugins library slot
+#ifdef READING_STATS_ENABLED
+  addTab(ChartBarIcon);
+#endif
+  addTab(TransferIcon);
+  addTab(Settings2Icon);
   tabs.tabs = tabItems.data();
   tabs.count = count;
   tabs.layout = fui::TabBarLayout::SpaceBetween;
@@ -283,11 +296,9 @@ void CoverGridHomeUi::drawTabs(UiScreen& screen, fui::Rect rect) {
   tabs.inputMask = fui::InputTouch;
   tabs.iconSize = 32;
   tabs.iconPainterUserData = this;
-  tabs.iconPainter = [](fui::DrawTarget&, fui::Rect iconRect, const fui::TabItem& tab, uint8_t, void* user) {
+  tabs.iconPainter = [](fui::DrawTarget&, fui::Rect iconRect, const fui::TabItem&, uint8_t index, void* user) {
     const auto& self = *static_cast<CoverGridHomeUi*>(user);
-    const int index = tab.value - static_cast<int>(self.books->size());
-    const int icon = !self.hasOpds && index >= 2 ? index + 1 : index;
-    self.renderer.drawIcon(ICONS[icon], iconRect.x, iconRect.y, iconRect.width);
+    self.renderer.drawIcon(self.tabIcons[index], iconRect.x, iconRect.y, iconRect.width);
     return true;
   };
   tabs.tabStyles.normal.background = fui::Paint::solid(fui::Color::White);
