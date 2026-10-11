@@ -502,7 +502,7 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   if (!definition.empty()) LOG_DBG("DICT", "definition head (first 120 bytes): %.120s", definition.c_str());
   if (!definition.empty())
     LOG_DBG("DICT", "definition tail (last 80 bytes): %.80s",
-            definition.c_str() + std::max<size_t>(0, definition.size() - 80));
+            definition.size() > 80 ? definition.c_str() + definition.size() - 80 : definition.c_str());
   if (!found)
     LOG_DBG("DICT", "lookup MISS: ok=%d dictNeedsIndex=%d indexResult=%d lookupResult=%d", ok, dictNeedsIndex,
             static_cast<int>(indexResult), static_cast<int>(result));

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cctype>
 #include <cstddef>
 #include <string>
 
@@ -15,14 +16,19 @@ inline constexpr size_t kMaxStyledHtmlBytes = 16 * 1024;
 
 // Content sniff: is this definition shaped like an HTML entry regardless of
 // what sametypesequence declared? Some dictionaries (e.g. M-WAWLD,
-// sametypesequence=x) ship HTML entries anyway. A leading '<' whose matching
-// '>' falls within the headword-tag window (e.g. "<k>") is treated as HTML.
+// sametypesequence=x) ship HTML entries anyway. A leading '<' (after any
+// whitespace) whose matching '>' falls within the headword-tag window
+// (e.g. "<k>") is treated as HTML.
 inline bool looksHtml(const std::string& definition) {
-  if (definition.size() < 4) {
+  size_t start = 0;
+  while (start < definition.size() && std::isspace(static_cast<unsigned char>(definition[start]))) {
+    ++start;
+  }
+  if (definition.size() - start < 4) {
     return false;
   }
-  const size_t gt = definition.find('>');
-  return definition[0] == '<' && gt != std::string::npos && gt <= 64;
+  const size_t gt = definition.find('>', start);
+  return definition[start] == '<' && gt != std::string::npos && gt - start <= 64;
 }
 
 // Plain-vs-styled routing decision: the size gate comes first (styled layout

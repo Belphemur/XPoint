@@ -50,6 +50,19 @@ TEST(DictionaryDefinitionRouting, ShortOrMalformedIsPlain) {
   EXPECT_TRUE(looksHtml("<" + std::string(63, 'a') + ">tail"));
 }
 
+// Entries may carry leading whitespace (newline after the previous record):
+// the sniff tests the first non-whitespace byte, not byte zero.
+TEST(DictionaryDefinitionRouting, LeadingWhitespaceBeforeTagStillSniffsHtml) {
+  EXPECT_TRUE(looksHtml("\n<k>reversible</k>"));
+  EXPECT_TRUE(looksHtml("  \r\n\t<k>w</k>"));
+  EXPECT_TRUE(routesToStyled("\n<k>w</k>", /*ifoHtml=*/false));
+  // Whitespace-only (or whitespace then text) stays plain.
+  EXPECT_FALSE(looksHtml("  \n plain text"));
+  // The 64-byte '>' window is measured from the first non-whitespace byte.
+  EXPECT_FALSE(looksHtml("\n\n<" + std::string(70, 'a') + ">tail"));
+  EXPECT_TRUE(looksHtml("\n\n<" + std::string(63, 'a') + ">tail"));
+}
+
 TEST(DictionaryDefinitionRouting, SizeGateWinsOverContentSniff) {
   const std::string def = oversizeHtml();
   EXPECT_TRUE(looksHtml(def));                           // content is HTML-shaped...
