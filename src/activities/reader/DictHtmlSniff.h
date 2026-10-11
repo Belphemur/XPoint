@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cctype>
 #include <cstddef>
 #include <string>
 
@@ -20,11 +19,8 @@ inline constexpr size_t kMaxStyledHtmlBytes = 16 * 1024;
 // whitespace) whose matching '>' falls within the headword-tag window
 // (e.g. "<k>") is treated as HTML.
 inline bool looksHtml(const std::string& definition) {
-  size_t start = 0;
-  while (start < definition.size() && std::isspace(static_cast<unsigned char>(definition[start]))) {
-    ++start;
-  }
-  if (definition.size() - start < 4) {
+  const size_t start = definition.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos || start + 4 > definition.size()) {
     return false;
   }
   const size_t gt = definition.find('>', start);
