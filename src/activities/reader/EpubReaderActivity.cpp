@@ -1466,11 +1466,14 @@ void EpubReaderActivity::loop() {
 
   if (SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF && mappedInput.hasTouch() &&
       (longPressRoute == TouchLongPressRoute::Dictionary || longPressRoute == TouchLongPressRoute::Footnote) &&
-      !showDictionaryMessage && !automaticPageTurnActive) {
+      !showDictionaryMessage) {
     int lx = 0, ly = 0;
     if (mappedInput.wasScreenLongPress(lx, ly)) {
-      // Match the clip branch: a manual turn queued while the turn guard was
-      // busy must not fire on the page left behind after the selector closes.
+      // Match the clip branch: the long press itself stops automatic turning
+      // (the selector must not open over a page that is about to flip), and a
+      // manual turn queued while the turn guard was busy must not fire on the
+      // page left behind after the selector closes.
+      automaticPageTurnActive = false;
       pendingManualTurn = 0;
       const auto mode = (longPressRoute == TouchLongPressRoute::Footnote) ? TouchLongPressMode::Footnote
                                                                           : TouchLongPressMode::Dictionary;

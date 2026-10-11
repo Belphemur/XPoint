@@ -456,6 +456,14 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   if (mode == TouchLongPressMode::Footnote && resolveFootnoteOrFinish(raw.c_str(), trimmed.c_str())) {
     return;
   }
+  // DEBUG(dict-debug): lookup diagnostics, visible at LOG_LEVEL >= 1/2.
+  LOG_INF("DICT", "Long-press lookup: raw='%s' trimmed='%s' headword_mode=%s", raw.c_str(), trimmed.c_str(),
+          mode == TouchLongPressMode::Footnote ? "FOOTNOTE" : "DICTIONARY");
+  {
+    const char* q = lookupText.empty() ? trimmed.c_str() : lookupText.c_str();
+    LOG_DBG("DICT", "lookup key='%s' (using %s)", q, lookupText.empty() ? "trimmed" : "lookupText(explicit)");
+    (void)q;  // keep defined when logging is compiled out
+  }
   {
     RenderLock lock;
     popupMsg = StrId::STR_DICT_LOOKING_UP;
@@ -487,6 +495,18 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
   const bool found =
       ok && dict.lookup(lookupText.empty() ? trimmed.c_str() : lookupText.c_str(), definition, headword, &result);
+
+  // DEBUG(dict-debug): lookup diagnostics, visible at LOG_LEVEL >= 1/2.
+  LOG_DBG("DICT", "lookup found=%d htmlDefinitions=%d headword='%s' definition_bytes=%u", found,
+          dict.definitionsAreHtml(), headword.c_str(), static_cast<unsigned>(definition.size()));
+  if (!definition.empty()) {
+    LOG_DBG("DICT", "definition head (first 120 bytes): %.120s", definition.c_str());
+    LOG_DBG("DICT", "definition tail (last 80 bytes): %.80s",
+            definition.size() > 80 ? definition.c_str() + definition.size() - 80 : definition.c_str());
+  }
+  if (!found)
+    LOG_DBG("DICT", "lookup MISS: ok=%d dictNeedsIndex=%d indexResult=%d lookupResult=%d", ok, dictNeedsIndex,
+            static_cast<int>(indexResult), static_cast<int>(result));
 
   if (found) {
     {

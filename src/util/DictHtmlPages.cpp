@@ -21,7 +21,10 @@ constexpr const char* TMP_HTML_PATH = "/.crosspoint/dicthtml.tmp";
 // ENTRY gate: is there room to start a styled layout at all? Keeps enough
 // contiguous heap for the parser's 16KB SD-font advance scratch plus
 // page/layout allocations. Falling back to plain text is cheaper than entering
-// a throwing allocation path under pressure.
+// a throwing allocation path under pressure. The max-alloc half consults the
+// pool the allocation would land in (PSRAM on PSRAM boards, like the
+// readDefinition/DictZip guards) so internal-heap fragmentation alone does not
+// silently downgrade styled definitions on X4 Pro.
 constexpr size_t MIN_STYLED_FREE_HEAP = 40 * 1024;
 constexpr size_t MIN_STYLED_MAX_ALLOC = 20 * 1024;
 
@@ -43,6 +46,8 @@ constexpr size_t MIN_STYLED_MAX_ALLOC = 20 * 1024;
 // point while still sitting far below any successful entry heap.
 constexpr size_t MIN_STYLED_RETAIN_HEAP = 16 * 1024;
 constexpr size_t MIN_STYLED_RETAIN_ALLOC = 8 * 1024;
+// RETAIN's max-alloc half consults the allocation pool for the same reason as
+// the entry gate.
 
 // Bound retained layout independently of input bytes: compact markup can emit
 // far more objects than its source size suggests.
@@ -210,9 +215,9 @@ bool writeNormalizedXhtml(const std::string& html, HalFile& file) {
 
 bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definition, const uint16_t viewportWidth,
                               const uint16_t viewportHeight, std::vector<std::unique_ptr<Page>>& pagesOut) {
-  if (ESP.getFreeHeap() < MIN_STYLED_FREE_HEAP || ESP.getMaxAllocHeap() < MIN_STYLED_MAX_ALLOC) {
+  if (ESP.getFreeHeap() < MIN_STYLED_FREE_HEAP || poolMaxAllocFor(MIN_STYLED_MAX_ALLOC) < MIN_STYLED_MAX_ALLOC) {
     LOG_ERR("DHTML", "Low heap for styled definition (%u free, %u max block)", ESP.getFreeHeap(),
-            ESP.getMaxAllocHeap());
+            poolMaxAllocFor(MIN_STYLED_MAX_ALLOC));
     return false;
   }
 
@@ -257,13 +262,14 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
             limitReason = "page count";
           } else if (pageElements > MAX_STYLED_PAGE_ELEMENTS - retainedElements) {
             limitReason = "element count";
-          } else if (ESP.getFreeHeap() < MIN_STYLED_RETAIN_HEAP || ESP.getMaxAllocHeap() < MIN_STYLED_RETAIN_ALLOC) {
+          } else if (ESP.getFreeHeap() < MIN_STYLED_RETAIN_HEAP ||
+                     poolMaxAllocFor(MIN_STYLED_RETAIN_ALLOC) < MIN_STYLED_RETAIN_ALLOC) {
             limitReason = "free heap";
           }
           if (limitReason != nullptr) {
             LOG_ERR("DHTML", "Styled definition stopped on %s (pages=%u elements=%u free=%u contig=%u)", limitReason,
                     static_cast<unsigned>(pagesOut.size()), static_cast<unsigned>(retainedElements + pageElements),
-                    ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+                    ESP.getFreeHeap(), poolMaxAllocFor(MIN_STYLED_RETAIN_ALLOC));
             resourceLimitHit = true;
             pagesOut.clear();
             return;
