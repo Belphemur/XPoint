@@ -81,6 +81,7 @@ int64_t SdCardCacheStorage::fileSize(const char* name) {
 }
 
 int32_t SdCardCacheStorage::readAt(const char* name, uint32_t offset, void* dst, uint32_t len) {
+  ++readAtCalls_;
   if (dir_[0] == '\0' || !pathBuf_ || !validName(name) || dst == nullptr) return -1;
   if (!buildPath(name, "", pathBuf_.get(), kPathMax)) return -1;
   HalFile f;
