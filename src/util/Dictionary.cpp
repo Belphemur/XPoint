@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "DictIfoTypes.h"
 #include "DictZip.h"
 #include "DictionaryRegistry.h"
 #include "StringUtils.h"
@@ -68,7 +69,7 @@ bool isWordByte(unsigned char c) { return c >= 0x80 || std::isalnum(c) != 0; }
 // headers are tiny and both keys always appear early when present.
 struct IfoFacts {
   bool offsets64 = false;        // idxoffsetbits=64 (unsupported)
-  bool htmlDefinitions = false;  // sametypesequence=h (definitions are HTML)
+  bool htmlDefinitions = false;  // sametypesequence declares a markup type
 };
 
 IfoFacts readIfoFacts(const std::string& ifoPath) {
@@ -85,9 +86,18 @@ IfoFacts readIfoFacts(const std::string& ifoPath) {
   line = strstr(buf, "sametypesequence");
   eq = line ? strchr(line, '=') : nullptr;
   if (eq) {
-    // Only the single-field sequence "h" is treated as HTML; multi-type
-    // entries keep the plain-text viewing path.
-    facts.htmlDefinitions = eq[1] == 'h' && (eq[2] == '\0' || eq[2] == '\r' || eq[2] == '\n');
+    // Copy the value up to the line terminator so the host-testable helper
+    // sees the exact declared sequence (multi-type sequences stay intact).
+    char seq[8];
+    size_t len = 0;
+    for (const char* v = eq + 1; len + 1 < sizeof(seq); ++v) {
+      if (*v == '\0' || *v == '\r' || *v == '\n') break;
+      seq[len++] = *v;
+    }
+    seq[len] = '\0';
+    // StarDict declares h/x/g/k/y/r/w as markup; 'm', unlisted types, and
+    // multi-type sequences keep the plain-text viewing path.
+    facts.htmlDefinitions = dict_ifo::declaresMarkupType(seq);
   }
   return facts;
 }
