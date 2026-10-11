@@ -10,6 +10,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "DictHtmlSniff.h"
 #include "HapticFeedback.h"
 #include "ReaderUtils.h"
 #include "activities/util/KeyboardEntryActivity.h"
@@ -31,34 +32,35 @@ constexpr int OVERLAY_MARGIN = 12;
 constexpr int OVERLAY_RADIUS = 18;
 constexpr int SEARCH_BUTTON_HEIGHT = 40;
 
-// Styled-path ceiling: the laid-out Pages keep the whole definition resident
-// (TextBlock arenas ≈ text + ~7 bytes/word plus per-line objects), roughly
-// doubling the string's footprint while this activity is stacked over the
-// reader and word-select. Bigger definitions take the span-based plain-text
-// path, which holds no per-page copies.
-constexpr size_t MAX_STYLED_HTML_BYTES = 16 * 1024;
-
 }  // namespace
 
 void DictionaryDefinitionActivity::onEnter() {
   Activity::onEnter();
+  // DEBUG(dict-debug): definition lookup diagnostics, visible at LOG_LEVEL >= 2.
+  LOG_DBG("DICT", "onEnter: html=%d bytes=%u headword='%s'", htmlDefinition, static_cast<unsigned>(definition.size()),
+          headword.c_str());
   // Normalize StarDict multi-type separators so the wrap loop and the
   // C-string font APIs below both see the whole definition.
   std::replace(definition.begin(), definition.end(), '\0', '\n');
+  // sametypesequence can lie (e.g. M-WAWLD declares 'x' while shipping HTML
+  // entries), so sniff the content before trusting the declared format.
+  const bool effectiveHtml = htmlDefinition || dict_html::looksHtml(definition);
   const char* plainTextReason = nullptr;
-  if (!htmlDefinition) {
+  if (definition.size() > dict_html::kMaxStyledHtmlBytes) {
+    plainTextReason = "definition exceeds 16 KiB limit";
+  } else if (!effectiveHtml) {
     plainTextReason = "dictionary format is not HTML";
-  } else if (definition.size() > MAX_STYLED_HTML_BYTES) {
-    plainTextReason = "HTML exceeds 16 KiB limit";
   } else if (!layoutHtmlPages()) {
     plainTextReason = "HTML layout failed; see DHTML/EHP error";
   }
   if (plainTextReason) {
-    LOG_INF("DICT", "Plain-text definition: %s (bytes=%u)", plainTextReason, static_cast<unsigned>(definition.size()));
-    if (htmlDefinition) definition = htmlToPlainText(definition);
+    LOG_INF("DICT", "Plain-text definition: %s (effectiveHtml=%d bytes=%u)", plainTextReason, effectiveHtml,
+            static_cast<unsigned>(definition.size()));
+    if (effectiveHtml) definition = htmlToPlainText(definition);
     wrapText();
   } else {
-    LOG_INF("DICT", "Styled definition: %u pages", static_cast<unsigned>(pages.size()));
+    LOG_INF("DICT", "Styled definition: %u pages (effectiveHtml=%d)", static_cast<unsigned>(pages.size()),
+            effectiveHtml);
   }
   requestUpdate();
 }
@@ -193,6 +195,9 @@ void DictionaryDefinitionActivity::wrapText() {
   const int spaceWidth = renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR);
   const int lineHeight = renderer.getLineHeight(fontId, PLAIN_TEXT_LINE_SPACING);
   linesPerPage = std::max(1, body.height / lineHeight);
+  // DEBUG(dict-debug): wrap diagnostics, visible at LOG_LEVEL >= 2.
+  LOG_DBG("DICT", "wrapText: body=%dx%d lineHeight=%d linesPerPage=%d maxWidth=%d bytes=%u", body.width, body.height,
+          lineHeight, linesPerPage, maxWidth, static_cast<unsigned>(definition.size()));
 
   const char* text = definition.c_str();
   const uint32_t n = static_cast<uint32_t>(definition.size());
@@ -280,6 +285,8 @@ void DictionaryDefinitionActivity::wrapText() {
 
   totalPages = std::max(1, (static_cast<int>(lines.size()) + linesPerPage - 1) / linesPerPage);
   currentPage = 0;
+  // DEBUG(dict-debug): wrap diagnostics, visible at LOG_LEVEL >= 2.
+  LOG_DBG("DICT", "wrapText: produced lines=%u totalPages=%d", static_cast<unsigned>(lines.size()), totalPages);
 }
 
 void DictionaryDefinitionActivity::loop() {
@@ -354,6 +361,9 @@ void DictionaryDefinitionActivity::drawBody(const int fontId, const int x, const
   char buf[MAX_LINE_BYTES + 1];
   const int firstLine = currentPage * linesPerPage;
   const int lastLine = std::min(firstLine + linesPerPage, static_cast<int>(lines.size()));
+  // DEBUG(dict-debug): paint trace, visible at LOG_LEVEL >= 2.
+  LOG_DBG("DICT", "drawBody plain-text page=%d firstLine=%d lastLine=%d lines=%u", currentPage, firstLine, lastLine,
+          static_cast<unsigned>(lines.size()));
   for (int i = firstLine; i < lastLine; i++) {
     if (lines[i].len == 0) continue;
     const size_t len = std::min(static_cast<size_t>(lines[i].len), MAX_LINE_BYTES);
@@ -365,6 +375,12 @@ void DictionaryDefinitionActivity::drawBody(const int fontId, const int x, const
 
 void DictionaryDefinitionActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
+  // DEBUG(dict-debug): paint trace, visible at LOG_LEVEL >= 2.
+  const BodyArea dbgBody = bodyArea();
+  LOG_DBG("DICT", "render: pages=%u lines=%u totalPages=%d currentPage=%d body=%dx%d",
+          static_cast<unsigned>(pages.size()), static_cast<unsigned>(lines.size()), totalPages, currentPage,
+          dbgBody.width, dbgBody.height);
+  (void)dbgBody;  // keep defined when logging is compiled out
   int contentX = 0;
   int contentY = 0;
   int contentWidth = 0;
