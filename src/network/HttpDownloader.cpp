@@ -65,6 +65,11 @@ class CoalescingWriter {
   download::ChunkCoalescer coalescer_;
 };
 
+// Written after every request, and read by the UI right after a failure.
+int g_lastStatus = 0;
+// Whether the last answer came from another origin than the request started at.
+bool g_lastRedirected = false;
+
 // All HTTP(S) fetches go through wolfSSL (the firmware's only TLS stack: it
 // speaks TLS 1.3 and reads large bodies reliably). Plain-http URLs still use a
 // WiFiClient here, so this is safe for non-TLS targets too. A body cut short
@@ -77,9 +82,11 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
   WifiPowerSaveGuard psGuard;
   freeink::FetchOptions options;
   options.redirectToHttp = downgradeRedirectsToHttp;
+  bool answeredBySameOrigin = true;
   const freeink::FetchResult result = freeink::fetchResumable(
       url, options,
       [&](freeink::SecureHttpClient& http, const bool sameOrigin) {
+        answeredBySameOrigin = sameOrigin;
         http.setTimeout(HTTP_TIMEOUT_MS);
         http.setInsecure();
         // setUserAgent replaces SecureHttpClient's built-in UA; addHeader would
@@ -97,6 +104,9 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
       },
       sink, [cancelFlag] { return cancelFlag && *cancelFlag; });
   if (bytesOut) *bytesOut = result.bytes;
+  // FetchResult::status is -1 when no response arrived (bad URL, DNS, connect, TLS).
+  g_lastStatus = result.status < 0 ? 0 : result.status;
+  g_lastRedirected = !answeredBySameOrigin;
 
   if (result.aborted) return HttpDownloader::ABORTED;
   if (result.stopped) return HttpDownloader::FILE_ERROR;
@@ -116,6 +126,10 @@ HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::st
 }
 
 }  // namespace
+
+int HttpDownloader::lastStatus() { return g_lastStatus; }
+
+bool HttpDownloader::lastAnswerRedirected() { return g_lastRedirected; }
 
 bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const std::string& username,
                               const std::string& password) {
