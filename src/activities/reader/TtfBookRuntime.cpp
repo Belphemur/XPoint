@@ -141,6 +141,18 @@ void TtfBookRuntime::close() {
 // ---- chapter cache serving ----
 
 BookStatus TtfBookRuntime::openChapterCache(const uint16_t spineIndex, const uint32_t generation) {
+  const unsigned long startMs = millis();
+  cacheStorage_.resetReadAtCount();
+  const BookStatus st = openChapterCacheInner(spineIndex, generation);
+  // Warm-open soak telemetry, unconditional: the storage readAt count is the
+  // on-device cost driver (one full SD open/close per call).
+  LOG_INF("TTFB", "openChapterCache spine=%u gen=%08x pages=%u ms=%lu readAt=%u status=%s",
+          static_cast<unsigned>(spineIndex), generation, st == BookStatus::Ok ? cacheReader_.pageCount() : 0u,
+          millis() - startMs, static_cast<unsigned>(cacheStorage_.readAtCount()), bookStatusName(st));
+  return st;
+}
+
+BookStatus TtfBookRuntime::openChapterCacheInner(const uint16_t spineIndex, const uint32_t generation) {
   closeChapterCache();
   if (!ensureArenas()) return BookStatus::OutOfMemory;
   if (!pageCacheName(spineIndex, generation, cacheName_, sizeof(cacheName_))) {

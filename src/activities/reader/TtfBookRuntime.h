@@ -149,6 +149,8 @@ class TtfBookRuntime : public ChapterIndexTarget {
 
   // Ensures arena backings exist; false on PSRAM OOM (LOG_ERR with sizes).
   bool ensureArenas();
+  // openChapterCache without the duration telemetry line.
+  BookStatus openChapterCacheInner(uint16_t spineIndex, uint32_t generation);
   void resetBuildArenas();  // scratch + parse + prescan reset (session over)
   void releaseArenas();
 

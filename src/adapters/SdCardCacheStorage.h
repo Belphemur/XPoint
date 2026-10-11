@@ -39,6 +39,13 @@ class SdCardCacheStorage : public CacheStorage {
   bool endWrite() override;
   int32_t readBackAt(uint32_t offset, void* dst, uint32_t len) override;
 
+  // Diagnostics: readAt() calls since the last reset. On device each readAt
+  // is a full SD open+seek+close cycle, so the count is the per-operation
+  // storage cost. Single-owner by design (HalStorage serializes SD access);
+  // the reader resets it around one cache open and logs the delta.
+  void resetReadAtCount() { readAtCalls_ = 0; }
+  uint32_t readAtCount() const { return readAtCalls_; }
+
  private:
   static bool validName(const char* name);
   // Joins "<dir>/<name><suffix>" into out; false when it does not fit.
@@ -55,6 +62,7 @@ class SdCardCacheStorage : public CacheStorage {
   HalFile writeHandle_;  // the open .tmp between beginWrite()/endWrite()
   bool writeFailed_ = false;
   bool endWriteFailed_ = false;
+  uint32_t readAtCalls_ = 0;
 };
 
 }  // namespace book
