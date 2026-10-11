@@ -60,5 +60,8 @@ class CoverGridHomeUi final : public UiAppHost {
   freeink::ui::CoverGridProps grid;
   freeink::ui::Rect gridBounds{};
   freeink::ui::TabBarProps tabs;
-  std::array<freeink::ui::TabItem, 5> tabItems;
+  std::array<freeink::ui::TabItem, 6> tabItems;
+  // Icon for each emitted tab slot, parallel to tabItems; drawTabs fills both
+  // from one table so the painter never re-derives an icon by position.
+  std::array<const uint8_t*, 6> tabIcons{};
 };

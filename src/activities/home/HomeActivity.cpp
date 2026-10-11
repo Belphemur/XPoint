@@ -29,6 +29,9 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+// Menu-order coupling point: CoverGridHomeUi::drawTabs() mirrors this order
+// (Browser, Library, [OPDS/Plugins], [Reading Stats], File Transfer, Settings)
+// for the cover-grid tab bar — keep the two in sync.
 int HomeActivity::getMenuItemCount() const {
   int count = 4;  // File Browser, Library, File transfer, Settings
 #ifdef READING_STATS_ENABLED
