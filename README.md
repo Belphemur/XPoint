@@ -22,6 +22,36 @@ Check the [devices page](https://crosspointreader.com/devices) for the full list
 
 ---
 
+## 🔀 What XPoint changes from CrossPoint
+
+Same hardware, same upstream core — XPoint is where reading-experience work lands
+first, soak-tested on a real device before it ships. The main differences:
+
+- **Faster book opens.** Returning to a book you were reading used to re-read its
+  chapter index from the SD card in hundreds of tiny chunks (~2 s on a long
+  chapter). XPoint reads the same data in a few batches, cutting that part of a
+  warm open to well under a tenth of a second.
+- **Smarter progress saving.** Stock CrossPoint writes your reading position on
+  *every page turn*. XPoint keeps it in memory and persists only when something
+  changed — up to 20× fewer SD writes. See
+  [Gentle on your SD card](#-gentle-on-your-sd-card).
+- **A true vector font engine.** Any `.ttf`/`.otf` family works with anti-aliased
+  grayscale at any size, plus a downloadable 53-family catalog — see
+  [Custom fonts](#-custom-fonts) and
+  [how the TTF pipeline differs](#how-xpoints-ttf-support-differs-from-upstream-crosspoint).
+- **Reading statistics.** A complete stats suite (sessions, reading speed, streaks,
+  rhythm, finished books) ported from CrossInk and YACP — see
+  [Reading statistics](#-reading-statistics).
+- **Signed OTA.** Every release ships an Ed25519-signed manifest that the device
+  verifies before flashing — see [Signed OTA updates](#-signed-ota-updates).
+- **Fixes land here first.** Reader and device fixes ship in fork releases as
+  they are ready, then upstream merges what it wants on its own schedule.
+
+Everything else — library, dictionary, wireless tools, settings — is shared with
+upstream and periodically synced from it.
+
+---
+
 ## ✨ Feature guide
 
 ### 📖 Reading experience
