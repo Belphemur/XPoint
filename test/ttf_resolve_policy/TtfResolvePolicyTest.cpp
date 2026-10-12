@@ -246,10 +246,10 @@ TEST(DeriveTargetTest, SavedPageAnchoredRecordDerivesPageTarget) {
   EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
 }
 
-TEST(DeriveTargetTest, SavedGenerationMismatchDegradesToChapterStart) {
-  // §7: a saved record whose layout generation no longer matches cannot map
-  // under the current layout — degrade to the chapter start (caller clears
-  // the latch and returns targetOut = 0).
+TEST(DeriveTargetTest, SavedGenerationMismatchStillRestoresCharOffset) {
+  // §10 amendment 11 (owner override): generation is advisory, NEVER a
+  // degrade trigger. The charOffset anchor is chapter character space and
+  // survives any layout bump; the funnel maps it in the new layout.
   ttf_resolve::LatchState s;
   s.hasSavedPosition = true;
   s.savedSpine = 3;
@@ -258,17 +258,86 @@ TEST(DeriveTargetTest, SavedGenerationMismatchDegradesToChapterStart) {
   s.savedGeneration = 5;
   s.generation = 6;  // font changed between save and reopen
   auto d = ttf_resolve::deriveTarget(s);
-  EXPECT_EQ(d.degrade, ttf_resolve::Degrade::ChapterStart);
-  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::None);
+  EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
+  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::CharOffset);
+  EXPECT_EQ(d.target.charOffset, 10u);
+  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
+}
+
+TEST(DeriveTargetTest, SavedGenerationZeroIsNotSpecial) {
+  // A record saved with generation 0 (the LatchState default) and a current
+  // generation of 0 must not trip any special-case path: the mismatch flip
+  // makes the comparison moot, but this pins that 0 != 0 special handling
+  // never appeared (guard item 4 of the directive).
+  ttf_resolve::LatchState s;
+  s.hasSavedPosition = true;
+  s.savedSpine = 3;
+  s.currentSpine = 3;
+  s.savedCharOffset = 10;
+  s.savedGeneration = 0;
+  s.generation = 0;
+  auto d = ttf_resolve::deriveTarget(s);
+  EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
+  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::CharOffset);
+}
+
+TEST(DeriveTargetTest, PageHintRestoresAcrossGenerationMismatch) {
+  // Page-anchored record (charOffset == 0) under a generation bump: the
+  // page hint restores approximately — chapter start is the LAST resort.
+  ttf_resolve::LatchState s;
+  s.hasSavedPosition = true;
+  s.savedSpine = 3;
+  s.currentSpine = 3;
+  s.savedCharOffset = 0;
+  s.savedPage = 12;
+  s.savedGeneration = 5;
+  s.generation = 6;
+  auto d = ttf_resolve::deriveTarget(s);
+  EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
+  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::Page);
+  EXPECT_EQ(d.target.charOffset, 12u);
+  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
+}
+
+TEST(DeriveTargetTest, LegacyShapePageHintRestores) {
+  // Legacy-shape record (no generation tag, page hint only) derived from the
+  // same latch state the load gate now arms: restores by page, not degrade.
+  ttf_resolve::LatchState s;
+  s.hasSavedPosition = true;
+  s.savedSpine = 3;
+  s.currentSpine = 3;
+  s.savedCharOffset = 0;
+  s.savedPage = 7;
+  s.savedGeneration = 0;
+  s.generation = 9;  // no tag ever matched; irrelevant now
+  auto d = ttf_resolve::deriveTarget(s);
+  EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
+  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::Page);
+  EXPECT_EQ(d.target.charOffset, 7u);
 }
 
 TEST(DeriveTargetTest, SavedSpineMismatchDegradesToChapterStart) {
+  // §7: the anchor is chapter-scoped — the ONLY remaining degrade for a
+  // loaded record (plus genuinely corrupt ones, rejected at load).
   ttf_resolve::LatchState s;
   s.hasSavedPosition = true;
   s.savedSpine = 2;
   s.currentSpine = 3;
   s.savedCharOffset = 10;
   s.savedGeneration = s.generation;
+  auto d = ttf_resolve::deriveTarget(s);
+  EXPECT_EQ(d.degrade, ttf_resolve::Degrade::ChapterStart);
+}
+
+TEST(DeriveTargetTest, SavedSpineMismatchDegradesEvenAcrossGenerationMismatch) {
+  // The spine check is independent of the advisory generation comparison.
+  ttf_resolve::LatchState s;
+  s.hasSavedPosition = true;
+  s.savedSpine = 2;
+  s.currentSpine = 3;
+  s.savedCharOffset = 10;
+  s.savedGeneration = 5;
+  s.generation = 6;
   auto d = ttf_resolve::deriveTarget(s);
   EXPECT_EQ(d.degrade, ttf_resolve::Degrade::ChapterStart);
 }
@@ -308,7 +377,9 @@ TEST(SequenceTest, SaveRestoreViaCharOffsetAfterGenerationMismatch) {
   // 1) deriveTarget on the reopen latches (saved record, generation bumped).
   // 2) evaluate on whatever target the derivation produced.
   //
-  // Step 1: generation mismatch → degrade, NOT a silent stale-page fallback.
+  // Step 1: generation mismatch → CharOffset restore (§10 amendment 11,
+  // owner override of the original §7 degrade): the anchor survives any
+  // layout bump, so the funnel maps it in the new layout.
   ttf_resolve::LatchState reopen;
   reopen.hasSavedPosition = true;
   reopen.savedSpine = 3;
@@ -317,7 +388,8 @@ TEST(SequenceTest, SaveRestoreViaCharOffsetAfterGenerationMismatch) {
   reopen.savedGeneration = 5;
   reopen.generation = 6;
   auto derived = ttf_resolve::deriveTarget(reopen);
-  ASSERT_EQ(derived.degrade, ttf_resolve::Degrade::ChapterStart);
+  ASSERT_EQ(derived.degrade, ttf_resolve::Degrade::None);
+  ASSERT_EQ(derived.target.kind, ttf_resolve::PendingTarget::CharOffset);
 
   // Step 2: same record under a MATCHING generation (e.g. the settings were
   // reverted) → CharOffset target maps through the rebuilt prefix.
@@ -331,6 +403,36 @@ TEST(SequenceTest, SaveRestoreViaCharOffsetAfterGenerationMismatch) {
   EXPECT_FALSE(result.needFullBuild);
   // Latch consumption: the target's origin is Saved, so the funnel clears
   // ttfHasSavedPosition when this outcome resolves (caller side effect).
+  EXPECT_EQ(derived.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
+}
+
+TEST(SequenceTest, LegacyPageHintRestoreAcrossGenerationBump) {
+  // Legacy-shape record (no generation tag): the load gate arms the latch
+  // from the page hint, deriveTarget yields a Page target, and evaluate
+  // resolves it against the rebuilt chapter (2 chars per page fake).
+  ttf_resolve::LatchState reopen;
+  reopen.hasSavedPosition = true;
+  reopen.savedSpine = 3;
+  reopen.currentSpine = 3;
+  reopen.savedCharOffset = 0;
+  reopen.savedGeneration = 0;  // legacy shape: no tag
+  reopen.generation = 9;
+  reopen.savedPage = 7;
+  auto derived = ttf_resolve::deriveTarget(reopen);
+  ASSERT_EQ(derived.degrade, ttf_resolve::Degrade::None);
+  ASSERT_EQ(derived.target.kind, ttf_resolve::PendingTarget::Page);
+
+  // Page 7 covered as soon as 8 pages exist → opens there (approximate
+  // restore beats the chapter start).
+  auto result = ttf_resolve::evaluate(derived.target, 8, pageForChar2PerPage, pageCharStart2PerPage, false);
+  EXPECT_TRUE(result.resolved);
+  EXPECT_EQ(result.page, 7);
+
+  // A hint beyond the chapter's real length terminal-clamps to the last
+  // page once the total is known — never a pending-forever state.
+  auto clamped = ttf_resolve::evaluate(derived.target, 4, pageForChar2PerPage, pageCharStart2PerPage, true);
+  EXPECT_TRUE(clamped.resolved);
+  EXPECT_EQ(clamped.page, 3);
   EXPECT_EQ(derived.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
 }
 
