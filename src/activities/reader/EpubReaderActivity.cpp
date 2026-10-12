@@ -735,6 +735,8 @@ bool EpubReaderActivity::loadBook() {
         savedPage = 0;
         savedPageCount = 0;
         ttfHasGeneration = false;
+        ttfSavedGeneration = 0;
+        ttfSavedCharOffset = 0;
       } else if (verdict == ttf_resolve::ProgressVerdict::ClampPageHint) {
         const uint16_t clampedPage = static_cast<uint16_t>(savedPageCount - 1);
         LOG_DBG("ERS", "Clamping stale TTF page hint: page=%u -> %u/%u", savedPage, clampedPage, savedPageCount);
@@ -749,10 +751,15 @@ bool EpubReaderActivity::loadBook() {
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = savedPageCount;
       ttfSavedSpine = savedSpine;
-      // Restore through pageForChar only when the generation still matches.
-      // A legacy-shape record has no usable page mapping for TTF layout, so
-      // it degrades to a chapter-start open (§7).
-      ttfHasSavedPosition = ttfHasGeneration;
+      // Restore latch: a judged record ALWAYS restores (owner directive,
+      // design §10 amendment 11) — the charOffset anchor is authoritative and
+      // generation-independent, and a page hint alone (charOffset 0, legacy
+      // shape) restores by page: approximately right beats the chapter start.
+      // Only a record with neither anchor nor hint (last-page sentinel
+      // normalized to 0 above, or page 0 = chapter start anyway) has nothing
+      // to restore; rejected records never latch.
+      const bool hasRestoreAnchor = (ttfHasGeneration && ttfSavedCharOffset != 0) || nextPageNumber != 0;
+      ttfHasSavedPosition = verdict != ttf_resolve::ProgressVerdict::Reject && hasRestoreAnchor;
       if (!ttfHasSavedPosition) {
         nextPageNumber = 0;
         cachedChapterTotalPageCount = 0;
@@ -3187,8 +3194,9 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     };
     const ttf_resolve::DerivedTarget derived = ttf_resolve::deriveTarget(latches);
     if (derived.degrade == ttf_resolve::Degrade::ChapterStart) {
-      // §7: a saved record bound to another spine or a stale generation
-      // cannot map — clear the latch and open at the chapter start.
+      // §7 (amended §10.11): a saved record bound to another spine cannot
+      // map — the anchor is chapter-scoped. A generation mismatch never
+      // degrades; the anchor restores through the funnel.
       ttfHasSavedPosition = false;
       pendingRestoreTarget_ = {};
       targetOut = 0;
