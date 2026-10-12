@@ -288,7 +288,7 @@ bool ProgressManager::openBookTtf(const char* cachePath, uint16_t& spineIndex, u
     LOG_INF(MUTEX_TAG, "TTF progress loaded: spine=%u page=%u charOffset=%u gen=%u", spineIndex, pageNumber, charOffset,
             generation);
   } else {
-    LOG_DBG(MUTEX_TAG, "openBookTtf(): legacy record — chapter-start degrade");
+    LOG_DBG(MUTEX_TAG, "openBookTtf(): legacy-shape record — restores by page hint");
   }
   return true;
 }

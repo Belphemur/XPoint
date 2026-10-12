@@ -724,9 +724,11 @@ bool EpubReaderActivity::loadBook() {
                                     ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
-      // Design §3: charOffset + generation are the authoritative anchors, the
-      // page hint advisory. A stale hint on a record with a valid anchor is
-      // clamped, not dropped — the count mirror can lag a partial build.
+      // Design §3, §10 amendment 11: the charOffset anchor is authoritative
+      // and generation-independent; the page hint is advisory. Generation is
+      // recorded metadata, never a gate. A stale hint on a record with a
+      // valid anchor is clamped, not dropped — the count mirror can lag a
+      // partial build.
       const auto verdict = ttf_resolve::judgeSavedTtfRecord(spineCount, savedSpine, savedPage, savedPageCount,
                                                             ttfHasGeneration, ttfSavedCharOffset);
       if (verdict == ttf_resolve::ProgressVerdict::Reject) {
@@ -735,6 +737,8 @@ bool EpubReaderActivity::loadBook() {
         savedPage = 0;
         savedPageCount = 0;
         ttfHasGeneration = false;
+        ttfSavedGeneration = 0;
+        ttfSavedCharOffset = 0;
       } else if (verdict == ttf_resolve::ProgressVerdict::ClampPageHint) {
         const uint16_t clampedPage = static_cast<uint16_t>(savedPageCount - 1);
         LOG_DBG("ERS", "Clamping stale TTF page hint: page=%u -> %u/%u", savedPage, clampedPage, savedPageCount);
@@ -749,10 +753,16 @@ bool EpubReaderActivity::loadBook() {
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = savedPageCount;
       ttfSavedSpine = savedSpine;
-      // Restore through pageForChar only when the generation still matches.
-      // A legacy-shape record has no usable page mapping for TTF layout, so
-      // it degrades to a chapter-start open (§7).
-      ttfHasSavedPosition = ttfHasGeneration;
+      // Restore latch: a judged record ALWAYS restores (owner directive,
+      // design §10 amendment 11) — the charOffset anchor is authoritative and
+      // generation-independent, and a page hint alone (charOffset 0, legacy
+      // shape) restores by page: approximately right beats the chapter start.
+      // Only a record with neither anchor nor hint (last-page sentinel
+      // normalized to 0 above, or page 0 = chapter start anyway) has nothing
+      // to restore; rejected records never latch.
+      const bool hasRestoreAnchor =
+          ttf_resolve::hasCharAnchor(ttfHasGeneration, ttfSavedCharOffset) || nextPageNumber != 0;
+      ttfHasSavedPosition = verdict != ttf_resolve::ProgressVerdict::Reject && hasRestoreAnchor;
       if (!ttfHasSavedPosition) {
         nextPageNumber = 0;
         cachedChapterTotalPageCount = 0;
@@ -3039,7 +3049,8 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
   if (restorePending && !restoreNeedsComplete) {
     percent = INDEX_BAR_INDETERMINATE[indexingBarStep_ % 4];
     ++indexingBarStep_;
-    LOG_INF("ERS", "Indexing popup: cover-driven restore, indeterminate bar step %d", percent);
+    // Per-pass line during a long restore: keep it off the serial floor.
+    LOG_DBG("ERS", "Indexing popup: cover-driven restore, indeterminate bar step %d", percent);
   } else {
     const uint32_t consumed = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
                                   ? ttf_->sessionBytesConsumed()
@@ -3048,7 +3059,7 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
                                ? ttf_->sessionBytesTotal()
                                : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
     percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
-    LOG_INF("ERS", "Indexing popup: restore=%d completeGated=%d consumed %lu/%lu bytes (%d%%)", restorePending,
+    LOG_DBG("ERS", "Indexing popup: restore=%d completeGated=%d consumed %lu/%lu bytes (%d%%)", restorePending,
             restoreNeedsComplete, static_cast<unsigned long>(consumed), static_cast<unsigned long>(total), percent);
   }
   GUI.fillPopupProgress(renderer, popupRect, percent);
@@ -3187,8 +3198,9 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
     };
     const ttf_resolve::DerivedTarget derived = ttf_resolve::deriveTarget(latches);
     if (derived.degrade == ttf_resolve::Degrade::ChapterStart) {
-      // §7: a saved record bound to another spine or a stale generation
-      // cannot map — clear the latch and open at the chapter start.
+      // §7 (amended §10.11): a saved record bound to another spine cannot
+      // map — the anchor is chapter-scoped. A generation mismatch never
+      // degrades; the anchor restores through the funnel.
       ttfHasSavedPosition = false;
       pendingRestoreTarget_ = {};
       targetOut = 0;

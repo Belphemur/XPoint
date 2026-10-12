@@ -498,11 +498,12 @@ readers treat it as a prefix (`isPartial()`). The restore primitive is
 `pageForChar(charOffset)`: the page whose `charStart` range covers the saved
 chapter character offset. `charOffset` addresses the extracted-text space,
 which is layout-parameter independent — it survives font-size/orientation
-changes as a coordinate. The saved record is still generation-gated: the
-TTF restore accepts it only when the saved `generation` matches the current
-layout generation (see `progress.bin` below); otherwise the book opens at
-the chapter start rather than trusting a coordinate whose page cache has
-not yet been rebuilt.
+changes as a coordinate. Generation never gates the TTF restore: the saved
+`charOffset` anchor maps through `pageForChar` across ANY layout generation
+(generation is advisory metadata on the record). A record without an anchor
+— and a legacy-shape record — restores by its page hint, across any
+generation as well. A spine mismatch is the only degrade: the anchor is
+chapter-scoped, so there is nothing to map.
 
 ## `progress.bin`
 
@@ -524,9 +525,9 @@ in that firmware's native shape. This firmware's own legacy paths
 (`ProgressManager::load`) decode by exact length and degrade to the base
 triple instead.
 Load-side migration never fails: any unrecognized size degrades to the
-6-byte base restore. The TTF reader restores through
-`pageForChar` only when the saved `generation` matches the current layout
-generation; otherwise the book opens at the chapter start (§7).
+6-byte base restore. The TTF reader restores by `charOffset` anchor or
+page hint across any layout generation (generation is advisory, never a
+gate); a spine mismatch is the only degrade (§7).
 
 ## CLX1 — library index (`.crosspoint/library.idx`)
 

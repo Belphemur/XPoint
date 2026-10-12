@@ -50,8 +50,8 @@ The write itself is already crash-safe and cheap (10 bytes, tmp+rename via
   through the record's page number (clamped to the chapter's page count)
   instead of the char-offset index. A genuine chapter-start save (page 0,
   charOffset 0) is indistinguishable and restores identically. A generation
-  mismatch (settings/layout changed since the sync) still degrades to
-  chapter start per §7.
+  mismatch never degrades the restore — generation is advisory (see the TTF
+  position-restore design, amendment 11).
 - Migrating TXT/XTC readers to the same manager (follow-up PR).
 - A user-facing settings row for the interval (KISS: constexpr only).
 
