@@ -573,7 +573,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     const auto eraseEntry = [&v](const StrId nameId) {
       v.erase(std::find_if(v.begin(), v.end(), [nameId](const SettingInfo& s) { return s.nameId == nameId; }));
     };
-    // Tilt page turn needs the QMI8658 IMU (X3).
+    // Tilt page turn needs an IMU with a gyroscope.
     if (!halTiltSensor.isAvailable()) eraseEntry(StrId::STR_TILT_PAGE_TURN);
     // Double-click power frontlight shortcut only exists on the X4 Pro.
     if (!BoardConfig::isX4Pro()) eraseEntry(StrId::STR_DBL_CLICK_PWR_LIGHT);
