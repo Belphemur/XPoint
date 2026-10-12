@@ -724,9 +724,11 @@ bool EpubReaderActivity::loadBook() {
                                     ttfSavedCharOffset, ttfSavedGeneration, ttfHasGeneration);
     if (progressLoaded) {
       const int spineCount = epub->getSpineItemsCount();
-      // Design §3: charOffset + generation are the authoritative anchors, the
-      // page hint advisory. A stale hint on a record with a valid anchor is
-      // clamped, not dropped — the count mirror can lag a partial build.
+      // Design §3, §10 amendment 11: the charOffset anchor is authoritative
+      // and generation-independent; the page hint is advisory. Generation is
+      // recorded metadata, never a gate. A stale hint on a record with a
+      // valid anchor is clamped, not dropped — the count mirror can lag a
+      // partial build.
       const auto verdict = ttf_resolve::judgeSavedTtfRecord(spineCount, savedSpine, savedPage, savedPageCount,
                                                             ttfHasGeneration, ttfSavedCharOffset);
       if (verdict == ttf_resolve::ProgressVerdict::Reject) {
@@ -758,7 +760,8 @@ bool EpubReaderActivity::loadBook() {
       // Only a record with neither anchor nor hint (last-page sentinel
       // normalized to 0 above, or page 0 = chapter start anyway) has nothing
       // to restore; rejected records never latch.
-      const bool hasRestoreAnchor = (ttfHasGeneration && ttfSavedCharOffset != 0) || nextPageNumber != 0;
+      const bool hasRestoreAnchor =
+          ttf_resolve::hasCharAnchor(ttfHasGeneration, ttfSavedCharOffset) || nextPageNumber != 0;
       ttfHasSavedPosition = verdict != ttf_resolve::ProgressVerdict::Reject && hasRestoreAnchor;
       if (!ttfHasSavedPosition) {
         nextPageNumber = 0;
@@ -3046,7 +3049,8 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
   if (restorePending && !restoreNeedsComplete) {
     percent = INDEX_BAR_INDETERMINATE[indexingBarStep_ % 4];
     ++indexingBarStep_;
-    LOG_INF("ERS", "Indexing popup: cover-driven restore, indeterminate bar step %d", percent);
+    // Per-pass line during a long restore: keep it off the serial floor.
+    LOG_DBG("ERS", "Indexing popup: cover-driven restore, indeterminate bar step %d", percent);
   } else {
     const uint32_t consumed = ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex))
                                   ? ttf_->sessionBytesConsumed()
@@ -3055,7 +3059,7 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
                                ? ttf_->sessionBytesTotal()
                                : (ttf_->cacheReady() ? ttf_->cacheBuildBytesTotal() : 0);
     percent = total > 0 ? static_cast<int>((static_cast<uint64_t>(consumed) * 100ULL) / total) : 0;
-    LOG_INF("ERS", "Indexing popup: restore=%d completeGated=%d consumed %lu/%lu bytes (%d%%)", restorePending,
+    LOG_DBG("ERS", "Indexing popup: restore=%d completeGated=%d consumed %lu/%lu bytes (%d%%)", restorePending,
             restoreNeedsComplete, static_cast<unsigned long>(consumed), static_cast<unsigned long>(total), percent);
   }
   GUI.fillPopupProgress(renderer, popupRect, percent);

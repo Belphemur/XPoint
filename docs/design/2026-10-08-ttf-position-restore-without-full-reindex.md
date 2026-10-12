@@ -63,7 +63,7 @@ visible-text offset — never to chapter end — then map exactly
   last-page sentinel).
 - Restore UX: Indexing popup with a progress bar (`BaseTheme::drawProgressBar`)
   fed by input-side build progress. No page is painted until the anchor
-  resolves (owner decision: block-to-anchor, no visual teleport).
+  resolves (owner decision: build-to-anchor, no visual teleport).
 - UI never feels dead: builds stay chunked per render pass; a navigation press
   during a restore supersedes it (§5.4).
 - Zero changes to `progress.bin`'s on-disk format; `ProgressManager` stays the
@@ -73,14 +73,15 @@ visible-text offset — never to chapter end — then map exactly
 
 ### 3.1 Principle: anchor authoritative, generation advisory
 
-`generation` matching remains the FAST path (reuse the record's page number
-directly on a matching-generation partial prefix — today's behavior at
-`:2915-2920`, kept verbatim). A generation MISMATCH no longer degrades to
-chapter start; it changes only WHICH mapping runs:
+There is no saved-page shortcut and generation never selects a mapping —
+matching or mismatched, every record resolves through the one funnel (§3.2):
 
-- same spine, matching generation, partial prefix → saved page number (fast);
-- same spine, any generation → map `charOffset` through the built prefix
-  (§3.2), building toward it as needed;
+- same spine, anchor (`charOffset > 0`) → map `charOffset` through the built
+  prefix (§3.2), building toward it as needed. A matching-generation cache
+  resolves the anchor in the same one-pass `evaluate()`; there is simply no
+  separate fast path anymore;
+- same spine, no anchor (`charOffset == 0`, incl. legacy-shape records) →
+  restore by the record's page hint (`PendingTarget::Page`), approximately;
 - different spine → chapter start (the anchor is chapter-scoped; nothing to
   map). Unchanged.
 
@@ -376,7 +377,7 @@ Qodo/Kody/CodeRabbit review findings and their resolutions:
     specified. New policy (wt/ttf-position-honor):
     - a record with a valid anchor (`charOffset > 0`) restores via the
       `CharOffset` path across ANY generation mismatch through the existing
-      funnel (covered-check → one chunk per pass, block-to-anchor);
+      funnel (covered-check → one chunk per pass, build-to-anchor);
     - a record with `charOffset == 0` and a sane page hint (or a legacy-shape
       record with a page hint) restores via `PendingTarget::Page` — a
       slightly wrong position beats the chapter start. The load gate arms
@@ -392,7 +393,9 @@ Qodo/Kody/CodeRabbit review findings and their resolutions:
       flag. Matching generations keep the same one-pass resolution through
       the anchor (the funnel replaced the old saved-page shortcut; a full
       matching-generation cache resolves the anchor in one `evaluate()`).
-    §3.1 and §8.1 item 6 now describe the shipped behavior again. Legacy
+    §8.1 item 6 now describes the shipped behavior again; §3.1's saved-page
+    fast-path wording (removed in the doc-lockstep pass) never described
+    shipped code — the funnel had already replaced that shortcut. Legacy
     6/10-byte `progress.bin` records still do not import their
     `visibleTextOffset` as a chapter char offset (it is a legacy-path
     offset, not chapter character space) — they restore by page hint only.

@@ -265,20 +265,36 @@ TEST(DeriveTargetTest, SavedGenerationMismatchStillRestoresCharOffset) {
 }
 
 TEST(DeriveTargetTest, SavedGenerationZeroIsNotSpecial) {
-  // A record saved with generation 0 (the LatchState default) and a current
-  // generation of 0 must not trip any special-case path: the mismatch flip
-  // makes the comparison moot, but this pins that 0 != 0 special handling
-  // never appeared (guard item 4 of the directive).
+  // No policy code compares the generation VALUE, so a record saved with
+  // generation 0 (the LatchState default) restores like any other. The real
+  // guarantee is the saved-0 vs nonzero-current case: the old degrade keyed
+  // on savedGeneration != generation, but 0-vs-0 never tripped it — only a
+  // mismatched nonzero pair did, so only that shape exercises the advisory
+  // guarantee.
   ttf_resolve::LatchState s;
   s.hasSavedPosition = true;
   s.savedSpine = 3;
   s.currentSpine = 3;
   s.savedCharOffset = 10;
   s.savedGeneration = 0;
-  s.generation = 0;
+  s.generation = 6;  // current generation nonzero
   auto d = ttf_resolve::deriveTarget(s);
   EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
   EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::CharOffset);
+  EXPECT_EQ(d.target.charOffset, 10u);
+  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
+
+  // 0-vs-0 stays a plain restore too (kept as a regression pin).
+  ttf_resolve::LatchState same;
+  same.hasSavedPosition = true;
+  same.savedSpine = 3;
+  same.currentSpine = 3;
+  same.savedCharOffset = 10;
+  same.savedGeneration = 0;
+  same.generation = 0;
+  auto dSame = ttf_resolve::deriveTarget(same);
+  EXPECT_EQ(dSame.degrade, ttf_resolve::Degrade::None);
+  EXPECT_EQ(dSame.target.kind, ttf_resolve::PendingTarget::CharOffset);
 }
 
 TEST(DeriveTargetTest, PageHintRestoresAcrossGenerationMismatch) {

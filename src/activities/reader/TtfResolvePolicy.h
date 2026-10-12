@@ -49,8 +49,10 @@ struct LatchState {
   uint32_t anchorHash = 0;
 };
 
-// Load-time verdict for a saved TTF progress record (design §3: the
-// charOffset + generation anchor is authoritative, the page hint advisory).
+// Load-time verdict for a saved TTF progress record (design §3, §10
+// amendment 11: the charOffset anchor is authoritative and
+// generation-independent — the page hint is advisory; generation is recorded
+// metadata, never a gate).
 // Reject = spine checks failed (unrecoverable) or a legacy-shape record has a
 // stale page hint. ClampPageHint = stale page hint on a record with a valid
 // anchor — keep the anchor, clamp the advisory page to the last built page.
@@ -58,6 +60,14 @@ struct LatchState {
 // build): the caller must publish the chapter length as unknown (0), never
 // the stale total.
 enum class ProgressVerdict : uint8_t { Accept, ClampPageHint, Reject };
+
+// True when the record carries a chapter character-space anchor. Generation
+// is only a presence flag on the record — the anchor restores across any
+// layout generation (§10 amendment 11). Shared by the load-time verdict and
+// the reader's restore latch.
+inline bool hasCharAnchor(bool hasGeneration, uint32_t savedCharOffset) {
+  return hasGeneration && savedCharOffset != 0;
+}
 
 // Judge a record read by openBookTtf() before it seeds the reader latches.
 // spineCount <= 0 or a bad spine is a hard reject: an anchor cannot recover a
@@ -67,7 +77,7 @@ inline ProgressVerdict judgeSavedTtfRecord(int spineCount, uint16_t savedSpine, 
   if (spineCount <= 0 || savedSpine >= static_cast<uint16_t>(spineCount)) return ProgressVerdict::Reject;
   const bool pageHintStale = savedPageCount > 0 && savedPage >= savedPageCount && savedPage != UINT16_MAX;
   if (!pageHintStale) return ProgressVerdict::Accept;
-  return (hasGeneration && savedCharOffset != 0) ? ProgressVerdict::ClampPageHint : ProgressVerdict::Reject;
+  return hasCharAnchor(hasGeneration, savedCharOffset) ? ProgressVerdict::ClampPageHint : ProgressVerdict::Reject;
 }
 
 // Saved-record degradation (§7): the record cannot map in this chapter.
