@@ -38,6 +38,8 @@ struct LatchState {
   bool hasSavedPosition = false;  // a saved TTF record exists for this open
   uint16_t savedSpine = 0;
   uint32_t savedCharOffset = 0;  // 0 → page-anchored record (use savedPage)
+  // Advisory only (§10 amendment 11): deriveTarget() never degrades on a
+  // generation mismatch, so these are informational for callers/tests.
   uint32_t savedGeneration = 0;
   uint32_t generation = 0;  // current layout generation
   uint16_t currentSpine = 0;
@@ -69,6 +71,11 @@ inline ProgressVerdict judgeSavedTtfRecord(int spineCount, uint16_t savedSpine, 
 }
 
 // Saved-record degradation (§7): the record cannot map in this chapter.
+// Owner directive (2026-10-14, see design §10 amendment 11): the saved
+// position is ALWAYS honored — a slightly wrong position beats the chapter
+// start. Generation is advisory, so a generation bump is never a degrade:
+// a charOffset anchor is chapter character space, layout-independent, and a
+// page hint restores approximately through the same funnel.
 enum class Degrade : uint8_t { None, ChapterStart };
 
 struct DerivedTarget {
@@ -77,17 +84,22 @@ struct DerivedTarget {
 };
 
 // Derive the active pending target from the source latches (§3.2 priority).
-// A saved record bound to another spine or a stale generation degrades to the
-// chapter start (§7) — the caller clears the latch and opens at page 0.
+// A saved record bound to another spine degrades to the chapter start (§7) —
+// the anchor is chapter-scoped, there is nothing to map. A generation
+// mismatch does NOT degrade (owner directive, §10 amendment 11): the anchor
+// restores across any generation through the funnel, and a page-anchored
+// record restores by page hint (approximately right beats chapter start).
 inline DerivedTarget deriveTarget(const LatchState& s) {
   if (s.reflowSeedPage >= 0)
     return {{PendingTarget::Page, static_cast<uint32_t>(s.reflowSeedPage), 0, 0, PendingTarget::Origin::Seed},
             Degrade::None};
   if (s.hasSavedPosition) {
-    if (s.currentSpine != s.savedSpine || s.savedGeneration != s.generation) return {{}, Degrade::ChapterStart};
+    if (s.currentSpine != s.savedSpine) return {{}, Degrade::ChapterStart};
     if (s.savedCharOffset > 0)
       return {{PendingTarget::CharOffset, s.savedCharOffset, 0, 0, PendingTarget::Origin::Saved}, Degrade::None};
-    // Page-anchored record (e.g. KOReader remote-accept): restore by page.
+    // Page-anchored record (KOReader remote-accept, legacy-shape save):
+    // restore by page. Across a generation bump the page hint is only
+    // approximate; evaluate() still clamps it to the chapter's real end.
     return {{PendingTarget::Page, s.savedPage, 0, 0, PendingTarget::Origin::Saved}, Degrade::None};
   }
   if (s.offsetJump.has_value())
