@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -1265,11 +1266,26 @@ void EpubReaderActivity::loop() {
       if (nextPage < static_cast<int>(section->pageCount)) {
         if (const auto p = section->loadPage(nextPage)) {
           if (auto* fcm = renderer.getFontCacheManager()) {
-            const auto t0 = millis();
-            auto scope = fcm->createPrewarmScope();
-            p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
-            scope.endScanAndPrewarm();
-            LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
+            // The prewarm pass paints the NEXT page into the live framebuffer
+            // only to scan its glyphs for the font cache; it never pushes the
+            // panel. But sleep entry (the "Entering sleep" popup, Quick
+            // Resume), a manual refresh, and screenshots all display the
+            // framebuffer without a re-render — leave page N+1 in there and
+            // the user sees the book flip a page as the device goes to sleep.
+            // Snapshot the current frame and restore it after the scan.
+            const uint32_t fbSize = display.getBufferSize();
+            PoolBytes fbBackup = poolMakeBytes(fbSize);
+            if (!fbBackup) {
+              LOG_DBG("ERS", "Idle prewarm skipped: no snapshot buffer");
+            } else {
+              memcpy(fbBackup.get(), display.getFrameBuffer(), fbSize);
+              const auto t0 = millis();
+              auto scope = fcm->createPrewarmScope();
+              p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
+              scope.endScanAndPrewarm();
+              memcpy(display.getFrameBuffer(), fbBackup.get(), fbSize);
+              LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
+            }
           }
         }
       }
