@@ -1257,7 +1257,7 @@ void EpubReaderActivity::loop() {
   constexpr unsigned long IDLE_PREWARM_RETRY_BACKOFF_MS = 5000;
   if (!inputPriority && millis() >= idlePrewarmRetryAt) {
     RenderLock lock(RenderLock::Mode::Try);
-    if (lock.ownsLock() && section && !section->isBuilding() && renderer.hasFrameBuffer() &&
+    if (lock.ownsLock() && overlay == Overlay::None && section && !section->isBuilding() && renderer.hasFrameBuffer() &&
         lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
         ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
         (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
@@ -1276,6 +1276,8 @@ void EpubReaderActivity::loop() {
           // the user sees the book flip a page as the device goes to sleep.
           // storeBwBuffer() snapshots the frame in 8 KB chunks (no
           // contiguous block) so it can be restored once the scan is done.
+          // The overlay==None guard above also protects an open toolbar's
+          // own stored snapshot from being freed by this store.
           if (renderer.storeBwBuffer()) {
             const auto t0 = millis();
             auto scope = fcm->createPrewarmScope();
@@ -1294,7 +1296,16 @@ void EpubReaderActivity::loop() {
           } else {
             idlePrewarmRetryAt = millis() + IDLE_PREWARM_RETRY_BACKOFF_MS;
           }
+        } else {
+          // No font cache manager: the prewarm cannot run at all this
+          // session; mark done so we stop rechecking.
+          idlePrewarmSpine = currentSpineIndex;
+          idlePrewarmPage = section->currentPage;
         }
+      } else {
+        // loadPage() failed (SD hiccup): retry after the backoff instead of
+        // re-attempting the SD load on every loop tick.
+        idlePrewarmRetryAt = millis() + IDLE_PREWARM_RETRY_BACKOFF_MS;
       }
     }
   }
