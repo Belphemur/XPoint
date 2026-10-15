@@ -100,11 +100,13 @@ class TtfBookRuntime : public ChapterIndexTarget {
   uint64_t sessionBytesConsumed() const { return session_.bytesConsumed(); }
   uint64_t sessionBytesTotal() const { return session_.bytesTotal(); }
 
-  // Transient page-only relayout for the quick font sheet. Calls sink.onPage()
-  // for laid pages and stops when the sink returns false (or maxPages). Uses
-  // the runtime's scratch/parse arenas; valid only when no build session is
-  // active. Does not touch the committed page cache.
-  BookStatus quickLayoutPage(uint16_t spineIndex, const LayoutParams& params, PageSink& sink, uint8_t maxPages);
+  // Transient page-only relayout for the quick font preview. Calls
+  // sink.onPage() for laid pages and stops when the sink returns false. With
+  // params.windowStartChar set, the engine lays only the page containing that
+  // char offset (window mode, ADR 2026-10-14). Uses the runtime's
+  // scratch/parse arenas; valid only when no build session is active. Does
+  // not touch the committed page cache.
+  BookStatus quickLayoutPage(uint16_t spineIndex, const LayoutParams& params, PageSink& sink);
 
   // Unified page access over writer (live build) and cache reader. All
   // accessors are scoped to `spineIndex`: a session building a DIFFERENT

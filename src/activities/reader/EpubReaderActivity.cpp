@@ -5664,25 +5664,15 @@ void EpubReaderActivity::openFontPreview() {
   discardOverlayPage();
   startActivityForResult(std::move(preview), [this](const ActivityResult& result) {
     if (!result.isCancelled && std::holds_alternative<QuickFontPreviewResult>(result.data)) {
-      const auto& previewResult = std::get<QuickFontPreviewResult>(result.data);
-      // The preview's transient layout pass already resolved the page holding
-      // the entry anchor under the settings now in SETTINGS. Seed it before the
-      // invalidation so the rebuild targets the reader's position and builds
-      // incrementally to it, instead of re-deriving the position from a char
-      // offset that cannot map until the chapter is fully indexed (which sent
-      // the reader back to the chapter start).
-      if (previewResult.changed && previewResult.hasPosition) {
-        // Arming happens inside applyReaderTextSettings() under the render
-        // lock; the rebuild then targets the reader's position and builds
-        // incrementally to it, instead of re-deriving the position from a char
-        // offset that cannot map until the chapter is fully indexed (which
-        // sent the reader back to the chapter start).
-        applyReaderTextSettings(static_cast<int32_t>(previewResult.pageIndex));
-      } else {
-        // The preview persisted the settings; this is the settings-driven
-        // clean reindex a Text-settings font change lands.
-        applyReaderTextSettings();
-      }
+      // The preview persisted the settings; this is the settings-driven clean
+      // reindex a Text-settings font change lands. The position restores
+      // through the chapter char offset the invalidation latches
+      // (ttfInvalidateCaches keeps ttfCurrentCharStart as a CharOffset target)
+      // — the preview's page-local relayout cannot supply a truthful page
+      // index for the rebuilt layout (ADR 2026-10-14).
+      applyReaderTextSettings();
+      // The first frame of the reindexed page must reach the glass as a full
+      // refresh (ADR §Decision 3): no FAST diff may land before it.
       pagesUntilFullRefresh = 1;
     }
     // Both close branches pop straight back to the book page; the chrome

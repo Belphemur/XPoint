@@ -85,3 +85,28 @@ class QuickPageCapture {
   bool valid_ = false;
   freeink::book::Page page_{};
 };
+
+// The preview's PageSink for the window pass (ADR 2026-10-14): deep-copies the
+// delivered page out of the engine's per-page arena and stops after it. The
+// stop-after-one contract is what keeps an anchor of 0 cheap: windowStartChar
+// 0 disables the engine window, so the pass would lay the whole chapter and
+// this sink cuts it after page 0.
+class QuickWindowSink final : public freeink::book::PageSink {
+ public:
+  explicit QuickWindowSink(QuickPageCapture& captureRef) : capture_(captureRef) {}
+
+  bool onPage(const freeink::book::Page& page) override {
+    delivered_ = true;
+    // A page too large for the buffer is SKIPPED, not painted inline: an
+    // inline speculative frame would be left on screen while the status bar
+    // still reported the old page.
+    if (!capture_.capture(page)) capture_.reset();
+    return false;  // one page is the whole window
+  }
+
+  bool delivered() const { return delivered_; }
+
+ private:
+  QuickPageCapture& capture_;
+  bool delivered_ = false;
+};

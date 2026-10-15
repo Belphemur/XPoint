@@ -1,21 +1,25 @@
 #pragma once
 
 // FontPreviewActivity — full-screen current-page font preview (design
-// docs/design/2026-09-27-quick-font-preview.md). Replaces the reader's inline
-// quick font sheet: the captured page fills the screen and a bottom chrome
-// sheet exposes the Size and Family rows. Every confirmed change re-lays the
-// page around the entry anchor through the shared quickRelayoutPage() seam
-// (transient pass, no committed-cache work, no indexing) and repaints
-// immediately.
+// docs/design/2026-09-27-quick-font-preview.md, amended by
+// docs/design/2026-10-14-quick-font-preview-page-local-relayout.md). Replaces
+// the reader's inline quick font sheet: the captured page fills the screen
+// and a bottom chrome sheet exposes the Size and Family rows. Every confirmed
+// change re-lays ONLY that page's text (page-local window through the shared
+// quickRelayoutPage() seam — transient pass, no committed-cache work, no
+// indexing) and repaints immediately.
 //
 // Close contract:
-//   - no changes (family and point size still the entry values): pops
-//     cancelled — the reader repaints the page it still owns; zero reflow,
-//     zero SD writes.
+//   - no changes (any row still at its entry value): pops cancelled — the
+//     reader repaints the page it still owns; zero reflow, zero SD writes.
 //   - changed: pops QuickFontPreviewResult{changed=true}; the reader's result
 //     handler runs applyReaderTextSettings() — the SAME settings-driven
 //     invalidation a Text-settings font change lands (full clean rebuild,
-//     position preserved through the page's char offset).
+//     position preserved through the page's char offset, which the reader
+//     already carries in ttfCurrentCharStart). The preview does NOT report a
+//     page index: its window pass cannot know the rebuilt layout's absolute
+//     page numbering, and the char-offset restore resolves at the same point
+//     of the incremental build.
 //
 // Changes are persisted per apply (Text-settings discipline) so a home
 // gesture or sleep mid-preview cannot lose them; the close reindex is the
@@ -99,11 +103,5 @@ class FontPreviewActivity final : public Activity {
   uint8_t entryLineSpacing_ = 0;
   uint8_t entryWordSpacing_ = 0;
   uint8_t entryCharacterSpacing_ = 0;
-  // The page the last confirmed relayout resolved for the entry anchor, under
-  // the settings now in SETTINGS. Handed to the reader so its reindex starts
-  // from this page instead of re-deriving the position from a char offset that
-  // cannot map until the chapter is fully indexed.
-  uint32_t resolvedPage_ = 0;
-  bool resolvedAnchor_ = false;
 };
 #endif  // CROSSPOINT_TTF_READER
