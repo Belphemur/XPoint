@@ -1254,38 +1254,45 @@ void EpubReaderActivity::loop() {
   const bool inputPriority = mappedInput.rawInputPriority();
 
   constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
-  if (!inputPriority) {
+  constexpr unsigned long IDLE_PREWARM_RETRY_BACKOFF_MS = 5000;
+  if (!inputPriority && millis() >= idlePrewarmRetryAt) {
     RenderLock lock(RenderLock::Mode::Try);
     if (lock.ownsLock() && section && !section->isBuilding() && renderer.hasFrameBuffer() &&
         lastRenderCompleteMs != 0 && millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS &&
         ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP && ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
         (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
-      idlePrewarmSpine = currentSpineIndex;
-      idlePrewarmPage = section->currentPage;
       const int nextPage = section->currentPage + 1;
-      if (nextPage < static_cast<int>(section->pageCount)) {
-        if (const auto p = section->loadPage(nextPage)) {
-          if (auto* fcm = renderer.getFontCacheManager()) {
-            // The prewarm pass paints the NEXT page into the live framebuffer
-            // only to scan its glyphs for the font cache; it never pushes the
-            // panel. But sleep entry (the "Entering sleep" popup, Quick
-            // Resume), a manual refresh, and screenshots all display the
-            // framebuffer without a re-render — leave page N+1 in there and
-            // the user sees the book flip a page as the device goes to sleep.
-            // Snapshot the current frame and restore it after the scan.
-            const uint32_t fbSize = display.getBufferSize();
-            PoolBytes fbBackup = poolMakeBytes(fbSize);
-            if (!fbBackup) {
-              LOG_DBG("ERS", "Idle prewarm skipped: no snapshot buffer");
-            } else {
-              memcpy(fbBackup.get(), display.getFrameBuffer(), fbSize);
-              const auto t0 = millis();
-              auto scope = fcm->createPrewarmScope();
-              p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
-              scope.endScanAndPrewarm();
-              memcpy(display.getFrameBuffer(), fbBackup.get(), fbSize);
-              LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
-            }
+      if (nextPage >= static_cast<int>(section->pageCount)) {
+        // Last page of the chapter: nothing to prewarm; stop re-checking.
+        idlePrewarmSpine = currentSpineIndex;
+        idlePrewarmPage = section->currentPage;
+      } else if (const auto p = section->loadPage(nextPage)) {
+        if (auto* fcm = renderer.getFontCacheManager()) {
+          // The prewarm pass paints the NEXT page into the live framebuffer
+          // only to scan its glyphs for the font cache; it never pushes the
+          // panel. But sleep entry (the "Entering sleep" popup, Quick
+          // Resume), a manual refresh, and screenshots all display the
+          // framebuffer without a re-render — leave page N+1 in there and
+          // the user sees the book flip a page as the device goes to sleep.
+          // storeBwBuffer() snapshots the frame in 8 KB chunks (no
+          // contiguous block) so it can be restored once the scan is done.
+          if (renderer.storeBwBuffer()) {
+            const auto t0 = millis();
+            auto scope = fcm->createPrewarmScope();
+            p->render(renderer, SETTINGS.getReaderFontId(), 0, 0);
+            scope.endScanAndPrewarm();
+            // Nothing was pushed to the panel since the store, so the
+            // controller's differential baseline already matches the
+            // restored frame — no baseline resync needed.
+            renderer.restoreBwBuffer(false);
+            // Mark only on success: a failed snapshot is retried after the
+            // backoff instead of being silently skipped for this page.
+            idlePrewarmSpine = currentSpineIndex;
+            idlePrewarmPage = section->currentPage;
+            idlePrewarmRetryAt = 0;
+            LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
+          } else {
+            idlePrewarmRetryAt = millis() + IDLE_PREWARM_RETRY_BACKOFF_MS;
           }
         }
       }

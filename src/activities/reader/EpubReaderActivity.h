@@ -69,6 +69,7 @@ class EpubReaderActivity final : public ReaderActivity {
   bool currentPageBookmarked = false;
   int idlePrewarmSpine = -1;
   int idlePrewarmPage = -1;
+  unsigned long idlePrewarmRetryAt = 0UL;
   std::unique_ptr<Section> nextSectionPrefetch = nullptr;
   int nextSectionSpineIndex = -1;
   unsigned long lastRenderCompleteMs = 0;
