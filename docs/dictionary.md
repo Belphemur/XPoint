@@ -52,7 +52,7 @@ On the very first lookup with a dictionary (and again whenever the `.idx` or `.s
 
 When a word is found, the definition screen shows the matched headword at the top and the definition text below, with a page counter for long definitions.
 
-HTML dictionaries that declare `sametypesequence=h` use the EPUB text-layout engine for semantic formatting such as headings, bold, italics, lists, and line breaks. Images and CSS styling are ignored. Definitions that are too large or cannot be laid out within the available memory fall back to plain text.
+Markup dictionaries — StarDict declares `sametypesequence` as `h` (HTML), `x` (XDXF), `g` (Pango), `k` (Lingvo), `y`, `r` (RTF), or `w` — use the EPUB text-layout engine for supported formatting such as headings, bold, italics, lists, and line breaks. Unrecognized tags keep their text without special formatting, and `m` plus unlisted or multi-type sequences keep the plain-text path. Images and CSS styling are ignored. Definitions that are too large or cannot be parsed or laid out within the available memory fall back to plain text.
 
 - **Left/Right** or side **Up/Down** — previous / next page
 - **Back** — return to word selection
