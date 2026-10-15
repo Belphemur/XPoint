@@ -493,6 +493,47 @@ TEST(SequenceTest, FontChangeRestoresThroughCharOffsetDuringIncrementalBuild) {
   EXPECT_FALSE(done.needFullBuild);
 }
 
+// ── Reflow restore latch (ttfInvalidateCaches, ADR 2026-10-14 close path) ───
+
+TEST(ReflowLatchTest, CharAnchorLatchesReflowTarget) {
+  // The invalidation's latch rule: a nonzero displayed-page char anchor arms
+  // a CharOffset target with origin Reflow — the layout-independent restore
+  // every settings/orientation/preview-close reflow rides.
+  const auto target = ttf_resolve::reflowRestoreTarget(2000);
+  ASSERT_EQ(target.kind, ttf_resolve::PendingTarget::CharOffset);
+  EXPECT_EQ(target.charOffset, 2000u);
+  EXPECT_EQ(target.origin, ttf_resolve::PendingTarget::Origin::Reflow);
+
+  // Same funnel shape as the #194 changed close: the anchor's page resolves
+  // from the built prefix as soon as it covers it (2 chars/page fake, anchor
+  // on page 1000) — never a chapter-start snap, never a full-index wait.
+  uint32_t builtPages = 0;
+  auto partialPageForChar = [&builtPages](uint32_t offset, uint32_t& pageOut) -> bool {
+    if (builtPages == 0 || offset >= builtPages * 2) return false;
+    pageOut = offset / 2;
+    return true;
+  };
+  for (uint32_t built : {0u, 10u, 500u, 999u, 1000u}) {
+    builtPages = built;
+    const auto step = ttf_resolve::evaluate(target, builtPages, partialPageForChar, pageCharStart2PerPage, false);
+    EXPECT_FALSE(step.resolved) << "built=" << built;
+  }
+  builtPages = 1001;
+  const auto done = ttf_resolve::evaluate(target, builtPages, partialPageForChar, pageCharStart2PerPage, false);
+  EXPECT_TRUE(done.resolved);
+  EXPECT_EQ(done.page, 1000);
+}
+
+TEST(ReflowLatchTest, ZeroAnchorLatchesNothing) {
+  // A zero anchor carries no page information: page 0 IS the chapter start,
+  // and every zero-char-start page of an image-lead chapter shares it. The
+  // invalidation arms nothing; the resolver default's preserved page number
+  // (ttfPage/nextPageNumber) restores, and a stored Saved/Anchor/Jump target
+  // re-derives from its raw latch — wiping the stored target is observably
+  // equivalent to the old anchor>0-only assignment.
+  EXPECT_EQ(ttf_resolve::reflowRestoreTarget(0).kind, ttf_resolve::PendingTarget::None);
+}
+
 // ── Build advances one chunk → next resolve succeeds (§8.1 case 4) ──────────
 
 TEST(SequenceTest, NotCoveredThenCoveredAfterBuild) {
