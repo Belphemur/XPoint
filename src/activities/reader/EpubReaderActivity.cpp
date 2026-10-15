@@ -3043,11 +3043,9 @@ void EpubReaderActivity::finishTtfPageRender() {
 
 void EpubReaderActivity::ttfInvalidateCaches() {
   if (!ttf_) return;
-  if (ttfCurrentCharStart > 0) {
-    // Settings/orientation reflow: the anchor (ttfCurrentCharStart) is preserved
-    // across the generation bump and resolved by the unified funnel (design §3.2).
-    pendingRestoreTarget_ = {PendingTarget::CharOffset, ttfCurrentCharStart, 0, 0, PendingTarget::Origin::Reflow};
-  }
+  // Settings/orientation reflow: the anchor (ttfCurrentCharStart) is preserved
+  // across the generation bump and resolved by the unified funnel (design §3.2).
+  pendingRestoreTarget_ = ttf_resolve::reflowRestoreTarget(ttfCurrentCharStart);
   ttf_->abortSession();
   ttf_->dropPrefetch();
   ttf_->closeChapterCache();

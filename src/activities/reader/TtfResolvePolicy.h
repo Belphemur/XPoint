@@ -126,6 +126,17 @@ struct ResolveOutcome {
   bool needFullBuild;  // full build required (Percent/LastPage kinds, or not yet covered)
 };
 
+// Reflow restore latch (ttfInvalidateCaches, design §3.2): the displayed
+// page's char anchor survives the generation bump and resolves through the
+// funnel — layout-independent, so a settings/orientation/preview-close reflow
+// lands on the page containing the same text. A zero anchor carries no
+// information: page 0 IS the chapter start, and the resolver default's
+// preserved page number (ttfPage/nextPageNumber) takes over.
+inline PendingTarget reflowRestoreTarget(const uint32_t anchorChar) {
+  if (anchorChar == 0) return {};
+  return {PendingTarget::CharOffset, anchorChar, 0, 0, PendingTarget::Origin::Reflow};
+}
+
 // Cover check result (§3.3).
 struct CoverResult {
   bool covered;
