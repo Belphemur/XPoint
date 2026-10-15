@@ -22,7 +22,10 @@ memory_guard = "  const auto heap = HalMemory::getDefaultHeap();" + source.split
 def method(name, next_name, text=source):
     signature = text.index(name)
     start = text.rfind("\n", 0, signature) + 1
-    return text[start:text.index(next_name, signature)].rstrip()
+    # Keep one line terminator: slices are concatenated with no separator, and a
+    # slice may end on a preprocessor directive (e.g. the reading-stats guard's
+    # #endif) that is invalid once glued to the next slice's first token.
+    return text[start:text.index(next_name, signature)].rstrip() + "\n"
 
 extract_words = method("bool ClipSelectionActivity::extractWords", "int ClipSelectionActivity::closestInRow")
 clean_draw = method("void ClipSelectionActivity::drawWordClean", "void ClipSelectionActivity::drawWordHighlight")
