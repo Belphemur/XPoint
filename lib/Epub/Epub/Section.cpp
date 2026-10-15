@@ -83,7 +83,11 @@ namespace {
 // v54: Source ranges retain codepoints absorbed by NFC composition (upstream).
 // v55: Persist the first logical word of each paragraph for clipping separators
 //      (upstream); invalidates both parents' v52 caches.
-constexpr uint8_t SECTION_FILE_VERSION = 55;
+// v56: Split hyphen and dash tokens (e.g "foo—bar" into "foo—") in standard reading
+//      mode (upstream #3883); the fork had already consumed the same v55 number
+//      upstream used for the first-logical-word change, so both parents' v55 caches
+//      are invalidated together.
+constexpr uint8_t SECTION_FILE_VERSION = 56;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
