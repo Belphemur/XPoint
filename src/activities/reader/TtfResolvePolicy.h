@@ -18,11 +18,11 @@ namespace ttf_resolve {
 // static_cast drift is impossible by construction.
 struct PendingTarget {
   enum Kind : uint8_t { None, CharOffset, Page, AnchorHash, Percent, LastPage };
-  enum Origin : uint8_t { OriginNone, Reflow, Seed, Saved, OffsetJump, Anchor };
+  enum Origin : uint8_t { OriginNone, Reflow, Saved, OffsetJump, Anchor };
   Kind kind = None;
   // CharOffset: chapter char offset. Page: page index (page-anchored records
-  // and the reflow/preview seed — a page number is NOT a char offset).
-  // AnchorHash: unused until charForAnchor() resolves it to CharOffset.
+  // — a page number is NOT a char offset). AnchorHash: unused until
+  // charForAnchor() resolves it to CharOffset.
   uint32_t charOffset = 0;
   uint32_t idHash = 0;         // AnchorHash
   uint8_t percent = 0;         // Percent
@@ -34,7 +34,6 @@ struct PendingTarget {
 // effects (latch clearing) itself — evaluate()/deriveTarget() stay side-effect
 // free so the funnel contract is testable.
 struct LatchState {
-  int32_t reflowSeedPage = -1;    // page-anchored preview/reflow seed
   bool hasSavedPosition = false;  // a saved TTF record exists for this open
   uint16_t savedSpine = 0;
   uint32_t savedCharOffset = 0;  // 0 → page-anchored record (use savedPage)
@@ -100,9 +99,6 @@ struct DerivedTarget {
 // restores across any generation through the funnel, and a page-anchored
 // record restores by page hint (approximately right beats chapter start).
 inline DerivedTarget deriveTarget(const LatchState& s) {
-  if (s.reflowSeedPage >= 0)
-    return {{PendingTarget::Page, static_cast<uint32_t>(s.reflowSeedPage), 0, 0, PendingTarget::Origin::Seed},
-            Degrade::None};
   if (s.hasSavedPosition) {
     if (s.currentSpine != s.savedSpine) return {{}, Degrade::ChapterStart};
     if (s.savedCharOffset > 0)
@@ -125,6 +121,17 @@ struct ResolveOutcome {
   int page;            // resolved page index (valid when resolved)
   bool needFullBuild;  // full build required (Percent/LastPage kinds, or not yet covered)
 };
+
+// Reflow restore latch (ttfInvalidateCaches, design §3.2): the displayed
+// page's char anchor survives the generation bump and resolves through the
+// funnel — layout-independent, so a settings/orientation/preview-close reflow
+// lands on the page containing the same text. A zero anchor carries no
+// information: page 0 IS the chapter start, and the resolver default's
+// preserved page number (ttfPage/nextPageNumber) takes over.
+inline PendingTarget reflowRestoreTarget(const uint32_t anchorChar) {
+  if (anchorChar == 0) return {};
+  return {PendingTarget::CharOffset, anchorChar, 0, 0, PendingTarget::Origin::Reflow};
+}
 
 // Cover check result (§3.3).
 struct CoverResult {

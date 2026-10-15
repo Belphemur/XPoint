@@ -198,9 +198,8 @@ TEST(EvaluateTest, PageKindTerminalClampsWhenComplete) {
 
 // ── Latch derivation (§3.2 priority + §7 degrade) ───────────────────────────
 
-TEST(DeriveTargetTest, SeedWinsPriority) {
+TEST(DeriveTargetTest, SavedWinsPriority) {
   ttf_resolve::LatchState s;
-  s.reflowSeedPage = 7;
   s.hasSavedPosition = true;
   s.savedCharOffset = 10;
   s.savedGeneration = s.generation;
@@ -208,9 +207,9 @@ TEST(DeriveTargetTest, SeedWinsPriority) {
   s.hasAnchor = true;
   auto d = ttf_resolve::deriveTarget(s);
   EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
-  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::Page);
-  EXPECT_EQ(d.target.charOffset, 7u);  // seed is a PAGE number, not a char offset
-  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Seed);
+  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::CharOffset);
+  EXPECT_EQ(d.target.charOffset, 10u);
+  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
 }
 
 TEST(DeriveTargetTest, SavedOffsetGenerationMatchDerivesCharOffset) {
@@ -450,6 +449,88 @@ TEST(SequenceTest, LegacyPageHintRestoreAcrossGenerationBump) {
   EXPECT_TRUE(clamped.resolved);
   EXPECT_EQ(clamped.page, 3);
   EXPECT_EQ(derived.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
+}
+
+TEST(SequenceTest, FontChangeRestoresThroughCharOffsetDuringIncrementalBuild) {
+  // #194 shape, as produced by the page-local font preview close (ADR
+  // 2026-10-14): the preview persisted new typography and reported no page
+  // index (its window pass cannot know the rebuilt layout's absolute page
+  // numbering). ttfInvalidateCaches() latches ttfCurrentCharStart as a
+  // CharOffset target with origin Reflow (EpubReaderActivity.cpp:3012) and
+  // the rebuild runs incrementally. The restore must resolve from the built
+  // prefix as soon as it covers the target page — never wait for the whole
+  // chapter, never snap to the chapter start.
+  //
+  // Fake chapter: 2 chars per page, 1200 pages; the entry anchor sits on
+  // page 1000 (char 2000) — late in the chapter.
+  const uint32_t anchor = 2000;
+  ttf_resolve::PendingTarget target = {ttf_resolve::PendingTarget::CharOffset, anchor, 0, 0,
+                                       ttf_resolve::PendingTarget::Origin::Reflow};
+
+  uint32_t builtPages = 0;
+  auto pageForChar = [&builtPages](uint32_t offset, uint32_t& pageOut) -> bool {
+    if (builtPages == 0 || offset >= builtPages * 2) return false;  // beyond built prefix
+    pageOut = offset / 2;
+    return true;
+  };
+
+  // Early passes: prefix shorter than the target page — pending, position
+  // kept (needFullBuild false: the build chunks toward it), page NOT served.
+  for (uint32_t built : {0u, 10u, 500u, 999u, 1000u}) {
+    builtPages = built;
+    const auto step = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart2PerPage, false);
+    EXPECT_FALSE(step.resolved) << "built=" << built;
+    EXPECT_FALSE(step.needFullBuild) << "built=" << built;
+  }
+
+  // The pass after the prefix covers the anchor page: restored to page 1000,
+  // not chapter start.
+  builtPages = 1001;
+  const auto done = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart2PerPage, false);
+  EXPECT_TRUE(done.resolved);
+  EXPECT_EQ(done.page, 1000);
+  EXPECT_FALSE(done.needFullBuild);
+}
+
+// ── Reflow restore latch (ttfInvalidateCaches, ADR 2026-10-14 close path) ───
+
+TEST(ReflowLatchTest, CharAnchorLatchesReflowTarget) {
+  // The invalidation's latch rule: a nonzero displayed-page char anchor arms
+  // a CharOffset target with origin Reflow — the layout-independent restore
+  // every settings/orientation/preview-close reflow rides.
+  const auto target = ttf_resolve::reflowRestoreTarget(2000);
+  ASSERT_EQ(target.kind, ttf_resolve::PendingTarget::CharOffset);
+  EXPECT_EQ(target.charOffset, 2000u);
+  EXPECT_EQ(target.origin, ttf_resolve::PendingTarget::Origin::Reflow);
+
+  // Same funnel shape as the #194 changed close: the anchor's page resolves
+  // from the built prefix as soon as it covers it (2 chars/page fake, anchor
+  // on page 1000) — never a chapter-start snap, never a full-index wait.
+  uint32_t builtPages = 0;
+  auto partialPageForChar = [&builtPages](uint32_t offset, uint32_t& pageOut) -> bool {
+    if (builtPages == 0 || offset >= builtPages * 2) return false;
+    pageOut = offset / 2;
+    return true;
+  };
+  for (uint32_t built : {0u, 10u, 500u, 999u, 1000u}) {
+    builtPages = built;
+    const auto step = ttf_resolve::evaluate(target, builtPages, partialPageForChar, pageCharStart2PerPage, false);
+    EXPECT_FALSE(step.resolved) << "built=" << built;
+  }
+  builtPages = 1001;
+  const auto done = ttf_resolve::evaluate(target, builtPages, partialPageForChar, pageCharStart2PerPage, false);
+  EXPECT_TRUE(done.resolved);
+  EXPECT_EQ(done.page, 1000);
+}
+
+TEST(ReflowLatchTest, ZeroAnchorLatchesNothing) {
+  // A zero anchor carries no page information: page 0 IS the chapter start,
+  // and every zero-char-start page of an image-lead chapter shares it. The
+  // invalidation arms nothing; the resolver default's preserved page number
+  // (ttfPage/nextPageNumber) restores, and a stored Saved/Anchor/Jump target
+  // re-derives from its raw latch — wiping the stored target is observably
+  // equivalent to the old anchor>0-only assignment.
+  EXPECT_EQ(ttf_resolve::reflowRestoreTarget(0).kind, ttf_resolve::PendingTarget::None);
 }
 
 // ── Build advances one chunk → next resolve succeeds (§8.1 case 4) ──────────

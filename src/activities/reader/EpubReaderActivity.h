@@ -245,6 +245,10 @@ class EpubReaderActivity final : public ReaderActivity {
   bool ttfRestoreLastPage = false;                  // back-navigation into the previous chapter
   std::atomic<bool> ttfFrameRenderComplete{false};  // framebuffer holds the last rendered page
   uint32_t ttfCurrentCharStart = 0;                 // charStart of the last rendered page
+  uint32_t ttfCurrentCharEnd = 0;                   // furthest run end of the last rendered page — the font
+                                                    // preview's window bound (ADR 2026-10-14: the preview
+                                                    // re-lays ONLY the entry page's span). Always paired
+                                                    // with ttfCurrentCharStart (same gate, same pages).
   // Progress-record restore data (consumed on the chapter's first open).
   bool ttfHasSavedPosition = false;
   uint16_t ttfSavedSpine = 0;
@@ -256,8 +260,8 @@ class EpubReaderActivity final : public ReaderActivity {
   // aliased here so the funnel and the policy share one struct and one
   // Kind/Origin enum (no cross-type static_cast to drift). CharOffset targets
   // come from reflow (ttfCurrentCharStart), saved position, and KOReader
-  // offset jumps; Page targets from page-anchored records and the preview
-  // seed; AnchorHash targets resolve to a char offset via charForAnchor first.
+  // offset jumps; Page targets from page-anchored records; AnchorHash
+  // targets resolve to a char offset via charForAnchor first.
   // The origin records which latch produced the target so the funnel clears
   // exactly that latch when the target resolves.
   using PendingTarget = ttf_resolve::PendingTarget;
@@ -266,12 +270,6 @@ class EpubReaderActivity final : public ReaderActivity {
   // restore is pending (see ttfShowIndexingPopup) — one step per drawn pass.
   uint8_t indexingBarStep_ = 0;
 
-  // Page the font preview resolved for the current spine under the settings
-  // being committed. Its transient layout pass runs the same engine and
-  // LayoutParams as the rebuild, so this is the rebuild's own target page:
-  // consuming it lets the pass build incrementally up to the reader's position
-  // instead of demanding a complete index before the char offset can map.
-  int32_t ttfReflowSeedPage = -1;
   void renderBookTtf();
   // Grayscale base refresh shared by both TTF gray transports: cleanup cycle
   // when due, otherwise the grayscale base waveform (§11 Q7).
@@ -447,9 +445,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void paintOverlayPopup();
   // Persist the reader text settings, (re)load the selected SD font, and
   // re-paginate the current chapter so changes apply without re-opening the book.
-  // seedPage >= 0 arms the font-preview reindex seed under the same
-  // RenderLock as the invalidation; -1 leaves any existing seed alone.
-  void applyReaderTextSettings(int32_t seedPage = -1);
+  void applyReaderTextSettings();
   // More panel rows.
   void buildMoreActions();
   std::string moreRowName(int row) const;

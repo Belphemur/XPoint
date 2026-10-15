@@ -359,8 +359,7 @@ void TtfBookRuntime::abortSession() {
   resetBuildArenas();
 }
 
-BookStatus TtfBookRuntime::quickLayoutPage(const uint16_t spineIndex, const LayoutParams& params, PageSink& sink,
-                                           const uint8_t maxPages) {
+BookStatus TtfBookRuntime::quickLayoutPage(const uint16_t spineIndex, const LayoutParams& params, PageSink& sink) {
   // A live build owns scratch_/parseArena_. The caller must fall back to a
   // full reflow in that rare case rather than corrupting the session.
   if (sessionActive()) return BookStatus::Unsupported;

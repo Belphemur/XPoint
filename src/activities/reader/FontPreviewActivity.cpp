@@ -23,11 +23,13 @@
 
 FontPreviewActivity::FontPreviewActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                          freeink::book::TtfBookRuntime* ttf, const uint16_t spineIndex,
-                                         const uint32_t anchorChar, const bool autoPageTurn, Host host)
+                                         const uint32_t anchorChar, const uint32_t pageEndChar, const bool autoPageTurn,
+                                         Host host)
     : Activity("FontPreview", renderer, mappedInput),
       ttf_(ttf),
       spineIndex_(spineIndex),
       anchorChar_(anchorChar),
+      pageEndChar_(pageEndChar),
       autoPageTurn_(autoPageTurn),
       host_(host) {}
 
@@ -63,19 +65,15 @@ void FontPreviewActivity::onExit() {
 void FontPreviewActivity::relayout() {
   needsRelayout_ = false;
   if (ttf_ == nullptr) return;
-  const auto out = quickRelayoutPage(*ttf_, renderer, spineIndex_, anchorChar_, autoPageTurn_, preview_, previewBuf_);
+  const auto out =
+      quickRelayoutPage(*ttf_, renderer, spineIndex_, anchorChar_, pageEndChar_, autoPageTurn_, preview_, previewBuf_);
   relayoutFont_ = out.font;
   relayoutCharSpacingPx_ = out.characterSpacingPx;
   relayoutWordSpacingPx_ = out.wordSpacingPx;
-  // An unconfirmed capture (anchor beyond the scan budget, layout failure)
-  // must not be displayed as if it were the current page: drop it and let the
-  // render keep the frame the preview opened over until close reflows.
+  // An unconfirmed capture (layout failure, anchor past the chapter's last
+  // char) must not be displayed as if it were the current page: drop it and
+  // let the render keep the frame the preview opened over until close reflows.
   if (!out.reachedAnchor) preview_.reset();
-  // Only a confirmed pass yields a usable target: an unconfirmed one may have
-  // stopped at the scan budget, where pageIndex is the last page scanned
-  // rather than the page holding the anchor.
-  resolvedAnchor_ = out.reachedAnchor;
-  resolvedPage_ = out.pageIndex;
 }
 
 void FontPreviewActivity::applySize(const uint32_t value) {
@@ -223,11 +221,7 @@ void FontPreviewActivity::close() {
                        SETTINGS.characterSpacing != entryCharacterSpacing_;
   ActivityResult result;
   if (changed) {
-    // A pending relayout means the captured page still reflects the settings
-    // in force when it was laid out, so its page index does not describe the
-    // layout the reader is about to rebuild. Report no position and let the
-    // reader fall back rather than opening at a page from the old settings.
-    result = QuickFontPreviewResult{true, resolvedAnchor_ && !needsRelayout_, resolvedPage_};
+    result = QuickFontPreviewResult{true};
   } else {
     result.isCancelled = true;
   }

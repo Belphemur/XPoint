@@ -2190,10 +2190,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     // Geometry change -> new generation -> new caches; the position rides the
-    // chapter char offset (design section 3.5). A font-preview seed is scoped to
-    // the settings generation it was resolved for, so it must not carry into
-    // this unrelated reflow.
-    ttfReflowSeedPage = -1;
+    // chapter char offset (design section 3.5).
     ttfInvalidateCaches();
   }
 #endif
@@ -2220,7 +2217,6 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_ && automaticPageTurnActive != wasActive) {
     RenderLock lock;
-    ttfReflowSeedPage = -1;
     ttfInvalidateCaches();
   }
 #endif
@@ -3043,11 +3039,9 @@ void EpubReaderActivity::finishTtfPageRender() {
 
 void EpubReaderActivity::ttfInvalidateCaches() {
   if (!ttf_) return;
-  if (ttfCurrentCharStart > 0) {
-    // Settings/orientation reflow: the anchor (ttfCurrentCharStart) is preserved
-    // across the generation bump and resolved by the unified funnel (design §3.2).
-    pendingRestoreTarget_ = {PendingTarget::CharOffset, ttfCurrentCharStart, 0, 0, PendingTarget::Origin::Reflow};
-  }
+  // Settings/orientation reflow: the anchor (ttfCurrentCharStart) is preserved
+  // across the generation bump and resolved by the unified funnel (design §3.2).
+  pendingRestoreTarget_ = ttf_resolve::reflowRestoreTarget(ttfCurrentCharStart);
   ttf_->abortSession();
   ttf_->dropPrefetch();
   ttf_->closeChapterCache();
@@ -3070,7 +3064,7 @@ void EpubReaderActivity::ttfShowIndexingPopup() {
   // truthful when the wait really is the whole chapter — normal forward
   // indexing, and Percent/LastPage restores, which resolve only from a
   // COMPLETE index. A cover-driven restore (CharOffset/Page kinds: Saved,
-  // Reflow, Seed, OffsetJump, Anchor — an offset or page target maps as soon
+  // Reflow, OffsetJump, Anchor — an offset or page target maps as soon
   // as the built prefix covers it) finishes at an arbitrary fraction of the
   // chapter, so the same metric can read 25% one frame and 100% the next
   // right before the page paints. Those get a stepped indeterminate fill
@@ -3120,15 +3114,13 @@ void EpubReaderActivity::consumeRestoreTarget() {
       pendingOffsetJump.reset();
       break;
     case PendingTarget::Origin::Reflow:
-    case PendingTarget::Origin::Seed:
-      break;  // no extra latch: the seed latch is cleared below for every origin
+      break;  // no extra latch: the invalidation anchor stays a CharOffset target
     case PendingTarget::Origin::OriginNone:
     default:
       break;  // no source latch (unexpected for a stored target)
   }
   LOG_INF("ERS", "TTF restore consumed: spine %d page %d origin %u", currentSpineIndex, ttfPage,
           static_cast<unsigned>(pendingRestoreTarget_.origin));
-  ttfReflowSeedPage = -1;
   pendingRestoreTarget_ = {};
 }
 
@@ -3204,21 +3196,19 @@ bool EpubReaderActivity::ttfResolveTargetPage(int& targetOut, const freeink::boo
   // only as a raw latch (pendingRestoreTarget_ still None), and deriveTarget()
   // ranks hasSavedPosition ahead of the explicit jump/anchor — the surviving
   // latch would win the pass. Supersede on the stored implicit target OR either
-  // implicit latch, then clear BOTH latches unconditionally (a Reflow/Seed
+  // implicit latch, then clear BOTH latches unconditionally (a Reflow
   // stored target can coexist with an armed saved-position latch).
   if ((pendingOffsetJump.has_value() || !pendingAnchor.empty()) &&
       (active.origin == PendingTarget::Origin::Saved || active.origin == PendingTarget::Origin::Reflow ||
-       active.origin == PendingTarget::Origin::Seed || ttfHasSavedPosition || ttfReflowSeedPage >= 0)) {
+       ttfHasSavedPosition)) {
     LOG_DBG("ERS", "Restore superseded by explicit navigation (stored origin %u)",
             static_cast<unsigned>(active.origin));
     ttfHasSavedPosition = false;
-    ttfReflowSeedPage = -1;
     pendingRestoreTarget_ = {};
     active = {};
   }
   if (active.kind == PendingTarget::None) {
     const ttf_resolve::LatchState latches{
-        .reflowSeedPage = ttfReflowSeedPage,
         .hasSavedPosition = ttfHasSavedPosition,
         .savedSpine = ttfSavedSpine,
         .savedCharOffset = ttfSavedCharOffset,
@@ -3435,6 +3425,7 @@ void EpubReaderActivity::renderBookTtf() {
       // A settings/orientation reflow still needs the displayed page's char
       // anchor — dropping it here would resolve the reflow to offset 0.
       ttfCurrentCharStart = 0;
+      ttfCurrentCharEnd = 0;
     }
     const freeink::book::BookStatus st = ttf_->openChapterCache(static_cast<uint16_t>(currentSpineIndex), generation);
     if (st == freeink::book::BookStatus::Stale) {
@@ -3546,8 +3537,7 @@ void EpubReaderActivity::renderBookTtf() {
       // (page jump, percent, last page) clear their latches on resolve, and a
       // probe-resolved jump would be lost to the default path on the next
       // pass. Explicit anchors and offset jumps keep the park behavior.
-      const bool restoreLikely =
-          pendingRestoreTarget_.kind != PendingTarget::None || ttfHasSavedPosition || ttfReflowSeedPage >= 0;
+      const bool restoreLikely = pendingRestoreTarget_.kind != PendingTarget::None || ttfHasSavedPosition;
       if (restoreLikely) {
         deferredProbed = true;
         deferredResolved = ttfResolveTargetPage(target, params, needFullBuild);
@@ -3917,7 +3907,10 @@ void EpubReaderActivity::renderBookTtf() {
   const bool consumeRestore =
       !servedPlaceholderPage && resolved && ttfPage == target && pendingRestoreTarget_.kind != PendingTarget::None;
   if (consumeRestore) consumeRestoreTarget();
-  if (!servedPlaceholderPage && ttfReflowSeedPage < 0) ttfCurrentCharStart = page.charStart;
+  if (!servedPlaceholderPage) {
+    ttfCurrentCharStart = page.charStart;
+    ttfCurrentCharEnd = QuickPageCapture::pageEndChar(page);
+  }
 
   // §3.5 item 8: footnote list from the engine's PageLink substrate. Internal
   // (resolvable) targets only — external URLs never enter the reader flow.
@@ -4253,6 +4246,7 @@ bool EpubReaderActivity::ttfFastDisplayPass(const freeink::book::LayoutParams& p
     return false;
   }
   ttfCurrentCharStart = page.charStart;
+  ttfCurrentCharEnd = QuickPageCapture::pageEndChar(page);
   if (page.imageCount > 0 && SETTINGS.imageRendering == CrossPointSettings::IMAGES_DISPLAY) {
     // Image pages are never prerendered; a stale flag must not fast-path them.
     ttf_->scratch().release(scratchMark);
@@ -4778,7 +4772,6 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       ttfUsePreRenderedBuffer = true;
       lastPageTurnTime = millis();
       ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
-      ttfReflowSeedPage = -1;
       pendingRestoreTarget_ = {};
 #ifdef READING_STATS_ENABLED
       pageShownAtMs = millis();
@@ -4838,7 +4831,6 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
 #endif
   logMemAt("page_turn");
   ttfHasSavedPosition = false;  // navigation succeeded: implicit latches die with the target
-  ttfReflowSeedPage = -1;
   pendingRestoreTarget_ = {};
   return true;
 }
@@ -4892,8 +4884,7 @@ void EpubReaderActivity::clearDeferredReposition() {
   // the chapter-scoped restore state dies. All values describe the chapter
   // being left: pendingRestoreTarget_ is the unified funnel input (CharOffset
   // from reflow via ttfCurrentCharStart, saved position, offset jump, or
-  // AnchorHash; see design §3.2/§4), ttfReflowSeedPage names a page in it,
-  // ttfCurrentCharStart is a chapter-relative offset that renderBookTtf
+  // AnchorHash; see design §3.2/§4), ttfCurrentCharStart is a chapter-relative offset that renderBookTtf
   // retains, and ttfRestoreLastPage sends the reader to the previous chapter's
   // end, which is only meaningful when stepping back into that chapter. Carrying
   // any of them into a different spine resolves against the wrong chapter — the
@@ -4901,8 +4892,8 @@ void EpubReaderActivity::clearDeferredReposition() {
   // cleared here — they are consumed by the funnel when resolved or unmappable,
   // not by the chokepoint (they describe the RECORD, consumed once).
   pendingRestoreTarget_ = {};
-  ttfReflowSeedPage = -1;
   ttfCurrentCharStart = 0;
+  ttfCurrentCharEnd = 0;
   ttfRestoreLastPage = false;
 #endif
 }
@@ -5625,6 +5616,10 @@ void EpubReaderActivity::onPreviewFontChanging() {
 // the reader's settings-driven clean reindex.
 void EpubReaderActivity::openFontPreview() {
   if (!ttf_) return;
+  // The preview's window bound is the displayed page's char end (recorded by
+  // the last render pass next to ttfCurrentCharStart), so a smaller font in
+  // the preview cannot pull later pages' text into the previewed span
+  // (ADR 2026-10-14 amendment: bounded window capture).
   if (ttf_->sessionActive()) {
     // A live inline build owns the arenas quickLayoutPage needs. Suspend it
     // (the partial stays resumable) and reopen the current chapter cache so
@@ -5641,7 +5636,7 @@ void EpubReaderActivity::openFontPreview() {
   host.onFamilyChanging = [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->onPreviewFontChanging(); };
   auto preview = makeUniqueNoThrow<FontPreviewActivity>(renderer, mappedInput, ttf_.get(),
                                                         static_cast<uint16_t>(currentSpineIndex), ttfCurrentCharStart,
-                                                        automaticPageTurnActive, host);
+                                                        ttfCurrentCharEnd, automaticPageTurnActive, host);
   if (!preview) {
     LOG_ERR("ERS", "OOM: font preview");
     return;
@@ -5664,25 +5659,15 @@ void EpubReaderActivity::openFontPreview() {
   discardOverlayPage();
   startActivityForResult(std::move(preview), [this](const ActivityResult& result) {
     if (!result.isCancelled && std::holds_alternative<QuickFontPreviewResult>(result.data)) {
-      const auto& previewResult = std::get<QuickFontPreviewResult>(result.data);
-      // The preview's transient layout pass already resolved the page holding
-      // the entry anchor under the settings now in SETTINGS. Seed it before the
-      // invalidation so the rebuild targets the reader's position and builds
-      // incrementally to it, instead of re-deriving the position from a char
-      // offset that cannot map until the chapter is fully indexed (which sent
-      // the reader back to the chapter start).
-      if (previewResult.changed && previewResult.hasPosition) {
-        // Arming happens inside applyReaderTextSettings() under the render
-        // lock; the rebuild then targets the reader's position and builds
-        // incrementally to it, instead of re-deriving the position from a char
-        // offset that cannot map until the chapter is fully indexed (which
-        // sent the reader back to the chapter start).
-        applyReaderTextSettings(static_cast<int32_t>(previewResult.pageIndex));
-      } else {
-        // The preview persisted the settings; this is the settings-driven
-        // clean reindex a Text-settings font change lands.
-        applyReaderTextSettings();
-      }
+      // The preview persisted the settings; this is the settings-driven clean
+      // reindex a Text-settings font change lands. The position restores
+      // through the chapter char offset the invalidation latches
+      // (ttfInvalidateCaches keeps ttfCurrentCharStart as a CharOffset target)
+      // — the preview's page-local relayout cannot supply a truthful page
+      // index for the rebuilt layout (ADR 2026-10-14).
+      applyReaderTextSettings();
+      // The first frame of the reindexed page must reach the glass as a full
+      // refresh (ADR §Decision 3): no FAST diff may land before it.
       pagesUntilFullRefresh = 1;
     }
     // Both close branches pop straight back to the book page; the chrome
@@ -6429,7 +6414,7 @@ void EpubReaderActivity::paintOverlayPopup() {
   pushOverlayRefresh();
 }
 
-void EpubReaderActivity::applyReaderTextSettings(const int32_t seedPage) {
+void EpubReaderActivity::applyReaderTextSettings() {
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     SETTINGS.saveToFile();
@@ -6441,14 +6426,11 @@ void EpubReaderActivity::applyReaderTextSettings(const int32_t seedPage) {
     freeink::book::ttfUiFallback.release(renderer);
 #endif
     RenderLock lock;
-    // Armed under the lock: a render pass that slipped in before this one
-    // would otherwise read the seed against the old-generation cache, clear
-    // it, and leave the rebuild with no target. The default -1 clears any seed
-    // a previous apply left behind — ttfInvalidateCaches() below then latches
-    // pendingRestoreTarget_ as a CharOffset target, so the position restores
-    // through the char offset
-    // instead of a page index from an older settings generation.
-    ttfReflowSeedPage = seedPage;
+    // ttfInvalidateCaches() below latches pendingRestoreTarget_ as a
+    // CharOffset target from ttfCurrentCharStart, so the position restores
+    // through the char offset. Armed under the lock: a render pass that
+    // slipped in before this one would otherwise read the anchor against
+    // the old-generation cache.
     freeink::book::fontLoader.markDirty();
     // Reflow in place: drop the caches; the new generation produces a fresh
     // build and the position restores through the page's char offset.

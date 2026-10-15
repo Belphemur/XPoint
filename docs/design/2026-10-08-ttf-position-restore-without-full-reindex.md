@@ -186,9 +186,6 @@ per `reader-position-and-reindex.md` §"enumerate the WHOLE set":
 
 - `PendingTarget` (kind + payload) — new, replaces the per-kind latches
   `ttfReflowJumpPending` / `pendingOffsetJump` as the funnel's input;
-- `ttfReflowSeedPage` — unchanged (font-preview seed; consumed by the same
-  funnel: a seed converts to a `CharOffset`-equivalent page target before
-  evaluation, preserving the peek-don't-consume semantics it already has);
 - `ttfCurrentCharStart`, `ttfRestoreLastPage` — unchanged;
 - saved-position fields (`ttfSaved*`) — cleared by the funnel when consumed or
   unmappable, not by the chokepoint (they describe the RECORD, consumed once).
@@ -393,6 +390,14 @@ Qodo/Kody/CodeRabbit review findings and their resolutions:
       flag. Matching generations keep the same one-pass resolution through
       the anchor (the funnel replaced the old saved-page shortcut; a full
       matching-generation cache resolves the anchor in one `evaluate()`).
+12. **Preview page-seed removed (2026-10-15, PR #227).** The quick font
+    preview's close contract no longer passes a page index — the reflow
+    restores through the char offset `ttfInvalidateCaches()` latches — so
+    `applyReaderTextSettings(seedPage)` / `ttfReflowSeedPage` and the
+    resolver's `Seed` origin became unreachable dead code. They are removed
+    (amendments 1, 2, and 6 above describe the funnel while the seed still
+    existed; the funnel itself is unchanged). Saved, Reflow, OffsetJump, and
+    Anchor origins cover every remaining restore path.
     §8.1 item 6 now describes the shipped behavior again; §3.1's saved-page
     fast-path wording (removed in the doc-lockstep pass) never described
     shipped code — the funnel had already replaced that shortcut. Legacy
