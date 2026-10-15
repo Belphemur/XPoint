@@ -452,6 +452,47 @@ TEST(SequenceTest, LegacyPageHintRestoreAcrossGenerationBump) {
   EXPECT_EQ(derived.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
 }
 
+TEST(SequenceTest, FontChangeRestoresThroughCharOffsetDuringIncrementalBuild) {
+  // #194 shape, as produced by the page-local font preview close (ADR
+  // 2026-10-14): the preview persisted new typography and reported no page
+  // index (its window pass cannot know the rebuilt layout's absolute page
+  // numbering). ttfInvalidateCaches() latches ttfCurrentCharStart as a
+  // CharOffset target with origin Reflow (EpubReaderActivity.cpp:3012) and
+  // the rebuild runs incrementally. The restore must resolve from the built
+  // prefix as soon as it covers the target page — never wait for the whole
+  // chapter, never snap to the chapter start.
+  //
+  // Fake chapter: 2 chars per page, 1200 pages; the entry anchor sits on
+  // page 1000 (char 2000) — late in the chapter.
+  const uint32_t anchor = 2000;
+  ttf_resolve::PendingTarget target = {ttf_resolve::PendingTarget::CharOffset, anchor, 0, 0,
+                                       ttf_resolve::PendingTarget::Origin::Reflow};
+
+  uint32_t builtPages = 0;
+  auto pageForChar = [&builtPages](uint32_t offset, uint32_t& pageOut) -> bool {
+    if (builtPages == 0 || offset >= builtPages * 2) return false;  // beyond built prefix
+    pageOut = offset / 2;
+    return true;
+  };
+
+  // Early passes: prefix shorter than the target page — pending, position
+  // kept (needFullBuild false: the build chunks toward it), page NOT served.
+  for (uint32_t built : {0u, 10u, 500u, 999u, 1000u}) {
+    builtPages = built;
+    const auto step = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart2PerPage, false);
+    EXPECT_FALSE(step.resolved) << "built=" << built;
+    EXPECT_FALSE(step.needFullBuild) << "built=" << built;
+  }
+
+  // The pass after the prefix covers the anchor page: restored to page 1000,
+  // not chapter start.
+  builtPages = 1001;
+  const auto done = ttf_resolve::evaluate(target, builtPages, pageForChar, pageCharStart2PerPage, false);
+  EXPECT_TRUE(done.resolved);
+  EXPECT_EQ(done.page, 1000);
+  EXPECT_FALSE(done.needFullBuild);
+}
+
 // ── Build advances one chunk → next resolve succeeds (§8.1 case 4) ──────────
 
 TEST(SequenceTest, NotCoveredThenCoveredAfterBuild) {

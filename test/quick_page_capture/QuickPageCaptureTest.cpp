@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -355,4 +356,71 @@ TEST_F(QuickPageCaptureTest, CaptureRejectsUndersizedBuffer) {
   ASSERT_GT(sink.pages, 0U);
   EXPECT_FALSE(sink.allCaptured());
   EXPECT_FALSE(capture_.ready());
+}
+
+// The preview's page-local relayout (ADR 2026-10-14): the entry capture is a
+// window pass at the entry page's char anchor, and every later change re-runs
+// the window at the SAME anchor. QuickWindowSink must deliver at most one
+// page, that page must contain the anchor, and the capture must always hold
+// the latest delivered page.
+TEST_F(QuickPageCaptureTest, WindowPassCapturesAnchorPageOnly) {
+  // Reference pass: per-page char anchors of the whole chapter.
+  struct AnchorSink final : public freeink::book::PageSink {
+    bool onPage(const freeink::book::Page& page) override {
+      charStarts.push_back(page.charStart);
+      return true;
+    }
+    std::vector<uint32_t> charStarts;
+  };
+  AnchorSink full;
+  layout(full);
+  ASSERT_GT(full.charStarts.size(), 3U);
+
+  const uint32_t anchor = full.charStarts[2];
+  ASSERT_GT(anchor, 0U);
+
+  // Entry capture: window pass at the anchor through the REAL preview sink.
+  freeink::book::LayoutParams params = makeParams(chain_);
+  params.windowStartChar = anchor;
+  QuickWindowSink entry(capture_);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_, entry,
+                        nullptr, nullptr, &parse_);
+  scratch_.reset();
+  parse_.reset();
+  ASSERT_TRUE(entry.delivered());
+  ASSERT_TRUE(capture_.ready());
+  EXPECT_LE(capture_.page().charStart, anchor);
+  uint32_t pageEnd = capture_.page().charStart;
+  for (uint16_t i = 0; i < capture_.page().runCount; ++i) {
+    pageEnd = std::max(pageEnd, capture_.page().runs[i].charStart + capture_.page().runs[i].charLen);
+  }
+  EXPECT_GT(pageEnd, anchor);
+
+  // A later change re-runs the window at the SAME anchor (bigger text): the
+  // capture is overwritten and still anchors the same page text.
+  params.baseSizePx = 32;
+  QuickWindowSink next(capture_);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_, next,
+                        nullptr, nullptr, &parse_);
+  scratch_.reset();
+  parse_.reset();
+  ASSERT_TRUE(next.delivered());
+  ASSERT_TRUE(capture_.ready());
+  EXPECT_LE(capture_.page().charStart, anchor);
+}
+
+// Anchor 0 disables the engine window; the sink's stop-after-one contract
+// must still limit the pass to page 0.
+TEST_F(QuickPageCaptureTest, WindowAtChapterStartLaysSinglePage) {
+  freeink::book::LayoutParams params = makeParams(chain_);
+  params.windowStartChar = 0;
+  QuickWindowSink sink(capture_);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_, sink,
+                        nullptr, nullptr, &parse_);
+  scratch_.reset();
+  parse_.reset();
+  ASSERT_TRUE(sink.delivered());
+  ASSERT_TRUE(capture_.ready());
+  EXPECT_EQ(capture_.page().pageIndex, 0U);
+  EXPECT_EQ(capture_.page().charStart, 0U);
 }
