@@ -18,11 +18,11 @@ namespace ttf_resolve {
 // static_cast drift is impossible by construction.
 struct PendingTarget {
   enum Kind : uint8_t { None, CharOffset, Page, AnchorHash, Percent, LastPage };
-  enum Origin : uint8_t { OriginNone, Reflow, Seed, Saved, OffsetJump, Anchor };
+  enum Origin : uint8_t { OriginNone, Reflow, Saved, OffsetJump, Anchor };
   Kind kind = None;
   // CharOffset: chapter char offset. Page: page index (page-anchored records
-  // and the reflow/preview seed — a page number is NOT a char offset).
-  // AnchorHash: unused until charForAnchor() resolves it to CharOffset.
+  // — a page number is NOT a char offset). AnchorHash: unused until
+  // charForAnchor() resolves it to CharOffset.
   uint32_t charOffset = 0;
   uint32_t idHash = 0;         // AnchorHash
   uint8_t percent = 0;         // Percent
@@ -34,7 +34,6 @@ struct PendingTarget {
 // effects (latch clearing) itself — evaluate()/deriveTarget() stay side-effect
 // free so the funnel contract is testable.
 struct LatchState {
-  int32_t reflowSeedPage = -1;    // page-anchored preview/reflow seed
   bool hasSavedPosition = false;  // a saved TTF record exists for this open
   uint16_t savedSpine = 0;
   uint32_t savedCharOffset = 0;  // 0 → page-anchored record (use savedPage)
@@ -100,9 +99,6 @@ struct DerivedTarget {
 // restores across any generation through the funnel, and a page-anchored
 // record restores by page hint (approximately right beats chapter start).
 inline DerivedTarget deriveTarget(const LatchState& s) {
-  if (s.reflowSeedPage >= 0)
-    return {{PendingTarget::Page, static_cast<uint32_t>(s.reflowSeedPage), 0, 0, PendingTarget::Origin::Seed},
-            Degrade::None};
   if (s.hasSavedPosition) {
     if (s.currentSpine != s.savedSpine) return {{}, Degrade::ChapterStart};
     if (s.savedCharOffset > 0)

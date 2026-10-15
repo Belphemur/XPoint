@@ -1,7 +1,7 @@
 # Quick font preview — page-local relayout (ADR)
 
 Date: 2026-10-14
-Status: accepted, implementation pending (job `quickfont-page-local`)
+Status: implemented (PR #227)
 Parent: `docs/design/2026-09-27-quick-font-preview.md` (amends its relayout
 mechanism; close contract unchanged in spirit, tightened below)
 Related issues: #137, #143, #168, #194, #195, #205
@@ -59,13 +59,18 @@ owner's contract for the feature:
    own char range. The 128-page budget, `sawCandidate` logic, and
    `budgetStopped` paths die with the scan.
 2. **Preview correctness stays subordinate to close.** The preview is a
-   rendering of the entry page's text at candidate settings; its page index
-   is advisory. The close contract (already shipped) is unchanged and
-   remains the authority: net-effect comparison against entry snapshots
-   (`FontPreviewActivity.cpp:216-236`); changed →
-   `applyReaderTextSettings(pageIndex?)` → the settings-driven CLEAN reindex
-   with position preserved (resolved-page seeding from #194/#195/#205
-   stays); unchanged → silent pop, zero reflow, zero writes.
+   rendering of the entry page's text at candidate settings; its page-local
+   result is advisory. The close contract remains the authority:
+   net-effect comparison against entry snapshots
+   (`FontPreviewActivity.cpp:216-236`); changed → `applyReaderTextSettings()`
+   → the settings-driven CLEAN reindex with the position restored from the
+   character offset `ttfInvalidateCaches()` latches (`ttfCurrentCharStart`
+   as a `CharOffset` target through the resolver funnel); unchanged →
+   silent pop, zero reflow, zero writes. The preview does NOT report a page
+   index: its window pass cannot know the rebuilt layout's absolute page
+   numbering. (An earlier page-seeded reindex draft —
+   `applyReaderTextSettings(seedPage)` / `ttfReflowSeedPage` — is removed;
+   see the amendment below and the position-restore doc's amendment 12.)
 3. **Close shows the reindexed view with a forced FULL screen refresh.**
    After a changed close the reader triggers indexing (clean rebuild) and
    the first frame of the reindexed page MUST be a full (non-fast) panel
@@ -103,3 +108,29 @@ owner's contract for the feature:
 - Crash root cause: once the serial log lands, it is diagnosed against this
   design (the ADR names the suspects); if the crash lives outside this
   seam, it gets its own fix commit in the same job, evidence-first.
+
+## Amendment (review round, PR #227 — 2026-10-15)
+
+Review findings tightened the page-local contract in three ways:
+
+1. **Bounded window capture.** The window pass now carries the entry page's
+   char end (`ttfCurrentCharEnd`, recorded by the render pass next to
+   `ttfCurrentCharStart`) and `QuickWindowSink` bounds the captured page to
+   that span: runs past the bound are dropped and a straddling run is
+   truncated to its leading codepoints (`QuickPageCapture::capture(page,
+   endChar)`). Without the bound, a smaller font packs more text per page
+   and the preview would pull later pages' text into the previewed span.
+   The trimmed preview is still the approximate view — the close reindex
+   computes the true pagination, unchanged.
+2. **Sink anchor containment is self-contained.** `QuickWindowSink` no
+   longer trusts the engine's window suppression alone: a delivered page
+   without text past the anchor (a run-less image/rule page whose char
+   position is already past it) keeps the pass running so the anchor's text
+   page is captured. `reachedAnchor` is reported by the sink itself.
+3. **The reflow page-seed path is removed.** Decision 2's original draft
+   seeded the close reindex with the preview's resolved page
+   (`applyReaderTextSettings(seedPage)` / `ttfReflowSeedPage`); the shipped
+   close contract does not pass a page index, so the parameter, the member,
+   and the resolver's `Seed` origin were dead code once the page-local
+   window landed. Removed (position-restore doc amendment 12); the
+   char-offset restore is the only reflow path.

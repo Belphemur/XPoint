@@ -382,7 +382,7 @@ TEST_F(QuickPageCaptureTest, WindowPassCapturesAnchorPageOnly) {
   // Entry capture: window pass at the anchor through the REAL preview sink.
   freeink::book::LayoutParams params = makeParams(chain_);
   params.windowStartChar = anchor;
-  QuickWindowSink entry(capture_);
+  QuickWindowSink entry(capture_, anchor, 0);
   freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_,
                                        entry, nullptr, nullptr, &parse_);
   scratch_.reset();
@@ -399,7 +399,7 @@ TEST_F(QuickPageCaptureTest, WindowPassCapturesAnchorPageOnly) {
   // A later change re-runs the window at the SAME anchor (bigger text): the
   // capture is overwritten and still anchors the same page text.
   params.baseSizePx = 32;
-  QuickWindowSink next(capture_);
+  QuickWindowSink next(capture_, anchor, 0);
   freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_,
                                        next, nullptr, nullptr, &parse_);
   scratch_.reset();
@@ -414,7 +414,7 @@ TEST_F(QuickPageCaptureTest, WindowPassCapturesAnchorPageOnly) {
 TEST_F(QuickPageCaptureTest, WindowAtChapterStartLaysSinglePage) {
   freeink::book::LayoutParams params = makeParams(chain_);
   params.windowStartChar = 0;
-  QuickWindowSink sink(capture_);
+  QuickWindowSink sink(capture_, 0, 0);
   freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_,
                                        sink, nullptr, nullptr, &parse_);
   scratch_.reset();
@@ -423,4 +423,158 @@ TEST_F(QuickPageCaptureTest, WindowAtChapterStartLaysSinglePage) {
   ASSERT_TRUE(capture_.ready());
   EXPECT_EQ(capture_.page().pageIndex, 0U);
   EXPECT_EQ(capture_.page().charStart, 0U);
+}
+
+// The sink keeps laying past a delivered page that has no text beyond the
+// anchor (a run-less image/rule page whose char position is already past it
+// can be delivered when its image forced the break) and captures the page
+// that actually reaches the anchor.
+TEST(QuickWindowSinkTest, ContinuesPastPagesWithoutTextPastAnchor) {
+  QuickPageCapture capture;
+  std::vector<uint8_t> buf(QuickPageCapture::kBufferBytes);
+  capture.attach(buf.data(), buf.size());
+
+  // A text page entirely before the anchor.
+  static char early[] = "early";
+  freeink::book::PageTextRun earlyRun{};
+  earlyRun.text = early;
+  earlyRun.len = 5;
+  earlyRun.charLen = 5;
+  earlyRun.charStart = 10;
+  freeink::book::Page beforePage{&earlyRun, 1, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, 0, 10};
+
+  // A run-less page (image-only) whose char position is past the anchor.
+  freeink::book::Page imageOnly{};
+  imageOnly.charStart = 40;
+
+  // A text page that reaches past the anchor.
+  static char late[] = "late text";
+  freeink::book::PageTextRun lateRun{};
+  lateRun.text = late;
+  lateRun.len = 9;
+  lateRun.charLen = 9;
+  lateRun.charStart = 30;
+  freeink::book::Page anchorPage{&lateRun, 1, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 1, 0, 30};
+
+  QuickWindowSink sink(capture, 30, 0);
+  EXPECT_TRUE(sink.onPage(beforePage));  // ends before the anchor: keep laying
+  EXPECT_FALSE(capture.ready());
+  EXPECT_TRUE(sink.onPage(imageOnly));  // no text past the anchor: keep laying
+  EXPECT_FALSE(capture.ready());
+  EXPECT_FALSE(sink.onPage(anchorPage));  // the anchor page: capture and stop
+  EXPECT_TRUE(sink.delivered());
+  EXPECT_TRUE(sink.reachedAnchor());
+  ASSERT_TRUE(capture.ready());
+  EXPECT_EQ(capture.page().charStart, 30U);
+  EXPECT_EQ(capture.page().runCount, 1U);
+}
+
+// The bounded capture trims the copied page to the entry page's span: runs
+// beyond endChar are dropped and a straddling run keeps only its leading
+// codepoints (the synthetic-hyphen bit recomputed from the kept bytes).
+TEST(QuickPageCaptureBounds, TrimsToEntrySpan) {
+  QuickPageCapture capture;
+  std::vector<uint8_t> buf(QuickPageCapture::kBufferBytes);
+  capture.attach(buf.data(), buf.size());
+
+  static char first[] = "first";       // fully inside the span
+  static char second[] = "second-hy";  // straddles; the '-' and tail get cut
+  static char third[] = "third";       // beyond the span: dropped
+  freeink::book::PageTextRun runs[3] = {};
+  runs[0].text = first;
+  runs[0].len = 5;
+  runs[0].charLen = 5;
+  runs[0].charStart = 10;
+  runs[1].text = second;
+  runs[1].len = 9;
+  runs[1].charLen = 9;
+  runs[1].charStart = 15;
+  runs[1].layoutFlags = freeink::book::PageTextRun::LayoutHyphenated;
+  runs[2].text = third;
+  runs[2].len = 5;
+  runs[2].charLen = 5;
+  runs[2].charStart = 30;
+  freeink::book::Page page{runs, 3, nullptr, 0, nullptr, 0, nullptr, 0, nullptr, 0, 0, 0, 10};
+
+  ASSERT_TRUE(capture.capture(page, 18));
+  ASSERT_TRUE(capture.ready());
+  ASSERT_EQ(capture.page().runCount, 2U);
+  EXPECT_EQ(capture.page().runs[0].charStart, 10U);
+  EXPECT_EQ(capture.page().runs[0].charLen, 5U);
+  EXPECT_EQ(capture.page().runs[1].charStart, 15U);
+  // Truncated to the 3 leading codepoints ("sec"); byte length follows.
+  EXPECT_EQ(capture.page().runs[1].charLen, 3U);
+  EXPECT_EQ(capture.page().runs[1].len, 3U);
+  EXPECT_EQ(0, memcmp(capture.page().runs[1].text, "sec", 3));
+  // The hyphen was cut: the bit must not survive the truncation.
+  EXPECT_EQ(capture.page().runs[1].layoutFlags & freeink::book::PageTextRun::LayoutHyphenated, 0U);
+  // The entry span's end is the bound — nothing past it is captured.
+  EXPECT_EQ(QuickPageCapture::pageEndChar(capture.page()), 18U);
+
+  // Unbounded capture keeps every run and the hyphen bit.
+  ASSERT_TRUE(capture.capture(page));
+  ASSERT_EQ(capture.page().runCount, 3U);
+  EXPECT_EQ(capture.page().runs[1].charLen, 9U);
+  EXPECT_EQ(capture.page().runs[1].layoutFlags & freeink::book::PageTextRun::LayoutHyphenated,
+            freeink::book::PageTextRun::LayoutHyphenated);
+}
+
+// A smaller font packs more text per page: the unbounded window would pull
+// text from later pages into the preview. The bounded window keeps the
+// captured span inside the entry page's char range (ADR 2026-10-14).
+TEST_F(QuickPageCaptureTest, SmallerFontWindowStaysWithinEntrySpan) {
+  struct AnchorSink final : public freeink::book::PageSink {
+    bool onPage(const freeink::book::Page& page) override {
+      charStarts.push_back(page.charStart);
+      return true;
+    }
+    std::vector<uint32_t> charStarts;
+  };
+  AnchorSink full;
+  layout(full);
+  ASSERT_GT(full.charStarts.size(), 3U);
+  const uint32_t anchor = full.charStarts[2];
+
+  // Entry pass at the entry size: the window page's char end is the span
+  // bound handed to every later change.
+  freeink::book::LayoutParams entryParams = makeParams(chain_);
+  entryParams.windowStartChar = anchor;
+  QuickWindowSink entry(capture_, anchor, 0);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), entryParams,
+                                       scratch_, entry, nullptr, nullptr, &parse_);
+  scratch_.reset();
+  parse_.reset();
+  ASSERT_TRUE(entry.reachedAnchor());
+  const uint32_t entryEnd = QuickPageCapture::pageEndChar(capture_.page());
+  ASSERT_GT(entryEnd, anchor);
+
+  // Unbounded smaller-font pass: proves the fixture actually spills past the
+  // entry span (the bug the bound exists for).
+  freeink::book::LayoutParams spillParams = makeParams(chain_);
+  spillParams.baseSizePx = 10;
+  spillParams.windowStartChar = anchor;
+  QuickWindowSink spill(capture_, anchor, 0);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), spillParams,
+                                       scratch_, spill, nullptr, nullptr, &parse_);
+  scratch_.reset();
+  parse_.reset();
+  ASSERT_TRUE(spill.reachedAnchor());
+  EXPECT_GT(QuickPageCapture::pageEndChar(capture_.page()), entryEnd);
+
+  // Bounded smaller-font pass: the capture stays within the entry span.
+  freeink::book::LayoutParams boundedParams = makeParams(chain_);
+  boundedParams.baseSizePx = 10;
+  boundedParams.windowStartChar = anchor;
+  QuickWindowSink bounded(capture_, anchor, entryEnd);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), boundedParams,
+                                       scratch_, bounded, nullptr, nullptr, &parse_);
+  scratch_.reset();
+  parse_.reset();
+  ASSERT_TRUE(bounded.reachedAnchor());
+  ASSERT_TRUE(capture_.ready());
+  EXPECT_LE(capture_.page().charStart, anchor);
+  EXPECT_LE(QuickPageCapture::pageEndChar(capture_.page()), entryEnd);
+  // The trimmed span still reaches past the anchor (the text was bounded,
+  // not lost).
+  EXPECT_GT(QuickPageCapture::pageEndChar(capture_.page()), anchor);
 }

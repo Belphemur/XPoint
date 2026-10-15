@@ -23,11 +23,13 @@
 
 FontPreviewActivity::FontPreviewActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                          freeink::book::TtfBookRuntime* ttf, const uint16_t spineIndex,
-                                         const uint32_t anchorChar, const bool autoPageTurn, Host host)
+                                         const uint32_t anchorChar, const uint32_t pageEndChar, const bool autoPageTurn,
+                                         Host host)
     : Activity("FontPreview", renderer, mappedInput),
       ttf_(ttf),
       spineIndex_(spineIndex),
       anchorChar_(anchorChar),
+      pageEndChar_(pageEndChar),
       autoPageTurn_(autoPageTurn),
       host_(host) {}
 
@@ -63,7 +65,8 @@ void FontPreviewActivity::onExit() {
 void FontPreviewActivity::relayout() {
   needsRelayout_ = false;
   if (ttf_ == nullptr) return;
-  const auto out = quickRelayoutPage(*ttf_, renderer, spineIndex_, anchorChar_, autoPageTurn_, preview_, previewBuf_);
+  const auto out =
+      quickRelayoutPage(*ttf_, renderer, spineIndex_, anchorChar_, pageEndChar_, autoPageTurn_, preview_, previewBuf_);
   relayoutFont_ = out.font;
   relayoutCharSpacingPx_ = out.characterSpacingPx;
   relayoutWordSpacingPx_ = out.wordSpacingPx;

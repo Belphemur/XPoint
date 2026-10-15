@@ -3,15 +3,17 @@
 // QuickPageRelayout — shared current-page relayout/paint seam for the quick
 // font surfaces (FontPreviewActivity).
 //
-// quickRelayoutPage() re-lays ONLY the page containing `anchorChar` — the text
-// the reader displays at open time (ADR 2026-10-14, page-local relayout). The
+// quickRelayoutPage() re-lays ONLY the entry page's text span — the text the
+// reader displays at open time (ADR 2026-10-14, page-local relayout). The
 // engine's window mode (LayoutParams::windowStartChar, freeink-sdk) skips
 // paragraphs that end before the anchor, lays the page containing it, and
 // stops at the first page break, so a size step paints in O(one page layout)
 // instead of a chapter scan. The delivered page is deep-copied out of the
-// per-page arena with QuickPageCapture. The page's line breaks approximate the
-// close reindex's (the engine starts at the paragraph boundary containing the
-// anchor); the close reindex computes the true pagination.
+// per-page arena with QuickPageCapture, trimmed to the entry span's end
+// (`windowEndChar`) so a smaller font cannot pull later pages' text into the
+// preview. The page's line breaks approximate the close reindex's (the engine
+// starts at the paragraph boundary containing the anchor); the close reindex
+// computes the true pagination.
 //
 // No committed cache is touched and no FIBP worker state changes; the caller
 // owns invalidation, cursor bookkeeping, and the session capture buffer.
@@ -38,16 +40,18 @@ struct QuickRelayoutResult {
   int16_t wordSpacingPx = 0;
 };
 
-// Relayout the page containing `anchorChar` in `spineIndex` at the CURRENT
-// settings into `capture`. `autoPageTurn` mirrors the reader's
+// Relayout the entry page's text span (`anchorChar .. windowEndChar`, the
+// reader's displayed page; windowEndChar 0 = unbounded) in `spineIndex` at the
+// CURRENT settings into `capture`. `autoPageTurn` mirrors the reader's
 // automaticPageTurnActive flag so the preview matches the layout a close
 // reflow would produce. `sessionBuffer` is the caller's one-per-session
 // pooled backing buffer: allocated on first use (PSRAM via poolMakeBytes),
 // reused for every change, freed by the owner when its surface closes.
 // Returns the outcome; painting (paintCapturedPage) is the caller's decision.
 QuickRelayoutResult quickRelayoutPage(freeink::book::TtfBookRuntime& ttf, GfxRenderer& renderer,
-                                      const uint16_t spineIndex, const uint32_t anchorChar, const bool autoPageTurn,
-                                      QuickPageCapture& capture, PoolBytes& sessionBuffer);
+                                      const uint16_t spineIndex, const uint32_t anchorChar,
+                                      const uint32_t windowEndChar, const bool autoPageTurn, QuickPageCapture& capture,
+                                      PoolBytes& sessionBuffer);
 
 // Paint a transient engine Page (captured or freshly read) with the reader's
 // TTF page pipeline: text via the shared uniform quantizer when AA gray

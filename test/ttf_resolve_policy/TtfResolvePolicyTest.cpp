@@ -198,9 +198,8 @@ TEST(EvaluateTest, PageKindTerminalClampsWhenComplete) {
 
 // ── Latch derivation (§3.2 priority + §7 degrade) ───────────────────────────
 
-TEST(DeriveTargetTest, SeedWinsPriority) {
+TEST(DeriveTargetTest, SavedWinsPriority) {
   ttf_resolve::LatchState s;
-  s.reflowSeedPage = 7;
   s.hasSavedPosition = true;
   s.savedCharOffset = 10;
   s.savedGeneration = s.generation;
@@ -208,9 +207,9 @@ TEST(DeriveTargetTest, SeedWinsPriority) {
   s.hasAnchor = true;
   auto d = ttf_resolve::deriveTarget(s);
   EXPECT_EQ(d.degrade, ttf_resolve::Degrade::None);
-  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::Page);
-  EXPECT_EQ(d.target.charOffset, 7u);  // seed is a PAGE number, not a char offset
-  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Seed);
+  EXPECT_EQ(d.target.kind, ttf_resolve::PendingTarget::CharOffset);
+  EXPECT_EQ(d.target.charOffset, 10u);
+  EXPECT_EQ(d.target.origin, ttf_resolve::PendingTarget::Origin::Saved);
 }
 
 TEST(DeriveTargetTest, SavedOffsetGenerationMatchDerivesCharOffset) {

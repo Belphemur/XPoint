@@ -51,9 +51,12 @@ class FontPreviewActivity final : public Activity {
     void (*onFamilyChanging)(void* ctx) = nullptr;
   };
 
+  // `anchorChar`/`pageEndChar` are the reader's displayed page char span
+  // (page.charStart and its furthest run end): every relayout re-lays ONLY
+  // that span (ADR 2026-10-14). pageEndChar 0 = unbounded fallback.
   explicit FontPreviewActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                freeink::book::TtfBookRuntime* ttf, uint16_t spineIndex, uint32_t anchorChar,
-                               bool autoPageTurn, Host host);
+                               uint32_t pageEndChar, bool autoPageTurn, Host host);
 
   void onEnter() override;
   void onExit() override;
@@ -76,6 +79,7 @@ class FontPreviewActivity final : public Activity {
   freeink::book::TtfBookRuntime* ttf_;
   const uint16_t spineIndex_;
   const uint32_t anchorChar_;
+  const uint32_t pageEndChar_;
   const bool autoPageTurn_;
   Host host_;
 
