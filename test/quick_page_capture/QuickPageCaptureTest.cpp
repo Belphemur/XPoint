@@ -383,8 +383,8 @@ TEST_F(QuickPageCaptureTest, WindowPassCapturesAnchorPageOnly) {
   freeink::book::LayoutParams params = makeParams(chain_);
   params.windowStartChar = anchor;
   QuickWindowSink entry(capture_);
-  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_, entry,
-                        nullptr, nullptr, &parse_);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_,
+                                       entry, nullptr, nullptr, &parse_);
   scratch_.reset();
   parse_.reset();
   ASSERT_TRUE(entry.delivered());
@@ -400,8 +400,8 @@ TEST_F(QuickPageCaptureTest, WindowPassCapturesAnchorPageOnly) {
   // capture is overwritten and still anchors the same page text.
   params.baseSizePx = 32;
   QuickWindowSink next(capture_);
-  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_, next,
-                        nullptr, nullptr, &parse_);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_,
+                                       next, nullptr, nullptr, &parse_);
   scratch_.reset();
   parse_.reset();
   ASSERT_TRUE(next.delivered());
@@ -415,8 +415,8 @@ TEST_F(QuickPageCaptureTest, WindowAtChapterStartLaysSinglePage) {
   freeink::book::LayoutParams params = makeParams(chain_);
   params.windowStartChar = 0;
   QuickWindowSink sink(capture_);
-  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_, sink,
-                        nullptr, nullptr, &parse_);
+  freeink::book::ChapterLayout::layout(book_->source(), book_->zip(), *book_->entry(), book_->href(), params, scratch_,
+                                       sink, nullptr, nullptr, &parse_);
   scratch_.reset();
   parse_.reset();
   ASSERT_TRUE(sink.delivered());
