@@ -30,6 +30,7 @@
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
+#include <time.h>
 
 #include <atomic>
 #include <cstring>
@@ -897,6 +898,11 @@ void setup() {
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
   pluginevents::refreshSubscriptions();
+  // RTC seeding is handled by halClock.begin() above (seedSystemClockFromRtc):
+  // it publishes the battery-backed RTC into the system clock before any
+  // reader of time(), and trustedtime::init() below vetoes a lagging RTC by
+  // restoring the persisted floor. (Upstream #3879 seeds here via a
+  // HalClock::localTime() call that this fork's HalClock does not carry.)
   // Restore the monotonic clock floor before anything reads time() (event
   // timestamps, loan-expiry checks).
   trustedtime::init();
