@@ -817,7 +817,6 @@ void OpdsBookBrowserActivity::openPublicationDetail(const OpdsEntry& entry) {
 
   if (!publication.valid) {
     // No self link, or the fetch/parse failed: show what the list row had.
-    OpdsPublication publication;
     publication.title = entry.title;
     publication.author = entry.author;
     publication.acquisitionHref = entry.href;
