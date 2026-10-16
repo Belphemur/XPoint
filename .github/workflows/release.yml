@@ -98,7 +98,17 @@ jobs:
             pio-${{ runner.os }}-
 
       - name: Build CrossPoint
-        run: pio run -e ${{ matrix.pio_env }} -j1
+        env:
+          # Enrollment gate for the LCP service: official releases carry this
+          # key, self-builds do not (and lose only LCP). Rotate per release by
+          # updating the repo secret; retire old values in the service's
+          # RELEASE_KEYS list.
+          FREEINK_LCP_RELEASE_KEY: ${{ secrets.FREEINK_LCP_RELEASE_KEY }}
+        run: |
+          if [ -n "$FREEINK_LCP_RELEASE_KEY" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DFREEINK_LCP_RELEASE_KEY=\\\"$FREEINK_LCP_RELEASE_KEY\\\""
+          fi
+          pio run -e ${{ matrix.pio_env }} -j1
 
       - name: Prepare firmware assets
         id: asset
