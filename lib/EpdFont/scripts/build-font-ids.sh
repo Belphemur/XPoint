@@ -23,14 +23,6 @@ def font_id(files):
     return total % (2**32) - 2**31
 
 defs = [
-    ("NOTOSERIF_12", ["notoserif_12_regular.h", "notoserif_12_bold.h",
-                      "notoserif_12_bolditalic.h", "notoserif_12_italic.h"]),
-    ("NOTOSERIF_14", ["notoserif_14_regular.h", "notoserif_14_bold.h",
-                      "notoserif_14_bolditalic.h", "notoserif_14_italic.h"]),
-    ("NOTOSERIF_16", ["notoserif_16_regular.h", "notoserif_16_bold.h",
-                      "notoserif_16_bolditalic.h", "notoserif_16_italic.h"]),
-    ("NOTOSERIF_18", ["notoserif_18_regular.h", "notoserif_18_bold.h",
-                      "notoserif_18_bolditalic.h", "notoserif_18_italic.h"]),
     ("ATKINSON_HN_12", ["atkinson_hn_12_regular.h", "atkinson_hn_12_bold.h",
                         "atkinson_hn_12_bolditalic.h", "atkinson_hn_12_italic.h"]),
     ("ATKINSON_HN_14", ["atkinson_hn_14_regular.h", "atkinson_hn_14_bold.h",

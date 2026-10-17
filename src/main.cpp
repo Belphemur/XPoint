@@ -100,44 +100,21 @@ using BookStatusProbe = const char* (*)(freeink::book::BookStatus);
 static bool wakePowerReleasePending = false;
 
 // Fonts
-EpdFont notoserif14RegularFont(&notoserif_14_regular);
-EpdFont notoserif14BoldFont(&notoserif_14_bold);
-EpdFont notoserif14ItalicFont(&notoserif_14_italic);
-EpdFont notoserif14BoldItalicFont(&notoserif_14_bolditalic);
-EpdFontFamily notoserif14FontFamily(&notoserif14RegularFont, &notoserif14BoldFont, &notoserif14ItalicFont,
-                                    &notoserif14BoldItalicFont);
-#ifndef OMIT_FONTS
-EpdFont notoserif12RegularFont(&notoserif_12_regular);
-EpdFont notoserif12BoldFont(&notoserif_12_bold);
-EpdFont notoserif12ItalicFont(&notoserif_12_italic);
-EpdFont notoserif12BoldItalicFont(&notoserif_12_bolditalic);
-EpdFontFamily notoserif12FontFamily(&notoserif12RegularFont, &notoserif12BoldFont, &notoserif12ItalicFont,
-                                    &notoserif12BoldItalicFont);
-EpdFont notoserif16RegularFont(&notoserif_16_regular);
-EpdFont notoserif16BoldFont(&notoserif_16_bold);
-EpdFont notoserif16ItalicFont(&notoserif_16_italic);
-EpdFont notoserif16BoldItalicFont(&notoserif_16_bolditalic);
-EpdFontFamily notoserif16FontFamily(&notoserif16RegularFont, &notoserif16BoldFont, &notoserif16ItalicFont,
-                                    &notoserif16BoldItalicFont);
-EpdFont notoserif18RegularFont(&notoserif_18_regular);
-EpdFont notoserif18BoldFont(&notoserif_18_bold);
-EpdFont notoserif18ItalicFont(&notoserif_18_italic);
-EpdFont notoserif18BoldItalicFont(&notoserif_18_bolditalic);
-EpdFontFamily notoserif18FontFamily(&notoserif18RegularFont, &notoserif18BoldFont, &notoserif18ItalicFont,
-                                    &notoserif18BoldItalicFont);
-
-EpdFont atkinson_hn12RegularFont(&atkinson_hn_12_regular);
-EpdFont atkinson_hn12BoldFont(&atkinson_hn_12_bold);
-EpdFont atkinson_hn12ItalicFont(&atkinson_hn_12_italic);
-EpdFont atkinson_hn12BoldItalicFont(&atkinson_hn_12_bolditalic);
-EpdFontFamily atkinson_hn12FontFamily(&atkinson_hn12RegularFont, &atkinson_hn12BoldFont, &atkinson_hn12ItalicFont,
-                                      &atkinson_hn12BoldItalicFont);
+// 14 pt stays outside OMIT_FONTS: the always-available default reader font.
+// (Formerly NotoSerif 14; the built-in family is Atkinson since upstream #4022.)
 EpdFont atkinson_hn14RegularFont(&atkinson_hn_14_regular);
 EpdFont atkinson_hn14BoldFont(&atkinson_hn_14_bold);
 EpdFont atkinson_hn14ItalicFont(&atkinson_hn_14_italic);
 EpdFont atkinson_hn14BoldItalicFont(&atkinson_hn_14_bolditalic);
 EpdFontFamily atkinson_hn14FontFamily(&atkinson_hn14RegularFont, &atkinson_hn14BoldFont, &atkinson_hn14ItalicFont,
                                       &atkinson_hn14BoldItalicFont);
+#ifndef OMIT_FONTS
+EpdFont atkinson_hn12RegularFont(&atkinson_hn_12_regular);
+EpdFont atkinson_hn12BoldFont(&atkinson_hn_12_bold);
+EpdFont atkinson_hn12ItalicFont(&atkinson_hn_12_italic);
+EpdFont atkinson_hn12BoldItalicFont(&atkinson_hn_12_bolditalic);
+EpdFontFamily atkinson_hn12FontFamily(&atkinson_hn12RegularFont, &atkinson_hn12BoldFont, &atkinson_hn12ItalicFont,
+                                      &atkinson_hn12BoldItalicFont);
 EpdFont atkinson_hn16RegularFont(&atkinson_hn_16_regular);
 EpdFont atkinson_hn16BoldFont(&atkinson_hn_16_bold);
 EpdFont atkinson_hn16ItalicFont(&atkinson_hn_16_italic);
@@ -745,14 +722,9 @@ void setupDisplayAndFonts(bool seamless = false) {
   }
   fontCacheManager.setFontDecompressor(&fontDecompressor);
   renderer.setFontCacheManager(&fontCacheManager);
-  renderer.insertFont(NOTOSERIF_14_FONT_ID, notoserif14FontFamily);
-#ifndef OMIT_FONTS
-  renderer.insertFont(NOTOSERIF_12_FONT_ID, notoserif12FontFamily);
-  renderer.insertFont(NOTOSERIF_16_FONT_ID, notoserif16FontFamily);
-  renderer.insertFont(NOTOSERIF_18_FONT_ID, notoserif18FontFamily);
-
-  renderer.insertFont(ATKINSON_HN_12_FONT_ID, atkinson_hn12FontFamily);
   renderer.insertFont(ATKINSON_HN_14_FONT_ID, atkinson_hn14FontFamily);
+#ifndef OMIT_FONTS
+  renderer.insertFont(ATKINSON_HN_12_FONT_ID, atkinson_hn12FontFamily);
   renderer.insertFont(ATKINSON_HN_16_FONT_ID, atkinson_hn16FontFamily);
   renderer.insertFont(ATKINSON_HN_18_FONT_ID, atkinson_hn18FontFamily);
   // NOTOSANS_* are macro aliases of the ATKINSON_HN_* IDs (implicit migration

@@ -5671,7 +5671,7 @@ std::string EpubReaderActivity::textRowName(int row) const {
 }
 
 std::string EpubReaderActivity::textRowValue(int row) const {
-  static constexpr StrId kFamily[] = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN};
+  static constexpr StrId kFamily[] = {StrId::STR_ATKINSON_HN};
 #if defined(CROSSPOINT_TTF_READER)
   if (ttf_) {
     switch (row) {

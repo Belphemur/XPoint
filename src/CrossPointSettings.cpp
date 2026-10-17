@@ -93,7 +93,7 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["frontButtonRight"] = frontButtonRight;
   // Font family and size — both use dynamic getter/setters in SettingsList (the
   // option lists depend on the SD font registry), so the generic loop skips them.
-  doc["fontFamily"] = fontFamily;
+  doc["fontFamily"] = STORED_NOTOSANS;
   doc["fontSize"] = fontPointSize;
   // SD card font family name — not in SettingsList, save manually
   if (sdFontFamilyName[0] != '\0') {
@@ -249,8 +249,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   fontPointSize = storedFontSize;
 
   // Font family — uses dynamic getter/setter in SettingsList so the generic loop skips it.
-  const uint8_t storedFontFamily = doc["fontFamily"] | (uint8_t)0;
-  fontFamily = clamp(storedFontFamily, BUILTIN_FONT_COUNT, 0);
+  const uint8_t storedFontFamily = doc["fontFamily"] | STORED_NOTOSANS;
+  fontFamily = NOTOSANS;
 
   // GT911 idle sleep toggle — not in SettingsList, load manually (bool-fold:
   // anything non-zero counts as enabled).
@@ -295,14 +295,19 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
     ttfFontPointSize = DEFAULT_TTF_FONT_POINT_SIZE;
     needsResave = true;
   }
-  if (storedFontFamily == LEGACY_OPENDYSLEXIC && sdFontFamilyName[0] == '\0') {
-    fontFamily = NOTOSERIF;
-    strncpy(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName) - 1);
-    sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
-    needsResave = true;
-  } else if (storedFontFamily >= BUILTIN_FONT_COUNT) {
-    needsResave = true;
+  if (sdFontFamilyName[0] == '\0') {
+    switch (storedFontFamily) {
+      case LEGACY_NOTOSERIF:
+        copyToField(sdFontFamilyName, "NotoSerif", sizeof(sdFontFamilyName));
+        break;
+      case LEGACY_OPENDYSLEXIC:
+        copyToField(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName));
+        break;
+        // STORED_NOTOSANS (1) and LEGACY_ATKINSON_HN (2) both mean the built-in
+        // Atkinson data — nothing to migrate, fontFamily stays NOTOSANS.
+    }
   }
+  if (storedFontFamily != STORED_NOTOSANS) needsResave = true;
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually
   copyToField(dictionaryName, doc["dictionaryName"] | "", sizeof(dictionaryName));
   // Language -- stored as code string for stability across enum reorders.
@@ -344,15 +349,6 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       minutes = 840;
     clockTzOffsetMin = static_cast<int16_t>(minutes);
     clockHasBeenSynced = 0;
-    needsResave = true;
-  }
-
-  // Migrate font family: NOTOSANS (1) → ATKINSON_HN (2). The font data is the
-  // same (Atkinson Hyperlegible Next), but the display label changed. Users
-  // who explicitly chose "Noto Sans" before should see "Atkinson Hyperlegible
-  // Next" in settings and have the new enum value, without a visible jump.
-  if (fontFamily == NOTOSANS) {
-    fontFamily = ATKINSON_HN;
     needsResave = true;
   }
 
@@ -424,32 +420,16 @@ float CrossPointSettings::getReaderLineCompression() const {
     }
   }
 
-  switch (fontFamily) {
-    case NOTOSERIF:
+  switch (lineSpacing) {
+    case TIGHT:
+      return 0.90f;
+    case NORMAL:
     default:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.95f;
-        case NORMAL:
-        default:
-          return 1.0f;
-        case WIDE:
-          return 1.1f;
-        case EXTRA_WIDE:
-          return 1.2f;
-      }
-    case NOTOSANS:
-      switch (lineSpacing) {
-        case TIGHT:
-          return 0.90f;
-        case NORMAL:
-        default:
-          return 0.95f;
-        case WIDE:
-          return 1.0f;
-        case EXTRA_WIDE:
-          return 1.05f;
-      }
+      return 0.95f;
+    case WIDE:
+      return 1.0f;
+    case EXTRA_WIDE:
+      return 1.05f;
   }
 }
 
@@ -506,16 +486,15 @@ int CrossPointSettings::getReaderFontId() const {
   // in the page render loop) so rendering is correct even before it has run.
   const uint8_t pt =
       snapToNearestPointSize(BUILTIN_READER_POINT_SIZES, std::size(BUILTIN_READER_POINT_SIZES), fontPointSize);
-  const bool sans = (fontFamily == NOTOSANS || fontFamily == ATKINSON_HN);
   switch (pt) {
     case 12:
-      return sans ? NOTOSANS_12_FONT_ID : NOTOSERIF_12_FONT_ID;
+      return NOTOSANS_12_FONT_ID;
     case 16:
-      return sans ? NOTOSANS_16_FONT_ID : NOTOSERIF_16_FONT_ID;
+      return NOTOSANS_16_FONT_ID;
     case 18:
-      return sans ? NOTOSANS_18_FONT_ID : NOTOSERIF_18_FONT_ID;
+      return NOTOSANS_18_FONT_ID;
     case 14:
     default:
-      return sans ? NOTOSANS_14_FONT_ID : NOTOSERIF_14_FONT_ID;
+      return NOTOSANS_14_FONT_ID;
   }
 }

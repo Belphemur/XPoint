@@ -44,7 +44,7 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
     const auto& families = registry->getFamilies();
     // UI list has VISIBLE_BUILTIN_FONT_COUNT built-in entries + SD entries.
     // SD font UI index = VISIBLE_BUILTIN_FONT_COUNT + i (not BUILTIN_FONT_COUNT).
-    constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
+    constexpr int VISIBLE_BUILTIN_FONT_COUNT = 1;
     const auto family = std::find_if(families.begin(), families.end(), [sdFontFamilyName](const auto& candidate) {
       return candidate.name == sdFontFamilyName;
     });
@@ -53,14 +53,8 @@ int findCurrentFontIndex(const SdCardFontRegistry* registry, const char* sdFontF
     }
   }
 
-  // Map built-in font family enum values to UI list positions.
-  // The UI shows 2 entries: NOTOSERIF (0) and ATKINSON_HN (2).
-  // NOTOSANS (1) is deprecated and hidden, but old settings may still hold it;
-  // treat it as ATKINSON_HN (same font) → UI index 1.
-  if (fontFamily == CrossPointSettings::NOTOSANS || fontFamily == CrossPointSettings::ATKINSON_HN) {
-    return 1;
-  }
-  // NOTOSERIF (0) maps to UI index 0; NOTOSANS (1) is already handled above.
+  // Built-in: the single Atkinson entry is UI index 0 (NotoSerif became an
+  // optional SD download, upstream #4022).
   return 0;
 }
 #endif  // !CROSSPOINT_TTF_READER
@@ -192,14 +186,12 @@ void TextSettingsActivity::onEnter() {
   }
   rebuildSizeList();
 #else
-  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
+  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 1;
   fonts_.reserve(VISIBLE_BUILTIN_FONT_COUNT + (registry_ ? registry_->getFamilyCount() : 0));
-  // Built-in fonts: NOTOSERIF (0) + ATKINSON_HN (2). NOTOSANS (1) is deprecated
-  // — migrated to ATKINSON_HN on settings load — and is NOT shown as a separate
-  // menu entry to avoid a duplicate "Atkinson Hyperlegible Next" row.
-  fonts_.push_back({I18N.get(StrId::STR_NOTO_SERIF), true, static_cast<uint8_t>(CrossPointSettings::NOTOSERIF), true});
-  fonts_.push_back(
-      {I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::ATKINSON_HN), true});
+  // Built-in font: ATKINSON_HN (labeled, enum value NOTOSANS = 0 — the
+  // historical persisted ID for the sans family). NotoSerif became an
+  // optional SD download (upstream #4022) and is no longer a menu entry.
+  fonts_.push_back({I18N.get(StrId::STR_ATKINSON_HN), true, static_cast<uint8_t>(CrossPointSettings::NOTOSANS), true});
   if (registry_) {
     const auto& families = registry_->getFamilies();
     for (int i = 0; i < static_cast<int>(families.size()); i++) {

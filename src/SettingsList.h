@@ -25,17 +25,13 @@
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
-  // Built-in font labels shown in the settings UI. The UI list is positional:
-  // index 0 = NOTOSERIF (enum 0), index 1 = ATKINSON_HN (enum 2).
-  // NOTOSANS (enum 1) is deprecated; it's migrated to ATKINSON_HN (enum 2)
-  // on settings load. Only 2 entries are shown in the settings UI (NOTOSERIF
-  // + ATKINSON_HN); the deprecated NOTOSANS slot is hidden to avoid a
-  // duplicate "Atkinson Hyperlegible Next" row.
-  // VISIBLE_BUILTIN_FONT_COUNT = 2 is used for UI list indexing (built-in +
-  // SD font offset); BUILTIN_FONT_COUNT (= 3) is still used for enum-value
-  // range checks since NOTOSANS remains a valid (if deprecated) enum value.
-  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 2;
-  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN};
+  // Built-in font label shown in the settings UI. The UI list is positional:
+  // index 0 = the built-in Atkinson Hyperlegible Next (enum NOTOSANS = 0;
+  // NotoSerif became an optional SD download, upstream #4022).
+  // VISIBLE_BUILTIN_FONT_COUNT is used for UI list indexing (built-in + SD
+  // font offset); BUILTIN_FONT_COUNT (= 1) covers the single built-in enum value.
+  constexpr int VISIBLE_BUILTIN_FONT_COUNT = 1;
+  std::vector<StrId> enumValues = {StrId::STR_ATKINSON_HN};
   // Runtime string labels for SD card fonts
   std::vector<std::string> enumStringValues;
 
@@ -56,7 +52,6 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
   // with all options when SD fonts are present.
   std::vector<std::string> allStringValues;
   if (sdFontCount > 0) {
-    allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF));
     allStringValues.push_back(I18N.get(StrId::STR_ATKINSON_HN));
     allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
   }
@@ -81,7 +76,7 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
 
   s.valueGetter = [sdFamilyNames, VISIBLE_BUILTIN_FONT_COUNT]() -> uint8_t {
     // If an SD card font is selected, find its index in the UI list.
-    // UI layout: [NOTOSERIF(0), ATKINSON_HN(1), SD-font(2), SD-font(3), ...]
+    // UI layout: [ATKINSON_HN(0), SD-font(1), SD-font(2), ...]
     if (SETTINGS.sdFontFamilyName[0] != '\0') {
       for (int i = 0; i < static_cast<int>(sdFamilyNames.size()); i++) {
         if (sdFamilyNames[i] == SETTINGS.sdFontFamilyName) {
@@ -90,21 +85,14 @@ inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
       }
       // SD font name not found in registry — fall through to built-in
     }
-    // Map built-in fontFamily enum values to UI list positions.
-    // UI has 2 entries: NOTOSERIF (0) and ATKINSON_HN (1).
-    // NOTOSANS (1) is deprecated and hidden; treat as ATKINSON_HN → UI index 1.
-    if (SETTINGS.fontFamily == CrossPointSettings::ATKINSON_HN || SETTINGS.fontFamily == CrossPointSettings::NOTOSANS) {
-      return 1;
-    }
-    // NOTOSERIF (0) maps to UI index 0; NOTOSANS (1) already handled above.
+    // Built-in: the single Atkinson entry is UI index 0.
     return 0;
   };
 
   s.valueSetter = [sdFamilyNames, VISIBLE_BUILTIN_FONT_COUNT](uint8_t v) {
     if (v < VISIBLE_BUILTIN_FONT_COUNT) {
-      // Map UI positions to enum values: 0→NOTOSERIF, 1→ATKINSON_HN
-      // (NOTOSANS/1 is skipped; settings migration handles old values.)
-      SETTINGS.fontFamily = (v == 0) ? CrossPointSettings::NOTOSERIF : CrossPointSettings::ATKINSON_HN;
+      // Map UI position 0 to the built-in Atkinson enum value.
+      SETTINGS.fontFamily = CrossPointSettings::NOTOSANS;
       SETTINGS.sdFontFamilyName[0] = '\0';
     } else {
       int sdIdx = v - VISIBLE_BUILTIN_FONT_COUNT;
@@ -289,9 +277,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         // --- Reader ---
         // Built-in font-family entry. Replaced per-call with a registry-aware
         // version when SD fonts are installed.
-        SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,
-                          {StrId::STR_NOTO_SERIF, StrId::STR_ATKINSON_HN, StrId::STR_ATKINSON_HN}, "fontFamily",
-                          StrId::STR_CAT_READER)
+        SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily, {StrId::STR_ATKINSON_HN},
+                          "fontFamily", StrId::STR_CAT_READER)
             .withTextSettings(),
         // Placeholder: the selectable sizes depend on the active font family, so
         // this entry is always replaced by buildFontSizeSetting() below. It only

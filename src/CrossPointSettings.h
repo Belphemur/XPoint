@@ -121,11 +121,21 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     SIDE_BUTTON_LAYOUT_COUNT
   };
 
-  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
-  // NOTOSANS remains for backward compatibility (existing saved settings use value 1);
-  // ATKINSON_HN is the same font (Atkinson Hyperlegible Next) with an explicit label.
-  enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, ATKINSON_HN = 2, FONT_FAMILY_COUNT };
+  // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName).
+  // Upstream #4022 moved NotoSerif out of the firmware: it is now an optional SD
+  // download (lib/EpdFont/scripts/sd-fonts.yaml) and the only built-in family is
+  // Atkinson Hyperlegible Next, registered under the NOTOSANS_* font IDs.
+  // Persisted values keep their historical meaning — never reorder them:
+  //   0 = NotoSerif (legacy default; migrated to sdFontFamilyName="NotoSerif" on load)
+  //   1 = NotoSans (legacy alias for the same Atkinson data)
+  //   2 = ATKINSON_HN (fork's explicit alias, same Atkinson data)
+  //   3 = legacy OpenDyslexic (migrated to sdFontFamilyName="OpenDyslexic" on load)
+  enum FONT_FAMILY { NOTOSANS = 0, FONT_FAMILY_COUNT = 1 };
+  static constexpr uint8_t LEGACY_NOTOSERIF = 0;
+  static constexpr uint8_t LEGACY_ATKINSON_HN = 2;
   static constexpr uint8_t LEGACY_OPENDYSLEXIC = 3;
+  // Persisted IDs stay stable even though the built-in menu now starts at zero.
+  static constexpr uint8_t STORED_NOTOSANS = 1;
   static constexpr uint8_t BUILTIN_FONT_COUNT = FONT_FAMILY_COUNT;
   // Reader font size is a point size, not an enum slot — see fontPointSize.
   // Legacy 1.4-and-earlier files stored a 0..3 SMALL/MEDIUM/LARGE/EXTRA_LARGE
@@ -318,7 +328,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t frontButtonLeft = FRONT_HW_LEFT;
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
-  uint8_t fontFamily = NOTOSERIF;
+  uint8_t fontFamily = NOTOSANS;
   // Point size of the reader font. Only sizes the active family actually ships
   // are selectable; SdCardFontSystem::ensureLoaded() snaps this to the nearest
   // available size (and persists the snap) whenever the family changes.
