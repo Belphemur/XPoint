@@ -42,6 +42,7 @@ class CatalogActivity : public UiListActivity {
   virtual bool hasSearch() const = 0;
   virtual void performSearch(const std::string& query) = 0;
   virtual void downloadFinished(bool cancelled) = 0;
+  virtual void wifiSelectionCancelled();
   // Initial keyboard text when search opens (refining the active query).
   virtual std::string searchPrefill() const { return {}; }
 

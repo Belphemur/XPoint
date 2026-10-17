@@ -4,6 +4,7 @@
 
 #include "util/HomeButtonInput.h"
 #include "util/PowerClickWindow.h"
+#include "util/RemoteButtonInput.h"
 #include "util/RepeatHoldDiscount.h"
 
 class GfxRenderer;
@@ -93,6 +94,8 @@ class MappedInputManager {
   // True while a power press in progress is still a double-click candidate
   // (hold not yet past the click window): suppresses button-down power-off.
   bool isPowerClickHoldCandidate() const;
+  bool injectRemoteClick(RemoteButton button);
+  bool hasRemoteClick() const { return remoteInput.button != RemoteButton::None; }
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
   // One-shot threshold event while the button is down; consumes its release.
@@ -217,6 +220,7 @@ class MappedInputManager {
   void rememberTouchHeldTime() const;
   void suppressNextRelease(Button button) const;
 
+  mutable RemoteButtonInput remoteInput;
   mutable HomeButtonInput homeButtonInput;
   mutable HomeButtonAction homeAction = HomeButtonAction::Ignore;
   mutable HomeButtonGesture homeGesture = HomeButtonGesture::None;

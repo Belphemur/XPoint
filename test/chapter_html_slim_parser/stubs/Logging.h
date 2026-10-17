@@ -2,3 +2,6 @@
 
 #define LOG_DBG(...) ((void)0)
 #define LOG_ERR(...) ((void)0)
+// BookMetadataCache (7365c1ac) logs at INFO on cache rebuild; keep the shared
+// host stub no-op complete so suites compiling that TU link.
+#define LOG_INF(...) ((void)0)

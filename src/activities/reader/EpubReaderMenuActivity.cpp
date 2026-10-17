@@ -1,5 +1,6 @@
 #include "EpubReaderMenuActivity.h"
 
+#include <BlePageTurner.h>
 #include <GfxRenderer.h>
 #include <HalFrontlight.h>
 #include <I18n.h>
@@ -65,6 +66,9 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   if (Frontlight.present()) {
     items.push_back({MenuAction::FRONTLIGHT, StrId::STR_FRONTLIGHT});
   }
+  if (bleturner::status().compiledIn) {
+    items.push_back({MenuAction::BLUETOOTH, StrId::STR_BT_PAGE_TURNER});
+  }
   if (SETTINGS.dictionaryName[0] != '\0') {
     items.push_back({MenuAction::DICTIONARY, StrId::STR_LOOKUP});
   }
@@ -101,6 +105,15 @@ void EpubReaderMenuActivity::buildToolbarMoreItems(std::vector<MenuItem>& items,
                                    ;
                              }),
               items.end());
+}
+
+void EpubReaderMenuActivity::toggleBluetooth() {
+  SETTINGS.ble.enabled = SETTINGS.ble.enabled ? 0 : 1;
+  if (!SETTINGS.ble.enabled) bleturner::switchOff();
+  SETTINGS.saveToFile();
+  // Enabling waits for the main-loop lifecycle's reader heap gates, then says in the status bar
+  // whether a remote linked.
+  if (SETTINGS.ble.enabled) bleturner::requestConnect();
 }
 
 void EpubReaderMenuActivity::closeCancelled() {
@@ -160,6 +173,12 @@ void EpubReaderMenuActivity::activateIndex(const int index) {
   if (selectedAction == MenuAction::NIGHT_MODE) {
     SETTINGS.screenInverted = SETTINGS.screenInverted == 0 ? 1 : 0;
     SETTINGS.saveToFile();
+    requestUpdate();
+    return;
+  }
+
+  if (selectedAction == MenuAction::BLUETOOTH) {
+    toggleBluetooth();
     requestUpdate();
     return;
   }
@@ -226,6 +245,8 @@ void EpubReaderMenuActivity::buildScreen(UiScreen& screen) {
       menuRowItems[i].value = pageTurnLabels[selectedPageTurnOption];
     } else if (action == MenuAction::NIGHT_MODE) {
       GUI.setCheckboxRow(menuRowItems[i], SETTINGS.screenInverted);
+    } else if (action == MenuAction::BLUETOOTH) {
+      GUI.setCheckboxRow(menuRowItems[i], SETTINGS.ble.enabled);
     } else if (action == MenuAction::FRONTLIGHT) {
       GUI.setCheckboxRow(menuRowItems[i], Frontlight.isOn());
     }

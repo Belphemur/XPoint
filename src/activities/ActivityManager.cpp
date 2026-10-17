@@ -1,5 +1,6 @@
 #include "ActivityManager.h"
 
+#include <BlePageTurner.h>
 #include <BoardConfig.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
@@ -33,6 +34,7 @@
 #include "network/UsbDriveActivity.h"
 #include "plugins/PluginCatalogActivity.h"
 #include "reader/ReaderActivity.h"
+#include "reader/RemoteTurnGate.h"
 #include "settings/OpdsServerListActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/BmpViewerActivity.h"
@@ -66,7 +68,12 @@ void ActivityManager::performRender() {
     // Night mode is a global output polarity applied to every activity.
     // The sleep screen forces normal polarity itself (SleepActivity).
     display.setInverted(SETTINGS.screenInverted != 0);
+    const uint32_t renderingVisit = screenVisit;
     currentActivity->render(std::move(lock));
+    // The Bluetooth page turner gates on "the home screen's own frame is on
+    // the panel" (isForegroundHomeShown); the fork renders inline on the main
+    // task instead of a render task, so the visit bookkeeping lives here.
+    paintedVisit.store(renderingVisit, std::memory_order_release);
 #if defined(CROSSPOINT_TTF_READER)
     // Render-stack and heap telemetry live in the book-render path
     // (EpubReaderActivity's TTF finish, where the deep frames actually run);
@@ -144,6 +151,12 @@ void ActivityManager::loop() {
   }
 
   while (pendingAction != PendingAction::None) {
+    // The page turner's radio gives its heap back before the next screen allocates. Its teardown
+    // can span loop passes and runs outside the render lock.
+    if (pendingAction != PendingAction::ReplaceForSleep &&
+        !bleturner::beforeScreenChange(0, pendingActivity && pendingActivity->isReaderActivity())) {
+      return;
+    }
     if (pendingAction == PendingAction::Pop) {
       RenderLock lock;
 
@@ -154,6 +167,7 @@ void ActivityManager::loop() {
         continue;
       }
 
+      ++screenVisit;
       ActivityResult pendingResult = std::move(currentActivity->result);
 
       // An activity popped without calling setResult() leaves its result in
@@ -205,7 +219,7 @@ void ActivityManager::loop() {
       // Current activity has requested a new activity to be launched
       RenderLock lock;
 
-      if (pendingAction == PendingAction::Replace) {
+      if (pendingAction == PendingAction::Replace || pendingAction == PendingAction::ReplaceForSleep) {
         // Destroy the current activity
         exitActivity(lock);
         // Clear the stack
@@ -221,6 +235,7 @@ void ActivityManager::loop() {
         HeaderBackTapTarget::clear();
         LOG_DBG("ACT", "Pushed to activity stack, new size = %zu", stackActivities.size());
       }
+      ++screenVisit;
       pendingAction = PendingAction::None;
       currentActivity = std::move(pendingActivity);
 
@@ -363,6 +378,7 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
 
 void ActivityManager::goToSleep(bool fromTimeout) {
   replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout));
+  if (pendingAction == PendingAction::Replace) pendingAction = PendingAction::ReplaceForSleep;
   loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
 }
 
@@ -449,6 +465,51 @@ bool ActivityManager::isReaderActivity() const {
 }
 
 bool ActivityManager::isCurrentActivityReader() const { return currentActivity && currentActivity->isReaderActivity(); }
+
+// Bluetooth page turner (lib/BlePageTurner): the book in front, whether it has painted a page, and
+// a page or chapter turn from a remote. False when no book in front took the turn.
+bool ActivityManager::isForegroundReader() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->isReaderActivity();
+}
+
+bool ActivityManager::isRemoteReaderContext() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->acceptsRemoteInput();
+}
+
+bool ActivityManager::remoteClick(const RemoteButton button) {
+  if (!isRemoteReaderContext() || RenderLock::peek() || requestedUpdate.load()) return false;
+  return mappedInput.injectRemoteClick(button);
+}
+
+bool ActivityManager::isForegroundHomeShown() const {
+  return pendingAction == PendingAction::None && currentActivity && currentActivity->name == "Home" &&
+         paintedVisit.load(std::memory_order_acquire) == screenVisit;
+}
+
+bool ActivityManager::remoteShortcut(const bool readerMenu) {
+  if (!isForegroundReader()) return false;
+  auto* reader = static_cast<ReaderActivity*>(currentActivity.get());
+  if (!remoteTurnAccepted(reader->pageRendered.load(std::memory_order_acquire), RenderLock::peek(),
+                          reader->inputOverPage())) {
+    return false;
+  }
+  return reader->remoteShortcut(readerMenu);
+}
+
+bool ActivityManager::remoteTurn(const bool forward, const bool chapter) {
+  if (!isRemoteReaderContext() || mappedInput.hasRemoteClick()) return false;
+  auto* reader = isForegroundReader() ? static_cast<ReaderActivity*>(currentActivity.get()) : nullptr;
+  if (!reader || reader->inputOverPage()) {
+    return !chapter && remoteClick(forward ? RemoteButton::Next : RemoteButton::Previous);
+  }
+  if (!remoteTurnAccepted(reader->pageRendered.load(std::memory_order_acquire), RenderLock::peek(),
+                          reader->inputOverPage())) {
+    return false;
+  }
+  const bool turned = chapter ? reader->skipPages(forward ? 1 : -1) : reader->pageTurn(forward);
+  if (turned) requestUpdate();
+  return turned;
+}
 
 bool ActivityManager::handleForcedRefresh() { return currentActivity && currentActivity->handleForcedRefresh(); }
 

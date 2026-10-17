@@ -1,5 +1,6 @@
 #include "CrossPointSettings.h"
 
+#include <BlePageTurnerJson.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
@@ -15,6 +16,7 @@
 #include "SettingsList.h"
 #include "fontIds.h"
 #include "util/ParagraphIndentMigration.h"
+#include "util/PluginLocations.h"
 
 namespace {
 
@@ -120,6 +122,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // GT911 idle sleep toggle — not in SettingsList (no menu UI yet), persisted
   // manually so the owner can flip it without a rebuild.
   doc["touchIdleSleep"] = touchIdleSleep;
+
+  bleturner::writeJson(ble, doc);
 }
 
 bool CrossPointSettings::fromJson(JsonVariantConst doc) {
@@ -187,6 +191,14 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       }
       s.*(info.valuePtr) = v;
     }
+  }
+
+  // Plugin System did not exist in older settings files. Preserve the behavior
+  // of users who already have SD plugins installed, while keeping the new
+  // default disabled on clean installs.
+  if (doc["pluginsEnabled"].isNull()) {
+    pluginsEnabled = PluginLocations::anyPluginInstalledOnDisk() ? 1 : 0;
+    needsResave = true;
   }
 
   const auto indentSpaces = doc["paragraphIndentSpaces"];
@@ -341,6 +353,10 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   // Next" in settings and have the new enum value, without a visible jump.
   if (fontFamily == NOTOSANS) {
     fontFamily = ATKINSON_HN;
+    needsResave = true;
+  }
+
+  if (!bleturner::readJson(ble, doc)) {
     needsResave = true;
   }
 

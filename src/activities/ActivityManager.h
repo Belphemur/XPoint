@@ -55,7 +55,7 @@ class ActivityManager {
 
   // Pending activity to be launched on next loop iteration
   std::unique_ptr<Activity> pendingActivity;
-  enum class PendingAction { None, Push, Pop, Replace };
+  enum class PendingAction { None, Push, Pop, Replace, ReplaceForSleep };
   PendingAction pendingAction = PendingAction::None;
 
   // The loop task is the renderer: it captures its own handle in begin()
@@ -75,6 +75,12 @@ class ActivityManager {
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
   std::atomic<bool> requestedUpdate{false};
+
+  // Counts screen changes, so the Bluetooth page turner can tell one visit of a book from the next.
+  // Written by the main loop under RenderLock; the render task captures it under that lock.
+  uint32_t screenVisit = 0;
+  // The screen visit whose frame the render task painted last.
+  std::atomic<uint32_t> paintedVisit{0};
 
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -135,6 +141,17 @@ class ActivityManager {
   bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;
   bool isCurrentActivityReader() const;
+  // Bluetooth page turner (lib/BlePageTurner): the book in front, whether it has painted a page, and
+  // a page or chapter turn from a remote. False when no book in front took the turn.
+  bool isForegroundReader() const;
+  bool isRemoteReaderContext() const;
+  bool remoteClick(RemoteButton button);
+  // Home is in front and has painted a frame of its own (not one left from the screen before).
+  bool isForegroundHomeShown() const;
+  uint32_t visit() const { return screenVisit; }
+  bool remoteTurn(bool forward, bool chapter);
+  // A remote button mapped to the reader menu (true) or to a new clipping (false).
+  bool remoteShortcut(bool readerMenu);
   bool handleForcedRefresh();
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;
