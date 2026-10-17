@@ -7,7 +7,6 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
     - [Button Layout](#button-layout)
     - [Taking a Screenshot](#taking-a-screenshot)
     - [Frontlight (X4 Pro and Paper Mono)](#frontlight-x4-pro-and-paper-mono)
-    - [Frontlight Side-Swipe Gestures](#frontlight-side-swipe-gestures)
   - [2. Power \& Startup](#2-power--startup)
     - [Power On / Off](#power-on--off)
     - [First Launch](#first-launch)
@@ -87,26 +86,12 @@ If the frontlight doesn't come back on after the device wakes from sleep, check 
 
 ---
 
-### Frontlight Side-Swipe Gestures
-
-Available on frontlight-equipped devices (X4 Pro and Paper Mono). While reading, swipe vertically on the **left edge** of the screen to adjust the frontlight color temperature (up = warmer, down = cooler). Swipe vertically on the **right edge** to adjust brightness (up = brighter, down = dimmer). The brightness swipe behaves identically to the frontlight panel's slider: it clamps to 1% minimum (it does not turn the light off — use the Power-button double-click or the panel's toggle tile to turn it off completely). The swipe distance maps proportionally to the adjustment step (full screen = 100%).
-
-> [!NOTE]
-> This feature is independent of the "Touch Reader Controls" setting and can be toggled in **Settings → Display → Frontlight Side Gestures** (on by default).
-> The left-edge warmth gesture only has a visible effect on devices with a warm/cool dual-channel frontlight (X4 Pro). On single-channel boards (Paper Mono), the gesture is consumed but the color temperature does not change.
-
----
-
 ## 2. Power & Startup
 
 ### Power On / Off
 
 To turn the device on or off, **press and hold the Power button for approximately half a second**.
-A **short press** of the Power button puts the device to sleep instead; you can change this binding in the **[Controls Settings](#363-controls)**.
-
-The power-off screen follows the picture configured by the **[Sleep Screen](#361-display)** setting — framed and accompanied by a prompt explaining how to turn the device back on. Modes without a standalone picture (blank screen, logo screens, quick resume) show only that prompt.
-
-The device also powers itself off automatically after being asleep for the duration set by **Auto power off** in the **[System Settings](#364-system)** (4 hours by default). When that happens, the sleep screen displays a prompt before the device turns off completely.
+In the **[Controls Settings](#363-controls)** you can configure the power button to turn the device off with a short press instead of a long one.
 
 To reboot the device (for example after a firmware update or if it's frozen), press and release the Reset button, and then quickly press and hold the Power button for a few seconds.
 
@@ -220,7 +205,7 @@ Books cannot be removed from your device through Calibre. Use the web interface 
 
 ### 3.6 Settings
 
-The Settings screen allows you to configure the device's behavior. There are a few settings you can adjust:
+Settings are grouped into **System**, **Display**, **Reader**, **Controls**, **Library**, and **Connectivity**. System contains language, keyboard layouts, hidden-file visibility, Clock (where available), firmware updates, and About. Library contains Use Book Metadata, Clear Read Books from Recent List, and Move Finished Books to Read Folder. Time to Sleep is under Display; Clear Reading Cache is under Reader. Connectivity contains Wi-Fi, Bluetooth Page Turner, CrossPoint Sync, OPDS, and the Plugins toggle. The options below describe these settings.
 
 #### 3.6.1 Display
 
@@ -245,7 +230,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
   - "Contrast" - The image will be displayed as a black & white image without grayscale conversion
   - "Inverted" - The image will be inverted as in white & black and will be displayed without grayscale conversion
 
-- **Quick Resume on Timeout**: Whether to enable the "Quick Resume" sleep screen when the device goes to sleep due to inactivity (System > Time to Sleep). This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book. This overwrites the Sleep Screen Cover Mode when enabled.
+- **Quick Resume on Timeout**: Whether to enable the "Quick Resume" sleep screen when the device goes to sleep due to inactivity (Display > Time to Sleep). This is useful for quickly resuming reading without waiting for the device to fully wake up and load the book. This overwrites the Sleep Screen Cover Mode when enabled.
 
 - **Status Bar**: Configure the status bar displayed while reading:
   
@@ -276,19 +261,15 @@ The Settings screen allows you to configure the device's behavior. There are a f
   - "OFF" (default) - Disable the fix
   - "ON" - Enable the fix
 
-- **Frontlight Side Gestures**: Toggle the frontlight side-swipe gestures on or off (frontlight-equipped devices only, on by default). While reading, swipe vertically on the left edge to adjust color temperature and the right edge to adjust brightness — see [Frontlight Side-Swipe Gestures](#frontlight-side-swipe-gestures) for details.
-
-> [!NOTE]
-> A battery charging indicator is shown on the battery icon whenever the device is actively charging.
-
 #### 3.6.2 Reader
 
 - **Reader Font Family**: Choose the font used for reading:
   
   - "Noto Serif" (default) - Google's serif font
   - "Noto Sans" - Google's sans-serif font
+  - Installed SD card families
 
-- **Reader Font Size**: Adjust the text size for reading; options are "Small", "Medium" (default), "Large", or "X Large".
+- **Reader Font Size**: Choose a point size. Built-in and direct TTF/OTF/TTC fonts offer 12, 14, 16, and 18 pt. A `.cpfont` family offers the sizes installed for that family.
 
 - **Reader Line Spacing**: Adjust the spacing between lines; options are "Tight", "Normal" (default), or "Wide".
 
@@ -339,8 +320,8 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 - **Short Power Button Click**: Controls the effect of a short click of the power button:
   
-  - "Sleep" (default) - A short press puts the device into sleep mode
-  - "Ignore" - A short press is ignored; use a long press to turn the device off
+  - "Ignore" (default) - Require a long press to turn off the device
+  - "Sleep" - A short press puts the device into sleep mode
   - "Page Turn" - A short press in reading mode turns to the next page; a long press turns the device off
   - "Links and footnotes" - A short press in reading mode opens link selection. If the page has only one link, it opens directly. After following a link, a short press returns to the previous location.
   - "Refresh" - A short press triggers a manual full-screen refresh, useful for clearing ghosting
@@ -348,19 +329,17 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 #### 3.6.4 System
 
-- **Time to Sleep**: Set the duration of inactivity before the device automatically goes to sleep; options are 1, 3, 5, 10 (default), 15 or 30 minutes.
-
-- **Auto power off**: Set how long the device may remain asleep before it shuts down automatically; options are 2, 4 (default), 6, 8, 10 or 12 hours — selecting 12 hours disables the timer (Off). When the timer expires, the sleep screen shows a prompt and the device turns off completely; press the Power button to turn it back on.
+- **Time to Sleep** (**Settings → Display**): Set the duration of inactivity before the device automatically goes to sleep; options are 1, 3, 5, 10 (default), 15 or 30 minutes.
 
 - **Wi-Fi Networks**: Connect to Wi-Fi networks for file transfers and firmware updates.
 
-- **Bluetooth Page Turner**: Enable Bluetooth, then open **Scan for Remotes** to connect a page turner. **Paired Remotes** lists saved remotes; selecting a row marked **Forget** removes it. Once connected, open **Map Buttons**, choose a page, chapter, Confirm, Back, reader menu, or clipping action, and press the remote button within 15 seconds. Release the button within 15 seconds: a hold of at least 0.7 seconds is mapped separately from its tap. If the remote never reports a release, learning waits 15 seconds and saves the press as a tap. Hold Confirm on an action, or long-press its row, to clear it. Back cancels learning or returns to the Bluetooth menu. Mapping is optional: without custom mappings, the default remote controls remain available. Each button gesture maps to one action; assigning it again replaces its previous action. Confirm and Back act like the device buttons while reading and in the reader list menu. Next/Previous Page navigate items while a reader menu is open and turn pages when it is closed. Bluetooth can also be toggled from the reader list menu or the toolbar’s **More** menu.
+- **Bluetooth Page Turner** (**Settings → Connectivity**): Enable Bluetooth, then open **Scan for Remotes** to connect a page turner. **Paired Remotes** lists saved remotes; selecting a row marked **Forget** removes it. Once connected, open **Map Buttons**, choose a page, chapter, Confirm, Back, reader menu, or clipping action, and press the remote button within 15 seconds. Release the button within 15 seconds: a hold of at least 0.7 seconds is mapped separately from its tap. If the remote never reports a release, learning waits 15 seconds and saves the press as a tap. Hold Confirm on an action, or long-press its row, to clear it. Back cancels learning or returns to the Bluetooth menu. Mapping is optional: without custom mappings, the default remote controls remain available. Each button gesture maps to one action; assigning it again replaces its previous action. Confirm and Back act like the device buttons while reading and in the reader list menu. Next/Previous Page navigate items while a reader menu is open and turn pages when it is closed. Bluetooth can also be toggled from the reader list menu or the toolbar’s **More** menu.
 
 - **CrossPoint Sync**: Settings for syncing book progress with CrossPoint Sync or a compatible KOSync server. **Smart sync** is the default for new configurations and auto-resolves simple push/pull decisions. Existing credential files retain **Ask every time** when migrated; you can switch Sync Behavior at any time if you prefer manual confirmation.
 
 - **OPDS Servers**: Manage one or more OPDS [(Open Publication Distribution System)](https://en.wikipedia.org/wiki/Open_Publication_Distribution_System) libraries for browsing and downloading books. See [OPDS Servers (Multiple Libraries)](#365-opds-servers-multiple-libraries) below.
 
-- **Clear Reading Cache**: Clear the internal SD card cache.
+- **Clear Reading Cache** (**Settings → Reader**): Clear the internal SD card cache.
 
 - **Use book metadata**: Read the title and author stored inside each book when the Library index is rebuilt. When disabled or unavailable, the Library uses the filename.
 
@@ -368,12 +347,12 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 - **Check for updates**: Check for Crosspoint firmware updates over Wi-Fi. Firmware can also be updated without a USB connection by placing a `firmware.bin` file on the SD card.
 
-- **Plugins**: Enable or disable SD-card plugins. Clean installs start disabled; upgrades with existing plugins are kept enabled automatically. Disabling plugins leaves all plugin files on the SD card but stops plugin discovery and execution until they are enabled again.
+- **Plugins** (**Settings → Connectivity**): Enable or disable SD-card plugins. Clean installs start disabled; upgrades with existing plugins are kept enabled automatically. Disabling plugins leaves all plugin files on the SD card but stops plugin discovery and execution until they are enabled again.
   - Enabling plugins immediately adds **Plugins** to the Home screen, even when no plugins are installed yet. Sideloaded SD-card plugins work without Plugin Hub.
   - Open **Home → Plugins** to view installed plugins. If no usable on-device Plugin Hub is available and its installer has not been hidden, a **Plugin Hub — Download, discover, and update plugins** entry is also shown. A manually sideloaded Hub with a valid `device.json` is recognized without requiring the optional README or browser files.
   - Selecting that Plugin Hub entry offers **Install**, **Hide**, or **Cancel**. **Install** downloads Plugin Hub over Wi-Fi. If you back out of Wi-Fi selection, installation is cancelled, Wi-Fi is turned back off, and you return to Plugins with the installer still available. **Hide** removes only the Plugin Hub install entry; it does not disable plugins or affect sideloaded plugins. **Cancel** leaves the entry unchanged.
-  - **Hide** persists across reboots. Setting **Settings → System → Plugins** to **Enabled** again brings the installer back.
-  - Plugin Hub is optional. Users who prefer manual installation can download it directly from [PluginHub.crosspoint-plugin releases](https://github.com/jadehawk/PluginHub.crosspoint-plugin/releases) and copy/extract the `pluginhub` folder so it ends up at `/.crosspoint/plugins/pluginhub/`, `/plugins/pluginhub/`, or `/.plugins/pluginhub/`. Once installed, Plugin Hub appears as a normal entry under **Home → Plugins**.
+  - **Hide** persists across reboots. Setting **Settings → Connectivity → Plugins** to **Enabled** again brings the installer back.
+  - Plugin Hub is optional. Users who prefer manual installation can download it directly from [crosspoint-plugin-hub releases](https://github.com/crosspoint-reader/crosspoint-plugin-hub/releases) and copy/extract the `pluginhub` folder so it ends up at `/.crosspoint/plugins/pluginhub/`, `/plugins/pluginhub/`, or `/.plugins/pluginhub/`. Once installed, Plugin Hub appears as a normal entry under **Home → Plugins**.
 
 - **Language**: Set the UI language. CrossPoint supports 32 languages: English, Spanish, French, German, Czech, Brazilian Portuguese, European Portuguese, Russian, Swedish, Romanian, Catalan, Ukrainian, Belarusian, Italian, Polish, Finnish, Danish, Dutch, Turkish, Kazakh, Hungarian, Lithuanian, Slovenian, Valencian, Hebrew, Arabic, Slovak, Bosnian, Vietnamese, Norwegian Bokmål, Indonesian, and Orangutan.
 
@@ -383,7 +362,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
 
 CrossPoint supports saving multiple OPDS servers and switching between them when browsing catalogs.
 
-1. Open **Settings -> System -> OPDS Servers**.
+1. Open **Settings -> Connectivity -> OPDS Servers**.
 
 2. Select **Add Server** to create a new entry, or select an existing server to edit it.
 
@@ -444,7 +423,7 @@ When **Sync Server URL** is left empty, CrossPoint uses the free CrossPoint sync
 
 1. On each CrossPoint device:
 
-   - Go to **Settings -> System -> CrossPoint Sync**.
+   - Go to **Settings -> Connectivity -> CrossPoint Sync**.
 
    - Set **Username** and **Password** (enter the plain password; CrossPoint computes MD5 internally, and use the same values on all devices).
 
@@ -462,7 +441,7 @@ Use this if you already sync KOReader devices against the official public server
 
 1. On each CrossPoint device:
 
-   - Go to **Settings -> System -> CrossPoint Sync**.
+   - Go to **Settings -> Connectivity -> CrossPoint Sync**.
 
    - Set **Sync Server URL** to `https://sync.koreader.rocks` (required; an empty URL now points at the CrossPoint server instead).
 
@@ -550,7 +529,7 @@ If this returns `HTTP 402` with `{"code":2002,"message":"Username is already reg
 
 4. On each CrossPoint device:
    
-   - Go to **Settings -> System -> CrossPoint Sync**.
+   - Go to **Settings -> Connectivity -> CrossPoint Sync**.
    
    - Set **Username** and **Password** (enter the plain password; CrossPoint computes MD5 internally, and use the same values on all devices).
    
@@ -621,26 +600,17 @@ Transparent overlay files are intentionally separate from normal sleep images. R
 
 ### 3.8 Custom Fonts (SD Card)
 
-CrossPoint supports loading additional fonts from the SD card, extending beyond the two built-in families (Noto Serif, Noto Sans). Custom fonts can include extended Unicode coverage, enabling CJK (Chinese, Japanese, Korean) and other scripts.
+CrossPoint loads additional fonts from the SD card. Custom fonts can add Chinese, Japanese, Korean, and other scripts that the built-in reader fonts lack. If your device have external RAM, you can copy `.ttf`, `.otf`, and `.ttc` files directly. Otherwise, use `.cpfont` files made from those fonts. 
 
 There are three ways to install fonts:
 
-1. **Download from device (recommended):** Go to **Settings -> System -> Manage Fonts**, browse the available font families, and select one to download over Wi-Fi.
-2. **Upload via web interface:** While in **File Transfer** mode, open the web UI in a browser and navigate to the **Fonts** tab to upload `.cpfont` files.
-3. **Manual SD card copy:** Download font files from the [crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts) and copy them to `/.fonts/` (preferred) or `/fonts/` on your SD card.
+1. **Download from device (recommended):** Go to **Settings -> Reader -> Manage Fonts**, browse the available font families, and select one to download over Wi-Fi.
+2. **Upload via web interface:** While in **File Transfer** mode, open the web UI and use the **Fonts** tab to upload `.cpfont` files. The Fonts tab does not accept TTF/OTF/TTC files.
+3. **Manual SD card copy:** Copy `.cpfont` families from the [crosspoint-fonts repository](https://github.com/crosspoint-reader/crosspoint-fonts) to `/.fonts/` or `/fonts/`. If your device have external RAM, you can also copy TTF/OTF/TTC files there without conversion.
 
 Once installed, custom fonts appear in **Settings → Reader → Font Family** alongside the built-in fonts.
 
-`.cpfont` families are pre-rasterized bitmap fonts (they work on every board). On
-PSRAM boards (X4 Pro, X4 Classic) you can additionally drop plain **`.ttf` /`.otf` /
-`.ttc` files** into `/fonts/<FamilyName>/` — each family folder holds up to four
-styles (regular, bold, italic, bold-italic), and any plain `.ttf` alone becomes the
-family's regular face. XPoint's native TTF engine renders them with real kerning,
-ligatures and anti-aliasing at any size, streams oversized fonts straight from the
-SD card, and can even use your chosen TTF family inside menus when a string needs
-CJK or other glyphs the built-in UI fonts lack.
-
-See [docs/sd-card-fonts.md](./docs/sd-card-fonts.md) for full installation details and SD card folder structure, and [docs/ttf.md](./docs/ttf.md) for how the native TTF engine differs from upstream CrossPoint's implementation.
+See [docs/sd-card-fonts.md](./docs/sd-card-fonts.md) for full installation details and SD card folder structure.
 
 ---
 
@@ -685,12 +655,6 @@ If the device sleeps or you close the book after following a link, the book reop
 Words on the current page can be looked up in an offline StarDict dictionary stored on the SD card. Copy a dictionary to the `/dictionaries/` folder, select it in **Settings → Reader → Dictionary**, then start a lookup by choosing **Look Up** in the **[Reader Menu](#5-reader-menu)** (or by holding **Confirm**, if the **Long-press Menu** setting in **[Controls Settings](#363-controls)** is set to "Dictionary"). Use **Left/Right** to highlight a word and press **Confirm** to show its definition.
 
 See [docs/dictionary.md](docs/dictionary.md) for supported formats, setup, and where to find dictionaries.
-
-### Font Preview
-
-To try a different typeface without leaving your book, open the Reader Menu, choose **Text**, and tap (or confirm) the **Font** row. The current page opens full-screen: pick a **family** from the list or set an **exact point size** with the slider, and the page re-typesets in place so you can judge the change before committing.
-
-Closing the preview applies your change to the whole book and re-typesets it at the same reading position. Leave the preview without making a change and nothing is re-flowed or saved. The full font settings (with all options) remain available in **Settings → Reader → Font Family / Font Size**.
 
 ### System Navigation
 

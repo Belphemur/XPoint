@@ -14,6 +14,7 @@
 #include "FrontlightControl.h"
 #include "GfxRenderer.h"
 #include "MappedInputManager.h"
+#include "settings/SettingsSection.h"
 #include "util/ScreenshotInfo.h"
 
 #ifdef READING_STATS_ENABLED
@@ -100,7 +101,8 @@ class ActivityManager {
   void goToFileTransfer();
   void goToJoinNetwork();  // File Transfer straight into Join Network (post heap-defrag reboot)
   void goToUsbDrive();
-  void goToSettings();
+  // openSection jumps straight into one group (End = the section list).
+  void goToSettings(SettingsSection openSection = SettingsSection::End);
   void goToFileBrowser(std::string path = {});
   void goToLibrary();
   void goToBrowser();
