@@ -6,6 +6,11 @@ add_executable(SectionIncrementalTest
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/blocks/TextBlock.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageBlock.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
+  ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
+  ${REPO_ROOT}/lib/MiniBidi/minibidi.c
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ContainerParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ContentOpfParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/TocNavParser.cpp
@@ -36,6 +41,11 @@ add_executable(SectionIncrementalReproTest
   ${REPO_ROOT}/lib/Epub/Epub/Section.cpp
   ${REPO_ROOT}/lib/Epub/Epub/BookMetadataCache.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/blocks/TextBlock.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/blocks/ImageBlock.cpp
+  ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
+  ${REPO_ROOT}/lib/MiniBidi/BidiUtils.cpp
+  ${REPO_ROOT}/lib/MiniBidi/minibidi.c
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ContainerParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/ContentOpfParser.cpp
   ${REPO_ROOT}/lib/Epub/Epub/parsers/TocNavParser.cpp
@@ -61,6 +71,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${REPO_ROOT}
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/lib/hal
+  ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers
@@ -86,6 +97,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${REPO_ROOT}
   ${REPO_ROOT}/lib
   ${REPO_ROOT}/lib/hal
+  ${REPO_ROOT}/lib/GfxRenderer
   ${REPO_ROOT}/lib/Epub
   ${REPO_ROOT}/lib/Epub/Epub
   ${REPO_ROOT}/lib/Epub/Epub/parsers

@@ -2,9 +2,14 @@
 
 #include <SdCardFontRegistry.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <vector>
+
+#include "fontIds.h"
 
 // Reader font size is stored as an actual point size (see CrossPointSettings::
 // fontPointSize), not an abstract Small/Medium/Large slot. The selectable sizes
@@ -15,9 +20,29 @@
 // point sizes (see the global font objects in main.cpp).
 inline constexpr uint8_t BUILTIN_READER_POINT_SIZES[] = {12, 14, 16, 18};
 
-// Point sizes selectable for the active reader font, ascending: the SD family's
-// installed sizes when `sdFamilyName` names one the registry knows, otherwise
-// the built-in set. Never returns empty.
+// Selects a built-in size without loading it; returns 0 for other font families.
+inline int builtinReaderFontVariant(const int fontId, const float scale) {
+  static constexpr int FAMILIES[][std::size(BUILTIN_READER_POINT_SIZES)] = {
+      {NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID, NOTOSANS_18_FONT_ID},
+  };
+  for (const int* family : FAMILIES) {
+    const int* end = family + std::size(BUILTIN_READER_POINT_SIZES);
+    const int* base = std::find(family, end, fontId);
+    if (base == end) continue;
+    const float target = BUILTIN_READER_POINT_SIZES[base - family] * scale;
+    size_t pick = scale < 1.0f ? 0 : static_cast<size_t>(base - family);
+    for (size_t i = 0; i < std::size(BUILTIN_READER_POINT_SIZES); ++i) {
+      const float points = BUILTIN_READER_POINT_SIZES[i];
+      // Shrinking rounds down; growing takes the nearest available size.
+      if (scale < 1.0f ? points <= target
+                       : std::fabs(points - target) < std::fabs(BUILTIN_READER_POINT_SIZES[pick] - target)) {
+        pick = i;
+      }
+    }
+    return family[pick];
+  }
+  return 0;
+}
 std::vector<uint8_t> readerFontPointSizes(const SdCardFontRegistry* registry, const char* sdFamilyName);
 
 // Closest entry in `sizes` (ascending, `count` > 0) to `pt`; ties resolve to the

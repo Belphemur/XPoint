@@ -87,8 +87,14 @@ namespace {
 //      mode (upstream #3883); the fork had already consumed the same v55 number
 //      upstream used for the first-logical-word change, so both parents' v55 caches
 //      are invalidated together.
-// v57: Preserve stored CSS styles during low-heap layout.
-constexpr uint8_t SECTION_FILE_VERSION = 57;
+// v57: Preserve stored CSS styles during low-heap layout (= upstream's v59; merged
+//      from 75c1c834).
+// v58: Upstream #3891 rendering layout lands on top of the fork's v57: fonts per word
+//      (CSS font-size spans, small caps via word-font slots), drop caps, border boxes,
+//      explicit hyphen/dash line breaks and footnote placement (= upstream's v56-v58).
+//      The merged layout is v60 — both parents' caches (fork v57, upstream v59) are
+//      structurally incompatible with it and are invalidated together.
+constexpr uint8_t SECTION_FILE_VERSION = 60;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
