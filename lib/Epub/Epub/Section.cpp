@@ -87,7 +87,8 @@ namespace {
 //      mode (upstream #3883); the fork had already consumed the same v55 number
 //      upstream used for the first-logical-word change, so both parents' v55 caches
 //      are invalidated together.
-constexpr uint8_t SECTION_FILE_VERSION = 56;
+// v57: Preserve stored CSS styles during low-heap layout.
+constexpr uint8_t SECTION_FILE_VERSION = 57;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
