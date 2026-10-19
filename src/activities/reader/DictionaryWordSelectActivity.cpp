@@ -516,9 +516,9 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
       // Direct lookup returns to the reader; this page is no longer needed.
       if (!lookupText.empty()) page.reset();
     }
-    auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
-        renderer, mappedInput, std::move(headword), std::move(definition), SETTINGS.dictionaryName,
-        dict.definitionsAreHtml());
+    auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
+                                                                    std::move(definition), SETTINGS.dictionaryName,
+                                                                    dict.definitionsAreHtml());
     if (!activity || !activity->enableLookup(dict, location)) {
       LOG_ERR("DICT", "OOM: definition activity");
       popup = Popup::Error;

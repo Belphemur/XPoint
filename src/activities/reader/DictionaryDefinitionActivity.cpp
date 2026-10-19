@@ -130,8 +130,8 @@ bool DictionaryDefinitionActivity::enableLookup(Dictionary& dictionary, const Di
 void DictionaryDefinitionActivity::onEnter() {
   Activity::onEnter();
   // DEBUG(dict-debug): definition lookup diagnostics, visible at LOG_LEVEL >= 2.
-  LOG_DBG("DICT", "onEnter: html=%d bytes=%u headword='%s'", htmlDefinition,
-          static_cast<unsigned>(content.text.size()), content.headword.c_str());
+  LOG_DBG("DICT", "onEnter: html=%d bytes=%u headword='%s'", htmlDefinition, static_cast<unsigned>(content.text.size()),
+          content.headword.c_str());
   initialLayoutFailed = !prepareDefinition(content);
   if (initialLayoutFailed) {
     content.lines.clear();
