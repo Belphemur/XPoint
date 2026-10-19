@@ -33,3 +33,6 @@ lib/EpdFont/scripts/output/
 sdkconfig.sticky
 sdkconfig.x4pro
 flake.*
+
+# CTest runtime artifacts
+test/Testing/Temporary/
