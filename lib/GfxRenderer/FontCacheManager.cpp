@@ -16,20 +16,27 @@ void FontCacheManager::setFontDecompressor(FontDecompressor* d) { fontDecompress
 
 void FontCacheManager::clearCache() {
   if (fontDecompressor_) fontDecompressor_->clearCache();
+// cpfont-path-only: sdCardFonts_ is always empty on native-TTF boards, and the
+// SdCardFont definitions those loops call are compiled only on legacy boards.
+#if !defined(CROSSPOINT_TTF_READER)
   for (auto& [id, font] : sdCardFonts_) {
     font->clearCache();
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 void FontCacheManager::releaseSdFontCaches() {
   if (fontDecompressor_) fontDecompressor_->clearCache();
+#if !defined(CROSSPOINT_TTF_READER)
   for (auto& [id, font] : sdCardFonts_) {
     font->releaseResidentCaches();
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t styleMask, bool accumulate) {
   // SD card font prewarm path: prewarm all requested styles in one call
+#if !defined(CROSSPOINT_TTF_READER)
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {
     int missed = it->second->prewarm(utf8Text, styleMask, /*metadataOnly=*/false, /*loadKernLig=*/true, accumulate);
@@ -38,6 +45,7 @@ void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t st
     }
     return;
   }
+#endif  // !CROSSPOINT_TTF_READER
 
   // Standard compressed font prewarm path: loop over all requested styles
   if (!fontDecompressor_ || fontMap_.count(fontId) == 0) return;
@@ -56,16 +64,20 @@ void FontCacheManager::prewarmCache(int fontId, const char* utf8Text, uint8_t st
 
 void FontCacheManager::logStats(const char* label) {
   if (fontDecompressor_) fontDecompressor_->logStats(label);
+#if !defined(CROSSPOINT_TTF_READER)
   for (auto& [id, font] : sdCardFonts_) {
     font->logStats(label);
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 void FontCacheManager::resetStats() {
   if (fontDecompressor_) fontDecompressor_->resetStats();
+#if !defined(CROSSPOINT_TTF_READER)
   for (auto& [id, font] : sdCardFonts_) {
     font->resetStats();
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 bool FontCacheManager::isScanning() const { return scanMode_ == ScanMode::Scanning; }
@@ -73,8 +85,10 @@ bool FontCacheManager::isScanning() const { return scanMode_ == ScanMode::Scanni
 uint8_t FontCacheManager::resolveScanStyle(int fontId, EpdFontFamily::Style style) const {
   const uint8_t baseStyle = static_cast<uint8_t>(style) & 0x03;
 
+#if !defined(CROSSPOINT_TTF_READER)
   const auto sdFont = sdCardFonts_.find(fontId);
   if (sdFont != sdCardFonts_.end()) return sdFont->second->resolveStyle(baseStyle);
+#endif  // !CROSSPOINT_TTF_READER
 
   const auto font = fontMap_.find(fontId);
   if (font == fontMap_.end()) return baseStyle;

@@ -54,6 +54,8 @@ static bool isValidFontFilenameWithExt(const char* name, const char* ext) {
   return true;
 }
 
+// cpfont-path-only: the only caller (FontDownloadActivity) is itself gated to
+// legacy boards; on native-TTF boards the install flow is TTF/OTF/TTC only.
 bool FontInstaller::isValidCpfontFilename(const char* name) { return isValidFontFilenameWithExt(name, ".cpfont"); }
 
 bool FontInstaller::isValidVectorFontFilename(const char* name) {
@@ -108,6 +110,7 @@ bool FontInstaller::ensureFamilyDir(const char* familyName) {
   return true;
 }
 
+#if !defined(CROSSPOINT_TTF_READER)
 bool FontInstaller::validateCpfontFile(const char* path) {
   HalFile file;
   if (!Storage.openFileForRead("FONT", path, file)) {
@@ -131,6 +134,7 @@ bool FontInstaller::validateCpfontFile(const char* path) {
 
   return true;
 }
+#endif  // !CROSSPOINT_TTF_READER
 
 bool FontInstaller::validateTtfFile(const char* path) {
   HalFile file;

@@ -90,6 +90,7 @@ target_include_directories(SectionIncrementalTest PRIVATE
   ${REPO_ROOT}/lib/inflate/src
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
   ${REPO_ROOT}/freeink-sdk/libs/book/ContentProtection/include
+  ${REPO_ROOT}/lib/GifSupport
 )
 
 target_include_directories(SectionIncrementalReproTest PRIVATE
@@ -116,6 +117,7 @@ target_include_directories(SectionIncrementalReproTest PRIVATE
   ${REPO_ROOT}/lib/inflate/src
   ${REPO_ROOT}/freeink-sdk/libs/book/FreeInkBook/third_party/miniz/include
   ${REPO_ROOT}/freeink-sdk/libs/book/ContentProtection/include
+  ${REPO_ROOT}/lib/GifSupport
 )
 
 target_compile_definitions(SectionIncrementalTest PRIVATE

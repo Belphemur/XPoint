@@ -2923,13 +2923,23 @@ void CrossPointWebServer::handleFontUploadData() {
       // Without this an attacker could supply
       // "../../.crosspoint/settings.json" as a "filename" and have it written
       // outside the fonts directory. Vector fonts need PSRAM to stay
-      // resident, so DRAM-only boards only accept .cpfont.
+      // resident, so DRAM-only boards only accept .cpfont. Native-TTF boards
+      // never load .cpfont (the legacy render path is compiled out, see
+      // docs/design/2026-10-trim-cpfont-x4pro.md), so a non-vector upload is
+      // refused there instead of parking an unusable file in a registry slot.
       const bool psramCapable = HalMemory::getPsramHeap().totalBytes > 0;
       fontUpload.isVector = psramCapable && FontInstaller::isValidVectorFontFilename(filename.c_str());
+#if defined(CROSSPOINT_TTF_READER)
+      if (!fontUpload.isVector) {
+        LOG_ERR("WEB", "Refusing non-vector font upload on native-TTF board: %s", filename.c_str());
+        break;
+      }
+#else
       if (!fontUpload.isVector && !FontInstaller::isValidCpfontFilename(filename.c_str())) {
         LOG_ERR("WEB", "Invalid font filename: %s", filename.c_str());
         break;
       }
+#endif
 
       fontUpload.familyName = family.c_str();
 

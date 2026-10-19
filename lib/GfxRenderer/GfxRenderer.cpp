@@ -35,7 +35,9 @@ constexpr int trackingBetween(const uint32_t leftCp, const uint32_t rightCp, con
 /**
  * Resolves the requested style to the best available style in the given SD card font.
  * Falls back gracefully when the font lacks the requested variant.
+ * cpfont-path-only: no SdCardFont is ever registered on native-TTF boards.
  */
+#if !defined(CROSSPOINT_TTF_READER)
 uint8_t resolveSdCardStyle(const SdCardFont& font, const EpdFontFamily::Style style) {
   return font.resolveStyle(static_cast<uint8_t>(style));
 }
@@ -51,6 +53,7 @@ uint16_t getSdCardSpaceAdvance(SdCardFont& font, const EpdFontFamily::Style styl
   const EpdGlyph* glyph = epdFont ? epdFont->getGlyph(' ') : nullptr;
   return glyph ? glyph->advanceX : 0;
 }
+#endif  // !CROSSPOINT_TTF_READER
 }  // namespace
 
 namespace {
@@ -109,16 +112,23 @@ const uint8_t* GfxRenderer::getGlyphBitmap(const EpdFontData* fontData, const Ep
   // We distinguish overflow-with-no-bitmap from non-overflow by checking isOverflowGlyph().
   // Ring-kind fonts (MISS_CTX_RING) store faulted bitmaps at
   // data->bitmap[glyph->dataOffset] and fall through to the standard tail.
+#if !defined(CROSSPOINT_TTF_READER)
   if (fontData->glyphMissCtx && fontData->missKind == MISS_CTX_SD_CARD) {
     auto* sdFont = SdCardFont::fromMissCtx(fontData->glyphMissCtx);
     if (sdFont->isOverflowGlyph(glyph)) {
       return sdFont->getOverflowBitmap(glyph);  // may be nullptr for zero-width glyphs
     }
   }
+#endif  // !CROSSPOINT_TTF_READER
   return &fontData->bitmap[glyph->dataOffset];
 }
 
-void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_t styleMask) const {
+// The SD advance-table warm-up only ever runs for registered SdCardFonts,
+// which do not exist on native-TTF boards; the definitions stay so the
+// unconditional callers in lib/Epub and the selection activities keep linking.
+void GfxRenderer::ensureSdCardFontReady([[maybe_unused]] int fontId, [[maybe_unused]] const char* utf8Text,
+                                        [[maybe_unused]] uint8_t styleMask) const {
+#if !defined(CROSSPOINT_TTF_READER)
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {
     std::string shaped;
@@ -128,11 +138,17 @@ void GfxRenderer::ensureSdCardFontReady(int fontId, const char* utf8Text, uint8_
       LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
     }
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
-void GfxRenderer::ensureSdCardFontReady(const int fontId, const char* const* segments, const size_t* segmentLens,
-                                        const size_t segmentCount, const bool includeSpace, const bool includeHyphen,
-                                        const uint8_t styleMask, const bool includeSmallCaps) const {
+void GfxRenderer::ensureSdCardFontReady([[maybe_unused]] const int fontId, [[maybe_unused]] const char* const* segments,
+                                        [[maybe_unused]] const size_t* segmentLens,
+                                        [[maybe_unused]] const size_t segmentCount,
+                                        [[maybe_unused]] const bool includeSpace,
+                                        [[maybe_unused]] const bool includeHyphen,
+                                        [[maybe_unused]] const uint8_t styleMask,
+                                        [[maybe_unused]] const bool includeSmallCaps) const {
+#if !defined(CROSSPOINT_TTF_READER)
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {
     // Augment the persistent advance-only table for layout measurement.
@@ -159,6 +175,7 @@ void GfxRenderer::ensureSdCardFontReady(const int fontId, const char* const* seg
       LOG_DBG("GFX", "ensureSdCardFontReady: %d glyph(s) not found", missed);
     }
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 void GfxRenderer::begin() {
@@ -187,6 +204,9 @@ void GfxRenderer::begin() {
                                 const size_t after = freeink::MemoryManager::instance().freeBytes();
                                 return after > before ? after - before : 0;
                               }});
+// cpfont-path-only: the SD mini-cache sink iterates registered SdCardFonts,
+// which never exist on native-TTF boards.
+#if !defined(CROSSPOINT_TTF_READER)
   memoryManager.registerSink({"gfx.sdFontMini", 60, [this](size_t) -> size_t {
                                 const size_t before = freeink::MemoryManager::instance().freeBytes();
                                 for (auto& entry : sdCardFonts_) {
@@ -195,6 +215,7 @@ void GfxRenderer::begin() {
                                 const size_t after = freeink::MemoryManager::instance().freeBytes();
                                 return after > before ? after - before : 0;
                               }});
+#endif  // !CROSSPOINT_TTF_READER
   // NOTE (TASK 5 deviation): no native-TTF sink. The loader's
   // releaseResidentCaches() frees the face BYTES (not just rebuildable
   // arenas), and TtfUiFont UI-fallback faces borrow those bytes — evicting
@@ -301,6 +322,7 @@ void GfxRenderer::prewarmFallbackText(const int fontId, const TextGetter getter,
   if (fallbackFontId == fontId) {
     return;
   }
+#if !defined(CROSSPOINT_TTF_READER)
   const auto sdIt = sdCardFonts_.find(fallbackFontId);
   if (sdIt == sdCardFonts_.end()) {
     return;
@@ -321,6 +343,7 @@ void GfxRenderer::prewarmFallbackText(const int fontId, const TextGetter getter,
   // loadKernLig=false: see ensureSdGlyphsResident below.
   sdIt->second->prewarm(withEllipsis, &wrap, textCount + 1, styleMask, /*metadataOnly=*/false,
                         /*loadKernLig=*/false);
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 void GfxRenderer::prewarmFallbackText(const int fontId, const char* text, const EpdFontFamily::Style style) const {
@@ -333,8 +356,10 @@ void GfxRenderer::prewarmFallbackText(const int fontId, const char* text, const 
   }
 }
 
-void GfxRenderer::ensureSdGlyphsResident(const int fontId, const char* text, const EpdFontFamily::Style style,
-                                         const bool metadataOnly) const {
+void GfxRenderer::ensureSdGlyphsResident([[maybe_unused]] const int fontId, [[maybe_unused]] const char* text,
+                                         [[maybe_unused]] const EpdFontFamily::Style style,
+                                         [[maybe_unused]] const bool metadataOnly) const {
+#if !defined(CROSSPOINT_TTF_READER)
   const auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt == sdCardFonts_.end()) {
     return;
@@ -349,6 +374,7 @@ void GfxRenderer::ensureSdGlyphsResident(const int fontId, const char* text, con
   // matrix up in prewarmStyle without re-reading glyphs.
   const uint8_t styleMask = static_cast<uint8_t>(1u << (static_cast<uint8_t>(style) & 0x03));
   sdIt->second->prewarm(text, styleMask, metadataOnly, /*loadKernLig=*/false);
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
@@ -2227,10 +2253,12 @@ bool GfxRenderer::copyBufferToRegion(int lx, int ly, int lw, int lh, const uint8
 
 int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style style) const {
   // Advance table fast-path for SD card fonts during layout
+#if !defined(CROSSPOINT_TTF_READER)
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     return fp4::toPixel(getSdCardSpaceAdvance(*sdIt->second, style));
   }
+#endif  // !CROSSPOINT_TTF_READER
 
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) {
@@ -2247,10 +2275,12 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
   // Advance table fast-path for SD card fonts during layout.
   // Kern data is not loaded during layout (consistent with previous metadataOnly behavior),
   // so we return just the space advance without kerning.
+#if !defined(CROSSPOINT_TTF_READER)
   auto sdIt = sdCardFonts_.find(fontId);
   if (sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     return fp4::toPixel(getSdCardSpaceAdvance(*sdIt->second, style));
   }
+#endif  // !CROSSPOINT_TTF_READER
 
   const auto fontIt = fontMap.find(fontId);
   if (fontIt == fontMap.end()) return 0;
@@ -2272,8 +2302,9 @@ int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint3
   return fp4::toPixel(kernFP) + trackingBetween(leftCp, rightCp, tracking);  // snap 4.4 fixed-point to nearest pixel
 }
 
-int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style, const int8_t tracking,
-                                 const BidiUtils::BidiBaseDir baseDir, const TextMeasureMode mode) const {
+int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style,
+                                 [[maybe_unused]] const int8_t tracking, const BidiUtils::BidiBaseDir baseDir,
+                                 [[maybe_unused]] const TextMeasureMode mode) const {
   // Match the font drawText would use for non-Latin strings (see resolveTextFontId).
   const int resolvedFontId = resolveTextFontId(fontId, text, style);
   // Measure the exact codepoint stream drawText renders: bidi-reordered and
@@ -2288,6 +2319,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   // Advance table fast-path for SD card fonts during layout.
   // No kerning/ligature lookup — consistent with previous metadataOnly behavior
   // where kern/lig data was not loaded.
+#if !defined(CROSSPOINT_TTF_READER)
   auto sdIt = sdCardFonts_.find(resolvedFontId);
   if (mode == TextMeasureMode::Layout && sdIt != sdCardFonts_.end() && sdIt->second->hasAdvanceTable()) {
     int32_t widthFP = 0;
@@ -2323,6 +2355,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
     }
     return fp4::toPixel(widthFP) + trackingPx;
   }
+#endif  // !CROSSPOINT_TTF_READER
 
   const auto fontIt = fontMap.find(resolvedFontId);
   if (fontIt == fontMap.end()) {

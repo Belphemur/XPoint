@@ -27,3 +27,9 @@ class PngToBmpConverter {
   static bool pngMemTo1BitBmpStreamWithSize(uint8_t* pngData, size_t pngSize, Print& bmpOut, int targetWidth,
                                             int targetHeight);
 };
+
+class GifToBmpConverter {
+ public:
+  static bool gifFileToBmpStream(HalFile& gifFile, Print& bmpOut, bool crop = true, bool originalThresholds = false);
+  static bool gifFileTo1BitBmpStreamWithSize(HalFile& gifFile, Print& bmpOut, int targetMaxWidth, int targetMaxHeight);
+};

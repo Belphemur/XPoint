@@ -49,3 +49,5 @@ bool PngToBmpConverter::pngFileToBmpStream(HalFile&, HalFile&, bool, bool) { ret
 bool PngToBmpConverter::pngFileTo1BitBmpStreamWithSize(HalFile&, HalFile&, int, int) { return false; }
 bool PngToBmpConverter::pngMemToBmpStream(uint8_t*, size_t, Print&, bool, bool) { return false; }
 bool PngToBmpConverter::pngMemTo1BitBmpStreamWithSize(uint8_t*, size_t, Print&, int, int) { return false; }
+bool GifToBmpConverter::gifFileToBmpStream(HalFile&, Print&, bool, bool) { return false; }
+bool GifToBmpConverter::gifFileTo1BitBmpStreamWithSize(HalFile&, Print&, int, int) { return false; }
