@@ -357,7 +357,6 @@ bool HalPowerManager::isBatteryCharging() const {
   return battery.isCharging();
 }
 
-
 #if FREEINK_DEVICE_PICCO
 // ponytail: 30 s poll; the SGM41562 status is I2C-only, so USB unplug and
 // charge progress are only seen when the timer fires.

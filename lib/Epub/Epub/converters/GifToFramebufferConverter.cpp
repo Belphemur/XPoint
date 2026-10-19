@@ -82,7 +82,8 @@ void renderCanvasRow(const uint8_t* grayRow, int srcY, GifContext& ctx) {
         ctx.success = false;
         return;
       } else {
-        cw.init(ctx.cache.buffer, ctx.cache.bytesPerRow, ctx.cache.bandRows, ctx.cache.originX);
+        // Fork: PixelCache::buffer is a PoolBytes (PSRAM-backed), not a raw pointer.
+        cw.init(ctx.cache.buffer.get(), ctx.cache.bytesPerRow, ctx.cache.bandRows, ctx.cache.originX);
         cw.beginRow(outY, ctx.config->y + ctx.cache.bandStart);
       }
     }

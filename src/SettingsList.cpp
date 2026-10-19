@@ -69,8 +69,7 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         // Built-in font-family entry. Replaced per-call with a registry-aware
         // version when SD fonts are installed.
         SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily, {StrId::STR_ATKINSON_HN},
-                          "fontFamily",
-                          StrId::STR_CAT_READER)
+                          "fontFamily", StrId::STR_CAT_READER)
             .withTextSettings(),
         // Placeholder: the selectable sizes depend on the active font family, so
         // UI callers replace this entry with buildFontSizeSetting(). It only
@@ -236,8 +235,7 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
                           {StrId::STR_ENGINE_BITMAP, StrId::STR_ENGINE_TTF}, "readerFontEngine"),
         SettingInfo::String(StrId::STR_FONT, &SETTINGS.ttfFontFamilyName[0], sizeof(SETTINGS.ttfFontFamilyName),
                             "ttfFontFamilyName"),
-        SettingInfo::Value(StrId::STR_FONT_SIZE, &CrossPointSettings::ttfFontPointSize, {8, 72, 1},
-                           "ttfFontPointSize"),
+        SettingInfo::Value(StrId::STR_FONT_SIZE, &CrossPointSettings::ttfFontPointSize, {8, 72, 1}, "ttfFontPointSize"),
         // OPDS download filename format: persisted + web-exposed, category-less so it
         // is hidden from the on-device Settings screen (cycled from the OPDS UI).
         SettingInfo::Enum(StrId::STR_OPDS_FILENAME_FORMAT, &CrossPointSettings::opdsFilenameFormat,
