@@ -94,6 +94,8 @@ namespace {
 //      explicit hyphen/dash line breaks and footnote placement (= upstream's v56-v58).
 //      The merged layout is v60 — both parents' caches (fork v57, upstream v59) are
 //      structurally incompatible with it and are invalidated together.
+// v60: Text running into a block or heading start stays in its own paragraph (upstream
+//      flush fix, 089e7ae5).
 constexpr uint8_t SECTION_FILE_VERSION = 60;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
