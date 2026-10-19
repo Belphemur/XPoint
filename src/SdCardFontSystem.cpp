@@ -35,16 +35,25 @@ void snapFontPointSizeTo(const uint8_t availablePointSize) {
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
   registry_.discover();
   renderer_ = &renderer;
-#if !defined(CROSSPOINT_TTF_READER)
-  cpfontVariants_.reserve(MAX_CPFONT_VARIANTS);
+  // Sized-variant provider on every board: the legacy bitmap reader path
+  // (SETTINGS.readerFontEngine == READER_ENGINE_BITMAP — the documented
+  // rollback engine on TTF boards) resolves headings/<small>/<big>/drop-cap
+  // sizes through it (ChapterHtmlSlimParser::fontIdForScale). On TTF boards
+  // resolveVariant serves only the built-in family's registered sizes; the
+  // cpfont half is compiled out and `load` stays null (built-in variants are
+  // always-registered fonts, never evicted, so re-registration is impossible
+  // by construction).
   FontVariantProvider provider;
   provider.ctx = this;
   provider.resolve = [](void* ctx, const int fontId, const float scale) {
     return static_cast<SdCardFontSystem*>(ctx)->resolveVariant(fontId, scale);
   };
+#if !defined(CROSSPOINT_TTF_READER)
   provider.load = [](void* ctx, const int fontId) { return static_cast<SdCardFontSystem*>(ctx)->loadVariant(fontId); };
+#endif
   renderer.setFontVariantProvider(provider);
 
+#if !defined(CROSSPOINT_TTF_READER)
   // Register this system as the SD font ID resolver in settings.
   // Uses a static trampoline since CrossPointSettings stores a plain function pointer.
   SETTINGS.sdFontIdResolver = [](void* ctx, const char* familyName, uint8_t pointSize) -> int {
@@ -203,31 +212,15 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
 #endif  // !CROSSPOINT_TTF_READER
 }
 
-// cpfont-path-only: variant ids, sized variants, and unload paths only ever
-// run for a registered SD reader font, which native-TTF boards never have.
-#if !defined(CROSSPOINT_TTF_READER)
-int SdCardFontSystem::variantFontId(const int readerFontId, const uint8_t pointSize) {
-  uint32_t hash = 2166136261u;
-  for (int shift = 0; shift < 32; shift += 8) {
-    hash ^= static_cast<uint8_t>(static_cast<uint32_t>(readerFontId) >> shift);
-    hash *= 16777619u;
-  }
-  hash ^= pointSize;
-  hash *= 16777619u;
-  hash ^= 0x56415200u;  // "VAR\0" salt keeps variants apart from reader and UI ids
-  const int id = static_cast<int>(hash);
-  return id != 0 ? id : 1;
-}
-
-void SdCardFontSystem::unloadCpfonts(GfxRenderer& renderer) {
-  cpfontVariants_.clear();  // the manager owns and frees the fonts themselves
-  manager_.unloadAll(renderer);
-}
-
+// Sized variants of the reader font (CSS font-size, headings, drop caps).
+// Live on every board: the built-in family's sizes are registered even on
+// native-TTF boards, where the legacy bitmap rollback engine still walks this
+// provider. The cpfont fallback below is compiled out there.
 int SdCardFontSystem::resolveVariant(const int fontId, const float scale) {
   if (const int builtin = builtinReaderFontVariant(fontId, scale); builtin != 0) {
     return renderer_->getFontMap().count(builtin) ? builtin : 0;
   }
+#if !defined(CROSSPOINT_TTF_READER)
   const std::string& familyName = manager_.currentFamilyName();
   if (familyName.empty() || fontId != manager_.getFontId(familyName)) return 0;
   const auto* family = registry_.findFamily(familyName);
@@ -255,6 +248,29 @@ int SdCardFontSystem::resolveVariant(const int fontId, const float scale) {
   if (chosen == base) return fontId;
   const int id = variantFontId(fontId, chosen);
   return loadCpfontVariant(*family, chosen, id) ? id : 0;
+#endif  // !CROSSPOINT_TTF_READER
+  return 0;
+}
+
+// cpfont-path-only: variant ids, sized variants, and unload paths only ever
+// run for a registered SD reader font, which native-TTF boards never have.
+#if !defined(CROSSPOINT_TTF_READER)
+int SdCardFontSystem::variantFontId(const int readerFontId, const uint8_t pointSize) {
+  uint32_t hash = 2166136261u;
+  for (int shift = 0; shift < 32; shift += 8) {
+    hash ^= static_cast<uint8_t>(static_cast<uint32_t>(readerFontId) >> shift);
+    hash *= 16777619u;
+  }
+  hash ^= pointSize;
+  hash *= 16777619u;
+  hash ^= 0x56415200u;  // "VAR\0" salt keeps variants apart from reader and UI ids
+  const int id = static_cast<int>(hash);
+  return id != 0 ? id : 1;
+}
+
+void SdCardFontSystem::unloadCpfonts(GfxRenderer& renderer) {
+  cpfontVariants_.clear();  // the manager owns and frees the fonts themselves
+  manager_.unloadAll(renderer);
 }
 
 bool SdCardFontSystem::loadVariant(const int fontId) {
@@ -308,8 +324,8 @@ int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*pointSize*
   // that font's ID. ensureLoaded() must have run for the current settings first.
   return manager_.getFontId(familyName);
 #else
-    // No SD reader font on TTF boards; begin() never wires this resolver.
-    (void)familyName;
-    return 0;
+  // No SD reader font on TTF boards; begin() never wires this resolver.
+  (void)familyName;
+  return 0;
 #endif
 }

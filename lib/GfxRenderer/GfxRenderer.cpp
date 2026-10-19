@@ -141,9 +141,13 @@ void GfxRenderer::ensureSdCardFontReady([[maybe_unused]] int fontId, [[maybe_unu
 #endif  // !CROSSPOINT_TTF_READER
 }
 
-void GfxRenderer::ensureSdCardFontReady(const int fontId, const char* const* segments, const size_t* segmentLens,
-                                        const size_t segmentCount, const bool includeSpace, const bool includeHyphen,
-                                        const uint8_t styleMask, const bool includeSmallCaps) const {
+void GfxRenderer::ensureSdCardFontReady([[maybe_unused]] const int fontId, [[maybe_unused]] const char* const* segments,
+                                        [[maybe_unused]] const size_t* segmentLens,
+                                        [[maybe_unused]] const size_t segmentCount,
+                                        [[maybe_unused]] const bool includeSpace,
+                                        [[maybe_unused]] const bool includeHyphen,
+                                        [[maybe_unused]] const uint8_t styleMask,
+                                        [[maybe_unused]] const bool includeSmallCaps) const {
 #if !defined(CROSSPOINT_TTF_READER)
   auto it = sdCardFonts_.find(fontId);
   if (it != sdCardFonts_.end()) {

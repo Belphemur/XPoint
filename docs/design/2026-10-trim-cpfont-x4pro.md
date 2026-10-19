@@ -55,7 +55,10 @@ Per-object `.text` (cpfont-ish objects, ~58 KB total). Bold = in scope for remov
 
 Realizable TTF-board savings ≈ **30 KB of `.text`** (SdCardFont.cpp alone is
 ~20.5 KB and is the dominant lever). The exact delta is confirmed by a before/after
-`firmware.map` `.text` diff + `arm-none-eabi-size` Flash/IRAM/DRAM in the verification.
+`firmware.map` `.text` diff plus the ESP32-S3 size report (`pio run -e x4pro`
+prints the linker's `RAM:`/`Flash:` usage summary from
+`xtensa-esp32s3-elf-size`; per-section `.text`/`flash.rodata`/`.dram0.bss`
+deltas come from the map file).
 
 ## Decision
 
@@ -83,9 +86,9 @@ them; the non-cpfont render path is untouched.
 `SdCardFontSystem` management facade + `SdCardFontRegistry` (family listing).
 
 ## Verification
-1. `pio run -e x4pro` builds; before/after `.text`/Flash/DRAM delta from
-   `firmware.map` + `arm-none-eabi-size`; `SdCardFont.cpp.o` absent from the new
-   map.
+1. `pio run -e x4pro` builds; before/after `.text`/`flash.rodata`/`.dram0.bss`
+   delta from `firmware.map` and the `RAM:`/`Flash:` summary from the
+   ESP32-S3 size report; `SdCardFont.cpp.o` absent from the new map.
 2. `pio run -e default` (C3, `FREEINK_BOOK_SMALL`, `!CROSSPOINT_TTF_READER`) still
    builds with the cpfont path intact — no regression for legacy boards.
 3. Host tests: `cmake -S test -B test/build-host && cmake --build test/build-host &&
@@ -98,3 +101,20 @@ also use the baked-bitmap path? If the latter, the cpfont parser is dead there t
 and a global removal (not a gate) is possible — but this change intentionally
 *keeps* cpfont on legacy boards (the conservative, safe choice), so the question
 does not block this PR.
+
+## As built (review round, 2026-10-19)
+- Measured delta vs `develop` at e41bcc26: `flash.text` −22,280 B,
+  `flash.rodata` −4,304 B, DRAM unchanged, firmware.bin −26,592 B (~26.6 KB;
+  design estimate ~30 KB).
+- The `FontVariantProvider` stays wired on every board: on `CROSSPOINT_TTF_READER`
+  builds `resolveVariant` serves only the built-in family's registered sizes
+  (`builtinReaderFontVariant` + font-map check) and `load` is null. The legacy
+  bitmap rollback engine (`SETTINGS.readerFontEngine == READER_ENGINE_BITMAP`) on
+  a TTF board would otherwise collapse headings/`<small>`/`<big>`/drop caps to
+  body size. This supersedes the "provider wire-up gated out" bullet above.
+- `/api/fonts/upload` refuses non-vector (`.cpfont`) uploads on
+  `CROSSPOINT_TTF_READER` builds so an accepted upload can never be a font the
+  reader cannot load.
+- The `BOOK_PROFILE` SD-font profiling loops in `EpubReaderActivity::renderContents`
+  are additionally gated on `!CROSSPOINT_TTF_READER` (x4pro_profile defines both
+  `BOOK_PROFILE` and `CROSSPOINT_TTF_READER`).

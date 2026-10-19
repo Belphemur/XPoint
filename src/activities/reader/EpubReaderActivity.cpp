@@ -5036,8 +5036,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   auto* fcm = renderer.getFontCacheManager();
   // BOOK_PROFILE: reset SD font overflow stats for this page turn.
   // The summary is logged at the end of the async display overlap block
-  // below (phase=font_overflow).
-#ifdef BOOK_PROFILE
+  // below (phase=font_overflow). CROSSPOINT_TTF_READER excludes it: no
+  // SdCardFont exists there, so the resetStats definition is compiled out
+  // (docs/design/2026-10-trim-cpfont-x4pro.md).
+#if defined(BOOK_PROFILE) && !defined(CROSSPOINT_TTF_READER)
   for (auto& [sdFontId, sdFont] : renderer.getSdCardFonts()) {
     sdFont->resetStats();
   }
@@ -5169,7 +5171,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // Each miss = SD read (~5-20ms); the goal of the PSRAM font cache feature
   // is to drive this to 0 for CJK books by raising MAX_PAGE_GLYPHS and expanding the ring.
   // Called at the end of renderContents() (after all gray paths) and before
-  // the early return on storeBwBuffer() failure.
+  // the early return on storeBwBuffer() failure. Compiles on TTF boards too:
+  // the body only touches header-inline accessors and TTF boards register no
+  // SdCardFonts, so it logs zeros there (only resetStats() below is gated).
 #ifdef BOOK_PROFILE
   auto logOverflowSummary = [&] {
     const auto& sdFonts = renderer.getSdCardFonts();
