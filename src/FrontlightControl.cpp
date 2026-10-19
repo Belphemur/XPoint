@@ -17,11 +17,11 @@ bool settingsDirty = false;
 
 namespace frontlight {
 
-void setBrightness(const uint8_t percent) {
+void setBrightness(const uint8_t percent, const bool turnOn) {
   const uint8_t clamped = std::clamp(percent, FRONTLIGHT_MIN_BRIGHTNESS, static_cast<uint8_t>(100));
   if (SETTINGS.frontlightBrightness == clamped && SETTINGS.frontlightOn && Frontlight.isOn()) return;
   SETTINGS.frontlightBrightness = clamped;
-  if (!SETTINGS.frontlightOn || !Frontlight.isOn()) {
+  if (turnOn && (!SETTINGS.frontlightOn || !Frontlight.isOn())) {
     // setOn(true) restores lastBrightness; apply the new level after it.
     SETTINGS.frontlightOn = 1;
     Frontlight.setOn(true);
@@ -48,13 +48,18 @@ void setOn(const bool on) {
   settingsDirty = true;
 }
 
-void adjustBrightness(const int delta) {
+void adjustBrightness(const int delta, const bool turnOn) {
   const int next = static_cast<int>(SETTINGS.frontlightBrightness) + delta;
   if (next <= 0) {
-    setOn(false);
+    if (turnOn) {
+      setOn(false);
+    } else {
+      // The slide switch owns on/off: clamp at the floor instead of toggling.
+      setBrightness(FRONTLIGHT_MIN_BRIGHTNESS, false);
+    }
     return;
   }
-  setBrightness(static_cast<uint8_t>(next));
+  setBrightness(static_cast<uint8_t>(next), turnOn);
 }
 
 void adjustWarmth(const int delta) {

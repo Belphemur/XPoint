@@ -94,7 +94,15 @@ namespace {
 //      explicit hyphen/dash line breaks and footnote placement (= upstream's v56-v58).
 //      The merged layout is v60 — both parents' caches (fork v57, upstream v59) are
 //      structurally incompatible with it and are invalidated together.
-constexpr uint8_t SECTION_FILE_VERSION = 60;
+// v60: Text running into a block or heading start stays in its own paragraph (upstream
+//      flush fix, 089e7ae5).
+// v64: Bump past both parents' consumed versions: the fork shipped its own v60
+//      (text-into-block flush fix, same change upstream numbered v60), while
+//      upstream consumed v60-v62 (GIF/table development builds) and shipped v63
+//      (corrected paragraph boundaries + static GIF images in EPUBs, #2299).
+//      The merged layout (fork v60 + upstream v61-v63) is v64 — max(60,63)+1 per
+//      the version-collision rule — and both parents' caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 64;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

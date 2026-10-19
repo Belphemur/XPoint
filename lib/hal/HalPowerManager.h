@@ -91,7 +91,11 @@ class HalPowerManager {
   // non-zero an RTC timer is armed so the device wakes after that many
   // microseconds of dwell (auto power off).
   // Should be called inside main loop() to handle the currentLockMode
-  void startDeepSleep(HalGPIO& gpio, uint64_t autoPowerOffTimerUs = 0) const;
+  void startDeepSleep(HalGPIO& gpio, uint64_t autoPowerOffTimerUs = 0, bool wakeOnHeldButton = false) const;
+
+  // wakeOnHeldButton: arm the wake without waiting for the power button's
+  // release, so a press that is still down wakes the device straight back up
+  // through the normal power-button wake path (upstream Picco USB-charge hold).
 
   // Final software power-off for auto power off: drives the master rail
   // latches LOW (held through sleep), disarms any RTC timer and re-enters
@@ -102,6 +106,14 @@ class HalPowerManager {
   // progress saver must not treat <5% as low battery in that state (design
   // decision log, 2026-09-10).
   bool isBatteryCharging() const;
+
+#if FREEINK_DEVICE_PICCO
+  // While USB powers the device, light-sleep instead of deep sleep (deep sleep
+  // cannot observe the charger), calling onStatus whenever the charging state
+  // or percentage changes. Returns true when the power button ended the hold,
+  // false when USB went away or was never present.
+  bool holdWhileUsbPowered(HalGPIO& gpio, void (*onStatus)(bool charging, uint16_t percent)) const;
+#endif
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;

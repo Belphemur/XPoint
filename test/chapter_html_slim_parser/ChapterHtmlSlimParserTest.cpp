@@ -1,4 +1,6 @@
+#include <Epub.h>
 #include <Epub/Page.h>
+#include <Epub/converters/ImageDimsProbe.h>
 #include <GfxRenderer.h>
 #include <gtest/gtest.h>
 
@@ -73,7 +75,122 @@ class ChapterHtmlSlimParserTest : public ::testing::TestWithParam<const char*> {
                                &cssParser};
 
   void SetUp() override { parser.currentTextBlock = std::make_unique<ParsedText>(); }
+  void TearDown() override { Epub::enableGifProbeForTest = false; }
+
+  // Lays out a body fragment through the cached-page path and joins its words the way a
+  // clipping does: '\n' at a paragraph start, ' ' across a source gap, nothing otherwise.
+  std::string parseToParagraphText(const std::string& body) {
+    const std::string html = "<html><body>" + body + "</body></html>";
+    const std::string testId = std::to_string(std::hash<std::string>{}(html));
+    const auto tempDir = std::filesystem::temp_directory_path();
+    filepath = (tempDir / ("crosspoint-clipping-paragraphs-" + testId + ".xhtml")).string();
+    {
+      HalFile file;
+      EXPECT_TRUE(file.open(filepath.c_str(), "wb"));
+      EXPECT_EQ(file.write(html.data(), html.size()), html.size());
+    }
+    const auto cachePath = (tempDir / ("crosspoint-clipping-paragraphs-" + testId + ".bin")).string();
+    std::string selected;
+    uint32_t previousEnd = 0;
+    bool paragraphStartPending = false;
+    parser.completePageFn = [&](std::unique_ptr<Page> page, auto, auto, auto) {
+      {
+        HalFile file;
+        ASSERT_TRUE(file.open(cachePath.c_str(), "wb"));
+        ASSERT_TRUE(page->serialize(file));
+      }
+      HalFile file;
+      ASSERT_TRUE(file.open(cachePath.c_str(), "rb"));
+      auto cached = Page::deserialize(file);
+      ASSERT_NE(cached, nullptr);
+      for (const auto& element : cached->elements) {
+        if (element->getTag() != TAG_PageLine) continue;
+        const auto& block = *static_cast<const PageLine&>(*element).getBlock();
+        for (uint16_t i = 0; i < block.wordCount(); ++i) {
+          if (block.wordStartsParagraph(i)) paragraphStartPending = true;
+          if (!clippingText::hasVisibleText(block.wordText(i))) continue;
+          const auto range = block.wordSourceRange(i);
+          const char separator = paragraphStartPending ? '\n' : range.start > previousEnd ? ' ' : '\0';
+          ASSERT_TRUE(clippingText::append(selected, block.wordText(i), separator, 4096));
+          paragraphStartPending = false;
+          previousEnd = range.end;
+        }
+      }
+      EXPECT_EQ(file.position(), file.size());
+    };
+    parser.paragraphIndentSpaces = 0;
+    EXPECT_TRUE(parser.parseAndBuildPages());
+    std::filesystem::remove(filepath);
+    std::filesystem::remove(cachePath);
+    return selected;
+  }
 };
+
+TEST(ImageDimsProbe, ReadsBothGifSignaturesInFragmentedStreams) {
+  for (const uint8_t version : {'7', '9'}) {
+    const uint8_t header[] = {'G', 'I', 'F', '8', version, 'a', 0, 12, 2, 0};
+    for (size_t split = 0; split <= sizeof(header); ++split) {
+      ImageDimsProbe probe;
+      probe.write(header, split);
+      ImageDimensions dims{};
+      EXPECT_EQ(probe.getDimensions(dims), split == sizeof(header));
+      probe.write(header + split, sizeof(header) - split);
+      ASSERT_TRUE(probe.getDimensions(dims));
+      EXPECT_EQ(dims.width, 3072);
+      EXPECT_EQ(dims.height, 2);
+      EXPECT_EQ(probe.write(0), 0u);
+    }
+  }
+}
+
+TEST(ImageDimsProbe, RejectsInvalidGifHeadersAndDimensions) {
+  const std::vector<std::vector<uint8_t>> headers = {
+      {'G', 'I', 'F', '8', '8', 'a', 1, 0, 1, 0},   {'G', 'I', 'F', '8', '9', 'b', 1, 0, 1, 0},
+      {'G', 'I', 'F', '8', '9', 'a', 0, 0, 1, 0},   {'G', 'I', 'F', '8', '9', 'a', 1, 0, 0, 0},
+      {'G', 'I', 'F', '8', '9', 'a', 0, 128, 1, 0},
+  };
+  for (const auto& header : headers) {
+    ImageDimsProbe probe;
+    probe.write(header.data(), header.size());
+    ImageDimensions dims{};
+    EXPECT_FALSE(probe.getDimensions(dims));
+  }
+}
+
+TEST(ImageDimsProbe, PreservesJpegAndPngDimensions) {
+  const std::vector<std::vector<uint8_t>> headers = {
+      {0xFF, 0xD8, 0xFF, 0xC0, 0, 17, 8, 0, 2, 0, 3},
+      {0x89, 'P', 'N', 'G', 13, 10, 26, 10, 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 3, 0, 0, 0, 2},
+  };
+  for (const auto& header : headers) {
+    for (size_t split = 0; split <= header.size(); ++split) {
+      ImageDimsProbe probe;
+      probe.write(header.data(), split);
+      probe.write(header.data() + split, header.size() - split);
+      ImageDimensions dims{};
+      ASSERT_TRUE(probe.getDimensions(dims));
+      EXPECT_EQ(dims.width, 3);
+      EXPECT_EQ(dims.height, 2);
+    }
+  }
+}
+
+TEST_F(ChapterHtmlSlimParserTest, StreamsGifDimensionsWithoutExtractingPayload) {
+  parser.epub = std::make_shared<Epub>();
+  parser.epub->imageBytes = {'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0};
+  parser.imageRendering = 0;
+  const auto imagePath = std::filesystem::temp_directory_path() / "crosspoint-gif-probe-0.gif";
+  std::filesystem::remove(imagePath);
+  parser.imageBasePath = imagePath.string().substr(0, imagePath.string().size() - 5);
+  Epub::enableGifProbeForTest = true;
+  const char* attrs[] = {"src", "probe.gif", nullptr};
+  ChapterHtmlSlimParser::startElement(&parser, "body", nullptr);
+  ChapterHtmlSlimParser::startElement(&parser, "img", attrs);
+  EXPECT_EQ(parser.epub->headerProbes, 1u);
+  EXPECT_EQ(parser.epub->fullExtractions, 0u);
+  EXPECT_FALSE(std::filesystem::exists(imagePath));
+  std::filesystem::remove(imagePath);
+}
 
 TEST_F(ChapterHtmlSlimParserTest, RubySurvivesPartialParagraphExtraction) {
   ParsedText text;
@@ -1669,56 +1786,20 @@ TEST_F(ChapterHtmlSlimParserTest, NfdWordAcrossInlineStyleKeepsSourceRange) {
 class ClippingParagraphTest : public ChapterHtmlSlimParserTest {};
 
 TEST_P(ClippingParagraphTest, CachedBlocksSeparateAdjacentParagraphs) {
-  const std::string html = std::string("<html><body>") + GetParam() + "</body></html>";
-  const std::string testId = std::to_string(std::hash<std::string>{}(html));
-  const auto tempDir = std::filesystem::temp_directory_path();
-  filepath = (tempDir / ("crosspoint-clipping-paragraphs-" + testId + ".xhtml")).string();
-  {
-    HalFile file;
-    ASSERT_TRUE(file.open(filepath.c_str(), "wb"));
-    ASSERT_EQ(file.write(html.data(), html.size()), html.size());
-  }
-  const auto cachePath = (tempDir / ("crosspoint-clipping-paragraphs-" + testId + ".bin")).string();
-  std::string selected;
-  uint32_t previousEnd = 0;
-  bool paragraphStartPending = false;
-  parser.completePageFn = [&](std::unique_ptr<Page> page, auto, auto, auto) {
-    {
-      HalFile file;
-      ASSERT_TRUE(file.open(cachePath.c_str(), "wb"));
-      ASSERT_TRUE(page->serialize(file));
-    }
-    HalFile file;
-    ASSERT_TRUE(file.open(cachePath.c_str(), "rb"));
-    auto cached = Page::deserialize(file);
-    ASSERT_NE(cached, nullptr);
-    for (const auto& element : cached->elements) {
-      if (element->getTag() != TAG_PageLine) continue;
-      const auto& block = *static_cast<const PageLine&>(*element).getBlock();
-      for (uint16_t i = 0; i < block.wordCount(); ++i) {
-        if (block.wordStartsParagraph(i)) paragraphStartPending = true;
-        if (!clippingText::hasVisibleText(block.wordText(i))) continue;
-        const auto range = block.wordSourceRange(i);
-        const char separator = paragraphStartPending ? '\n' : range.start > previousEnd ? ' ' : '\0';
-        ASSERT_TRUE(clippingText::append(selected, block.wordText(i), separator, 4096));
-        paragraphStartPending = false;
-        previousEnd = range.end;
-      }
-    }
-    EXPECT_EQ(file.position(), file.size());
-  };
-  parser.paragraphIndentSpaces = 0;
-  ASSERT_TRUE(parser.parseAndBuildPages());
-  EXPECT_EQ(selected, "one\ntwo");
-  std::filesystem::remove(filepath);
-  std::filesystem::remove(cachePath);
+  EXPECT_EQ(parseToParagraphText(GetParam()), "one\ntwo");
+}
+
+TEST_F(ChapterHtmlSlimParserTest, TextBetweenBlocksStaysInItsOwnParagraph) {
+  EXPECT_EQ(parseToParagraphText("<p>one</p>two<div>three</div>"), "one\ntwo\nthree");
 }
 
 INSTANTIATE_TEST_SUITE_P(ClippingBoundaries, ClippingParagraphTest,
                          ::testing::Values("<p>one</p><p>two</p>", "<p>one</p>\n  <p>two</p>",
                                            "<div>one</div><div>two</div>", "<div>one</div>\n  <div>two</div>",
                                            "<p>one<br/>two</p>", "<p>o<b>ne</b></p><p>two</p>",
-                                           "<p>one</p><p>&#160;two</p>", "<p>one</p><p>&#8239;two</p>"));
+                                           "<p>one</p><p>&#160;two</p>", "<p>one</p><p>&#8239;two</p>",
+                                           "one<div>two</div>", "<div>one<div>two</div></div>",
+                                           "<div>one<p>two</p></div>", "<div>one<h3>two</h3></div>"));
 
 TEST(TextSpacingLayout, ParagraphMarkerSurvivesBidiAndOnlyMarksFirstExtractedLine) {
   GfxRenderer renderer;
