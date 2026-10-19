@@ -102,7 +102,10 @@ namespace {
 //      (corrected paragraph boundaries + static GIF images in EPUBs, #2299).
 //      The merged layout (fork v60 + upstream v61-v63) is v64 — max(60,63)+1 per
 //      the version-collision rule — and both parents' caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 64;
+// v65: Upstream #4072 explicit font inheritance preserves parent emphasis and
+//      changes text layout on top of the merged v64 (fork v64 + upstream v63);
+//      both parents' v64 caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 65;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects

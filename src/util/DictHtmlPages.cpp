@@ -238,7 +238,6 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
   pagesOut.reserve(MAX_STYLED_PAGES);
 
   bool ok = false;
-  bool resourceLimitHit = false;
   const char* limitReason = nullptr;
   size_t retainedElements = 0;
   {
@@ -246,13 +245,14 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
     // Heap-allocated as Section does — the parser object is far too large for
     // a stack local. Null epub is safe: imageRendering=2 suppresses <img>
     // handling, the only path that dereferences it.
-    auto parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
+    std::unique_ptr<ChapterHtmlSlimParser> parser;
+    parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
         nullptr, tmpPath, renderer, SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
         SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
         SETTINGS.hyphenationEnabled, SETTINGS.focusReadingEnabled,
-        [&pagesOut, &resourceLimitHit, &retainedElements, &limitReason](std::unique_ptr<Page> page, uint16_t, uint16_t,
-                                                                        uint32_t) {
-          if (resourceLimitHit) return;
+        [&pagesOut, &parser, &retainedElements, &limitReason](std::unique_ptr<Page> page, uint16_t, uint16_t,
+                                                              uint32_t) {
+          if (limitReason) return;
           const size_t pageElements = page->elements.size();
           // Name the limit that fired. The three causes mean different things --
           // the count caps say the definition is genuinely too big to hold,
@@ -272,6 +272,7 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
                     ESP.getFreeHeap(), poolMaxAllocFor(MIN_STYLED_RETAIN_ALLOC));
             resourceLimitHit = true;
             pagesOut.clear();
+            parser->requestStop();
             return;
           }
           retainedElements += pageElements;
@@ -288,13 +289,13 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
   }
   Storage.remove(TMP_HTML_PATH);
 
-  if (resourceLimitHit) {
+  if (limitReason) {
     LOG_ERR("DHTML", "Styled definition exceeded page heap budget");
   }
-  if (!ok || resourceLimitHit || pagesOut.empty()) {
-    if (!ok) {
+  if (!ok || limitReason || pagesOut.empty()) {
+    if (!ok && !limitReason) {
       LOG_ERR("DHTML", "Definition parse/layout failed");
-    } else if (!resourceLimitHit && pagesOut.empty()) {
+    } else if (!limitReason && pagesOut.empty()) {
       LOG_ERR("DHTML", "Definition produced no styled pages");
     }
     pagesOut.clear();

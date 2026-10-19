@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <ctime>
 
+#include "Activity.h"
 #include "CrossPointSettings.h"
 #include "HapticFeedback.h"
 #include "MemSentinel.h"
@@ -46,6 +47,14 @@ bool ActivityManager::isOnHomeScreen() const { return currentActivity && current
 bool ActivityManager::handleBackOnCurrent() {
   return currentActivity && pendingAction == PendingAction::None && currentActivity->handleHomeGesture();
 }
+
+ActivityManager::ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
+    : renderer(renderer), mappedInput(mappedInput), renderingMutex(xSemaphoreCreateMutex()) {
+  assert(renderingMutex != nullptr && "Failed to create rendering mutex");
+  stackActivities.reserve(10);
+}
+
+ActivityManager::~ActivityManager() { assert(false); /* should never be called */ }
 
 void ActivityManager::begin() {
   // All rendering runs on the Arduino loop task: the Adobe CFF engine needs

@@ -493,8 +493,9 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   std::string definition;
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  const bool found =
-      ok && dict.lookup(lookupText.empty() ? trimmed.c_str() : lookupText.c_str(), definition, headword, &result);
+  DictLocation location;
+  const bool found = ok && dict.lookup(lookupText.empty() ? trimmed.c_str() : lookupText.c_str(), definition, headword,
+                                       &result, &location);
 
   // DEBUG(dict-debug): lookup diagnostics, visible at LOG_LEVEL >= 1/2.
   LOG_DBG("DICT", "lookup found=%d htmlDefinitions=%d headword='%s' definition_bytes=%u", found,
@@ -515,18 +516,28 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
       // Direct lookup returns to the reader; this page is no longer needed.
       if (!lookupText.empty()) page.reset();
     }
-    startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(
-                               renderer, mappedInput, std::move(headword), std::move(definition),
-                               SETTINGS.dictionaryName, dict.definitionsAreHtml()),
-                           [this](const ActivityResult& result) {
-                             if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
-                               performLookup(std::get<DictionarySearchResult>(result.data).text);
-                             } else if (!lookupText.empty() || (initialX >= 0 && initialY >= 0)) {
-                               finish();
-                             } else {
-                               requestUpdate();
-                             }
-                           });
+    auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(
+        renderer, mappedInput, std::move(headword), std::move(definition), SETTINGS.dictionaryName,
+        dict.definitionsAreHtml());
+    if (!activity || !activity->enableLookup(dict, location)) {
+      LOG_ERR("DICT", "OOM: definition activity");
+      popup = Popup::Error;
+      popupMsg = StrId::STR_DICT_LOW_MEMORY;
+      popupTime = millis();
+      requestUpdate();
+      return;
+    }
+    startActivityForResult(std::move(activity), [this](const ActivityResult& result) {
+      if (!result.isCancelled && std::holds_alternative<DictionarySearchResult>(result.data)) {
+        performLookup(std::get<DictionarySearchResult>(result.data).text);
+      } else if (!lookupText.empty() || (initialX >= 0 && initialY >= 0)) {
+        setResult(ActivityResult{result});
+        finish();
+      } else {
+        popup = Popup::None;
+        requestUpdate();
+      }
+    });
     return;
   }
   // Name the failure: a genuine miss is "Not found"; a word that WAS found but
