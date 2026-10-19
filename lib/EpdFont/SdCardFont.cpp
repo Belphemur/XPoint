@@ -13,6 +13,12 @@
 
 #include "EpdFontFamily.h"
 
+// The .cpfont render path is the legacy SD-card font reader; boards that ship
+// the native-TTF reader never create an SdCardFont, so this translation unit
+// compiles empty there and --gc-sections drops the parser
+// (docs/design/2026-10-trim-cpfont-x4pro.md).
+#if !defined(CROSSPOINT_TTF_READER)
+
 // Resident SD-font buffers (glyph/kern arenas, interval + advance tables, the
 // overflow ring) are placed in PSRAM when the board has it — freeing scarce
 // internal SRAM — via these helpers. On a no-PSRAM board they fall back to the
@@ -1894,3 +1900,5 @@ const uint8_t* SdCardFont::getOverflowBitmap(const EpdGlyph* glyph) const {
 }
 
 SdCardFont* SdCardFont::fromMissCtx(void* ctx) { return static_cast<OverflowContext*>(ctx)->self; }
+
+#endif  // !CROSSPOINT_TTF_READER

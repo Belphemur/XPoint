@@ -16,12 +16,15 @@ namespace {
 // Point the reader font size at a size the given family actually ships, and
 // persist the change so the settings UI and the loaded font never disagree.
 // Guarded by the value-change check: a no-op snap must not write SPIFFS.
+// cpfont-path-only: unused on native-TTF boards (see ensureLoaded).
+#if !defined(CROSSPOINT_TTF_READER)
 void snapFontPointSizeTo(const uint8_t availablePointSize) {
   if (availablePointSize == 0 || availablePointSize == SETTINGS.fontPointSize) return;
   LOG_DBG("SDFS", "Font size %u unavailable, snapping to %u", SETTINGS.fontPointSize, availablePointSize);
   SETTINGS.fontPointSize = availablePointSize;
   SETTINGS.saveToFile();
 }
+#endif  // !CROSSPOINT_TTF_READER
 
 // Built-in UI fonts and their physical point sizes (at 150 DPI, matching the
 // SD-font converter) are shared with the TTF UI fallback via kUiFontSizes in
@@ -32,6 +35,7 @@ void snapFontPointSizeTo(const uint8_t availablePointSize) {
 void SdCardFontSystem::begin(GfxRenderer& renderer) {
   registry_.discover();
   renderer_ = &renderer;
+#if !defined(CROSSPOINT_TTF_READER)
   cpfontVariants_.reserve(MAX_CPFONT_VARIANTS);
   FontVariantProvider provider;
   provider.ctx = this;
@@ -47,8 +51,10 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
     return static_cast<SdCardFontSystem*>(ctx)->resolveFontId(familyName, pointSize);
   };
   SETTINGS.sdFontResolverCtx = this;
+#endif  // !CROSSPOINT_TTF_READER
 
   // If user has a saved SD font selection, load it
+#if !defined(CROSSPOINT_TTF_READER)
   if (SETTINGS.sdFontFamilyName[0] != '\0') {
     const auto* family = registry_.findFamily(SETTINGS.sdFontFamilyName);
     if (family) {
@@ -65,6 +71,7 @@ void SdCardFontSystem::begin(GfxRenderer& renderer) {
       SETTINGS.clearSdFontFamily();
     }
   }
+#endif  // !CROSSPOINT_TTF_READER
 
   LOG_DBG("SDFS", "SD font system ready (%d families discovered)", registry_.getFamilyCount());
 }
@@ -80,6 +87,7 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
     registry_.discover();
   }
 
+#if !defined(CROSSPOINT_TTF_READER)
   const char* wantedFamily = SETTINGS.sdFontFamilyName;
   const std::string& currentFamily = manager_.currentFamilyName();
 
@@ -134,9 +142,13 @@ void SdCardFontSystem::ensureLoaded(GfxRenderer& renderer) {
     LOG_DBG("SDFS", "SD font family not found: %s (clearing)", wantedFamily);
     SETTINGS.clearSdFontFamily();
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
 void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
+  // cpfont-path-only: on native-TTF boards no SD family is ever loaded, so the
+  // UI fallback registration is dead and the TTF UI fallback covers CJK UI.
+#if !defined(CROSSPOINT_TTF_READER)
   const std::string& familyName = manager_.currentFamilyName();
   if (familyName.empty()) return;  // no SD family loaded — nothing to fall back to
 
@@ -188,8 +200,12 @@ void SdCardFontSystem::setupUiFallbacks(GfxRenderer& renderer) {
       LOG_DBG("SDFS", "No %u pt SD glyphs for UI fallback in %s", ui.pointSize, familyName.c_str());
     }
   }
+#endif  // !CROSSPOINT_TTF_READER
 }
 
+// cpfont-path-only: variant ids, sized variants, and unload paths only ever
+// run for a registered SD reader font, which native-TTF boards never have.
+#if !defined(CROSSPOINT_TTF_READER)
 int SdCardFontSystem::variantFontId(const int readerFontId, const uint8_t pointSize) {
   uint32_t hash = 2166136261u;
   for (int shift = 0; shift < 32; shift += 8) {
@@ -283,10 +299,17 @@ bool SdCardFontSystem::loadCpfontVariant(const SdCardFontFamilyInfo& family, con
           static_cast<unsigned>(ESP.getFreeHeap()));
   return true;
 }
+#endif  // !CROSSPOINT_TTF_READER
 
 int SdCardFontSystem::resolveFontId(const char* familyName, uint8_t /*pointSize*/) const {
+#if !defined(CROSSPOINT_TTF_READER)
   // The manager holds exactly one reader-size font, already selected for
   // SETTINGS.fontPointSize, so the size argument is implicit — always return
   // that font's ID. ensureLoaded() must have run for the current settings first.
   return manager_.getFontId(familyName);
+#else
+    // No SD reader font on TTF boards; begin() never wires this resolver.
+    (void)familyName;
+    return 0;
+#endif
 }

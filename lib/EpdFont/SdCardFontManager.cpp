@@ -6,15 +6,25 @@
 #include <SdCardFont.h>
 #include <SdCardFontRegistry.h>
 
+#if !defined(CROSSPOINT_TTF_READER)
+// The .cpfont face manager only ever loads fonts for the legacy SD-card render
+// path, which does not exist on native-TTF boards; compile it empty there so
+// --gc-sections drops it (docs/design/2026-10-trim-cpfont-x4pro.md).
 SdCardFontManager::~SdCardFontManager() {
   for (auto& lf : loaded_) {
     delete lf.font;
   }
 }
+#else
+// Native-TTF boards never load a cpfont face; the destructor stays defined
+// (empty) because SdCardFontSystem's implicit destructor references it.
+SdCardFontManager::~SdCardFontManager() {}
+#endif  // !CROSSPOINT_TTF_READER
 
 // FNV-1a continuation: seeds with contentHash, then hashes family name + point size.
 // Produces a deterministic ID that is stable across load/unload cycles and reboots,
 // and changes when font content changes (different header/TOC = different contentHash).
+#if !defined(CROSSPOINT_TTF_READER)
 int SdCardFontManager::computeFontId(uint32_t contentHash, const char* familyName, uint8_t pointSize) {
   static constexpr uint32_t FNV_PRIME = 16777619u;
   uint32_t hash = contentHash;
@@ -128,3 +138,4 @@ int SdCardFontManager::getFontId(const std::string& familyName) const {
   if (familyName != loadedFamilyName_ || loaded_.empty()) return 0;
   return loaded_.front().fontId;
 }
+#endif  // !CROSSPOINT_TTF_READER
