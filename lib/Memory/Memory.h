@@ -144,6 +144,10 @@ inline uint32_t poolMaxAllocFor(size_t size) {
   return ESP.getMaxAllocHeap();
 #endif
 }
+#else
+// Host unit-test build: no ESP heaps to query. Report unbounded so heap gates
+// pass and host tests exercise layout, not allocation refusal.
+inline uint32_t poolMaxAllocFor(size_t) { return UINT32_MAX; }
 #endif  // ESP_PLATFORM
 
 // Helper struct to call a cleanup function on exit from any scope.
