@@ -57,6 +57,8 @@ struct CrossPointSettings {
   enum { PREV_NEXT, NEXT_PREV, PREV_PREV, NEXT_NEXT, SIDE_BUTTONS_DISABLED };
   int sideButtonLayout = PREV_NEXT;
   int frontButtonBack = 0, frontButtonConfirm = 1, frontButtonLeft = 2, frontButtonRight = 3;
+  enum { IGNORE = 0, PWR_BOOKMARK = 7, PWR_SYNC = 8, PWR_READER_MENU = 9 };
+  int shortPwrBtn = IGNORE;
   int vibration = VIBRATION_OFF, hapticIntensity = 0;
   int homeButtonTapAction = 0, homeButtonDoubleTapAction = 0, homeButtonLongPressAction = 0;
 } SETTINGS;

@@ -54,6 +54,11 @@ jobs:
             device: metalio_eink4
           - pio_env: eego_a4-gh_release
             device: eego_a4
+          - pio_env: picco-gh_release
+            device: picco
+          - release_env: picco-gh_release
+            rc_env: picco-gh_release_rc
+            device: picco
     steps:
       - uses: actions/checkout@v7
         with:
@@ -167,6 +172,14 @@ jobs:
               cp "$bin" "dist/$(basename "$bin")"
             done < <(find "$d" -type f \( -name 'crosspoint-*.bin' -o -name 'xpoint-*.bin' \))
           done
+          # Upstream parity check (hand-ported from the Picco sync): every device
+          # in the matrix must have produced its crosspoint asset before a release
+          # is cut — a silently missing device would otherwise ship half a release.
+          version="${GITHUB_REF_NAME#v}"
+          for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco; do
+            test -f "dist/crosspoint-${version}-${device}.bin"
+          done
+          test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 8
           ls -la dist
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
@@ -189,6 +202,7 @@ jobs:
               "x4c": "x4c",
               "metalio_eink4": "metalio_eink4",
               "eego_a4": "eego_a4",
+              "picco": "picco",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
           # Sign both asset families. Crosspoint entries MUST come first:

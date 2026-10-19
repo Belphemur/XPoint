@@ -17,6 +17,7 @@
 #include "components/UIThemeTokens.h"
 #include "components/icons/customListIcons.h"
 #include "components/icons/listIcons.h"
+#include "util/SlideSwitch.h"
 
 namespace fui = freeink::ui;
 
@@ -81,7 +82,9 @@ void FrontlightPanelActivity::onExit() { Activity::onExit(); }
 void FrontlightPanelActivity::onBrightnessEvent(const fui::ActionEvent& event, void* user) {
   (void)user;
   if (event.dragPermille < 0) return;
-  frontlight::setBrightness(std::max(FRONTLIGHT_MIN_BRIGHTNESS, percentFromPermille(event.dragPermille)));
+  // A slide switch bound to the frontlight owns on/off: adjust the level only.
+  frontlight::setBrightness(std::max(FRONTLIGHT_MIN_BRIGHTNESS, percentFromPermille(event.dragPermille)),
+                            !slideSwitchOwnsLight());
 }
 
 void FrontlightPanelActivity::onWarmthEvent(const fui::ActionEvent& event, void* user) {
@@ -151,7 +154,8 @@ void FrontlightPanelActivity::runTile(const int idx) {
 }
 
 void FrontlightPanelActivity::adjustBrightness(const int delta) {
-  frontlight::adjustBrightness(delta);
+  // A slide switch bound to the frontlight owns on/off: clamp, never toggle.
+  frontlight::adjustBrightness(delta, !slideSwitchOwnsLight());
   requestUpdate();
 }
 
@@ -210,7 +214,7 @@ void FrontlightPanelActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    toggleLight();
+    if (!slideSwitchOwnsLight()) toggleLight();
     return;
   }
 
@@ -317,7 +321,8 @@ void FrontlightPanelActivity::buildPanelScreen(UiScreen& screen) {
 
   if (Frontlight.present()) {
     addSliderRow(screen, tr(STR_BRIGHTNESS), std::max(FRONTLIGHT_MIN_BRIGHTNESS, SETTINGS.frontlightBrightness),
-                 ACTION_BRIGHTNESS, ACTION_BRIGHTNESS_STEP, /*showToggle=*/true);
+                 ACTION_BRIGHTNESS, ACTION_BRIGHTNESS_STEP,
+                 /*showToggle=*/!slideSwitchOwnsLight());
     if (Frontlight.hasColorTemperature()) {
       addSliderRow(screen, tr(STR_WARMTH), SETTINGS.frontlightWarmth, ACTION_WARMTH, ACTION_WARMTH_STEP,
                    /*showToggle=*/false);

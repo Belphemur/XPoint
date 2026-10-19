@@ -315,6 +315,39 @@ bool dispatchGlobalHomeButtonAction() {
   }
 }
 
+// Applies the slide switch's position to the bound function at boot, on each
+// change, and when its binding changes; the physical position stays the source
+// of truth, as on stock.
+void handleSlideSwitch() {
+  static int appliedAction = -1;
+  static int appliedOn = -1;
+  if (!gpio.hasToggleSwitch()) return;
+  // Compare the position, not the change edge: transfer loops poll input and
+  // clear the edge before this runs.
+  const bool on = gpio.isToggleSwitchOn();
+  if (appliedAction == SETTINGS.slideSwitchAction && appliedOn == static_cast<int>(on)) return;
+  appliedAction = SETTINGS.slideSwitchAction;
+  appliedOn = on;
+  switch (SETTINGS.slideSwitchAction) {
+    case CrossPointSettings::SLIDE_SWITCH_NIGHT_MODE:
+      if ((SETTINGS.screenInverted != 0) == on) return;
+      SETTINGS.screenInverted = on ? 1 : 0;
+      break;
+    case CrossPointSettings::SLIDE_SWITCH_TOUCH_CONTROLS:
+      if ((SETTINGS.touchReaderControls != CrossPointSettings::TOUCH_READER_OFF) == on) return;
+      SETTINGS.touchReaderControls = on ? CrossPointSettings::TOUCH_READER_ON : CrossPointSettings::TOUCH_READER_OFF;
+      break;
+    default:
+      if (!Frontlight.present() || Frontlight.isOn() == on) return;
+      Frontlight.setOn(on);
+      SETTINGS.frontlightOn = on ? 1 : 0;
+      break;
+  }
+  SETTINGS.saveToFile();
+  activityManager.requestUpdate();
+  LOG_INF("SWITCH", "Slide switch %s", on ? "on" : "off");
+}
+
 bool handleX4ProFrontlightDoubleClick() {
   // Window ownership moved into MappedInputManager (soak-fix7 JFhK): the
   // manager holds the first release out of the served mask until the window
@@ -579,6 +612,42 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
   }
 }
 
+#if FREEINK_DEVICE_PICCO
+// Charge strip along the bottom of the retained sleep screen.
+static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
+  RenderLock lock;
+  const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
+  const int y = renderer.getScreenHeight() - h;
+  renderer.fillRect(0, y, renderer.getScreenWidth(), h, false);
+  char text[48];
+  snprintf(text, sizeof(text), "%s  %u%%", charging ? tr(STR_CHARGING) : tr(STR_CHARGED), percent);
+  renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+// Shows the charge strip while the power HAL holds sleep on USB power, and
+// removes it again if USB goes away. Returns true when the power button ended
+// the hold.
+static bool holdSleepWhileUsbPowered() {
+  if (!gpio.isUsbConnected()) return false;
+  // Keep the sleep frame so unplugging can remove the strip. 48 KB of PSRAM,
+  // freed when the hold ends.
+  const size_t frameSize = renderer.getBufferSize();
+  auto* const sleepFrame = static_cast<uint8_t*>(heap_caps_malloc(frameSize, MALLOC_CAP_SPIRAM));
+  if (sleepFrame) memcpy(sleepFrame, renderer.getFrameBuffer(), frameSize);
+  const bool buttonPressed = powerManager.holdWhileUsbPowered(gpio, drawSleepChargeStrip);
+  if (sleepFrame) {
+    if (!buttonPressed) {
+      RenderLock lock;
+      memcpy(renderer.getFrameBuffer(), sleepFrame, frameSize);
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    }
+    heap_caps_free(sleepFrame);
+  }
+  return buttonPressed;
+}
+#endif
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -626,6 +695,15 @@ void enterDeepSleep(bool fromTimeout = false) {
     WiFi.mode(WIFI_OFF);
   }
 
+#if FREEINK_DEVICE_PICCO
+  // The I2C LED driver keeps its state through deep sleep; switch it off here
+  // (SETTINGS.frontlightOn keeps the preference for restore-on-wake).
+  Frontlight.setOn(false);
+  const bool wakeOnHeldButton = holdSleepWhileUsbPowered();
+#else
+  const bool wakeOnHeldButton = false;
+#endif
+
   halTiltSensor.deepSleep();
   display.deepSleep();
   Storage.prepareForDeepSleep();
@@ -639,7 +717,7 @@ void enterDeepSleep(bool fromTimeout = false) {
     // Non-timer wakes suppress it below before takeLastShutdownKind().
     powerManager.stageAutoPowerOff();
   }
-  powerManager.startDeepSleep(gpio, autoPowerOffUs);
+  powerManager.startDeepSleep(gpio, autoPowerOffUs, wakeOnHeldButton);
 }
 
 // Manual power off: render the shutdown screen, then cut power. Unlike deep
@@ -873,8 +951,9 @@ void setup() {
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
   const auto recoveryButton = (BoardConfig::isX4Pro() || BoardConfig::isX4Classic()) ? MappedInputManager::Button::Down
                                                                                      : MappedInputManager::Button::Up;
+  // The Picco has no second app slot to flash into (partitions_picco.csv).
   const bool recoveryFirmwareMode = wakeupReason == HalGPIO::WakeupReason::PowerButton && !BoardConfig::isPaperMono() &&
-                                    mappedInputManager.isPressed(recoveryButton);
+                                    !BoardConfig::isPicco() && mappedInputManager.isPressed(recoveryButton);
 
   halTiltSensor.begin();
   halClock.begin();
@@ -980,7 +1059,9 @@ void setup() {
     case HalGPIO::WakeupReason::PowerButton:
       // With Short Power Button Press = Sleep, a single click wakes on any
       // device; otherwise the button must still be held (ghost-wake debounce).
-      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
+      // Picco: plugging in USB pulses the wake line; power on, as stock does.
+      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+          !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected())) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
         powerManager.startDeepSleep(gpio);
@@ -991,11 +1072,11 @@ void setup() {
       // Most devices return to sleep after a USB-powered cold boot.
       LOG_DBG("MAIN", "Wakeup reason: After USB Power");
 #if FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_EEGO_A4 || \
-    FREEINK_DEVICE_METALIO_EINK4
+    FREEINK_DEVICE_METALIO_EINK4 || FREEINK_DEVICE_PICCO
       // X4 Pro must stay awake so USB Serial/JTAG remains available after leaving
       // USB Drive and reconnecting the cable. Paper Mono has no armable GPIO wake
       // (its button is behind the PMIC). Metalio also needs native USB available
-      // after a USB-powered boot. EEGO A4's post-flash reset reads as
+      // after a USB-powered boot, as does the Picco. EEGO A4's post-flash reset reads as
       // POWERON (native-USB), so a flash would otherwise be misclassified as a
       // USB-power cold boot and sleep. Sleeping any of these here would strand
       // the device in a USB-replug boot loop (or sleep right after a flash).
@@ -1185,6 +1266,8 @@ void loop() {
     return;
   }
 
+  // After the exclusive-storage return: it saves settings to the SD card.
+  handleSlideSwitch();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   // Under the render lock, so a step never overlaps the themes' gauge reads.

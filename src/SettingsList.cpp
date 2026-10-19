@@ -55,6 +55,11 @@ const std::vector<SettingInfo>& getBaseSettingsList() {
         SettingInfo::Toggle(StrId::STR_FRONTLIGHT_SIDE_GESTURES, &CrossPointSettings::frontlightSideGestures,
                             "frontlightSideGestures", StrId::STR_CAT_DISPLAY),
 #endif
+#if FREEINK_DEVICE_PICCO
+        SettingInfo::Enum(StrId::STR_SLIDE_SWITCH, &CrossPointSettings::slideSwitchAction,
+                          {StrId::STR_FRONTLIGHT, StrId::STR_NIGHT_MODE, StrId::STR_TOUCH_READER_CONTROLS},
+                          "slideSwitchAction", StrId::STR_CAT_DISPLAY),
+#endif
         // Night mode = inverted output polarity everywhere (ActivityManager
         // applies it to every activity), so it lives in the Display category.
         SettingInfo::Toggle(StrId::STR_NIGHT_MODE, &CrossPointSettings::screenInverted, "screenInverted",

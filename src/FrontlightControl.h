@@ -13,13 +13,16 @@ class MappedInputManager;
 // modified, so a slider drag costs no SD writes.
 namespace frontlight {
 
-// Clamps to [FRONTLIGHT_MIN_BRIGHTNESS, 100] and turns the light on.
-void setBrightness(uint8_t percent);
+// Clamps to [FRONTLIGHT_MIN_BRIGHTNESS, 100]. turnOn=false adjusts only the
+// level (a bound slide switch owns on/off, so the UI must not switch the light
+// on behind it — upstream Picco slide-switch contract).
+void setBrightness(uint8_t percent, bool turnOn = true);
 // No-op when the panel has no color channel.
 void setWarmth(uint8_t percent);
 void setOn(bool on);
-// Relative; stepping brightness to <=0 turns the light off (drag-to-bottom).
-void adjustBrightness(int delta);
+// Relative; with turnOn=true (default) stepping to <=0 turns the light off
+// (drag-to-bottom); with turnOn=false the level just clamps at the minimum.
+void adjustBrightness(int delta, bool turnOn = true);
 void adjustWarmth(int delta);
 
 // One SD write if any mutator has run since the last flush.
