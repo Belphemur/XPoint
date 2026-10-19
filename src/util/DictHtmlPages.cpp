@@ -252,7 +252,7 @@ bool buildDictionaryHtmlPages(GfxRenderer& renderer, const std::string& definiti
         SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
         SETTINGS.hyphenationEnabled, SETTINGS.focusReadingEnabled,
         [&pagesOut, &parser, &retainedElements, &limitReason, &resourceLimitHit](std::unique_ptr<Page> page, uint16_t,
-                                                                                uint16_t, uint32_t) {
+                                                                                 uint16_t, uint32_t) {
           if (limitReason) return;
           const size_t pageElements = page->elements.size();
           // Name the limit that fired. The three causes mean different things --

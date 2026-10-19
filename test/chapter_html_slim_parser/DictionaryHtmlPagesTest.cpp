@@ -47,15 +47,18 @@ TEST_F(DictionaryHtmlPagesTest, SmallDefinitionKeepsStyledPages) {
 }
 
 TEST_F(DictionaryHtmlPagesTest, LowHeadroomStopsBeforePreparingAnotherParagraph) {
-  expectEarlyStop(30 * 1024, UINT32_MAX);
+  // Fork thresholds: the retain gate trips below 16 KiB free (upstream: 40 KiB).
+  expectEarlyStop(12 * 1024, UINT32_MAX);
 }
 
 TEST_F(DictionaryHtmlPagesTest, FragmentationStopsBeforePreparingAnotherParagraph) {
-  expectEarlyStop(UINT32_MAX, 24 * 1024);
+  // Fork thresholds: the retain max-alloc half trips below 8 KiB (upstream: 32 KiB).
+  expectEarlyStop(UINT32_MAX, 4 * 1024);
 }
 
 TEST_F(DictionaryHtmlPagesTest, LowEntryHeapAvoidsStartingParser) {
-  ESP.freeHeap = 60 * 1024;
+  // Fork thresholds: the entry gate refuses below 40 KiB free (upstream: 64 KiB).
+  ESP.freeHeap = 32 * 1024;
   EXPECT_FALSE(buildDictionaryHtmlPages(renderer, "<p>one two three</p>", 160, 16, pages));
   EXPECT_TRUE(pages.empty());
   EXPECT_EQ(renderer.fontPreparations, 0u);

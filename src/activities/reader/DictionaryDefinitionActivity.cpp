@@ -117,7 +117,8 @@ struct DictionaryDefinitionActivity::PlainSelectionLine {
 
   std::unique_ptr<TextBlock> pack() const {
     return makeUniqueNoThrow<TextBlock>(words, positions, styles, std::vector<uint8_t>{}, std::vector<uint16_t>{},
-                                        style, std::vector<std::string>{}, std::vector<TextBlock::LinkSpan>{}, ranges);
+                                        std::vector<uint32_t>{}, style, std::vector<std::string>{},
+                                        std::vector<TextBlock::LinkSpan>{}, ranges);
   }
 };
 

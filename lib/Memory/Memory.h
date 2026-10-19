@@ -145,9 +145,13 @@ inline uint32_t poolMaxAllocFor(size_t size) {
 #endif
 }
 #else
-// Host unit-test build: no ESP heaps to query. Report unbounded so heap gates
-// pass and host tests exercise layout, not allocation refusal.
-inline uint32_t poolMaxAllocFor(size_t) { return UINT32_MAX; }
+// Host unit-test build: no ESP heaps to query. Suites that exercise heap
+// gates provide a strong poolMaxAllocForHostFallback(); the weak default
+// answers unbounded so gates pass everywhere else.
+uint32_t poolMaxAllocForHostFallback() __attribute__((weak));
+inline uint32_t poolMaxAllocFor(size_t) {
+  return poolMaxAllocForHostFallback ? poolMaxAllocForHostFallback() : UINT32_MAX;
+}
 #endif  // ESP_PLATFORM
 
 // Helper struct to call a cleanup function on exit from any scope.

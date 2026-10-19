@@ -1,6 +1,7 @@
 add_executable(ChapterHtmlSlimParserTest
   ChapterHtmlSlimParserTest.cpp
   ParserLinkStubs.cpp
+  DictHtmlPagesHostStubs.cpp
   DictionaryHtmlPagesTest.cpp
   ${REPO_ROOT}/src/util/DictHtmlPages.cpp
   ${REPO_ROOT}/lib/Epub/Epub/Page.cpp
