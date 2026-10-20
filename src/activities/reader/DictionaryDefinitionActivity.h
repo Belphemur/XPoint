@@ -44,6 +44,7 @@ class DictionaryDefinitionActivity final : public Activity {
   struct Line {
     uint32_t start;
     uint16_t len;
+    bool bold;
   };
 
   // Usable body-text area between the header and the button hints.
@@ -55,6 +56,7 @@ class DictionaryDefinitionActivity final : public Activity {
   };
 
   BodyArea bodyArea() const;
+
   struct Definition {
     std::string headword;
     std::string text;
@@ -96,7 +98,7 @@ class DictionaryDefinitionActivity final : public Activity {
   bool layoutHtmlPages(Definition& next);
   bool wrapText(Definition& next);
   bool reserveLines(Definition& next, size_t count);
-  int measureSpan(int fontId, const char* text, size_t len) const;
+  int measureSpan(int fontId, const char* text, size_t len, EpdFontFamily::Style family = EpdFontFamily::REGULAR) const;
   void drawBody(int fontId, int x, int startY, int currentPage) const;
   void startSelection(int x = -1, int y = -1);
   bool buildPlainSelectionPages();

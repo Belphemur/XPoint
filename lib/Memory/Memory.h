@@ -12,10 +12,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 // Nothrow versions of std::make_unique. Return nullptr on allocation failure
 // instead of calling abort() (the default when exceptions are disabled on ESP32).
@@ -173,3 +175,13 @@ struct [[nodiscard]] ScopedCleanup final {
 
 template <typename F>
 ScopedCleanup(F) -> ScopedCleanup<F>;
+
+// Trim a vector's capacity to its size once it has stopped growing.
+// std::vector::shrink_to_fit() is a no-op in libstdc++ when exceptions are
+// disabled, so move the elements into a fresh buffer instead. Keeps the
+// allocator. Invalidates pointers and iterators into `v`.
+template <typename T, typename A>
+void shrinkToFit(std::vector<T, A>& v) {
+  if (v.capacity() == v.size()) return;
+  std::vector<T, A>(std::make_move_iterator(v.begin()), std::make_move_iterator(v.end()), v.get_allocator()).swap(v);
+}
