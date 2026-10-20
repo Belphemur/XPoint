@@ -74,7 +74,10 @@ harness = r'''
 #include <Memory.h>
 #include "activities/ActivityResult.h"
 #include "components/HeaderBackTapTarget.h"
+#include "activities/reader/DictHtmlSniff.h"
 #define LOG_ERR(...) ((void)0)
+template<typename... Args> void logInfo(Args&&...) {}
+#define LOG_INF(...) logInfo(__VA_ARGS__)
 template<typename... Args> void logDebug(Args&&...) {}
 #define LOG_DBG(...) logDebug(__VA_ARGS__)
 
@@ -100,8 +103,9 @@ struct TextBlock {
   std::vector<SourceRange> ranges;
   TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& positions,
             const std::vector<EpdFontFamily::Style>&, const std::vector<uint8_t>&,
-            const std::vector<uint16_t>&, BlockStyle, std::vector<std::string>, std::vector<LinkSpan>,
-            const std::vector<SourceRange>& ranges) : words(words), positions(positions), ranges(ranges) {}
+            const std::vector<uint16_t>&, const std::vector<uint32_t>&, BlockStyle, std::vector<std::string>,
+            std::vector<LinkSpan>, const std::vector<SourceRange>& ranges)
+      : words(words), positions(positions), ranges(ranges) {}
   bool valid() const { return true; }
 };
 struct PageElement { virtual ~PageElement() = default; };
@@ -206,12 +210,23 @@ struct DictionaryDefinitionActivity {
   ActivityResult result;
   std::unique_ptr<ClipSelectionActivity> child;
   ActivityResultHandler callback;
+  // Stubs for the DictionaryWordSelectActivity lambda context: the extracted
+  // handler references the caller's popup state and direct-lookup coordinates.
+  // The coordinates model a reader-originated lookup so a non-recursive child
+  // result propagates to the reader, matching the production flow under test.
+  enum class Popup { None, Error };
+  Popup popup = Popup::None;
+  std::string lookupText;
+  int initialX = 0, initialY = 0;
   BodyArea bodyArea() const { return {0, 0, 12, 20}; }
   void requestUpdate() {}
   void requestUpdateAndWait() {}
   void finish() { finished = true; }
   void setResult(ActivityResult&& next) { result = std::move(next); }
   void openDictionaryWordSelect() { selectionOpened = true; }
+  // Recursive re-lookup is driven through navigateDefinition() in this harness;
+  // the extracted handler only needs the name to compile.
+  void performLookup(const std::string& word) { lookupText = word; }
   void handleBack() { ''' + back_handler + r''' }
   void onDefinitionResult(const ActivityResult& child) { (''' + definition_result + r''')(child); }
   void onLookupResult(const ActivityResult& child) { (''' + lookup_result + r''')(child); }
@@ -463,6 +478,10 @@ struct EspStub {
   size_t getMaxAllocHeap() { return 1024 * 1024; }
 };
 EspStub ESP;
+// The fork's heap gates ask poolMaxAllocFor (Memory.h) instead of the ESP
+// interface upstream used; answer with the stubbed pool's largest block so
+// the LowMemory paths below stay exercisable.
+uint32_t poolMaxAllocFor(size_t) { return HalMemory::heap.largestBlockBytes; }
 struct TxtToHtml {
   static size_t escapedHtmlSize(std::string_view text) { return text.size(); }
   static void appendEscapedHtml(std::string& out, std::string_view text) { out.append(text); }

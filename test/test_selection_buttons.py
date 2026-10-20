@@ -107,8 +107,16 @@ popup_source = (ROOT / "src/components/OptionPopup.h").read_text()
 popup_buttons = "  bool handleButtons(" + popup_source.split("  bool handleButtons(", 1)[1].split(
     "  bool processRender(", 1
 )[0]
+# handleButtons() now scrolls the selection into view, so compile the real
+# scroll logic instead of a stub that would silently drop that behavior.
+scroll_state = popup_source[popup_source.index("std::atomic<int> scrollTop_"):]
+scroll_state = scroll_state[:scroll_state.index(";") + 1] + "\n"
+scroll_method = "  void scrollToSelected() {" + popup_source.split(
+    "  void scrollToSelected() {", 1
+)[1].split("  static constexpr size_t INTERACTION_CAPACITY", 1)[0]
 popup_harness = r"""
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <functional>
@@ -119,8 +127,11 @@ struct Input { bool touch = false, back = false, confirm = false, outsideTap = f
 };
 struct Popup {
   static constexpr int MAX_OPTIONS = 16;
+  // Mirrors the OptionPopup default so the extracted scroll logic compiles.
+  static constexpr int MaxVisibleOptions = 8;
   bool active = true;
   int selectedIndex = 0;
+""" + scroll_state + scroll_method + r"""
   std::vector<int> ownedStrings{0};
   std::function<void(int)> onSelectCallback;
   bool isActive() const { return active; }
