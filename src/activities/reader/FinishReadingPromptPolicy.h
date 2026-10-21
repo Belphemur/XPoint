@@ -21,12 +21,13 @@ enum class Decision {
   Latched,  // dismissed previously — never fires again for this book
 };
 
-// progressPercent: 0-100 (e.g. EpubReaderActivity's computeBookProgressPercent
-// or XtcReaderActivity's calculateProgress). bookCompleted: stats.isCompleted.
-// promptDismissed: the per-book finishPromptDismissed latch. The at-100%
-// existing STR_MARK_FINISHED_PROMPT flow is NOT handled here — the caller's
-// existing goHomeOrShowCompletionAchievement() path keeps owning progress
-// >= 99.5 / the final page.
-Decision evaluate(int progressPercent, bool settingEnabled, bool bookCompleted, bool promptDismissed);
+// progressPercent: 0-100 UNROUNDED (e.g. EpubReaderActivity's
+// computeBookProgressPercent or XtcReaderActivity's
+// getCurrentBookProgressPercent). bookCompleted: stats.isCompleted.
+// promptDismissed: the per-book finishPromptDismissed latch. Positions at or
+// past the 99.5% completion boundary return None — the caller's existing
+// goHomeOrShowCompletionAchievement() path keeps owning that range (the final
+// page / "Mark as finished?" prompt), so both prompts can never stack.
+Decision evaluate(float progressPercent, bool settingEnabled, bool bookCompleted, bool promptDismissed);
 
 }  // namespace finish_prompt
