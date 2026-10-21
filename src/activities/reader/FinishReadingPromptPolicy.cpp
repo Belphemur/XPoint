@@ -12,9 +12,12 @@ Decision evaluate(const float progressPercent, const bool settingEnabled, const 
   if (bookCompleted) return Decision::None;
   // ADR-3: the setting gates only the new threshold modals.
   if (!settingEnabled) return Decision::None;
-  // ADR-6: at/past the 99.5% completion boundary the existing end-of-book
-  // flow owns the finish UX (final page / "Mark as finished?" prompt) — the
-  // threshold modal never fires there, so the two prompts cannot stack.
+  // ADR-5: the threshold modal fires only strictly below the 99.5% completion
+  // boundary. ADR-6: at/past the 99.5% completion boundary the existing
+  // end-of-book flow owns the finish UX (final page / "Mark as finished?"
+  // prompt) — the threshold modal never fires there, so the two prompts
+  // cannot stack. Progress is compared UNROUNDED so a 99.49% read is not
+  // skipped by a 99.5% display rounding error.
   if (progressPercent >= 99.5f) return Decision::None;
   // ADR-5: fire when >= 90% read, showing the crossed band's value (10/5/1).
   if (progressPercent >= 99.0f) return Decision::Fire1;

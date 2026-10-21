@@ -107,7 +107,11 @@ void FinishReadingPromptActivity::loop() {
   };
   if (handleButton(MappedInputManager::Button::Back) || handleButton(MappedInputManager::Button::Confirm) ||
       handleButton(MappedInputManager::Button::Left) || handleButton(MappedInputManager::Button::Right) ||
-      handleButton(MappedInputManager::Button::Up) || handleButton(MappedInputManager::Button::Down)) {
+      handleButton(MappedInputManager::Button::Up) || handleButton(MappedInputManager::Button::Down) ||
+      // A power release with the IGNORE short-press binding is unhandled
+      // globally and falls through to the modal — dismissing here keeps the
+      // "every physical key answers Keep reading" contract.
+      handleButton(MappedInputManager::Button::Power)) {
     return;
   }
 }
@@ -149,6 +153,7 @@ void FinishReadingPromptActivity::buildPromptScreen(UiScreen& screen) {
   // reassigned each build.
   fui::DialogOption options[2];
   static fui::OptionDialogProps props;
+  props = fui::OptionDialogProps{};  // invalidate every field from the previous build before reassigning
   props.title = I18N.get(StrId::STR_ALMOST_THERE);
   props.headline = readout;
   if (touch) {

@@ -81,6 +81,10 @@ void BookStatsActivity::applyCompletedState(const bool completed) {
   stats.isCompleted = completed;
   stats.completionAchievementPending = completed;
   stats.completionPromptDismissedAtHundred = false;
+  // A completed book is done: pin the percent so the home screen and any
+  // reader's onExit() skip (which trusts a completed record) never report a
+  // stale partial value — matches the readers' setBookCompleted behavior.
+  if (completed) stats.lastBookProgressPercent = 100;
   // ADR-2: the finish-reading latch clears on every completion-state change
   // (same rule as the readers' setBookCompleted) — a book un-finished from the
   // stats screen must become finish-prompt-eligible again.
@@ -230,6 +234,9 @@ void BookStatsActivity::saveStats() {
   diskStats.isCompleted = stats.isCompleted;
   diskStats.completionAchievementPending = stats.completionAchievementPending;
   diskStats.completionPromptDismissedAtHundred = stats.completionPromptDismissedAtHundred;
+  // Persist the pinned 100% from applyCompletedState(true) so completed-from-
+  // stats books display 100% everywhere, not a stale partial percent.
+  diskStats.lastBookProgressPercent = stats.lastBookProgressPercent;
   // Persist the latch alongside the completion fields it is cleared/reset with
   // in applyCompletedState(), so an edited book does not keep a stale on-disk
   // latch from before the completion change.

@@ -49,7 +49,12 @@ void XtcReaderActivity::onEnter() {
     globalStats = GlobalReadingStats::load();
     // ADR-5: the finish-reading prompt fires only on forward page movement,
     // never on open — the first settled evaluation seeds the baseline.
-    lastPromptProgress = -1;
+    lastPromptProgress = -1.0f;
+    lastPromptPage = -1;
+    // Session-scoped completion guard: a book reopened from a previously
+    // completed state starts the session WITHOUT a completion confirmation, so
+    // onExit() saves the reread position instead of re-pinning 100%.
+    completedThisSession = false;
   }
 }
 
@@ -75,24 +80,31 @@ void XtcReaderActivity::maybePromptFinishReading() {
   // end-of-book flow owns completion there).
   if (isAtEndOfBook()) return;
 
+  // Performance guard: only re-evaluate the policy when the reading position
+  // actually changed (progress is a pure function of currentPage/pageCount).
+  if (currentPage == lastPromptPage) return;
+  lastPromptPage = currentPage;
+
   const float progress = getCurrentBookProgressPercent();
-  if (progress < 0.0f) return;
-  const int pct = static_cast<int>(progress + 0.5f);
-  if (pct < 0 || pct > 100) return;
+  // Clamp the unrounded percent to the valid range before any comparison —
+  // the baseline must track real progress, not a display-rounded integer
+  // (a rounded baseline can swallow a forward turn: 98.6% → 99.1% both round
+  // to 99, and ≥99.5% then suppresses the 1% band forever).
+  if (progress < 0.0f || progress > 100.0f) return;
 
   // ADR-5: fire on forward progress only. A backward jump re-entering the
   // zone does not fire; firing resumes when progress moves forward again.
   // The first settled evaluation seeds the baseline and never fires — a book
   // opened already in the zone must not prompt without a real forward turn.
-  if (lastPromptProgress < 0) {
-    lastPromptProgress = pct;
+  if (lastPromptProgress < 0.0f) {
+    lastPromptProgress = progress;
     return;
   }
-  if (pct <= lastPromptProgress) {
-    lastPromptProgress = pct;
+  if (progress <= lastPromptProgress) {
+    lastPromptProgress = progress;
     return;
   }
-  lastPromptProgress = pct;
+  lastPromptProgress = progress;
 
   // Unrounded progress: the policy's own boundaries (90/95/99/99.5) work on
   // the real percentage, not the display-rounded integer.
@@ -131,10 +143,12 @@ void XtcReaderActivity::maybePromptFinishReading() {
 void XtcReaderActivity::onExit() {
   if (xtc && SETTINGS.shouldTrackReadingStats()) {
     const uint32_t pageCount = xtc->getPageCount();
-    // A completed book keeps the 100% pinned at the confirm site
-    // (setBookCompleted) — recomputing here would report the
-    // pre-confirmation page's partial percent in the stats.
-    const bool preservesProgress = !stats.isCompleted;
+    // A book completed in THIS session keeps the 100% pinned at the confirm
+    // site (setBookCompleted) — recomputing here would report the
+    // pre-confirmation page's partial percent in the stats. A book completed
+    // in an EARLIER session and reopened for a reread does not: the reader
+    // must save the current position like any other book.
+    const bool preservesProgress = stats.isCompleted && completedThisSession;
     if (pageCount > 0 && preservesProgress) {
       const uint32_t clampedPage = std::min(currentPage, pageCount - 1);
       const int progress = std::clamp(
@@ -229,6 +243,9 @@ void XtcReaderActivity::setBookCompleted(bool completed) {
   if (!xtc || stats.isCompleted == completed) return;
 
   stats.isCompleted = completed;
+  // Session-scoped completion guard: the 100% pin in onExit() only applies to
+  // a completion confirmed during THIS reader session.
+  completedThisSession = completed;
   stats.completionAchievementPending = completed;
   stats.completionPromptDismissedAtHundred = false;
   // A completed book is done: pin the percent so onExit()'s recomputation

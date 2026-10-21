@@ -354,7 +354,13 @@ void EpubReaderActivity::onEnter() {
     hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
     // ADR-5: the finish-reading prompt fires only on forward page movement,
     // never on open — the first settled evaluation seeds the baseline.
-    lastPromptProgress = -1;
+    lastPromptProgress = -1.0f;
+    lastPromptPage = -1;
+    lastPromptSpineIndex = -1;
+    // Session-scoped completion guard: a book reopened from a previously
+    // completed state starts the session WITHOUT a completion confirmation, so
+    // onExit() saves the reread position instead of re-pinning 100%.
+    completedThisSession = false;
   }
 #endif
 }
@@ -415,10 +421,12 @@ void EpubReaderActivity::onExit() {
 #else
       const float bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
 #endif
-      // A completed book keeps the 100% the completion flow pinned at the
-      // confirm site (setBookCompleted) — recomputing here would report the
-      // pre-confirmation page's partial percent in the stats.
-      const bool preservesProgress = !stats.isCompleted;
+      // A book completed in THIS session keeps the 100% the completion flow
+      // pinned at the confirm site (setBookCompleted) — recomputing here would
+      // report the pre-confirmation page's partial percent in the stats. A
+      // book completed in an EARLIER session and reopened for a reread does
+      // not: the reader must save the current position like any other book.
+      const bool preservesProgress = stats.isCompleted && completedThisSession;
       if (bookSize > 0 && chapterBytes > 0 && chapterPages > 0 && bookProgressPercent >= 0.0f &&
           bookProgressPercent <= 100.0f && preservesProgress) {
         const uint64_t bookPagesEstimate = static_cast<uint64_t>(chapterPages) * bookSize / chapterBytes;
@@ -575,6 +583,20 @@ void EpubReaderActivity::maybePromptFinishReading() {
   // existing end-of-book flow owns completion there).
   if (overlay != Overlay::None || overlayPopup.isActive() || endOfBookMenuActive()) return;
   if (currentSpineIndex >= epub->getSpineItemsCount()) return;
+
+  // Performance guard: skip the spine walk when the reading position is
+  // identical to the last settled evaluation (progress only moves on a
+  // committed page turn, so the percent cannot have changed).
+  const int positionPage =
+#if defined(CROSSPOINT_TTF_READER)
+      (ttf_ && !section) ? ttfPage : (section ? section->currentPage : -1);
+#else
+      section ? section->currentPage : -1;
+#endif
+  if (currentSpineIndex == lastPromptSpineIndex && positionPage == lastPromptPage) return;
+  lastPromptSpineIndex = currentSpineIndex;
+  lastPromptPage = positionPage;
+
 #if defined(CROSSPOINT_TTF_READER)
   float bookProgressPercent;
   if (ttf_ && !section) {
@@ -592,22 +614,25 @@ void EpubReaderActivity::maybePromptFinishReading() {
   if (!section || section->isBuilding()) return;
   const float bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
 #endif
-  const int pct = static_cast<int>(bookProgressPercent + 0.5f);
-  if (pct < 0 || pct > 100) return;
+  // Clamp the unrounded percent to the valid range before any comparison —
+  // the baseline must track real progress, not a display-rounded integer
+  // (a rounded baseline can swallow a forward turn: 98.6% → 99.1% both round
+  // to 99, and ≥99.5% then suppresses the 1% band forever).
+  if (bookProgressPercent < 0.0f || bookProgressPercent > 100.0f) return;
 
   // ADR-5: fire on forward progress only. A backward jump re-entering the
   // zone does not fire; firing resumes when progress moves forward again.
   // The first settled evaluation seeds the baseline and never fires — a book
   // opened already in the zone must not prompt without a real forward turn.
-  if (lastPromptProgress < 0) {
-    lastPromptProgress = pct;
+  if (lastPromptProgress < 0.0f) {
+    lastPromptProgress = bookProgressPercent;
     return;
   }
-  if (pct <= lastPromptProgress) {
-    lastPromptProgress = pct;
+  if (bookProgressPercent <= lastPromptProgress) {
+    lastPromptProgress = bookProgressPercent;
     return;
   }
-  lastPromptProgress = pct;
+  lastPromptProgress = bookProgressPercent;
 
   // Unrounded progress: the policy's own boundaries (90/95/99/99.5) work on
   // the real percentage, not the display-rounded integer.
@@ -723,6 +748,9 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
   if (!epub || stats.isCompleted == completed) return;
 
   stats.isCompleted = completed;
+  // Session-scoped completion guard: the 100% pin in onExit() only applies to
+  // a completion confirmed during THIS reader session.
+  completedThisSession = completed;
   stats.completionAchievementPending = completed;
   stats.completionPromptDismissedAtHundred = false;
   // ADR-2: the finish-reading latch clears only on a completion-state change

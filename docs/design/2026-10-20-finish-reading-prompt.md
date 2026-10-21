@@ -140,9 +140,14 @@ Evaluate after each committed page turn (where
 `computeBookProgressPercent()` is already available,
 `EpubReaderActivity.cpp:557`) and after a jump that lands in the zone:
 
-- Fire when `computeBookProgressPercent(...) >= 90` (equivalently ≤10%
-  remaining) and the modal was never answered for this book and the setting is
-  on and `!stats.isCompleted`.
+- Fire when `computeBookProgressPercent(...) >= 90` and
+  `computeBookProgressPercent(...) < 99.5` (equivalently ≤10% remaining but
+  still above the ADR-6 completion boundary) and the modal was never answered
+  for this book and the setting is on and `!stats.isCompleted`. The upper
+  bound is the ADR-6 hand-off: at or past 99.5% the existing end-of-book flow
+  (final page / "Mark as finished?" prompt) solely owns completion, so the
+  threshold modal never fires there (FinishReadingPromptPolicy.cpp returns
+  None for the ≥99.5% range).
 - The readout shows the **crossed** band's value (10/5/1) chosen as the
   highest threshold not yet crossed; with the single latch (ADR-2) each book
   sees at most one firing.
