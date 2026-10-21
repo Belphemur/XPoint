@@ -633,7 +633,7 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   return true;
 }
 
-bool Section::buildSomeMore(const int maxPages) {
+bool Section::buildSomeMore(const int maxPages, bool (*yieldNow)()) {
 #ifdef BOOK_PROFILE
   uint32_t profile_start_ms = millis();
   uint8_t core = xPortGetCoreID();
@@ -674,8 +674,9 @@ bool Section::buildSomeMore(const int maxPages) {
     // re-enters loadSectionFile() (returns false) and rebuilds from the
     // on-SD HTML cache (Phase 2); see v3 design doc §E.5.
 
-    // ParseStatus::More: yield once we've laid out the requested number of pages.
-    if (maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) {
+    // ParseStatus::More: yield once we've laid out the requested number of pages, or as soon
+    // as the caller has something more urgent to do (a button contact — see backgroundBuildTick).
+    if ((maxPages > 0 && (builtPageCount_ - startCount) >= maxPages) || (yieldNow && yieldNow())) {
       build_->bytesConsumed = build_->parser->parseBytesConsumed();
 #ifdef BOOK_PROFILE
       uint32_t psram_free_after = ESP.getFreePsram();

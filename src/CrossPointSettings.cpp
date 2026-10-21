@@ -407,7 +407,9 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
 }
 
 float CrossPointSettings::getReaderLineCompression() const {
-  // SD card fonts use same compression as Bookerly (the most neutral values)
+  // One scale for all SD card fonts, whatever their format: .cpfont and vector
+  // fonts both take their line height from FreeType's size metrics. Same values
+  // as the former built-in Noto Serif; Normal keeps the font's own line height.
   if (sdFontFamilyName[0] != '\0') {
     switch (lineSpacing) {
       case TIGHT:

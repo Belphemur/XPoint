@@ -286,6 +286,10 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
   }
 }
 
+// A button contact is closed right now. Reads the Xteink ADC ladder and power pin only; on other
+// boards a press stops the build once the loop has debounced it.
+bool buttonContactClosed() { return gpio.rawInputActive(); }
+
 }  // namespace
 
 EpubReaderActivity::~EpubReaderActivity() {
@@ -1008,6 +1012,54 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
   buildPopupPending = false;
 }
 
+// Debounced state of every button. Covers the frame between a raw release and its debounced
+// release edge, which would otherwise run a build step before the page turn.
+bool EpubReaderActivity::anyButtonPressed() const {
+  using Button = MappedInputManager::Button;
+  for (const Button button :
+       {Button::Back, Button::Confirm, Button::Left, Button::Right, Button::Up, Button::Down, Button::Power}) {
+    if (mappedInput.isPressed(button)) return true;
+  }
+  return false;
+}
+
+void EpubReaderActivity::backgroundBuildTick() {
+  RenderLock lock(RenderLock::Mode::Try);
+  // Not under an open toolbar or panel: those repaint straight onto the page in the framebuffer.
+  if (!lock.ownsLock() || overlay != Overlay::None || !backgroundBuildWanted()) return;
+  // A button is down or a page turn is queued: the next loop frames act on it first.
+  if (buttonContactClosed() || anyButtonPressed() || pendingManualTurn != 0 || !buildTickHeapGate()) return;
+  // A build step can lend the framebuffer (image probes), which hands it back white while the
+  // panel still shows the page; redraw so nothing is later painted over the blank buffer.
+  const uint32_t loansBefore = renderer.frameBufferLoanCount();
+  const bool built = section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK, &buttonContactClosed);
+  if (renderer.frameBufferLoanCount() != loansBefore) {
+    pageBufferStale = true;
+    requestUpdate();
+  }
+  if (!built) {
+    LOG_ERR("ERS", "Background section build failed");
+    backgroundBuildFailedSpine = currentSpineIndex;
+    nextPageNumber = section->currentPage;
+    section.reset();
+    requestUpdate();
+  } else if (section->isBuildComplete()) {
+    // A target the render pass left pending because the index was still
+    // partial (the readable-page yield) is applied now that the finished
+    // index can satisfy it; applyDeferredReposition() otherwise only guesses
+    // a proportional page from the clamped one.
+    bool repositioned = false;
+    if (pendingPageJump.has_value()) {
+      section->currentPage = *pendingPageJump == std::numeric_limits<uint16_t>::max()
+                                 ? section->pageCount - 1
+                                 : static_cast<int>(*pendingPageJump);
+      pendingPageJump.reset();
+      repositioned = true;
+    }
+    if (applyDeferredReposition() || repositioned) requestUpdate();
+  }
+}
+
 void EpubReaderActivity::openDictionaryWordSelect(int touchX, int touchY, TouchLongPressMode mode) {
   if (mode == TouchLongPressMode::Dictionary && SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
@@ -1287,7 +1339,7 @@ void EpubReaderActivity::loop() {
   retryDeferredOverlayPush();
 
   // The radio stopped for a chapter build: once the render task has let go of the lock, that page
-  // is on screen; once the look-ahead below has finished the chapter, no parser is left alive and
+  // is on screen; once the build tick below has finished the chapter, no parser is left alive and
   // the radio may start again.
   if (radioReleasedForBuild.load()) {
     RenderLock lock(RenderLock::Mode::Try);
@@ -1394,38 +1446,9 @@ void EpubReaderActivity::loop() {
     }
   }
 
-  if (!inputPriority) {
-    RenderLock lock(RenderLock::Mode::Try);
-    if (lock.ownsLock() && overlay == Overlay::None && backgroundBuildWanted() && buildTickHeapGate()) {
-      // A build step can lend the framebuffer (image probes), which hands it back white while the
-      // panel still shows the page; redraw so nothing is later painted over the blank buffer.
-      const uint32_t loansBefore = renderer.frameBufferLoanCount();
-      const bool built = section->buildSomeMore(BACKGROUND_BUILD_PAGES_PER_TICK);
-      if (renderer.frameBufferLoanCount() != loansBefore) {
-        pageBufferStale = true;
-        requestUpdate();
-      }
-      if (!built) {
-        LOG_ERR("ERS", "Background section build failed");
-        section.reset();
-        requestUpdate();
-      } else if (section->isBuildComplete()) {
-        // A target the render pass left pending because the index was still
-        // partial (the readable-page yield) is applied now that the finished
-        // index can satisfy it; applyDeferredReposition() otherwise only guesses
-        // a proportional page from the clamped one.
-        bool repositioned = false;
-        if (pendingPageJump.has_value()) {
-          section->currentPage = *pendingPageJump == std::numeric_limits<uint16_t>::max()
-                                     ? section->pageCount - 1
-                                     : static_cast<int>(*pendingPageJump);
-          pendingPageJump.reset();
-          repositioned = true;
-        }
-        if (applyDeferredReposition() || repositioned) requestUpdate();
-      }
-    }
-  }
+  // The legacy chapter build advances from the post-input idle path below
+  // (the backgroundBuildTick() call after the page-turn detection), so one
+  // bounded build step runs per idle loop frame, never two.
 
 #if defined(CROSSPOINT_TTF_READER)
   if (!inputPriority) {
@@ -1677,6 +1700,7 @@ void EpubReaderActivity::loop() {
     } else {
       openReaderMenu();
     }
+    return;  // no build step before the menu shows
   }
 
   if (footnoteDepth > 0 && mappedInput.wasReleased(MappedInputManager::Button::Back) &&
@@ -1733,6 +1757,8 @@ void EpubReaderActivity::loop() {
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) {
+    // Nothing to act on in this frame: build more of the chapter.
+    backgroundBuildTick();
     return;
   }
 
@@ -2583,10 +2609,12 @@ bool EpubReaderActivity::preventAutoSleep() {
   return section != nullptr && section->isBuilding();
 }
 
+// A started build runs to the end of the chapter, one bounded step per idle loop frame, so the
+// parser and its page LUT are freed soon (and a radio stopped for the build comes back with no
+// parser alive). Not while the radio holds the heap, and not in a spine whose background build
+// failed.
 bool EpubReaderActivity::backgroundBuildWanted() const {
-  return section && section->isBuilding() && !bleturner::holdsHeap() &&
-         (radioReleasedForBuild.load() || section->isPartial() ||
-          static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD);
+  return section && section->isBuilding() && !bleturner::holdsHeap() && currentSpineIndex != backgroundBuildFailedSpine;
 }
 
 bool EpubReaderActivity::skipLoopDelay() {
@@ -2595,7 +2623,9 @@ bool EpubReaderActivity::skipLoopDelay() {
     return ttf_->sessionFor(static_cast<uint16_t>(currentSpineIndex)) && ttf_->sessionActive() && !buildHeapPaused;
   }
 #endif
-  // The main loop holds the render lock while querying this hint.
+  // The main loop holds the render lock while querying this hint. It keeps yielding while a button
+  // is down: a press that starts inside a long build step gets its second debounce sample ~5 ms
+  // after the step instead of after a 10 ms sleep.
   return overlay == Overlay::None && !buildHeapPaused && backgroundBuildWanted();
 }
 
