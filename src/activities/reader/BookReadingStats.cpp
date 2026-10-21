@@ -45,6 +45,7 @@ namespace {
 // v8 (135 bytes) appends the completion-flow flags (v7 fields unchanged):
 //   [134]     completionFlags           bit0=achievementPending
 //                                       bit1=completionPromptDismissedAtHundred
+//                                       bit2=finishPromptDismissed
 //
 // The record lives INSIDE the book cache dir, so its lifetime matches the
 // cache dir exactly (created/deleted/moved with the book — no orphan cleanup,
@@ -68,6 +69,7 @@ constexpr uint8_t FLAG_START_DATE_MANUAL = 1u << 0;
 constexpr uint8_t FLAG_FINISHED_DATE_MANUAL = 1u << 1;
 constexpr uint8_t FLAG_COMPLETION_ACHIEVEMENT_PENDING = 1u << 0;
 constexpr uint8_t FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED = 1u << 1;
+constexpr uint8_t FLAG_FINISH_PROMPT_DISMISSED = 1u << 2;
 
 std::string statsFileNameForVersion(const uint8_t version) {
   char buf[16];
@@ -191,6 +193,7 @@ void readSessionWindow(const uint8_t* data, SessionWindow& sessionWindow) {
 void readCompletionFlags(const uint8_t flags, BookReadingStats& stats) {
   stats.completionAchievementPending = (flags & FLAG_COMPLETION_ACHIEVEMENT_PENDING) != 0;
   stats.completionPromptDismissedAtHundred = (flags & FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED) != 0;
+  stats.finishPromptDismissed = (flags & FLAG_FINISH_PROMPT_DISMISSED) != 0;
 }
 
 // Decodes a v6 record (109 bytes = v5 plus the WPM window). Returns false on
@@ -374,7 +377,8 @@ void BookReadingStats::save(const std::string& cachePath) const {
   }
   data[133] = sessionWindow.pos;
   data[134] = (completionAchievementPending ? FLAG_COMPLETION_ACHIEVEMENT_PENDING : 0u) |
-              (completionPromptDismissedAtHundred ? FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED : 0u);
+              (completionPromptDismissedAtHundred ? FLAG_COMPLETION_PROMPT_DISMISSED_AT_HUNDRED : 0u) |
+              (finishPromptDismissed ? FLAG_FINISH_PROMPT_DISMISSED : 0u);
   const size_t written = f.write(data, STATS_FILE_SIZE);
   if (written != STATS_FILE_SIZE) {
     // Do NOT publish and do NOT delete the legacy files — the v8 write didn't

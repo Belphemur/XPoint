@@ -788,6 +788,41 @@ TEST_F(ReadingStatsBinaryStoreTest, BookCompletionFlagsMigrateFromV7) {
   EXPECT_TRUE(reloaded.completionPromptDismissedAtHundred);
 }
 
+TEST_F(ReadingStatsBinaryStoreTest, BookFinishPromptDismissedFlagRoundtrip) {
+  // ADR-2 latch: finishPromptDismissed is bit2 of the v8 completionFlags byte
+  // [134] — no version bump, no size change (v8 stays 135 bytes). Unlike
+  // completionPromptDismissedAtHundred it has NO forward-page-turn reset and
+  // clears only on a completion-state change (setBookCompleted()).
+  (void)BookReadingStats::remove(BOOK_DIR);
+  BookReadingStats b;
+  b.finishPromptDismissed = true;
+  b.save(BOOK_DIR);
+
+  const auto bytes = readFileBytes(statsPath(BOOK_DIR, 8));
+  ASSERT_EQ(bytes.size(), 135u);
+  EXPECT_EQ(bytes[0], 8);
+  EXPECT_EQ(bytes[134], 0x04);  // bit2 set, bit0/bit1 clear
+
+  const BookReadingStats out = BookReadingStats::load(BOOK_DIR);
+  EXPECT_TRUE(out.finishPromptDismissed);
+  EXPECT_FALSE(out.completionAchievementPending);
+  EXPECT_FALSE(out.completionPromptDismissedAtHundred);
+
+  // All three completion flags coexist in the same byte.
+  b.completionAchievementPending = true;
+  b.completionPromptDismissedAtHundred = true;
+  b.save(BOOK_DIR);
+  const auto bytesAll = readFileBytes(statsPath(BOOK_DIR, 8));
+  ASSERT_EQ(bytesAll.size(), 135u);
+  EXPECT_EQ(bytesAll[134], 0x07);
+  const BookReadingStats reloaded = BookReadingStats::load(BOOK_DIR);
+  EXPECT_TRUE(reloaded.finishPromptDismissed);
+  EXPECT_TRUE(reloaded.completionAchievementPending);
+  EXPECT_TRUE(reloaded.completionPromptDismissedAtHundred);
+
+  (void)BookReadingStats::remove(BOOK_DIR);
+}
+
 TEST_F(ReadingStatsBinaryStoreTest, BookNewerFormatBlocksSaves) {
   (void)BookReadingStats::remove(BOOK_DIR);  // clear a prior test's latch
   std::vector<uint8_t> future(136, 0);

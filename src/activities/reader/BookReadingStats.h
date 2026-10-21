@@ -41,9 +41,14 @@ struct BookReadingStats {
   uint8_t lastBookProgressPercent = UNKNOWN_BOOK_PROGRESS_PERCENT;
   // Completion-flow state (v8 byte 134). Pending is set when completion is
   // first recorded and consumed by the achievement screen; dismissed is the
-  // no-repeat latch for a declined 100% exit prompt.
+  // no-repeat latch for a declined 100% exit prompt; finishPromptDismissed is
+  // the permanent no-refire latch for the 10/5/1% finish-reading prompt
+  // (docs/design/2026-10-20-finish-reading-prompt.md) — unlike
+  // completionPromptDismissedAtHundred it has no forward-page-turn reset and
+  // clears only on a completion-state change in setBookCompleted().
   bool completionAchievementPending = false;
   bool completionPromptDismissedAtHundred = false;
+  bool finishPromptDismissed = false;
 
   static BookReadingStats load(const std::string& cachePath);
   void save(const std::string& cachePath) const;
