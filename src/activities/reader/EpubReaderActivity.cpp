@@ -415,8 +415,12 @@ void EpubReaderActivity::onExit() {
 #else
       const float bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
 #endif
+      // A completed book keeps the 100% the completion flow pinned at the
+      // confirm site (setBookCompleted) — recomputing here would report the
+      // pre-confirmation page's partial percent in the stats.
+      const bool preservesProgress = !stats.isCompleted;
       if (bookSize > 0 && chapterBytes > 0 && chapterPages > 0 && bookProgressPercent >= 0.0f &&
-          bookProgressPercent <= 100.0f) {
+          bookProgressPercent <= 100.0f && preservesProgress) {
         const uint64_t bookPagesEstimate = static_cast<uint64_t>(chapterPages) * bookSize / chapterBytes;
         const float bookProgress = bookProgressPercent / 100.0f;
         const uint32_t remainingPages =
@@ -492,6 +496,11 @@ void EpubReaderActivity::applyBookStatsEditsFromDisk() {
   stats.finishedDateManual = diskStats.finishedDateManual;
   stats.completionAchievementPending = diskStats.completionAchievementPending;
   stats.completionPromptDismissedAtHundred = diskStats.completionPromptDismissedAtHundred;
+  // The stats screen's completion edits clear the latch on disk
+  // (BookStatsActivity::applyCompletedState); import it so the reader's
+  // in-memory gate matches the record instead of staying latched from before
+  // the screen ran.
+  stats.finishPromptDismissed = diskStats.finishPromptDismissed;
   stats.startDate = diskStats.startDate;
   stats.finishedDate = diskStats.finishedDate;
 
@@ -588,15 +597,21 @@ void EpubReaderActivity::maybePromptFinishReading() {
 
   // ADR-5: fire on forward progress only. A backward jump re-entering the
   // zone does not fire; firing resumes when progress moves forward again.
-  // lastPromptProgress is seeded on open (-1) so the first settled frame
-  // never fires without real forward movement.
-  if (lastPromptProgress >= 0 && pct <= lastPromptProgress) {
+  // The first settled evaluation seeds the baseline and never fires — a book
+  // opened already in the zone must not prompt without a real forward turn.
+  if (lastPromptProgress < 0) {
+    lastPromptProgress = pct;
+    return;
+  }
+  if (pct <= lastPromptProgress) {
     lastPromptProgress = pct;
     return;
   }
   lastPromptProgress = pct;
 
-  const auto decision = finish_prompt::evaluate(pct, true, stats.isCompleted, stats.finishPromptDismissed);
+  // Unrounded progress: the policy's own boundaries (90/95/99/99.5) work on
+  // the real percentage, not the display-rounded integer.
+  const auto decision = finish_prompt::evaluate(bookProgressPercent, true, stats.isCompleted, stats.finishPromptDismissed);
   if (decision != finish_prompt::Decision::Fire10 && decision != finish_prompt::Decision::Fire5 &&
       decision != finish_prompt::Decision::Fire1) {
     return;

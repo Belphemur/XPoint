@@ -112,17 +112,27 @@ hint-line pattern, `UiSliderDialog.h:125-137`):
 
 ```
 │   │  Front: Keep reading          │  │  ← hint line 1 (smallText, centered)
-│   │  Side:  Yes, I finished       │  │  ← hint line 2
+│   │  Side:  Keep reading          │  │  ← hint line 2
 ```
+
+Every physical key answers "Keep reading": the side keys are the reader's
+page-turn keys and the front row includes Back/Confirm, so mapping any of them
+to "Yes, finished" would let a habitual key press — or the release of a key
+still held from the page turn that raised the prompt — silently complete the
+book. "Yes, finished" is touch-only; button-board completion stays with the
+existing end-of-book flow (final page / "Mark as finished?" prompt).
 
 Readout escalates across firings: `10%` → `5%` → `1%` (only one is ever shown
 per book given ADR-2's latch; the escalation exists for a book that is
 re-opened after the latch state was reset by a completed-state change).
 
-New I18n keys (translation workflow — generated files, English source in
-`lib/I18n/I18nStrings.*`): `STR_ALMOST_THERE`, `STR_DID_YOU_FINISH`,
-`STR_YES_FINISHED`, `STR_KEEP_READING`, plus the settings label. The "left to
-read" suffix may fold into the readout string to keep translation flexible.
+New I18n keys (translation workflow: add English entries to
+`lib/I18n/translations/english.yaml`, then regenerate with
+`scripts/gen_i18n.py`; `lib/I18n/I18nKeys.h` and `lib/I18n/I18nStrings.*` are
+generated outputs — never edit or stage them directly):
+`STR_ALMOST_THERE`, `STR_DID_YOU_FINISH`, `STR_YES_FINISHED`,
+`STR_KEEP_READING`, plus the settings label. The "left to read" suffix may
+fold into the readout string to keep translation flexible.
 
 ### ADR-5: Threshold detection — on page turn, using the existing progress computation
 

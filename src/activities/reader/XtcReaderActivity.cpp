@@ -82,15 +82,21 @@ void XtcReaderActivity::maybePromptFinishReading() {
 
   // ADR-5: fire on forward progress only. A backward jump re-entering the
   // zone does not fire; firing resumes when progress moves forward again.
-  // lastPromptProgress is seeded on open (-1) so the first settled frame
-  // never fires without real forward movement.
-  if (lastPromptProgress >= 0 && pct <= lastPromptProgress) {
+  // The first settled evaluation seeds the baseline and never fires — a book
+  // opened already in the zone must not prompt without a real forward turn.
+  if (lastPromptProgress < 0) {
+    lastPromptProgress = pct;
+    return;
+  }
+  if (pct <= lastPromptProgress) {
     lastPromptProgress = pct;
     return;
   }
   lastPromptProgress = pct;
 
-  const auto decision = finish_prompt::evaluate(pct, true, stats.isCompleted, stats.finishPromptDismissed);
+  // Unrounded progress: the policy's own boundaries (90/95/99/99.5) work on
+  // the real percentage, not the display-rounded integer.
+  const auto decision = finish_prompt::evaluate(progress, true, stats.isCompleted, stats.finishPromptDismissed);
   if (decision != finish_prompt::Decision::Fire10 && decision != finish_prompt::Decision::Fire5 &&
       decision != finish_prompt::Decision::Fire1) {
     return;
@@ -125,7 +131,11 @@ void XtcReaderActivity::maybePromptFinishReading() {
 void XtcReaderActivity::onExit() {
   if (xtc && SETTINGS.shouldTrackReadingStats()) {
     const uint32_t pageCount = xtc->getPageCount();
-    if (pageCount > 0) {
+    // A completed book keeps the 100% pinned at the confirm site
+    // (setBookCompleted) — recomputing here would report the
+    // pre-confirmation page's partial percent in the stats.
+    const bool preservesProgress = !stats.isCompleted;
+    if (pageCount > 0 && preservesProgress) {
       const uint32_t clampedPage = std::min(currentPage, pageCount - 1);
       const int progress = std::clamp(
           static_cast<int>((static_cast<float>(clampedPage) + 1.0f) * 100.0f / static_cast<float>(pageCount) + 0.5f), 0,
@@ -221,6 +231,9 @@ void XtcReaderActivity::setBookCompleted(bool completed) {
   stats.isCompleted = completed;
   stats.completionAchievementPending = completed;
   stats.completionPromptDismissedAtHundred = false;
+  // A completed book is done: pin the percent so onExit()'s recomputation
+  // skip (and the home screen) never report a partial pre-confirmation value.
+  if (completed) stats.lastBookProgressPercent = 100;
   // ADR-2: the finish-reading latch clears only on a completion-state change
   // — never on a forward page turn (unlike completionPromptDismissedAtHundred).
   stats.finishPromptDismissed = false;
