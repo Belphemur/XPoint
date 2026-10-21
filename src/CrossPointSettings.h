@@ -430,6 +430,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t backShortToFileBrowser = 0;
   // Track reading statistics into the SQLite database (0 = disabled, 1 = enabled)
   uint8_t trackReadingStats = 1;
+  // Proactive finish-reading prompt near the end of a book (10/5/1% remaining),
+  // asking "Did you finish the book?" (0 = disabled, 1 = enabled)
+  uint8_t finishReadingPrompt = 1;
   // Image rendering mode in EPUB reader
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
