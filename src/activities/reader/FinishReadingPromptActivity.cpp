@@ -26,6 +26,16 @@ FinishReadingPromptActivity::FinishReadingPromptActivity(GfxRenderer& renderer, 
 
 void FinishReadingPromptActivity::onEnter() {
   Activity::onEnter();
+  // The modal opens on the settled frame right after the page turn that raised
+  // it: a side key may still be down (or its release pending on boards whose
+  // digital side keys isPressed() cannot see). Record the held set; each of
+  // those keys' first release is dropped instead of answering the prompt.
+  heldAtEnterButtons = 0;
+  for (uint8_t b = 0; b <= static_cast<uint8_t>(MappedInputManager::Button::ScreenDown); ++b) {
+    if (mappedInput.isPressed(static_cast<MappedInputManager::Button>(b))) {
+      heldAtEnterButtons |= static_cast<uint16_t>(1u << b);
+    }
+  }
   resetUi();
   app.on(ACTION_YES, &FinishReadingPromptActivity::onYesEvent, this);
   app.on(ACTION_KEEP, &FinishReadingPromptActivity::onKeepEvent, this);
@@ -59,6 +69,15 @@ void FinishReadingPromptActivity::onKeepEvent(const fui::ActionEvent&, void* use
   self->dismiss();
 }
 
+bool FinishReadingPromptActivity::isStaleRelease(const MappedInputManager::Button button) {
+  const uint16_t bit = static_cast<uint16_t>(1u << static_cast<uint8_t>(button));
+  if ((heldAtEnterButtons & bit) == 0) return false;
+  heldAtEnterButtons &= static_cast<uint16_t>(~bit);
+  // The release's press predated the modal (a page-turn key still down when
+  // the prompt opened, or a held digital side key): consume it silently.
+  return true;
+}
+
 void FinishReadingPromptActivity::loop() {
   // Touch goes through the FreeInkApp: render() registered the Yes/Keep pills and
   // the chrome guard. Runs before the Back handler so a tap inside the dialog is
@@ -75,27 +94,20 @@ void FinishReadingPromptActivity::loop() {
     return;
   }
 
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+  // Button boards: every physical key answers "Keep reading". The side keys are
+  // the reader's page-turn keys and the front row includes Back/Confirm, so no
+  // habitual key press — nor the release of a key held from before the modal
+  // opened — can ever mark the book finished. "Yes, finished" is touch-only;
+  // button-board completion still runs through the existing end-of-book flow.
+  const auto handleButton = [this](const MappedInputManager::Button button) {
+    if (!mappedInput.wasReleased(button)) return false;
+    if (isStaleRelease(button)) return true;  // consumed, not an answer
     dismiss();
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    confirm();
-    return;
-  }
-
-  // Button boards: front buttons = Keep reading, side buttons = Yes, finished.
-  // Both directions of each pair answer the prompt so a hand resting on either
-  // edge always gets the same semantic.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Left) ||
-      mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    dismiss();
-    return;
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
-      mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    confirm();
+    return true;
+  };
+  if (handleButton(MappedInputManager::Button::Back) || handleButton(MappedInputManager::Button::Confirm) ||
+      handleButton(MappedInputManager::Button::Left) || handleButton(MappedInputManager::Button::Right) ||
+      handleButton(MappedInputManager::Button::Up) || handleButton(MappedInputManager::Button::Down)) {
     return;
   }
 }
@@ -205,15 +217,16 @@ void FinishReadingPromptActivity::buildPromptScreen(UiScreen& screen) {
   screen.target().text(fui::Rect{band.x, questionY, band.width, bodyLh}, question, questionText);
 
   if (!touch) {
-    // Front buttons = Keep reading, side buttons = Yes, finished — built from
-    // separate label + answer strings so the layout doesn't depend on a
-    // separator hidden in translated text.
+    // Every physical key = Keep reading (loop() maps all buttons to dismiss;
+    // "Yes, finished" is touch-only) — built from separate label + answer
+    // strings so the layout doesn't depend on a separator hidden in
+    // translated text.
     char hintFront[96];
     snprintf(hintFront, sizeof(hintFront), "%s %s", I18N.get(StrId::STR_STEP_HINT_FRONT),
              I18N.get(StrId::STR_KEEP_READING));
     char hintSide[96];
     snprintf(hintSide, sizeof(hintSide), "%s %s", I18N.get(StrId::STR_STEP_HINT_SIDE),
-             I18N.get(StrId::STR_YES_FINISHED));
+             I18N.get(StrId::STR_KEEP_READING));
 
     const int16_t hintY = static_cast<int16_t>(questionY + bodyLh + theme.spaceMd);
     screen.target().text(fui::Rect{band.x, hintY, band.width, capLh}, hintFront, suffixText);
