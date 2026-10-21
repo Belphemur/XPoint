@@ -611,7 +611,8 @@ void EpubReaderActivity::maybePromptFinishReading() {
 
   // Unrounded progress: the policy's own boundaries (90/95/99/99.5) work on
   // the real percentage, not the display-rounded integer.
-  const auto decision = finish_prompt::evaluate(bookProgressPercent, true, stats.isCompleted, stats.finishPromptDismissed);
+  const auto decision =
+      finish_prompt::evaluate(bookProgressPercent, true, stats.isCompleted, stats.finishPromptDismissed);
   if (decision != finish_prompt::Decision::Fire10 && decision != finish_prompt::Decision::Fire5 &&
       decision != finish_prompt::Decision::Fire1) {
     return;
