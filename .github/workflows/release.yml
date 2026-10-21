@@ -56,9 +56,7 @@ jobs:
             device: eego_a4
           - pio_env: picco-gh_release
             device: picco
-          - release_env: picco-gh_release
-            rc_env: picco-gh_release_rc
-            device: picco
+          # picco release-CANDIDATE builds live in release_candidate.yml (which carries a proper pio_env); the legacy release_env/rc_env-only entry here lacked pio_env and broke the release build with UnknownEnvNamesError.
     steps:
       - uses: actions/checkout@v7
         with:
