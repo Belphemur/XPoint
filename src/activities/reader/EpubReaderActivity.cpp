@@ -594,8 +594,6 @@ void EpubReaderActivity::maybePromptFinishReading() {
       section ? section->currentPage : -1;
 #endif
   if (currentSpineIndex == lastPromptSpineIndex && positionPage == lastPromptPage) return;
-  lastPromptSpineIndex = currentSpineIndex;
-  lastPromptPage = positionPage;
 
 #if defined(CROSSPOINT_TTF_READER)
   float bookProgressPercent;
@@ -619,6 +617,11 @@ void EpubReaderActivity::maybePromptFinishReading() {
   // (a rounded baseline can swallow a forward turn: 98.6% → 99.1% both round
   // to 99, and ≥99.5% then suppresses the 1% band forever).
   if (bookProgressPercent < 0.0f || bookProgressPercent > 100.0f) return;
+  // Cache only positions that were actually evaluated: an early return above
+  // (section still building, no section yet, invalid percent) must be retried
+  // on the next settled frame instead of being swallowed by the guard.
+  lastPromptSpineIndex = currentSpineIndex;
+  lastPromptPage = positionPage;
 
   // ADR-5: fire on forward progress only. A backward jump re-entering the
   // zone does not fire; firing resumes when progress moves forward again.

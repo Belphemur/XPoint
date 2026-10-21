@@ -83,7 +83,6 @@ void XtcReaderActivity::maybePromptFinishReading() {
   // Performance guard: only re-evaluate the policy when the reading position
   // actually changed (progress is a pure function of currentPage/pageCount).
   if (currentPage == lastPromptPage) return;
-  lastPromptPage = currentPage;
 
   const float progress = getCurrentBookProgressPercent();
   // Clamp the unrounded percent to the valid range before any comparison —
@@ -91,6 +90,9 @@ void XtcReaderActivity::maybePromptFinishReading() {
   // (a rounded baseline can swallow a forward turn: 98.6% → 99.1% both round
   // to 99, and ≥99.5% then suppresses the 1% band forever).
   if (progress < 0.0f || progress > 100.0f) return;
+  // Cache only evaluated positions: an invalid-percent frame must be retried
+  // on the next settled frame instead of being swallowed by the guard.
+  lastPromptPage = currentPage;
 
   // ADR-5: fire on forward progress only. A backward jump re-entering the
   // zone does not fire; firing resumes when progress moves forward again.

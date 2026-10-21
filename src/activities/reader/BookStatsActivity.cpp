@@ -84,7 +84,13 @@ void BookStatsActivity::applyCompletedState(const bool completed) {
   // A completed book is done: pin the percent so the home screen and any
   // reader's onExit() skip (which trusts a completed record) never report a
   // stale partial value — matches the readers' setBookCompleted behavior.
-  if (completed) stats.lastBookProgressPercent = 100;
+  // Un-completing cannot restore the measured value (the pin overwrote the
+  // only copy): report UNKNOWN instead of retaining 100 on an incomplete book.
+  if (completed) {
+    stats.lastBookProgressPercent = 100;
+  } else {
+    stats.lastBookProgressPercent = UNKNOWN_BOOK_PROGRESS_PERCENT;
+  }
   // ADR-2: the finish-reading latch clears on every completion-state change
   // (same rule as the readers' setBookCompleted) — a book un-finished from the
   // stats screen must become finish-prompt-eligible again.
