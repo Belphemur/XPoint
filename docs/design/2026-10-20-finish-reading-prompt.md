@@ -170,6 +170,33 @@ Evaluate after each committed page turn (where
 
 ## Verification
 
+### Amendment (2026-10-20, same day): XTC reader coverage
+
+The end-of-book completion UX is implemented in **both** reader activities
+(user directive 2026-09-12, PR #114 pattern): `EpubReaderActivity` AND
+`XtcReaderActivity` (`src/activities/reader/XtcReaderActivity.cpp:91-121` has
+the same `goHomeOrShowCompletionAchievement()` / `setBookCompleted()` /
+`completionPromptDismissedAtHundred` flow). The threshold modal therefore
+applies to **XTC books too**:
+
+- ADR-5's detection runs in both readers; XTC progress percent comes from the
+  XTC reader's own progress computation (`xtc->calculateProgress(page)`,
+  `src/util/BookProgress.cpp:54` is the home-screen equivalent).
+- The dismissal latch (ADR-2) lives in the shared `BookReadingStats`, so it is
+  naturally per-book across both engines. IMPORTANT divergence from the
+  existing flag: `completionPromptDismissedAtHundred` is reset on every
+  forward page turn (`XtcReaderActivity.cpp:447,473`) so the at-100% prompt
+  can re-ask later — `finishPromptDismissed` MUST NOT get that reset. The
+  owner decision is "no re-fire": once dismissed, the book never prompts again
+  through this modal. The latch clears only where `setBookCompleted()` clears
+  the existing flag (`EpubReaderActivity.cpp:631`,
+  `XtcReaderActivity.cpp:149`), i.e. on a completion-state change.
+- ADR-1's reuse applies unchanged: XTC's `setBookCompleted()` feeds the same
+  `BookStatsActivity` Achievement screen.
+
+Implementation must keep the two readers symmetric: one shared modal
+activity/threshold helper, called from both — not two divergent copies.
+
 - Host tests: threshold detector as a pure helper (progress percent →
   {none, fire 10/5/1, latched}) in the existing host test style
   (`test/`, build only the touched suites).
