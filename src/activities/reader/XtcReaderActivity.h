@@ -34,6 +34,11 @@ class XtcReaderActivity final : public ReaderActivity {
 #ifdef READING_STATS_ENABLED
   BookReadingStats stats;
   GlobalReadingStats globalStats;
+  // Finish-reading prompt (docs/design/2026-10-20-finish-reading-prompt.md):
+  // progress percent at the last settled evaluation, so backward jumps never
+  // fire and firing resumes when progress moves forward again (ADR-5).
+  int lastPromptProgress = -1;
+  void maybePromptFinishReading();
 
   void onGoHomeRequested() override;
   void setBookCompleted(bool completed);
@@ -44,6 +49,7 @@ class XtcReaderActivity final : public ReaderActivity {
 #endif
 
   bool loadBook() override;
+  void loop() override;
   std::string getBookTitle() const override { return xtc ? xtc->getTitle() : ""; }
   std::string getBookAuthor() const override { return xtc ? xtc->getAuthor() : ""; }
   std::string getBookThumbBmpPath() const override { return xtc ? xtc->getThumbBmpPath() : ""; }

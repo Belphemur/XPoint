@@ -10,6 +10,8 @@
 
 #ifdef READING_STATS_ENABLED
 #include "BookStatsActivity.h"
+#include "FinishReadingPromptActivity.h"
+#include "FinishReadingPromptPolicy.h"
 #include "FinishedBooksIndex.h"
 #include "ReadingStatsUtils.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -45,8 +47,81 @@ void XtcReaderActivity::onEnter() {
   if (xtc && SETTINGS.shouldTrackReadingStats()) {
     stats = BookReadingStats::load(xtc->getCachePath());
     globalStats = GlobalReadingStats::load();
+    // ADR-5: the finish-reading prompt fires only on forward page movement,
+    // never on open — the first settled evaluation seeds the baseline.
+    lastPromptProgress = -1;
   }
 }
+
+void XtcReaderActivity::loop() {
+#ifdef READING_STATS_ENABLED
+  // Finish-reading prompt (ADR-5): settled-frame evaluation after committed
+  // forward progress. Deferred while a gesture is in flight (inputPriority);
+  // the helper itself gates overlays, the end-of-book menu, and builds.
+  if (!mappedInput.rawInputPriority()) maybePromptFinishReading();
+#endif
+  ReaderActivity::loop();
+}
+
+#ifdef READING_STATS_ENABLED
+void XtcReaderActivity::maybePromptFinishReading() {
+  if (!xtc || !SETTINGS.shouldTrackReadingStats()) return;
+  // ADR-3: the toggle gates only the new threshold modals (the existing 100%
+  // prompt and the End-of-Book screen are untouched).
+  if (!SETTINGS.finishReadingPrompt) return;
+  if (stats.isCompleted) return;            // ADR-5: !stats.isCompleted
+  if (stats.finishPromptDismissed) return;  // ADR-2: permanent per-book latch
+  // Settled frame only: never at/past the final section boundary (the existing
+  // end-of-book flow owns completion there).
+  if (isAtEndOfBook()) return;
+
+  const float progress = getCurrentBookProgressPercent();
+  if (progress < 0.0f) return;
+  const int pct = static_cast<int>(progress + 0.5f);
+  if (pct < 0 || pct > 100) return;
+
+  // ADR-5: fire on forward progress only. A backward jump re-entering the
+  // zone does not fire; firing resumes when progress moves forward again.
+  // lastPromptProgress is seeded on open (-1) so the first settled frame
+  // never fires without real forward movement.
+  if (lastPromptProgress >= 0 && pct <= lastPromptProgress) {
+    lastPromptProgress = pct;
+    return;
+  }
+  lastPromptProgress = pct;
+
+  const auto decision = finish_prompt::evaluate(pct, true, stats.isCompleted, stats.finishPromptDismissed);
+  if (decision != finish_prompt::Decision::Fire10 && decision != finish_prompt::Decision::Fire5 &&
+      decision != finish_prompt::Decision::Fire1) {
+    return;
+  }
+  const uint8_t remaining = decision == finish_prompt::Decision::Fire1
+                                ? 1
+                                : (decision == finish_prompt::Decision::Fire5 ? 5 : 10);
+  auto prompt = makeUniqueNoThrow<FinishReadingPromptActivity>(renderer, mappedInput, remaining);
+  if (!prompt) {
+    LOG_ERR("XTR", "OOM: finish-reading prompt");
+    return;
+  }
+  startActivityForResult(std::move(prompt), [this](const ActivityResult& result) {
+    if (result.isCancelled) {
+      // ADR-2: one dismissal silences the book permanently — no later
+      // thresholds fire either. The latch clears only on a completion-state
+      // change (setBookCompleted).
+      stats.finishPromptDismissed = true;
+      if (xtc) stats.save(xtc->getCachePath());
+      requestUpdate();
+      return;
+    }
+    // ADR-1: route through exactly the existing completion path.
+    setBookCompleted(true);
+    // Completed from the prompt: persist the terminal page like the turn
+    // crossing does; loadProgress clamps it to the last page on reopen.
+    if (xtc) saveProgress(xtc->getPageCount());
+    goHomeOrShowCompletionAchievement();
+  });
+}
+#endif
 
 void XtcReaderActivity::onExit() {
   if (xtc && SETTINGS.shouldTrackReadingStats()) {
@@ -147,6 +222,9 @@ void XtcReaderActivity::setBookCompleted(bool completed) {
   stats.isCompleted = completed;
   stats.completionAchievementPending = completed;
   stats.completionPromptDismissedAtHundred = false;
+  // ADR-2: the finish-reading latch clears only on a completion-state change
+  // — never on a forward page turn (unlike completionPromptDismissedAtHundred).
+  stats.finishPromptDismissed = false;
   if (completed && !stats.finishedDateManual && !stats.finishedDate.isValid()) {
     ReadingStatsDateTime now;
     if (getCurrentLocalReadingStatsDateTime(now)) stats.finishedDate = now.date;
