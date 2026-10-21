@@ -4972,8 +4972,8 @@ bool EpubReaderActivity::saveFinishedProgress() {
   // eobTerminalProgressSaved on success lets the EOB-entry save skip once any
   // writer (crossing or prompt or first EOB render) has put the record down.
   if (!epub) return false;
-  const bool saved = progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0,
-                                             0, false, 0);
+  const bool saved =
+      progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false, 0);
   if (saved) eobTerminalProgressSaved = true;
   return saved;
 }
