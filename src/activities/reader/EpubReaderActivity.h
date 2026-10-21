@@ -77,6 +77,9 @@ class EpubReaderActivity final : public ReaderActivity {
   bool bookmarkRemoved = false;
   std::vector<BookmarkEntry> cachedBookmarks;
   bool recentsEntryRemoved = false;
+  // Latched by saveFinishedProgress() success: once the terminal record is on
+  // disk this session, the EOB-entry save in onEndOfBookRendered is a no-op.
+  bool eobTerminalProgressSaved = false;
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
 

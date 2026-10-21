@@ -4964,14 +4964,24 @@ bool EpubReaderActivity::saveFinishedProgress() {
   // Terminal record: spine == spineCount means the book is read past its
   // last section. The restore paths reject that spine and open fresh, so
   // reopen of a finished book starts at the beginning; KOReader/sleep sync
-  // report a finished position instead of the last pre-finish page.
+  // report a finished position instead of the last pre-finish page. Latching
+  // eobTerminalProgressSaved on success lets the EOB-entry save skip once any
+  // writer (crossing or prompt or first EOB render) has put the record down.
   if (!epub) return false;
-  return progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false,
-                                 0);
+  const bool saved = progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0,
+                                             0, false, 0);
+  if (saved) eobTerminalProgressSaved = true;
+  return saved;
 }
 
 void EpubReaderActivity::onEndOfBookRendered() {
   automaticPageTurnActive = false;
+  // The EOB menu may show without any page-turn crossing having run: persist
+  // the terminal record the moment the screen is visible, once per session
+  // (crossing saves latch eobTerminalProgressSaved, so no duplicate write).
+  if (!eobTerminalProgressSaved) {
+    if (!saveFinishedProgress()) LOG_ERR("ERS", "Failed to save end-of-book progress");
+  }
   if (pendingSyncSaveError) {
     pendingSyncSaveError = false;
     GUI.drawPopup(renderer, tr(STR_SAVE_PROGRESS_FAILED));
