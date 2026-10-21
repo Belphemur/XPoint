@@ -22,9 +22,7 @@ constexpr fui::ActionId ACTION_CHROME = 5;
 
 FinishReadingPromptActivity::FinishReadingPromptActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                          const uint8_t percentRemaining)
-    : Activity("FinishReadingPrompt", renderer, mappedInput),
-      UiAppHost(renderer),
-      percentRemaining(percentRemaining) {}
+    : Activity("FinishReadingPrompt", renderer, mappedInput), UiAppHost(renderer), percentRemaining(percentRemaining) {}
 
 void FinishReadingPromptActivity::onEnter() {
   Activity::onEnter();
@@ -95,7 +93,8 @@ void FinishReadingPromptActivity::loop() {
     dismiss();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up) || mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
+      mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     confirm();
     return;
   }
@@ -210,9 +209,11 @@ void FinishReadingPromptActivity::buildPromptScreen(UiScreen& screen) {
     // separate label + answer strings so the layout doesn't depend on a
     // separator hidden in translated text.
     char hintFront[96];
-    snprintf(hintFront, sizeof(hintFront), "%s %s", I18N.get(StrId::STR_STEP_HINT_FRONT), I18N.get(StrId::STR_KEEP_READING));
+    snprintf(hintFront, sizeof(hintFront), "%s %s", I18N.get(StrId::STR_STEP_HINT_FRONT),
+             I18N.get(StrId::STR_KEEP_READING));
     char hintSide[96];
-    snprintf(hintSide, sizeof(hintSide), "%s %s", I18N.get(StrId::STR_STEP_HINT_SIDE), I18N.get(StrId::STR_YES_FINISHED));
+    snprintf(hintSide, sizeof(hintSide), "%s %s", I18N.get(StrId::STR_STEP_HINT_SIDE),
+             I18N.get(StrId::STR_YES_FINISHED));
 
     const int16_t hintY = static_cast<int16_t>(questionY + bodyLh + theme.spaceMd);
     screen.target().text(fui::Rect{band.x, hintY, band.width, capLh}, hintFront, suffixText);

@@ -49,9 +49,9 @@
 #include "activities/ActivityResult.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #ifdef READING_STATS_ENABLED
+#include "BookStatsActivity.h"
 #include "FinishReadingPromptActivity.h"
 #include "FinishReadingPromptPolicy.h"
-#include "BookStatsActivity.h"
 #include "FinishedBooksActivity.h"
 #include "FinishedBooksIndex.h"
 #include "GlobalReadingStats.h"
@@ -559,7 +559,7 @@ void EpubReaderActivity::maybePromptFinishReading() {
   // ADR-3: the toggle gates only the new threshold modals (the existing 100%
   // prompt and the End-of-Book screen are untouched).
   if (!SETTINGS.finishReadingPrompt) return;
-  if (stats.isCompleted) return;          // ADR-5: !stats.isCompleted
+  if (stats.isCompleted) return;            // ADR-5: !stats.isCompleted
   if (stats.finishPromptDismissed) return;  // ADR-2: permanent per-book latch
   // Settled frame only: no overlay/other modal, no end-of-book menu, no
   // mid-build section, and never at/past the final section boundary (the
@@ -570,10 +570,9 @@ void EpubReaderActivity::maybePromptFinishReading() {
   float bookProgressPercent;
   if (ttf_ && !section) {
     // Mirrors-based percent (computeBookProgressPercent needs a Section).
-    const float chapterProgress =
-        cachedChapterTotalPageCount > 0
-            ? static_cast<float>(ttfPage) / static_cast<float>(cachedChapterTotalPageCount)
-            : 0.0f;
+    const float chapterProgress = cachedChapterTotalPageCount > 0
+                                      ? static_cast<float>(ttfPage) / static_cast<float>(cachedChapterTotalPageCount)
+                                      : 0.0f;
     bookProgressPercent = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
   } else if (section && !section->isBuilding()) {
     bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
@@ -602,9 +601,8 @@ void EpubReaderActivity::maybePromptFinishReading() {
       decision != finish_prompt::Decision::Fire1) {
     return;
   }
-  const uint8_t remaining = decision == finish_prompt::Decision::Fire1
-                                ? 1
-                                : (decision == finish_prompt::Decision::Fire5 ? 5 : 10);
+  const uint8_t remaining =
+      decision == finish_prompt::Decision::Fire1 ? 1 : (decision == finish_prompt::Decision::Fire5 ? 5 : 10);
   auto prompt = makeUniqueNoThrow<FinishReadingPromptActivity>(renderer, mappedInput, remaining);
   if (!prompt) {
     LOG_ERR("ERS", "OOM: finish-reading prompt");

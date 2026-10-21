@@ -95,9 +95,8 @@ void XtcReaderActivity::maybePromptFinishReading() {
       decision != finish_prompt::Decision::Fire1) {
     return;
   }
-  const uint8_t remaining = decision == finish_prompt::Decision::Fire1
-                                ? 1
-                                : (decision == finish_prompt::Decision::Fire5 ? 5 : 10);
+  const uint8_t remaining =
+      decision == finish_prompt::Decision::Fire1 ? 1 : (decision == finish_prompt::Decision::Fire5 ? 5 : 10);
   auto prompt = makeUniqueNoThrow<FinishReadingPromptActivity>(renderer, mappedInput, remaining);
   if (!prompt) {
     LOG_ERR("XTR", "OOM: finish-reading prompt");
