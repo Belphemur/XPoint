@@ -1,11 +1,46 @@
 import hashlib
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
 
 def cache_matches(requested, cached_request):
     return bool(requested.strip()) and requested.strip() == cached_request.strip()
+
+
+def restore_bt_includes(libs_dir, chip_variant: str, env) -> None:
+    """Repair a shared pioarduino-build.py whose bt include block was stripped.
+
+    The platform's component_manager.py removes lib_ignore'd components'
+    include paths from the shared framework-arduinoespressif32-libs
+    <chip>/pioarduino-build.py for any project whose lib_deps lack BT/BLE
+    keywords, and only restores it after a full build's checkprogsize --
+    never after metadata/IntelliSense runs. A sibling project sharing this
+    platform pin can therefore leave the chip without bt includes, which
+    breaks NimBLE with "esp_bt.h: No such file or directory". Restore the
+    pristine copy the package ships before the framework loads.
+    """
+    build_py = libs_dir / chip_variant / "pioarduino-build.py"
+    backup = libs_dir / chip_variant / f"pioarduino-build.py.{chip_variant}"
+    marker = f'"{chip_variant}", "include", "bt"'
+    lib_deps = env.GetProjectOption("lib_deps", [])
+    lib_deps_str = " ".join(str(dep) for dep in lib_deps).upper()
+    needs_bt = any(token in lib_deps_str for token in ("BLE", "BT", "NIMBLE", "BLUETOOTH"))
+    if not needs_bt or not build_py.is_file():
+        return
+    if marker in build_py.read_text(encoding="utf-8"):
+        return
+    if backup.is_file() and marker in backup.read_text(encoding="utf-8"):
+        shutil.copy2(backup, build_py)
+        print(f"Restored stripped bt includes for {chip_variant} from package backup")
+        return
+    raise RuntimeError(
+        f"{build_py} lost its bt include block and no pristine "
+        f"{backup.name} exists; reinstall with: "
+        "rm -rf ~/.platformio/packages/framework-arduinoespressif32-libs"
+        " && pio run -e <env>"
+    )
 
 
 if "--self-test" in sys.argv:
@@ -90,3 +125,5 @@ if rebuild and not board.get("build.esp-idf.sdkconfig_path", ""):
         print(f"Reset generated SDK configuration: {resolved.name}")
 
 request_file.write_text(cache_request + "\n", encoding="utf-8")
+
+restore_bt_includes(framework_libs, chip_variant, env)
