@@ -114,6 +114,10 @@ void XtcReaderActivity::goHomeOrShowCompletionAchievement() {
         return;
       }
       setBookCompleted(true);
+      // Completed from the prompt: the turn crossing never ran, so push the
+      // record past the final page like the crossing does; loadProgress
+      // clamps it to the last page on reopen.
+      if (xtc) saveProgress(xtc->getPageCount());
       goHomeOrShowCompletionAchievement();
     });
     return;
@@ -210,7 +214,7 @@ void XtcReaderActivity::renderBook() {
   }
 
   renderPage();
-  saveProgress();
+  saveProgress(currentPage);
 }
 
 XtcReaderActivity::StatusBarInfo XtcReaderActivity::getStatusBarInfo() const {
@@ -451,7 +455,7 @@ bool XtcReaderActivity::pageTurn(bool isForward) {
 #endif
       // The EOB render path bypasses renderBook()'s save, so persist the
       // terminal page synchronously when the forward turn crosses it.
-      if (currentPage == xtc->getPageCount()) saveProgress();
+      if (currentPage == xtc->getPageCount()) saveProgress(currentPage);
       return true;
     }
   } else {
@@ -480,7 +484,7 @@ bool XtcReaderActivity::skipPages(int amount) {
     if (currentPage == xtc->getPageCount()) {
       // The EOB render path bypasses renderBook()'s save, so persist the
       // terminal page synchronously when a skip crosses it.
-      saveProgress();
+      saveProgress(currentPage);
     }
     return true;
   }
@@ -497,15 +501,15 @@ void XtcReaderActivity::onReturnFromEndOfBook() {
   }
 }
 
-void XtcReaderActivity::saveProgress() const {
+void XtcReaderActivity::saveProgress(const uint32_t page) const {
   if (!xtc) return;
   uint8_t data[4];
-  data[0] = currentPage & 0xFF;
-  data[1] = (currentPage >> 8) & 0xFF;
-  data[2] = (currentPage >> 16) & 0xFF;
-  data[3] = (currentPage >> 24) & 0xFF;
+  data[0] = page & 0xFF;
+  data[1] = (page >> 8) & 0xFF;
+  data[2] = (page >> 16) & 0xFF;
+  data[3] = (page >> 24) & 0xFF;
   if (!ProgressFile::writeAtomic(xtc->getCachePath(), data, sizeof(data))) {
-    LOG_ERR("XTC", "Failed to save progress: page %lu", currentPage);
+    LOG_ERR("XTC", "Failed to save progress: page %lu", static_cast<unsigned long>(page));
   }
 }
 

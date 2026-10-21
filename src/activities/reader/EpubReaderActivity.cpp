@@ -578,6 +578,9 @@ void EpubReaderActivity::goHomeOrShowCompletionAchievement() {
         return;
       }
       setBookCompleted(true);
+      // Completed from the prompt: no page-turn crossing ran, so persist the
+      // terminal record here or the pre-jump position survives on disk.
+      if (!saveFinishedProgress()) LOG_ERR("ERS", "Failed to save finished-book progress");
       goHomeOrShowCompletionAchievement();
     });
     return;
@@ -2348,8 +2351,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 #endif
       // The EOB screen bypasses the section render path, so persist the
       // terminal position synchronously instead of waiting for the gate.
-      if (!progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false,
-                                   0)) {
+      if (!saveFinishedProgress()) {
         LOG_ERR("ERS", "Failed to save end-of-book progress");
       }
       lastPageTurnTime = millis();
@@ -2437,8 +2439,7 @@ bool EpubReaderActivity::skipPages(int amount) {
     if (currentSpineIndex == epub->getSpineItemsCount()) {
       // The EOB screen bypasses the section render path, so persist the
       // terminal position synchronously when a skip crosses it.
-      if (!progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false,
-                                   0)) {
+      if (!saveFinishedProgress()) {
         LOG_ERR("ERS", "Failed to save end-of-book progress");
       }
     }
@@ -4922,6 +4923,9 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
       lastPageTurnTime = millis();
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
+      // Same terminal-record guarantee as the legacy crossings: nothing past
+      // here renders a section page, so this save is the book's done marker.
+      if (!saveFinishedProgress()) LOG_ERR("ERS", "Failed to save end-of-book progress");
       lastPageTurnTime = millis();
     }
   } else {
@@ -4955,6 +4959,16 @@ bool EpubReaderActivity::ttfPageTurn(const bool isForwardTurn) {
 }
 
 #endif  // CROSSPOINT_TTF_READER
+
+bool EpubReaderActivity::saveFinishedProgress() {
+  // Terminal record: spine == spineCount means the book is read past its
+  // last section. The restore paths reject that spine and open fresh, so
+  // reopen of a finished book starts at the beginning; KOReader/sleep sync
+  // report a finished position instead of the last pre-finish page.
+  if (!epub) return false;
+  return progressManager.saveNow(epub->getCachePath().c_str(), /*spineIndex=*/epub->getSpineItemsCount(), 0, 0, false,
+                                 0);
+}
 
 void EpubReaderActivity::onEndOfBookRendered() {
   automaticPageTurnActive = false;

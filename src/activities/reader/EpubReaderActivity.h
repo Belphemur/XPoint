@@ -173,6 +173,10 @@ class EpubReaderActivity final : public ReaderActivity {
   // still returns to where a followed link was tapped.
   void saveLinkStack() const;
   void loadLinkStack();
+  // Terminal progress record: spine == spineCount marks the book read past
+  // its last section (reopen treats it as done and starts fresh; sync
+  // reports a finished position). Every completion path writes it.
+  bool saveFinishedProgress();
 
 #ifdef READING_STATS_ENABLED
   BookReadingStats stats;

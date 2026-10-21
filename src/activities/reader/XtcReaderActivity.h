@@ -27,7 +27,9 @@ class XtcReaderActivity final : public ReaderActivity {
   void openChapterSelection();
   void renderStatusBarOverlay(GfxRenderer& renderer, StatusBarOverlayPosition position) const;
   StatusBarInfo getStatusBarInfo() const;
-  void saveProgress() const;
+  // Writes `page` into progress.bin; pass xtc->getPageCount() for the
+  // terminal record (past the final page, matching the turn crossing).
+  void saveProgress(const uint32_t page) const;
   void loadProgress();
 #ifdef READING_STATS_ENABLED
   BookReadingStats stats;
