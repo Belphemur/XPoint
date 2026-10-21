@@ -635,6 +635,10 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
   }
 
   if (completed) {
+    // The home screen reads lastBookProgressPercent, but onExit() cannot
+    // compute it at the end-of-book state (no section). A completed book is
+    // done: pin the percent. Re-reading it later overwrites with real values.
+    stats.lastBookProgressPercent = 100;
     if (SETTINGS.removeReadBooksFromRecents) RECENT_BOOKS.removeByPath(epub->getPath());
     if (SETTINGS.moveFinishedToReadFolder && !isInReadFolder(epub->getPath())) pendingReadFolderMove = true;
     if (globalStats.completedBooks < UINT32_MAX) ++globalStats.completedBooks;
