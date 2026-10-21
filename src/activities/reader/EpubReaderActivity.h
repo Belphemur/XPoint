@@ -199,6 +199,13 @@ class EpubReaderActivity final : public ReaderActivity {
   bool currentPageReadingSecondsForStats(uint32_t& seconds) const;
   void recordCurrentPageReadingTime();
   void recordForwardPagePaceSample(uint32_t seconds, uint16_t wordsOnPage);
+  // Finish-reading prompt (docs/design/2026-10-20-finish-reading-prompt.md):
+  // fires on settled frames after forward progress crosses the 10/5/1%
+  // remaining bands. lastPromptProgress is the progress percent at the last
+  // settled evaluation, so backward jumps never fire and firing resumes when
+  // progress moves forward again (ADR-5).
+  int lastPromptProgress = -1;
+  void maybePromptFinishReading();
   // Completion/achievement flow: real end auto-completes, while a final-page
   // or 100% exit asks first and latches a declined prompt.
   void onGoHomeRequested() override;

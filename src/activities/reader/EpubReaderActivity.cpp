@@ -49,6 +49,8 @@
 #include "activities/ActivityResult.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #ifdef READING_STATS_ENABLED
+#include "FinishReadingPromptActivity.h"
+#include "FinishReadingPromptPolicy.h"
 #include "BookStatsActivity.h"
 #include "FinishedBooksActivity.h"
 #include "FinishedBooksIndex.h"
@@ -350,6 +352,9 @@ void EpubReaderActivity::onEnter() {
     sessionReadingSeconds = 0;
     sessionPageTurns = 0;
     hasSessionStartLocalDateTime = getCurrentLocalReadingStatsDateTime(sessionStartLocalDateTime);
+    // ADR-5: the finish-reading prompt fires only on forward page movement,
+    // never on open — the first settled evaluation seeds the baseline.
+    lastPromptProgress = -1;
   }
 #endif
 }
@@ -548,6 +553,83 @@ BookReadingStats EpubReaderActivity::achievementStatsPreview(uint32_t* pendingRe
   return preview;
 }
 
+void EpubReaderActivity::maybePromptFinishReading() {
+#ifdef READING_STATS_ENABLED
+  if (!epub || !SETTINGS.shouldTrackReadingStats()) return;
+  // ADR-3: the toggle gates only the new threshold modals (the existing 100%
+  // prompt and the End-of-Book screen are untouched).
+  if (!SETTINGS.finishReadingPrompt) return;
+  if (stats.isCompleted) return;          // ADR-5: !stats.isCompleted
+  if (stats.finishPromptDismissed) return;  // ADR-2: permanent per-book latch
+  // Settled frame only: no overlay/other modal, no end-of-book menu, no
+  // mid-build section, and never at/past the final section boundary (the
+  // existing end-of-book flow owns completion there).
+  if (overlay != Overlay::None || overlayPopup.isActive() || endOfBookMenuActive()) return;
+  if (currentSpineIndex >= epub->getSpineItemsCount()) return;
+#if defined(CROSSPOINT_TTF_READER)
+  float bookProgressPercent;
+  if (ttf_ && !section) {
+    // Mirrors-based percent (computeBookProgressPercent needs a Section).
+    const float chapterProgress =
+        cachedChapterTotalPageCount > 0
+            ? static_cast<float>(ttfPage) / static_cast<float>(cachedChapterTotalPageCount)
+            : 0.0f;
+    bookProgressPercent = epub->calculateProgress(currentSpineIndex, chapterProgress) * 100.0f;
+  } else if (section && !section->isBuilding()) {
+    bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
+  } else {
+    return;  // no section yet: defer to the next settled frame
+  }
+#else
+  if (!section || section->isBuilding()) return;
+  const float bookProgressPercent = computeBookProgressPercent(*epub, section.get(), currentSpineIndex);
+#endif
+  const int pct = static_cast<int>(bookProgressPercent + 0.5f);
+  if (pct < 0 || pct > 100) return;
+
+  // ADR-5: fire on forward progress only. A backward jump re-entering the
+  // zone does not fire; firing resumes when progress moves forward again.
+  // lastPromptProgress is seeded on open (-1) so the first settled frame
+  // never fires without real forward movement.
+  if (lastPromptProgress >= 0 && pct <= lastPromptProgress) {
+    lastPromptProgress = pct;
+    return;
+  }
+  lastPromptProgress = pct;
+
+  const auto decision = finish_prompt::evaluate(pct, true, stats.isCompleted, stats.finishPromptDismissed);
+  if (decision != finish_prompt::Decision::Fire10 && decision != finish_prompt::Decision::Fire5 &&
+      decision != finish_prompt::Decision::Fire1) {
+    return;
+  }
+  const uint8_t remaining = decision == finish_prompt::Decision::Fire1
+                                ? 1
+                                : (decision == finish_prompt::Decision::Fire5 ? 5 : 10);
+  auto prompt = makeUniqueNoThrow<FinishReadingPromptActivity>(renderer, mappedInput, remaining);
+  if (!prompt) {
+    LOG_ERR("ERS", "OOM: finish-reading prompt");
+    return;
+  }
+  startActivityForResult(std::move(prompt), [this](const ActivityResult& result) {
+    if (result.isCancelled) {
+      // ADR-2: one dismissal silences the book permanently — no later
+      // thresholds fire either. The latch clears only on a completion-state
+      // change (setBookCompleted).
+      stats.finishPromptDismissed = true;
+      if (epub) stats.save(epub->getCachePath());
+      requestUpdate();
+      return;
+    }
+    // ADR-1: route through exactly the existing completion path.
+    setBookCompleted(true);
+    // Completed from the prompt: persist the terminal record here so 100%
+    // survives on disk.
+    if (!saveFinishedProgress()) LOG_ERR("ERS", "Failed to save finished-book progress");
+    goHomeOrShowCompletionAchievement();
+  });
+#endif
+}
+
 void EpubReaderActivity::goHomeOrShowCompletionAchievement() {
   const int spineCount = epub ? epub->getSpineItemsCount() : 0;
   const bool atEndOfBook = epub && spineCount > 0 && currentSpineIndex >= spineCount;
@@ -629,6 +711,9 @@ void EpubReaderActivity::setBookCompleted(bool completed) {
   stats.isCompleted = completed;
   stats.completionAchievementPending = completed;
   stats.completionPromptDismissedAtHundred = false;
+  // ADR-2: the finish-reading latch clears only on a completion-state change
+  // — never on a forward page turn (unlike completionPromptDismissedAtHundred).
+  stats.finishPromptDismissed = false;
   if (completed && !stats.finishedDateManual && !stats.finishedDate.isValid()) {
     ReadingStatsDateTime now;
     if (getCurrentLocalReadingStatsDateTime(now)) stats.finishedDate = now.date;
@@ -1457,6 +1542,13 @@ void EpubReaderActivity::loop() {
   } else {
     pendingReadFolderMove = false;
   }
+
+  // Finish-reading prompt (ADR-5): settled-frame evaluation after committed
+  // forward progress. Deferred while a gesture is in flight (inputPriority);
+  // the helper itself gates overlays, the end-of-book menu, and builds.
+#ifdef READING_STATS_ENABLED
+  if (!inputPriority) maybePromptFinishReading();
+#endif
 
   // The open overlay owns the touch latch; page-turn tap detection must not
   // consume a tap that FUI will route to the sheet.
