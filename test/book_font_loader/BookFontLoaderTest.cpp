@@ -1645,11 +1645,19 @@ uint32_t loadDejaFamily(BookFontLoader& loader) {
   if (loader.getReaderFont() == nullptr) return 0;
   return loader.fontFingerprint();
 }
+// Scoped hold of the sticky unmeasurable override: the destructor resets it
+// on EVERY exit — including a GTEST_SKIP() throw from the fixture-unavailable
+// early return — so a skipped retry test cannot leave later probe tests
+// running against a forced-unmeasurable probe (kody 2026-10-22).
+struct UnmeasurableOverrideGuard {
+  UnmeasurableOverrideGuard() { BookFontLoader::setHintProbeUnmeasurableForTest(true); }
+  ~UnmeasurableOverrideGuard() { BookFontLoader::setHintProbeUnmeasurableForTest(false); }
+};
 }  // namespace
 
 TEST(HintingProbeRetryTest, FailedShallowAttemptArmsExactlyOneRetry) {
   BookFontLoader::setHintProbeSizeForTest(16);
-  BookFontLoader::setHintProbeUnmeasurableForTest(true);
+  UnmeasurableOverrideGuard unmeasurable;
   BookFontLoader loader;
   const uint32_t fp = loadDejaFamily(loader);
   if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
@@ -1679,12 +1687,11 @@ TEST(HintingProbeRetryTest, FailedShallowAttemptArmsExactlyOneRetry) {
   EXPECT_TRUE(loader.hintProbeRetryArmedForTest());
 
   loader.resetHintStateForTest();
-  BookFontLoader::setHintProbeUnmeasurableForTest(false);
 }
 
 TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
   BookFontLoader::setHintProbeSizeForTest(16);
-  BookFontLoader::setHintProbeUnmeasurableForTest(true);
+  UnmeasurableOverrideGuard unmeasurable;
   BookFontLoader loader;
   const uint32_t fp = loadDejaFamily(loader);
   if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
@@ -1708,7 +1715,6 @@ TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
   EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
 
   loader.resetHintStateForTest();
-  BookFontLoader::setHintProbeUnmeasurableForTest(false);
 }
 
 // The retry must (a) restore the requested mode BEFORE the re-measurement —
@@ -1725,7 +1731,7 @@ TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
 // degraded), reproducing the device's tag shift.
 TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
   BookFontLoader::setHintProbeSizeForTest(16);
-  BookFontLoader::setHintProbeUnmeasurableForTest(true);
+  UnmeasurableOverrideGuard unmeasurable;
   BookFontLoader loader;
   const uint32_t fp = loadDejaFamily(loader);
   if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
@@ -1759,7 +1765,6 @@ TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
   EXPECT_FALSE(loader.hintProbePendingForTest());
 
   loader.resetHintStateForTest();
-  BookFontLoader::setHintProbeUnmeasurableForTest(false);
 }
 
 TEST(HintingProbeRetryTest, CleanLoadSettlesAtLoadTailAndClearsBoth) {
@@ -1783,7 +1788,6 @@ TEST(HintingProbeRetryTest, CleanLoadSettlesAtLoadTailAndClearsBoth) {
   EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
 
   loader.resetHintStateForTest();
-  BookFontLoader::setHintProbeUnmeasurableForTest(false);
 }
 #endif
 

@@ -327,7 +327,8 @@ class BookFontLoader {
   static void setHintProbeSizeForTest(uint16_t pointSize);
   // Force the unmeasurable path (device: probe task spawn failure / settle
   // timeout) for the retry state machine's host tests. Sticky file-scope
-  // state: reset with false when a test is done.
+  // state: hold it with the test file's UnmeasurableOverrideGuard so any
+  // exit — including GTEST_SKIP — resets it.
   static void setHintProbeUnmeasurableForTest(bool unmeasurable);
   // Observable probe state for the retry tests (see hintProbeRetryArmed_).
   bool hintProbePendingForTest() const { return hintProbePending_; }
