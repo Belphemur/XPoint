@@ -822,6 +822,16 @@ void setupDisplayAndFonts(bool seamless = false) {
   // registers until the next settings/reader lifecycle event.
 #if defined(CROSSPOINT_TTF_READER)
   freeink::book::fontLoader.begin();
+  // Select the reader family BEFORE the first ensureLoaded(): the UI-fallback
+  // sync below triggers the session's first load, and an unselected loader
+  // loads families_[0] — so the boot stack probe measured (and cached its
+  // verdict for) a family the reader never opens. Every book open then
+  // re-probed into the fragmented post-open heap (MaxAlloc ~45-63 KB < the
+  // 57 KB probe stack) and failed closed = unhinted text for the whole
+  // session (design 2026-10-22-hint-probe-boot-family.md, soak F1). Mirrors
+  // the reader's own selection in TtfBookRuntime::makeLayoutParams.
+  freeink::book::fontLoader.selectFamily(
+      SETTINGS.readerFontEngine == CrossPointSettings::READER_ENGINE_TTF ? SETTINGS.ttfFontFamilyName : "");
 #endif
 
 #if CROSSPOINT_TTF_UI_FALLBACK
