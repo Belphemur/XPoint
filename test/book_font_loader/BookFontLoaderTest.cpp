@@ -1575,7 +1575,7 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
 
   // Changed bytes: the content identity moves, so the cached verdict no
   // longer describes these faces — slot 3 returns to the requested mode and
-  // the new load owes a fresh probe.
+  // the new load settles its own fresh verdict at the tail.
   std::string modified = dejavu;
   modified[8] = static_cast<char>(modified[8] ^ 0xFF);  // same size, valid sfnt
   ASSERT_NE(modified, dejavu);
@@ -1588,18 +1588,206 @@ TEST(BookFontLoaderHinting, VerdictReusesOnUnchangedReloadAndMissesOnChangedByte
 
   // Body-size change: the probe's depth is a function of the size it
   // rasterized, so the cached verdict must not be reused at a different
-  // size — the slot returns to the requested mode and the load owes a probe.
+  // size. The settle now runs at the load tail, so the changed-bytes load
+  // already recorded its own verdict (the cache is single-slot), and the
+  // restored bytes settle a fresh one — the slot stays at the requested mode
+  // and the identity returns to the original content's value.
   writeFaceFile(kFacePath, dejavu);  // restore the verdict's face bytes
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
-  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::None);
+  EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
+  EXPECT_EQ(loader.fontFingerprint(), fpRequested);
   BookFontLoader::setHintProbeSizeForTest(24);
   loader.markDirty();
   ASSERT_NE(loader.getReaderFont(), nullptr);
   EXPECT_EQ(BookFontLoader::effectiveRenderOptions(3).hinting, HM::Light);
   EXPECT_EQ(BookFontLoader::renderOptionsFingerprintTag(), tagFor({HM::None, HM::Light, HM::Light, HM::Light}));
+  EXPECT_EQ(loader.fontFingerprint(), fpRequested);
   // Restore after the test (the override is file-scope static state).
   BookFontLoader::setHintProbeSizeForTest(16);
+}
+
+// Retry backstop for an unmeasurable probe (2026-10-22): the device's probe
+// task needs a 56KB contiguous DRAM stack, which a fragmented heap cannot
+// give at the reader's first render — the settle therefore runs at
+// ensureLoaded()'s tail (shallow window) and arms exactly ONE re-probe that
+// the reader's first-render ensureHintProbeSettled() call consumes. The host
+// probe is compiled out, so the unmeasurable path is driven through
+// setHintProbeUnmeasurableForTest and the flag state machine is pinned
+// directly: (a) a failed shallow attempt leaves the probe pending + one
+// retry armed, (b) the retry attempt disarms it whatever its outcome,
+// (c) a failed retry never re-arms, (d) a successful attempt clears both.
+// Slot-option/fingerprint folds are covered by the BookFontLoaderHinting
+// tests; the host FT funnel keeps every loaded face unhinted, so this suite
+// pins the scheduling state, not the modes.
+namespace {
+// Loads the one-face DejaVu family through the real ensureLoaded() path
+// (which now settles the probe at its tail). Returns the load's content
+// fingerprint, or 0 when the fixture is unavailable (the test body owns the
+// GTEST_SKIP — it only returns from the current function).
+uint32_t loadDejaFamily(BookFontLoader& loader) {
+  const std::string dejavu = readFixtureFile(DEJAVU_FIXTURE);
+  if (!fixtureAvailable(dejavu)) return 0;
+  resetStorage();
+  constexpr const char* kFacePath = "/fonts/Deja/Deja-Regular.ttf";
+  seedLoadableFace(dejavu, kFacePath, 0x5F123456u);
+  testSetPsramHeap({8 * 1024 * 1024, 8 * 1024 * 1024, 0, 0});
+  loader.begin();
+  auto& fam = loader.editFamily(0);
+  std::snprintf(fam.name, sizeof(fam.name), "%s", "Deja");
+  fam.faceCount = 1;
+  fam.faces[0].styleFlags = freeink::book::StyleNone;
+  fam.faces[0].fileSize = static_cast<uint32_t>(dejavu.size());
+  fam.faces[0].mtime = 0x5F123456u;
+  std::snprintf(fam.faces[0].file, sizeof(fam.faces[0].file), "%s", kFacePath);
+  loader.setFamilyCountForTest(1);
+  loader.markDirty();
+  if (loader.getReaderFont() == nullptr) return 0;
+  return loader.fontFingerprint();
+}
+// Scoped hold of the sticky unmeasurable override: the destructor resets it
+// on EVERY exit — including a GTEST_SKIP() throw from the fixture-unavailable
+// early return — so a skipped retry test cannot leave later probe tests
+// running against a forced-unmeasurable probe (kody 2026-10-22).
+struct UnmeasurableOverrideGuard {
+  UnmeasurableOverrideGuard() { BookFontLoader::setHintProbeUnmeasurableForTest(true); }
+  ~UnmeasurableOverrideGuard() { BookFontLoader::setHintProbeUnmeasurableForTest(false); }
+};
+}  // namespace
+
+TEST(HintingProbeRetryTest, FailedShallowAttemptArmsExactlyOneRetry) {
+  BookFontLoader::setHintProbeSizeForTest(16);
+  UnmeasurableOverrideGuard unmeasurable;
+  BookFontLoader loader;
+  const uint32_t fp = loadDejaFamily(loader);
+  if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+
+  // (a) The shallow attempt failed inside the load: the verdict stayed
+  // uncached, the probe is still pending, and one retry is armed for the
+  // reader's first-render backstop call.
+  EXPECT_TRUE(loader.hintProbePendingForTest());
+  EXPECT_TRUE(loader.hintProbeRetryArmedForTest());
+
+  // Backstop: consumes the retry — the attempt runs again, fails again, and
+  // must NOT re-arm (the retry is granted once per load cycle).
+  loader.ensureHintProbeSettled();
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());  // (b) consumed
+  EXPECT_FALSE(loader.hintProbePendingForTest());     // (c) no further probing
+
+  // A third settle is a no-op: the cycle is over, the session stays degraded.
+  loader.ensureHintProbeSettled();
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+
+  // A fresh load cycle re-arms the attempt budget (the retry flag resets
+  // with the load); the unmeasurable override still holds, so the new
+  // shallow attempt fails and grants its own retry.
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_TRUE(loader.hintProbePendingForTest());
+  EXPECT_TRUE(loader.hintProbeRetryArmedForTest());
+
+  loader.resetHintStateForTest();
+}
+
+TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
+  BookFontLoader::setHintProbeSizeForTest(16);
+  UnmeasurableOverrideGuard unmeasurable;
+  BookFontLoader loader;
+  const uint32_t fp = loadDejaFamily(loader);
+  if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_TRUE(loader.hintProbeRetryArmedForTest());  // shallow attempt failed
+
+  // The backstop retry runs with a clean heap: the measurement succeeds, the
+  // verdict is recorded, and the fail-closed degrade of the failed attempt is
+  // rolled back through the degrade funnel (device: hinting upgrades, one
+  // FIBP re-index accepted by design).
+  BookFontLoader::setHintProbeUnmeasurableForTest(false);
+  loader.ensureHintProbeSettled();
+  EXPECT_FALSE(loader.hintProbePendingForTest());  // (d) success clears both
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
+
+  // The settled verdict is cached: an unchanged reload reuses it instead of
+  // re-probing, and the identity stays stable.
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(loader.fontFingerprint(), fp);
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
+
+  loader.resetHintStateForTest();
+}
+
+// The retry must (a) restore the requested mode BEFORE the re-measurement —
+// the failed attempt's fail-closed degrade would otherwise make the probe
+// read unhinted depth and clear a hinted render it never tested — and (b)
+// cache the verdict under the key observed when the retry was ARMED (the
+// requested-options fingerprint): the retry pass re-enters with fingerprint_
+// under the fail-closed degrade tag, so caching under the entry key would
+// never match what an unchanged later load computes and every reload would
+// re-probe. Host limits: the host funnel drops autohint for every loaded
+// face (slot 0 already sits at None), so (a) is pinned via the restore-order
+// snapshot and (b) by engineering a fingerprint-visible degrade on a
+// FACELESS slot (allowed there — it stays at the requested Light until
+// degraded), reproducing the device's tag shift.
+TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
+  BookFontLoader::setHintProbeSizeForTest(16);
+  UnmeasurableOverrideGuard unmeasurable;
+  BookFontLoader loader;
+  const uint32_t fp = loadDejaFamily(loader);
+  if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_TRUE(loader.hintProbeRetryArmedForTest());  // shallow attempt failed
+  // The first attempt ran with nothing restored ahead of it.
+  EXPECT_EQ(BookFontLoader::hintProbeRestoresAtProbeForTest(), 0);
+
+  // Make the fail-closed degrade fingerprint-visible the way it is on the
+  // device (there the loaded faces drop Light -> None; the host funnel has
+  // already dropped slot 0, so shift a faceless slot instead).
+  loader.degradeHintForTest(1);
+  loader.applyRenderMode(false);
+  const uint32_t degradedEntryKey = loader.fontFingerprint();
+  ASSERT_NE(degradedEntryKey, fp);
+
+  // The backstop retry runs with a clean heap: it must restore BEFORE the
+  // probe (snapshot 1 at entry) and cache under the armed key.
+  BookFontLoader::setHintProbeUnmeasurableForTest(false);
+  loader.ensureHintProbeSettled();
+  EXPECT_EQ(BookFontLoader::hintProbeRestoresAtProbeForTest(), 1);
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
+  EXPECT_EQ(loader.hintVerdictKeyForTest(), fp);
+  EXPECT_NE(loader.hintVerdictKeyForTest(), degradedEntryKey);
+
+  // The unchanged reload therefore REUSES the verdict (the fingerprint comes
+  // back at the requested tag) instead of paying a second blocking probe.
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(loader.fontFingerprint(), fp);
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+
+  loader.resetHintStateForTest();
+}
+
+TEST(HintingProbeRetryTest, CleanLoadSettlesAtLoadTailAndClearsBoth) {
+  BookFontLoader::setHintProbeSizeForTest(16);
+  BookFontLoader loader;
+  const uint32_t fp = loadDejaFamily(loader);
+  if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+
+  // (d) The shallow attempt succeeded inside the load: nothing pending, no
+  // retry armed — the reader's backstop call is a no-op.
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
+  loader.ensureHintProbeSettled();
+  EXPECT_EQ(loader.fontFingerprint(), fp);
+
+  // An unchanged reload reuses the verdict instead of re-probing.
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(loader.fontFingerprint(), fp);
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
+
+  loader.resetHintStateForTest();
 }
 #endif
 

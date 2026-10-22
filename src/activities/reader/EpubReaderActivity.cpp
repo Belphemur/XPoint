@@ -3661,9 +3661,13 @@ void EpubReaderActivity::renderBookTtf() {
     showBuildError();
     return;
   }
-  // Settle the P2 hint-stack verdict from this shallow frame, before the
+  // Retry backstop for the P2 hint-stack verdict. ensureLoaded() settles the
+  // probe itself at its tail (shallow-heap window); an unmeasurable attempt
+  // there arms exactly one re-probe, consumed HERE — still before the
   // generation hash and the worker start below consume the fingerprint and
-  // before any hinted rasterization in this pass. Measured deeper down the
+  // before any hinted rasterization in this pass (a retry that succeeds
+  // re-opens hinting and re-derives the fingerprint; a failed one leaves the
+  // fail-closed degrade in effect). Measured deeper down the
   // settings/preview stack the loop task's own frames dominate the probe's
   // high-water delta and every face degrades.
   freeink::book::fontLoader.ensureHintProbeSettled();
