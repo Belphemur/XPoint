@@ -123,6 +123,42 @@ No consumer stack size is changed by this work; growing the 32 KB worker is an
 owner decision that would buy nothing for hinting (it never hints) — the
 loop task already has the headroom the honest budget requires.
 
+### Addendum 2026-10-22: the schedulability broke, not the budget
+
+Owner device log (3 runs, 100% reproducible, BLE page turner DISABLED):
+
+```
+[CPRO] open: free=107044 max_block=65524      ← pre-book allocations
+[MEM] Stage=book_open HeapFree=93KB
+[ERR] [BFNT] Hint probe task spawn failed      ← instant, no timeout
+[INF] [BFNT] Hinting degraded to None for face slot 0..3 (stack probe: unmeasurable)
+```
+
+The "book_open ≈ 128 KB" line above is STALE for today's resident set: at the
+probe's only trigger — the reader's first TTF render — the heap shows 93 KB
+free but the largest block has already fragmented to ~47 KB (lifetime
+MaxAlloc 47,092 B in the reader / 51,188 B after reader exit). The 56 KB
+probe-task stack cannot be allocated, `xTaskCreatePinnedToCore` fails
+instantly, and the fail-closed path degrades every loaded slot. The verdict
+from an unmeasurable probe is deliberately not cached, so every family
+load / size change re-arms the probe and fails again — hinting permanently
+off for the session. Not BLE-related (reproduced with the page turner off).
+
+The budget derivation stands (measured depths 16–28 KB < 40 KB); what broke
+is the SCHEDULING POINT. The window where the 56 KB task fits existed seconds
+earlier: `max_block=65524` at the content-protection open, before the bulk of
+book-open allocations (65,524 ≥ 57,344 with 8 KB slack). Fix (design
+`2026-10-22-hint-probe-scheduling.md`): the probe settles at the tail of
+`ensureLoaded()` — the load's shallow-heap window, which for the normal
+boot→open flow is the boot load with a whole heap — with the reader's
+first-render call kept as a one-retry backstop. Measurement methodology,
+56 KB task stack, 40 KB budget, timeout, and join discipline are unchanged.
+Divergence note: a reader-path RELOAD (family change, or a multi-family card
+whose `families_[0]` is not the selected family) still settles after book-open
+allocations; the shallow-window rationale holds unconditionally only for the
+boot-path load. Worst case for a reload is today's behavior bounded by one
+retry.
+
 ## Coverage note
 
 `probeHintStackSafety()` itself is `#if defined(ARDUINO)` and compiles to a

@@ -198,13 +198,13 @@ class BookFontLoader {
 
   // P2 stack gate, call-site half (no-op on the stb backend, which has no
   // render options to gate). Measures the loaded faces' hinted render depth
-  // on a dedicated one-shot task (see probeHintStackSafety), so where this is
-  // called from only affects WHEN the one-time measurement happens, not its
-  // attribution. Call it from the reader's first TTF render, after the
-  // family is loaded and before any hinted rasterization or FIBP worker
-  // start, so no consumer runs a hinted glyph the verdict has not cleared.
-  // One-shot per load: ensureLoaded() re-arms it and an unchanged face set at
-  // the same body size reuses its verdict.
+  // on a dedicated one-shot task (see probeHintStackSafety). ensureLoaded()
+  // settles the probe itself at its tail (the load's shallow-heap window);
+  // this call re-runs the settle as the RETRY BACKSTOP: an unmeasurable
+  // attempt arms exactly one re-probe, consumed here on the reader's first
+  // TTF render — still before the generation hash, the FIBP worker start,
+  // and any hinted rasterization, so no consumer runs a hinted glyph the
+  // verdict has not cleared.
   void ensureHintProbeSettled();
 
   // Scrub arenas + unload file bytes when leaving the reader with low heap.
@@ -325,6 +325,13 @@ class BookFontLoader {
   // compile the FreeRTOS probe out and have no SETTINGS, so the size axis of
   // the verdict key needs a seam). 0 = "unset", the host default.
   static void setHintProbeSizeForTest(uint16_t pointSize);
+  // Force the unmeasurable path (device: probe task spawn failure / settle
+  // timeout) for the retry state machine's host tests. Sticky file-scope
+  // state: reset with false when a test is done.
+  static void setHintProbeUnmeasurableForTest(bool unmeasurable);
+  // Observable probe state for the retry tests (see hintProbeRetryArmed_).
+  bool hintProbePendingForTest() const { return hintProbePending_; }
+  bool hintProbeRetryArmedForTest() const { return hintProbeRetryArmed_; }
   // Restore every slot to the requested mode — degradeHintForTest is sticky
   // (file-scope static state outlives the test) and the tag participates in
   // other tests' fingerprints.
@@ -385,6 +392,12 @@ class BookFontLoader {
   uint8_t hintVerdictMask_ = 0;     // bit i: slot i measured too deep for the consumer budget
   uint16_t hintVerdictSizePt_ = 0;  // body point size the cached mask was measured at
   bool hintProbePending_ = true;    // the current face set has no settled verdict
+  // One re-probe armed after an unmeasurable attempt (probe task spawn
+  // failure / settle timeout), consumed by the next ensureHintProbeSettled()
+  // call whatever its outcome: a failed retry never re-arms within the load
+  // cycle, and a fresh load cycle re-arms the attempt budget via
+  // resetHintState(). Bounds the worst case to probe + one retry.
+  bool hintProbeRetryArmed_ = false;
 #endif
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};
