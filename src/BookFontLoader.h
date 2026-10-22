@@ -332,6 +332,19 @@ class BookFontLoader {
   // Observable probe state for the retry tests (see hintProbeRetryArmed_).
   bool hintProbePendingForTest() const { return hintProbePending_; }
   bool hintProbeRetryArmedForTest() const { return hintProbeRetryArmed_; }
+  // Key the cached verdict is stored under (requested-options fingerprint
+  // after a successful retry — see hintProbeRetryKey_).
+  uint32_t hintVerdictKeyForTest() const { return hintVerdictKey_; }
+  // Hinting mode slot 0 carried when the probe last ran, and how many retry
+  // pre-probe restores had completed by then (host stub records both). The
+  // restore count pins the ORDER: the failed attempt's fail-closed degrade
+  // must be rolled back BEFORE the retry probe, so the retry measures the
+  // hinted depth the gate exists for. On the host FT variant slot 0 sits at
+  // None regardless (the funnel drops autohint), so the mode capture is
+  // device-parity documentation; the restore count is the live assertion.
+  // -1 = the stub has not run yet.
+  static int hintProbeObservedHintingForTest();
+  static int hintProbeRestoresAtProbeForTest();
   // Restore every slot to the requested mode — degradeHintForTest is sticky
   // (file-scope static state outlives the test) and the tag participates in
   // other tests' fingerprints.
@@ -398,6 +411,11 @@ class BookFontLoader {
   // cycle, and a fresh load cycle re-arms the attempt budget via
   // resetHintState(). Bounds the worst case to probe + one retry.
   bool hintProbeRetryArmed_ = false;
+  // Load key (requested-options fingerprint) observed at the attempt that
+  // armed the retry. The retry pass re-enters with fingerprint_ under the
+  // fail-closed degrade tag, so the successful retry's verdict must be cached
+  // under this stored key — the key an unchanged later load computes.
+  uint32_t hintProbeRetryKey_ = 0;
 #endif
 
   std::array<FamilyInfo, kMaxDiscoveredFamilies> families_{};

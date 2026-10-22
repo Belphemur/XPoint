@@ -127,6 +127,15 @@ static uint16_t g_hintProbeSizeOverride = 0;  // 0 = unset: the host probe is co
 // Retry-state tests: force the unmeasurable path (device: probe task spawn
 // failure / settle timeout) through the host stub of probeHintStackSafety.
 static bool g_hintProbeUnmeasurableOverride = false;
+// Host stub observability: slot 0's hinting mode at the last probe entry, and
+// how many retry pre-probe restores had completed by then (the retry must
+// restore BEFORE the probe runs, so the snapshot must be 1 at the retry). -1
+// = the stub has not run yet.
+static int g_hintProbeObservedHinting = -1;
+static int g_hintProbeRestoresAtProbe = -1;
+// Incremented by the retry's pre-probe restore pass (host builds only; the
+// device has no host stub to snapshot it).
+static int g_hintProbeRetryRestoreCount = 0;
 #endif
 static uint16_t currentHintProbeSizePt() {
 #if defined(HOST_TEST)
@@ -143,6 +152,8 @@ void BookFontLoader::setHintProbeSizeForTest(uint16_t pointSize) { g_hintProbeSi
 void BookFontLoader::setHintProbeUnmeasurableForTest(bool unmeasurable) {
   g_hintProbeUnmeasurableOverride = unmeasurable;
 }
+int BookFontLoader::hintProbeObservedHintingForTest() { return g_hintProbeObservedHinting; }
+int BookFontLoader::hintProbeRestoresAtProbeForTest() { return g_hintProbeRestoresAtProbe; }
 #endif
 
 void BookFontLoader::degradeHint(uint8_t faceSlot, const char* reason) {
@@ -383,8 +394,18 @@ void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasura
 #else
 void BookFontLoader::probeHintStackSafety(uint8_t& degradedMask, bool& unmeasurable) {
 #if defined(HOST_TEST)
-  // Retry-state tests: reproduce the device's spawn-failure/timeout verdict.
-  if (g_hintProbeUnmeasurableOverride) unmeasurable = true;
+  // Record slot 0's mode at probe entry: pins that the retry measures the
+  // REQUESTED mode (the pre-probe restore), not the failed attempt's
+  // fail-closed degrade.
+  g_hintProbeObservedHinting = static_cast<int>(effectiveRenderOptions_[0].hinting);
+  g_hintProbeRestoresAtProbe = g_hintProbeRetryRestoreCount;
+  // Mirror the device contract: every unmeasurable device path degrades all
+  // loaded slots INSIDE the probe, so the fingerprint follows the degrade
+  // exactly as it does on the target.
+  if (g_hintProbeUnmeasurableOverride) {
+    degradedMask |= degradeAllLoadedSlots("stack probe: unmeasurable");
+    unmeasurable = true;
+  }
 #endif
 }
 #endif  // ARDUINO
@@ -394,6 +415,12 @@ void BookFontLoader::resetHintState() {
   monoAcceptable_ = true;  // fresh load: support is re-observed by the funnel
   // New load cycle: the retry budget re-arms with the fresh probe.
   hintProbeRetryArmed_ = false;
+  hintProbeRetryKey_ = 0;
+#if defined(HOST_TEST)
+  g_hintProbeObservedHinting = -1;
+  g_hintProbeRestoresAtProbe = -1;
+  g_hintProbeRetryRestoreCount = 0;
+#endif
 }
 #endif  // CROSSPOINT_FONT_BACKEND_FT
 
@@ -432,6 +459,23 @@ void BookFontLoader::ensureHintProbeSettled() {
   // applied for this face set, or the pending flag would already be clear.
   const uint32_t loadKey = fingerprint_;
   const bool wasRetry = hintProbeRetryArmed_;
+  if (wasRetry) {
+#if defined(HOST_TEST)
+    ++g_hintProbeRetryRestoreCount;  // the stub snapshots this at probe entry
+#endif
+    // The failed attempt degraded every loaded slot fail-closed. Restore the
+    // requested mode BEFORE the re-measurement so the probe measures the
+    // hinted depth it gates: a reading taken at HintingMode::None would
+    // clear a hinted render the verdict never tested. The probe task is not
+    // spawned yet, so the P1 flush cannot race a rasterization; if the retry
+    // is unmeasurable too, probeHintStackSafety's fail-closed path re-degrades
+    // every slot and the branch below keeps the session degraded.
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (faces_[i] == nullptr) continue;
+      applySlotRenderOptions(faces_[i], i, currentRenderOptions(), "hint probe retry");
+    }
+    fingerprint_ = computeFingerprintCached();
+  }
   uint8_t degradedMask = 0;
   bool unmeasurable = false;
   probeHintStackSafety(degradedMask, unmeasurable);
@@ -451,6 +495,11 @@ void BookFontLoader::ensureHintProbeSettled() {
       // the shallow window cannot spawn the 56KB probe task (heap
       // fragmentation): hinting is lost only when BOTH windows fail.
       hintProbeRetryArmed_ = true;
+      // Remember the key observed HERE — the requested-options fingerprint,
+      // captured before the fail-closed degrade moved the tag. The retry pass
+      // re-enters with the degraded tag, so caching its verdict under the
+      // entry key would never match what a later unchanged load computes.
+      hintProbeRetryKey_ = loadKey;
       LOG_INF("BFNT", "Hint probe retry armed after unmeasurable attempt");
     } else {
       // The retry also failed: disarm and stop probing for this load cycle.
@@ -460,22 +509,12 @@ void BookFontLoader::ensureHintProbeSettled() {
     return;
   }
   hintProbeRetryArmed_ = false;
-  if (wasRetry) {
-    // The failed attempt degraded every loaded slot fail-closed; a clean
-    // re-measurement re-opens hinting: restore the requested mode through
-    // the degrade funnel (the P1 glyph-cache flush point — the probe task is
-    // joined by now, so no rasterization races the setRenderOptions) and let
-    // the fingerprint follow the restored tag. Slots the FRESH measurement
-    // found over budget keep the degrade probeHintStackSafety just applied —
-    // the restore must never re-open a face the verdict fails closed.
-    for (uint8_t i = 0; i < 4; ++i) {
-      if (faces_[i] == nullptr) continue;
-      if ((degradedMask & static_cast<uint8_t>(1u << i)) != 0) continue;
-      applySlotRenderOptions(faces_[i], i, currentRenderOptions(), "hint probe retry");
-    }
-    if (loaded_) fingerprint_ = computeFingerprintCached();
-  }
-  recordHintVerdict(loadKey, degradedMask);
+  // The restored slots carry the requested mode again (pre-probe restore);
+  // slots the fresh measurement found over budget keep the degrade
+  // probeHintStackSafety just applied. Cache the verdict under the
+  // REQUESTED-options key — on the retry pass the entry fingerprint_ described
+  // the fail-closed degrade, which no later unchanged load computes.
+  recordHintVerdict(wasRetry && hintProbeRetryKey_ != 0 ? hintProbeRetryKey_ : loadKey, degradedMask);
 }
 #else
 // No members to touch: kept non-static so the call site reads identically

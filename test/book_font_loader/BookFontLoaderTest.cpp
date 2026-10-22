@@ -1711,6 +1711,57 @@ TEST(HintingProbeRetryTest, RetrySuccessClearsBothAndCachesVerdict) {
   BookFontLoader::setHintProbeUnmeasurableForTest(false);
 }
 
+// The retry must (a) restore the requested mode BEFORE the re-measurement —
+// the failed attempt's fail-closed degrade would otherwise make the probe
+// read unhinted depth and clear a hinted render it never tested — and (b)
+// cache the verdict under the key observed when the retry was ARMED (the
+// requested-options fingerprint): the retry pass re-enters with fingerprint_
+// under the fail-closed degrade tag, so caching under the entry key would
+// never match what an unchanged later load computes and every reload would
+// re-probe. Host limits: the host funnel drops autohint for every loaded
+// face (slot 0 already sits at None), so (a) is pinned via the restore-order
+// snapshot and (b) by engineering a fingerprint-visible degrade on a
+// FACELESS slot (allowed there — it stays at the requested Light until
+// degraded), reproducing the device's tag shift.
+TEST(HintingProbeRetryTest, RetryMeasuresRequestedModeAndCachesRequestedKey) {
+  BookFontLoader::setHintProbeSizeForTest(16);
+  BookFontLoader::setHintProbeUnmeasurableForTest(true);
+  BookFontLoader loader;
+  const uint32_t fp = loadDejaFamily(loader);
+  if (fp == 0u) GTEST_SKIP() << "fixture unavailable: DejaVuSans.ttf";
+  ASSERT_TRUE(loader.hintProbeRetryArmedForTest());  // shallow attempt failed
+  // The first attempt ran with nothing restored ahead of it.
+  EXPECT_EQ(BookFontLoader::hintProbeRestoresAtProbeForTest(), 0);
+
+  // Make the fail-closed degrade fingerprint-visible the way it is on the
+  // device (there the loaded faces drop Light -> None; the host funnel has
+  // already dropped slot 0, so shift a faceless slot instead).
+  loader.degradeHintForTest(1);
+  loader.applyRenderMode(false);
+  const uint32_t degradedEntryKey = loader.fontFingerprint();
+  ASSERT_NE(degradedEntryKey, fp);
+
+  // The backstop retry runs with a clean heap: it must restore BEFORE the
+  // probe (snapshot 1 at entry) and cache under the armed key.
+  BookFontLoader::setHintProbeUnmeasurableForTest(false);
+  loader.ensureHintProbeSettled();
+  EXPECT_EQ(BookFontLoader::hintProbeRestoresAtProbeForTest(), 1);
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+  EXPECT_FALSE(loader.hintProbeRetryArmedForTest());
+  EXPECT_EQ(loader.hintVerdictKeyForTest(), fp);
+  EXPECT_NE(loader.hintVerdictKeyForTest(), degradedEntryKey);
+
+  // The unchanged reload therefore REUSES the verdict (the fingerprint comes
+  // back at the requested tag) instead of paying a second blocking probe.
+  loader.markDirty();
+  ASSERT_NE(loader.getReaderFont(), nullptr);
+  EXPECT_EQ(loader.fontFingerprint(), fp);
+  EXPECT_FALSE(loader.hintProbePendingForTest());
+
+  loader.resetHintStateForTest();
+  BookFontLoader::setHintProbeUnmeasurableForTest(false);
+}
+
 TEST(HintingProbeRetryTest, CleanLoadSettlesAtLoadTailAndClearsBoth) {
   BookFontLoader::setHintProbeSizeForTest(16);
   BookFontLoader loader;
