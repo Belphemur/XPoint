@@ -64,6 +64,8 @@ class EpubReaderActivity final : public ReaderActivity {
   // instead of the no-dictionary one (kody, PR #113).
   bool dictionaryMessageTtf = false;
   unsigned long dictionaryMessageTime = 0UL;
+  bool showFontDamagedMessage = false;
+  unsigned long fontDamagedMessageTime = 0UL;
   bool showClippingMessage = false;
   StrId clippingMessage = StrId::STR_CLIPPING_SAVED;
   unsigned long clippingMessageTime = 0UL;
