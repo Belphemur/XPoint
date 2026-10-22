@@ -493,9 +493,8 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
   std::string definition;
   std::string headword;
   Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  DictLocation location;
-  const bool found = ok && dict.lookup(lookupText.empty() ? trimmed.c_str() : lookupText.c_str(), definition, headword,
-                                       &result, &location);
+  const bool found =
+      ok && dict.lookup(lookupText.empty() ? trimmed.c_str() : lookupText.c_str(), definition, headword, &result);
 
   // DEBUG(dict-debug): lookup diagnostics, visible at LOG_LEVEL >= 1/2.
   LOG_DBG("DICT", "lookup found=%d htmlDefinitions=%d headword='%s' definition_bytes=%u", found,
@@ -519,7 +518,12 @@ void DictionaryWordSelectActivity::performLookup(const std::string& raw, const s
     auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                                     std::move(definition), SETTINGS.dictionaryName,
                                                                     dict.definitionsAreHtml());
-    if (!activity || !activity->enableLookup(dict, location)) {
+    // enableLookup moves the query into the definition activity's lookup state.
+    // Pass a copy of the actual lookup key — the same string the call above
+    // resolved — because the callback below still reads lookupText to decide
+    // whether to return straight to the reader.
+    if (!activity ||
+        !activity->enableLookup(dict, lookupText.empty() ? std::string(trimmed) : std::string(lookupText))) {
       LOG_ERR("DICT", "OOM: definition activity");
       popup = Popup::Error;
       popupMsg = StrId::STR_DICT_LOW_MEMORY;

@@ -105,7 +105,15 @@ namespace {
 // v65: Upstream #4072 explicit font inheritance preserves parent emphasis and
 //      changes text layout on top of the merged v64 (fork v64 + upstream v63);
 //      both parents' v64 caches are invalidated.
-constexpr uint8_t SECTION_FILE_VERSION = 65;
+// v66: Count literal spaces after hyphens and ellipses when justifying text
+//      (upstream #4142, its v65).
+// v67: Omit carried no-break spaces at the start of wrapped lines (upstream
+//      #4142, its v66).
+// v68: Count only stretchable literal spaces after visual text reordering
+//      (upstream #4142, its v67). The fork's v65 carries the same change
+//      upstream numbered v64 (explicit font inheritance), so the merged layout
+//      is max(65, 67) + 1 = v68 and both parents' caches are invalidated.
+constexpr uint8_t SECTION_FILE_VERSION = 68;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
