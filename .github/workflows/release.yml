@@ -185,6 +185,11 @@ jobs:
         env:
           OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
+          # Deployed firmware aborts the manifest fetch above MAX_MANIFEST_BYTES
+          # (src/network/OtaUpdater.cpp). Derive the gate below from the source
+          # so the firmware stays the single source of truth for the cap.
+          OTA_CAP=$(grep -oP 'MAX_MANIFEST_BYTES\s*=\s*\K[0-9]+' src/network/OtaUpdater.cpp | head -1)
+          export OTA_CAP
           python3 - <<'PY'
           import base64, hashlib, json, os, glob, sys
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -239,11 +244,22 @@ jobs:
               "repository": os.environ["GITHUB_REPOSITORY"],
               "boards": boards,
           }
-          text = json.dumps(manifest, indent=2, sort_keys=True)
+          # Compact separators, not indent=2: the manifest must fit inside the
+          # firmware's OTA fetch cap (asserted below against OTA_CAP). The
+          # pretty form measured 4163 bytes for 16 entries — over the 4096 cap —
+          # once the repo rename lengthened every asset URL; compact is ~3475.
+          text = json.dumps(manifest, separators=(",", ":"), sort_keys=True)
           # Sign the EXACT bytes we write to disk. The device verifies the
           # downloaded file body, so the signature must cover the same bytes
           # (including the trailing newline) or verification fails.
           body = text + "\n"
+          cap = int(os.environ["OTA_CAP"])
+          if len(body.encode("utf-8")) > cap:
+              raise SystemExit(
+                  f"manifest.json is {len(body.encode('utf-8'))} bytes, over the "
+                  f"{cap}-byte OTA fetch cap (OtaUpdater.cpp MAX_MANIFEST_BYTES). "
+                  "Shrink the manifest or coordinate a firmware cap bump first."
+              )
           with open(os.path.join(dist, "manifest.json"), "w") as f:
               f.write(body)
 
