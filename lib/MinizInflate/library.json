@@ -10,8 +10,8 @@
       "-DMINIZ_NO_ARCHIVE_APIS=1",
       "-DMINIZ_NO_STDIO=1",
       "-DMINIZ_NO_TIME=1",
-      "-Dtdefl_compress_mem_to_output=xpoint_tdefl_compress_mem_to_output",
-      "-Dtdefl_compress_mem_to_heap=xpoint_tdefl_compress_mem_to_heap"
+      "-Dtdefl_compress_mem_to_output=xerif_tdefl_compress_mem_to_output",
+      "-Dtdefl_compress_mem_to_heap=xerif_tdefl_compress_mem_to_heap"
     ]
   }
 }

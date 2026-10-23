@@ -222,4 +222,4 @@ activity/threshold helper, called from both — not two divergent copies.
   that setting is on, achievement screen shown once
   (`completionAchievementPending` cleared after display).
 - `pio run -e x4pro` clean; no untracked `platformio.local.ini`; `gh` resolves
-  against `Belphemur/XPoint`.
+  against `Belphemur/Xerif-eReader`.

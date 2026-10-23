@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to XPoint are documented in this file.
+All notable changes to Xerif are documented in this file.
 
 ## [Unreleased]
 

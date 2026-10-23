@@ -141,7 +141,7 @@ noise, not a fault).
   the corrected DRAM math superseding the "book_open ≈ 128 KB" line.
 - `CHANGELOG.md` entry under Fixed (owner will edit wording at merge; agent
   provides a factual draft).
-- The `xpoint-bookfont-loader` skill's failure-mode section gains the fix
+- The `xerif-bookfont-loader` skill's failure-mode section gains the fix
   note at merge time (owner's post-merge workflow).
 
 ## 4. Risks

@@ -119,7 +119,7 @@ one small SDK PR (`FtFont::glyphBounds`). Estimated firmware-side delta:
   §4 items 1–2, host tests (§4.4), gates §5.1–5.4. Pin the submodule to the
   merged Task-1 commit on `main`.
 - **[task3] PR + review loop:** push the branch, open the PR against
-  `Belphemur/XPoint` `develop` (draft until Task 2 lands), run the
+  `Belphemur/Xerif-eReader` `develop` (draft until Task 2 lands), run the
   answer-code-review loop to convergence (CI green, zero unresolved
   threads, re-review clean on the final commit).
 - **[task4] Docs:** CHANGELOG entry + a pointer row in

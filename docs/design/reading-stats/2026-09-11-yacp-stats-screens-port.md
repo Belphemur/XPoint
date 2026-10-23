@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-11
 - **Status:** Approved (user decisions 2026-09-11): Rhythm = Option B (global v5→v6 minutes array); completion flags ride along (book v7→v8); contextual sub-menu as drafted; fork-only.
-- **Scope:** `Belphemur/XPoint` (`feat/reading-stats-screens`, worktree `crosspoint-x-reader-rs-screens`)
+- **Scope:** `Belphemur/Xerif-eReader` (`feat/reading-stats-screens`, worktree `crosspoint-x-reader-rs-screens`)
 - **Source analyzed:** `Sichroteph/YACP` @ `a96da86` (v1.6.2), cloned at `/home/balor/workspace/eink/YACP`
 
 ## 1. Background and source analysis
