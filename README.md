@@ -2,6 +2,21 @@
 
 ![Xerif eReader logo](./docs/images/repo_logo.jpg)
 
+## 📣 XPoint is now Xerif eReader
+
+**Pronounced like *Xerox*: ZER-if, /ˈzɛr.ɪf/ — the X says "z", as in *Xerox*, never "ex".
+
+The project formerly known as **XPoint** is now **Xerif eReader**. The rename avoids any
+naming conflict with [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader),
+the upstream firmware this fork builds on: one name per project, so bug reports, firmware
+files and community discussions always land in the right place.
+
+Nothing changes on your device: books, fonts, settings and reading progress are untouched,
+and OTA keeps updating exactly as before. Firmware flashed before the rename follows the
+repository move transparently, and releases keep shipping both `xpoint-*.bin` and
+`xerif-*.bin` builds so pre-rename devices keep updating. See the
+[latest release](https://github.com/Belphemur/Xerif-eReader/releases/latest).
+
 **Xerif eReader** is open-source e-reader firmware for ESP32-based devices — community-built,
 fully hackable, free forever. It is a fork of
 [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
