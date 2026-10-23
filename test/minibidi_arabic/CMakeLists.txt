@@ -12,6 +12,7 @@ set_source_files_properties(${REPO_ROOT}/lib/MiniBidi/minibidi.c PROPERTIES COMP
 target_include_directories(MiniBidiArabicTest PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs  # no-op Logging.h (real one needs Arduino)
   ${REPO_ROOT}/lib/MiniBidi
+  ${REPO_ROOT}/lib/Memory
   ${REPO_ROOT}/lib/Utf8
 )
 
