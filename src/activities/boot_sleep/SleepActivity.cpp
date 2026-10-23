@@ -937,15 +937,17 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     return;
   }
 
+  // Draw BEFORE the inversion filter and before the transparent-overlay
+  // branch and the grayscale passes. After the inversion the text would stay
+  // black ink over the already-flipped cover and become unreadable; the gray
+  // passes only repaint gray planes over the preserved B/W background, so the
+  // text placed here survives.
+  drawReadingProgressPercent(renderer, progressPercent);
+
   if (!preserveBackground &&
       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
   }
-
-  // Draw before the transparent-overlay branch and the grayscale passes: both
-  // only repaint gray planes over the preserved B/W background, so the text
-  // placed here survives.
-  drawReadingProgressPercent(renderer, progressPercent);
 
   // Cover + Transparent: the B/W cover is the overlay's background; the overlay renderers redraw its gray planes.
   if (overlayCover == &bitmap) {
@@ -957,8 +959,12 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     return;
   }
 
+  // Absolute planes repaint the whole panel from the plane content alone, so
+  // they would erase the progress text living in the base framebuffer. While
+  // text is shown, force the OEM fold pipeline, which keeps base content
+  // (same choice renderShutdownImageFramed makes for its frame + caption).
   displayImageWithGrayscale(renderer, bitmap, x, y, pageWidth, pageHeight, cropX, cropY, hasGreyscale,
-                            preserveBackground, /*allowAbsolutePlanes=*/true, overlayGrayCover);
+                            preserveBackground, /*allowAbsolutePlanes=*/progressPercent < 0, overlayGrayCover);
 }
 
 bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog) const {
@@ -1090,8 +1096,12 @@ void SleepActivity::renderCoverSleepScreen() const {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
       if (withOverlay) overlayCover = &bitmap;
       int progressPercent = -1;
-      if (SETTINGS.sleepScreenCoverShowProgress && !APP_STATE.openEpubPath.empty())
-        progressPercent = loadBookProgress(APP_STATE.openEpubPath);
+      if (SETTINGS.sleepScreenCoverShowProgress && !APP_STATE.openEpubPath.empty()) {
+        // Seeded by the reader at exit; the SD reload only serves state from
+        // before the cache existed (no reader exit since the upgrade).
+        progressPercent = APP_STATE.openBookProgressPercent;
+        if (progressPercent < 0) progressPercent = loadBookProgress(APP_STATE.openEpubPath);
+      }
       renderBitmapSleepScreen(bitmap, /*preserveBackground=*/false, progressPercent);
       overlayCover = nullptr;
       return;
@@ -1170,8 +1180,12 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
   bool haveImage = false;
   int progressPercent = -1;
   if (useCover) {
-    if (SETTINGS.sleepScreenCoverShowProgress && !APP_STATE.openEpubPath.empty())
-      progressPercent = loadBookProgress(APP_STATE.openEpubPath);
+    if (SETTINGS.sleepScreenCoverShowProgress && !APP_STATE.openEpubPath.empty()) {
+      // Seeded by the reader at exit (and persisted at sleep entry); the SD
+      // reload only serves state from before the cache existed.
+      progressPercent = APP_STATE.openBookProgressPercent;
+      if (progressPercent < 0) progressPercent = loadBookProgress(APP_STATE.openEpubPath);
+    }
     const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
     HalFile file;
     if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {

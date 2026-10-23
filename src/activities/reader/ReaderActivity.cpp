@@ -111,6 +111,14 @@ void ReaderActivity::onExit() {
   // durable before a subscriber can act on the exit notification.
   flushReaderSession();
 
+  // Cache the session's final reading progress for the cover sleep/shutdown
+  // screens: SleepActivity reads this instead of reloading book metadata from
+  // SD during those transitions. Seeding before saveToFile() below also
+  // persists it for the timer-wake shutdown path.
+  if (bookRemembered) {
+    APP_STATE.openBookProgressPercent = static_cast<int8_t>(std::clamp(getScreenshotInfo().progressPercent, 0, 100));
+  }
+
   if (pluginevents::anySubscriber(pluginevents::Event::ReaderExit)) {
     char percent[8];
     snprintf(percent, sizeof(percent), "%d", getScreenshotInfo().progressPercent);

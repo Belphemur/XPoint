@@ -26,6 +26,10 @@ class CrossPointState : public PersistableStore<CrossPointState> {
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
   bool showBootScreen = true;
+  // Reading progress (0-100, -1 unknown) of the book in openEpubPath, seeded by
+  // the reader at exit so the cover sleep/shutdown screens skip the SD
+  // metadata reload during those transitions.
+  int8_t openBookProgressPercent = -1;
 
   static const char* getFilePath() { return "/.crosspoint/state.json"; }
   void toJson(JsonDocument& doc) const;
