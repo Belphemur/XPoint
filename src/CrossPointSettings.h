@@ -261,6 +261,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t sleepScreenCoverMode = FIT;
   // Sleep screen cover filter
   uint8_t sleepScreenCoverFilter = NO_FILTER;
+  // Show the current book's reading progress % on cover sleep/shutdown screens
+  uint8_t sleepScreenCoverShowProgress = 1;
   // Status bar settings
   uint8_t statusBarChapterPageCount = 1;
   // Chapter-time-left status-bar placement. Supersedes the old unreleased
