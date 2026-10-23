@@ -20,8 +20,8 @@
 #include "OtaSignature.h"
 
 namespace {
-// This fork (XPoint) publishes its firmware as GitHub releases on the
-// "Belphemur/XPoint" repo (renamed from crosspoint-x-reader). The updater reads
+// This fork (Xerif) publishes its firmware as GitHub releases on the
+// "Belphemur/Xerif-eReader" repo (renamed from crosspoint-x-reader). The updater reads
 // the latest release + a signed manifest attached to it. The manifest is what
 // we actually verify; the firmware is stream-checked against the manifest's
 // signed SHA-256 (not locked/co-signed).
@@ -74,20 +74,12 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   }
 
   // Fork release tags are "v"-prefixed ("v1.15.0"); the asset name carries the
-  // bare version ("xpoint-1.16.0-x4pro.bin").
+  // bare version ("xerif-1.16.0-x4pro.bin").
   const char* version = info.tagName;
   if (*version == 'v' || *version == 'V') ++version;
   char assetName[48];
-  snprintf(assetName, sizeof(assetName), "xpoint-%s%s.bin", version, assetSuffix);
+  snprintf(assetName, sizeof(assetName), "xerif-%s%s.bin", version, assetSuffix);
   parseOtaRelease(releaseBody.data(), releaseBody.size(), assetName, "manifest.json", info);
-
-  // Transition shim: v1.16 releases also publish crosspoint-<version>-<device>.bin
-  // so v1.15.x devices keep finding an asset. Remove this fallback after v1.17
-  // drops the compatibility assets.
-  if (!info.hasFirmware) {
-    snprintf(assetName, sizeof(assetName), "crosspoint-%s%s.bin", version, assetSuffix);
-    parseOtaRelease(releaseBody.data(), releaseBody.size(), assetName, "manifest.json", info);
-  }
 
   // Legacy fallback: releases published before either versioned naming still
   // carry firmware[-<board>].bin assets.

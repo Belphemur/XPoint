@@ -44,7 +44,7 @@ BUILD NOTES:
   (never SdFat direct).
 
 REVIEW GATE — multiple rounds, mandatory before merge:
-1. Push and open a PR to Belphemur/XPoint (base develop). Attach the PR URL
+1. Push and open a PR to Belphemur/Xerif-eReader (base develop). Attach the PR URL
    to this card (kanban_attach_url).
 2. Review loop until CLEAN: python3 ~/.hermes/skills/github/answer-code-review/scripts/reply_review.py threads --pr <N> --open --full
    lists open GitHub Copilot AND CodeRabbit threads. Answer EVERY thread

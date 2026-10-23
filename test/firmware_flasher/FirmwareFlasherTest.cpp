@@ -57,13 +57,12 @@ TEST_F(FirmwareFlasherValidateImageFile, AcceptsAnyBinFilenameForIdenticalImageB
   const std::string image = buildValidImage();
   constexpr size_t kPartitionSize = 2 * 1024 * 1024;
   auto& files = Storage.files;
+  files["/xerif-1.16.0-x4pro.bin"] = image;
   files["/xpoint-1.16.0-x4pro.bin"] = image;
-  files["/crosspoint-1.16.0-x4pro.bin"] = image;
   files["/locally-built-firmware.bin"] = image;
 
+  EXPECT_EQ(firmware_flash::validateImageFile("/xerif-1.16.0-x4pro.bin", kPartitionSize), firmware_flash::Result::OK);
   EXPECT_EQ(firmware_flash::validateImageFile("/xpoint-1.16.0-x4pro.bin", kPartitionSize), firmware_flash::Result::OK);
-  EXPECT_EQ(firmware_flash::validateImageFile("/crosspoint-1.16.0-x4pro.bin", kPartitionSize),
-            firmware_flash::Result::OK);
   EXPECT_EQ(firmware_flash::validateImageFile("/locally-built-firmware.bin", kPartitionSize),
             firmware_flash::Result::OK);
 }

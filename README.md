@@ -1,8 +1,8 @@
-# XPoint
+# Xerif eReader
 
-![XPoint logo](./docs/images/repo_logo.jpg)
+![Xerif eReader logo](./docs/images/repo_logo.jpg)
 
-**XPoint** is open-source e-reader firmware for ESP32-based devices — community-built,
+**Xerif eReader** is open-source e-reader firmware for ESP32-based devices — community-built,
 fully hackable, free forever. It is a fork of
 [crosspoint-reader/crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
 with a focus on the reading experience of the Xteink X4 Pro, plus features the
@@ -22,23 +22,23 @@ Check the [devices page](https://crosspointreader.com/devices) for the full list
 
 ---
 
-## 🔀 What XPoint changes from CrossPoint
+## 🔀 What Xerif eReader changes from CrossPoint
 
-Same hardware, same upstream core — XPoint is where reading-experience work lands
+Same hardware, same upstream core — Xerif eReader is where reading-experience work lands
 first, soak-tested on a real device before it ships. The main differences:
 
 - **Faster book opens.** Returning to a book you were reading used to re-read its
   chapter index from the SD card in hundreds of tiny chunks (~2 s on a long
-  chapter). XPoint reads the same data in a few batches, cutting that part of a
+  chapter). Xerif eReader reads the same data in a few batches, cutting that part of a
   warm open to well under a tenth of a second.
 - **Smarter progress saving.** Stock CrossPoint writes your reading position on
-  *every page turn*. XPoint keeps it in memory and persists only when something
+  *every page turn*. Xerif eReader keeps it in memory and persists only when something
   changed — up to 20× fewer SD writes. See
   [Gentle on your SD card](#-gentle-on-your-sd-card).
 - **A true vector font engine.** Any `.ttf`/`.otf` family works with anti-aliased
   grayscale at any size, plus a downloadable 53-family catalog — see
   [Custom fonts](#-custom-fonts) and
-  [how the TTF pipeline differs](#how-xpoints-ttf-support-differs-from-upstream-crosspoint).
+  [how the TTF pipeline differs](#how-xerif-ereaders-ttf-support-differs-from-upstream-crosspoint).
 - **Reading statistics.** A complete stats suite (sessions, reading speed, streaks,
   rhythm, finished books) ported from CrossInk and YACP — see
   [Reading statistics](#-reading-statistics).
@@ -107,7 +107,7 @@ ports directly.
 ### 🔤 Custom fonts
 
 Your e-reader shouldn't dictate your typography. On PSRAM-equipped devices
-(X4 Pro, M5PaperMono), XPoint ships a true vector font engine: take any `.ttf` or
+(X4 Pro, M5PaperMono), Xerif eReader ships a true vector font engine: take any `.ttf` or
 `.otf` file — from Google Fonts, your OS, or that foundry you've been saving up for —
 copy it to the SD card, and it just works. No firmware reflash, no rebuild, no
 compromises.
@@ -136,15 +136,15 @@ are cached on the SD card keyed to your exact font and settings — so switching
 only re-typesets what actually changed. (Curious about the engine? The design docs
 live in [docs/design/ttf](./docs/design/ttf).)
 
-#### How XPoint's TTF support differs from upstream CrossPoint
+#### How Xerif eReader's TTF support differs from upstream CrossPoint
 
 Both readers draw `.ttf`/`.otf`/`.ttc` files with the same FreeType engine, but
-XPoint rebuilds the whole book-rendering pipeline around it (fractional metrics,
+Xerif eReader rebuilds the whole book-rendering pipeline around it (fractional metrics,
 kerning, ligatures, anti-aliasing, cached sections) while upstream teaches its
 old bitmap pipeline to draw TTF glyphs. Both now stream oversized fonts from the
 SD card and fall back to your TTF font for CJK text in menus. Practical rule of
 thumb: `.ttf` files work on both readers; `.cpfont` pre-rasterized families are
-XPoint-specific. Details in [docs/ttf.md](./docs/ttf.md).
+Xerif eReader-specific. Details in [docs/ttf.md](./docs/ttf.md).
 
 #### Built-in font catalog
 
@@ -214,7 +214,7 @@ releases. All fonts carry the SIL Open Font License (OFL).
 ### 💾 Gentle on your SD card
 
 **Smart progress saving — writes only when something changed.** Stock CrossPoint
-writes your reading position to the SD card on *every single page turn*. XPoint
+writes your reading position to the SD card on *every single page turn*. Xerif eReader
 keeps your place in memory and persists it every two minutes only if you actually
 moved — and always the instant you close the book, sleep, power off, or reach the
 end of a book. The result: up to **20× fewer SD writes** during a reading session,
@@ -275,7 +275,7 @@ device still doesn't appear.
 
 1. Connect your device to your computer via USB-C and wake/unlock the device
 2. Download the firmware file for your device from
-   [Releases](https://github.com/Belphemur/XPoint/releases), or compile yourself.
+   [Releases](https://github.com/Belphemur/Xerif-eReader/releases), or compile yourself.
 3. Go to https://crosspointreader.com/#flash-tools, select your device, click
    "Custom .bin" and upload the firmware file.
 
@@ -293,7 +293,7 @@ pip install esptool
 ```
 
 2. Download the firmware file for your device from the
-   [releases page](https://github.com/Belphemur/XPoint/releases).
+   [releases page](https://github.com/Belphemur/Xerif-eReader/releases).
 3. Connect your device via USB-C.
 4. Find the device port. On Linux, run `dmesg` after connecting. On macOS:
 
@@ -345,8 +345,8 @@ See [Development quick start](#development-quick-start) below.
 ### Setup
 
 ```bash
-git clone --recursive https://github.com/Belphemur/XPoint
-cd XPoint
+git clone --recursive https://github.com/Belphemur/Xerif-eReader
+cd Xerif-eReader
 
 # if cloned without --recursive:
 git submodule update --init --recursive
@@ -471,7 +471,7 @@ community expectations, see [GOVERNANCE.md](./GOVERNANCE.md).
 
 [![Fund contributors](https://img.shields.io/badge/%F0%9F%91%91_Fund_contributors-royalty.dev-BB953A?style=for-the-badge&labelColor=1a1a1a)](https://app.royalty.dev/crosspoint-reader/crosspoint-reader)
 
-XPoint exists thanks to the CrossPoint team and its community. If this firmware is
+Xerif eReader exists thanks to the CrossPoint team and its community. If this firmware is
 useful to you, please **support the original CrossPoint project** — they build and
 maintain the foundation this fork stands on.
 
@@ -481,5 +481,5 @@ each sale, helping fund development costs.
 
 ---
 
-CrossPoint Reader and XPoint are **not affiliated with Xteink or any device
+CrossPoint Reader and Xerif eReader are **not affiliated with Xteink or any device
 manufacturer**.

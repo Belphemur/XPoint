@@ -16,7 +16,7 @@ void BootActivity::onEnter() {
   // screen use the same treatment so boot and sleep match.
   drawLogo120Inverted(renderer, (pageWidth - 120) / 2, (pageHeight - 120) / 2);
   // Fork brand text — hardcoded on purpose (not translated).
-  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "XPOINT", true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 70, "XERIF", true, EpdFontFamily::BOLD);
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 95, "Booting ...");
   renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 30, CROSSPOINT_VERSION);
   renderer.displayBuffer();

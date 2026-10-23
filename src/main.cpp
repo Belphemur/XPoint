@@ -1610,7 +1610,7 @@ void loop() {
       // refresh can start — every paint runs on this loop task (the FIBP
       // worker builds layouts, it never paints). Not USB-gated: USB power
       // is the owner's bench condition (see the park's
-      // XPOINT_BENCH_TOUCH_PARK escape for the GT911 equivalent).
+      // XERIF_BENCH_TOUCH_PARK escape for the GT911 equivalent).
       if (!display.refreshBusy() && millis() - lastActivityTime >= HalPowerManager::EPD_IDLE_POF_MS) {
         display.powerOffScreen();
       }
@@ -1620,17 +1620,17 @@ void loop() {
       // when the user disabled the feature (SETTINGS.touchIdleSleep), and on
       // boards with no touch-independent wake source — parking those would
       // leave their only input unreachable until a power cycle.
-      // BENCH ESCAPE (XPOINT_BENCH_TOUCH_PARK): the USB gate makes the park
+      // BENCH ESCAPE (XERIF_BENCH_TOUCH_PARK): the USB gate makes the park
       // unobservable over serial — the owner's only verification path is the
       // serial monitor on USB power. Define the flag in a gitignored
       // platformio.local.ini to bypass JUST the USB gate on bench builds:
       //   [env:x4pro]
-      //   build_flags = -DXPOINT_BENCH_TOUCH_PARK=1
+      //   build_flags = -DXERIF_BENCH_TOUCH_PARK=1
       // then `pio run -e x4pro -t upload`. Battery behaviour is unchanged.
-#ifndef XPOINT_BENCH_TOUCH_PARK
-#define XPOINT_BENCH_TOUCH_PARK 0
+#ifndef XERIF_BENCH_TOUCH_PARK
+#define XERIF_BENCH_TOUCH_PARK 0
 #endif
-      const bool usbGate = !gpio.isUsbConnected() || XPOINT_BENCH_TOUCH_PARK;
+      const bool usbGate = !gpio.isUsbConnected() || XERIF_BENCH_TOUCH_PARK;
       // Parked state comes straight from the SDK (isTouchAsleep), so a failed
       // entry is retried after the backoff window instead of latched awake
       // until the next activity edge.

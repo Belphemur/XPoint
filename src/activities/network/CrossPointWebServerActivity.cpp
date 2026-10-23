@@ -23,9 +23,9 @@
 
 namespace {
 // AP Mode configuration
-constexpr const char* AP_SSID = "XPoint-Reader";
+constexpr const char* AP_SSID = "Xerif-Reader";
 constexpr const char* AP_PASSWORD = nullptr;  // Open network for ease of use
-constexpr const char* AP_HOSTNAME = "xpoint";
+constexpr const char* AP_HOSTNAME = "xerif";
 constexpr uint8_t AP_CHANNEL = 1;
 constexpr uint8_t AP_MAX_CONNECTIONS = 4;
 constexpr int QR_CODE_WIDTH = 198;

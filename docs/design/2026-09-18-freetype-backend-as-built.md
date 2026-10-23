@@ -2,7 +2,7 @@
 
 **Status:** Authoritative. **Supersedes** [2026-09-17-freetype-font-backend.md](2026-09-17-freetype-font-backend.md) — that document's §3 decisions D1–D10 remain valid except where amended below, and its §6 task plan is fully executed. This document records the shipped architecture, including every course correction made during the on-device crash campaign.
 
-- Firmware: XPoint PR #146 (`feat/freetype-font-backend` → `develop`)
+- Firmware: Xerif PR #146 (`feat/freetype-font-backend` → `develop`)
 - SDK: freeink-sdk PRs #26 (merged `6a8addc`), #27 (merged `5b52bfc1`), #28 (merged `7fb79b0`), #29 (merged `7987dfd`), **#30 reverted #29 (merged `9dcd6814`)**
 
 ## 1. Executive summary
@@ -72,7 +72,7 @@ All other D1–D10 decisions stand as written in the superseded document.
 
 - Superseded design: [2026-09-17-freetype-font-backend.md](2026-09-17-freetype-font-backend.md) (D1–D10 decision rationale)
 - freeink-sdk PRs: [#26](https://github.com/Belphemur/freeink-sdk/pull/26) glyphBounds, [#27](https://github.com/Belphemur/freeink-sdk/pull/27) render pool 4 KB, [#28](https://github.com/Belphemur/freeink-sdk/pull/28) unhinted loads, [#29](https://github.com/Belphemur/freeink-sdk/pull/29) old CFF engine (reverted), [#30](https://github.com/Belphemur/freeink-sdk/pull/30) revert
-- XPoint PR #146 — firmware switch + main-thread renderer
+- Xerif PR #146 — firmware switch + main-thread renderer
 - External precedent: [EPub-InkPlate](https://github.com/turgu1/EPub-InkPlate) — Adobe engine + bytecode interpreter on a single 40 KB `mainTask` (ESP32, Xtensa). Note on PSRAM stacks: IDF ≥5.x CAN place task stacks in external RAM on the S3 (`CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` / `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM` + `xTaskCreateStatic()` with an externally allocated buffer), but Espressif advises against it and it is unsafe here: external RAM is inaccessible whenever the flash cache is disabled (every OTA/flash write), which this firmware performs with live rendering. CrossPoint therefore keeps all task stacks in internal DRAM — a deliberate choice, not a platform limitation.
 
 ## 7. Addendum (index-ahead prefetch worker, 2026-09-18)

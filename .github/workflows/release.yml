@@ -1,9 +1,9 @@
 name: Compile Release
 
-# Builds every board's release firmware on tag push and publishes each .bin under
-# BOTH names during the OTA asset-name transition:
-#   xpoint-<version>-<device>.bin        (current name)
-#   crosspoint-<version>-<device>.bin    (compatibility name for v1.15.x OTA)
+# Builds every board's release firmware on tag push and publishes each .bin
+# under BOTH names during the OTA asset-name transition:
+#   xpoint-<version>-<device>.bin        (compatibility name for pre-rename OTA)
+#   xerif-<version>-<device>.bin         (current name)
 # (the combined C3 X4/X3 binary uses device tag x3-x4). It then creates a draft
 # GitHub Release, attaches all build artifacts, and generates + signs a per-board
 # manifest.json (Ed25519) so the device can verify OTA authenticity.
@@ -119,23 +119,23 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version="${RELEASE_TAG#v}"
-          crosspoint_asset="crosspoint-${version}-${{ matrix.device }}.bin"
           xpoint_asset="xpoint-${version}-${{ matrix.device }}.bin"
-          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
-            ".pio/build/${{ matrix.pio_env }}/${crosspoint_asset}"
+          xerif_asset="xerif-${version}-${{ matrix.device }}.bin"
           cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
             ".pio/build/${{ matrix.pio_env }}/${xpoint_asset}"
-          echo "crosspoint_name=$crosspoint_asset" >> "$GITHUB_OUTPUT"
+          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
+            ".pio/build/${{ matrix.pio_env }}/${xerif_asset}"
           echo "xpoint_name=$xpoint_asset" >> "$GITHUB_OUTPUT"
+          echo "xerif_name=$xerif_asset" >> "$GITHUB_OUTPUT"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.asset.outputs.crosspoint_name }}
+          name: ${{ steps.asset.outputs.xerif_name }}
           path: |
             .pio/build/${{ matrix.pio_env }}/bootloader.bin
-            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.crosspoint_name }}
             .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.xpoint_name }}
+            .pio/build/${{ matrix.pio_env }}/${{ steps.asset.outputs.xerif_name }}
             .pio/build/${{ matrix.pio_env }}/firmware.elf
             .pio/build/${{ matrix.pio_env }}/firmware.map
             .pio/build/${{ matrix.pio_env }}/partitions.bin
@@ -162,22 +162,22 @@ jobs:
         id: collect
         run: |
           mkdir -p dist
-          # Each artifact carries one crosspoint-*.bin and one identical
-          # xpoint-*.bin. Search for actual *files* recursively and never match a
+          # Each artifact carries one xpoint-*.bin and one identical
+          # xerif-*.bin. Search for actual *files* recursively and never match a
           # directory (a directory match made `cp` fail with "omitting directory").
           for d in artifacts/*/; do
             while IFS= read -r bin; do
               cp "$bin" "dist/$(basename "$bin")"
-            done < <(find "$d" -type f \( -name 'crosspoint-*.bin' -o -name 'xpoint-*.bin' \))
+            done < <(find "$d" -type f \( -name 'xpoint-*.bin' -o -name 'xerif-*.bin' \))
           done
           # Upstream parity check (hand-ported from the Picco sync): every device
-          # in the matrix must have produced its crosspoint asset before a release
-          # is cut — a silently missing device would otherwise ship half a release.
+          # in the matrix must have produced its xerif asset before a release is
+          # cut — a silently missing device would otherwise ship half a release.
           version="${GITHUB_REF_NAME#v}"
           for device in x3-x4 sticky x4pro x4c papermono metalio_eink4 eego_a4 picco; do
-            test -f "dist/crosspoint-${version}-${device}.bin"
+            test -f "dist/xerif-${version}-${device}.bin"
           done
-          test "$(find dist -maxdepth 1 -type f -name 'crosspoint-*.bin' | wc -l)" -eq 8
+          test "$(find dist -maxdepth 1 -type f -name 'xerif-*.bin' | wc -l)" -eq 8
           ls -la dist
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
@@ -203,14 +203,14 @@ jobs:
               "picco": "picco",
           }
           version = os.environ["GITHUB_REF_NAME"].lstrip("v")
-          # Sign both asset families. Crosspoint entries MUST come first:
-          # v1.15.x devices parse at most 8 entries and return the first match
-          # for their board, so they must encounter the crosspoint URL before
-          # the duplicate xpoint entry. Newer devices select the entry whose
-          # URL matches the xpoint asset they found in the release JSON.
+          # Sign both asset families. Xpoint entries MUST come first:
+          # pre-rename devices (v1.16..v2.10) select the manifest entry whose
+          # URL matches the xpoint asset they found in the release JSON, and
+          # older cap-8 parsers return the first board match they encounter.
+          # Xerif devices select the entry whose URL matches the xerif asset.
           families = (
-              ("crosspoint", f"crosspoint-{version}-"),
               ("xpoint", f"xpoint-{version}-"),
+              ("xerif", f"xerif-{version}-"),
           )
           repo = os.environ["GITHUB_REPOSITORY"]
           tag = os.environ["GITHUB_REF_NAME"]
@@ -285,7 +285,7 @@ jobs:
           # Flip `--draft` to `--latest` (or add `--latest`) to auto-publish.
           gh release create "${{ steps.collect.outputs.tag }}" \
             --draft \
-            --title "XPoint ${{ steps.collect.outputs.tag }}" \
+            --title "Xerif ${{ steps.collect.outputs.tag }}" \
             --notes-file dist/NOTES.md \
-            dist/crosspoint-*.bin dist/xpoint-*.bin \
+            dist/xpoint-*.bin dist/xerif-*.bin \
             dist/manifest.json dist/manifest.json.sig

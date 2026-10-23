@@ -15,10 +15,10 @@ struct ManifestBoardEntry {
   bool hasSha;
 };
 
-// Upper bound on boards parsed from one manifest: five boards x two asset
-// families. The release workflow puts crosspoint entries first so v1.15.x
-// parsers (which retain the old cap of 8 and return the first board match)
-// still resolve their compatibility URL.
+// Upper bound on boards parsed from one manifest: eight boards x two asset
+// families (xpoint compat + xerif). The release workflow puts xpoint entries
+// first so pre-rename parsers that return the first board match still resolve
+// their compatibility URL.
 constexpr int OTA_MANIFEST_MAX_BOARDS = 16;
 
 // Returns the entry whose `board` matches name/len, or nullptr if the
@@ -35,7 +35,7 @@ inline const ManifestBoardEntry* findBoardEntry(const ManifestBoardEntry* entrie
 
 // Like findBoardEntry, but prefers the entry whose URL matches the asset the
 // release JSON selected. This disambiguates duplicate board entries published
-// during the crosspoint/xpoint asset-name transition. Falls back to the first
+// during the xpoint/xerif asset-name transition. Falls back to the first
 // board match for manifests that carry only one entry per board.
 inline const ManifestBoardEntry* findBoardEntryForUrl(const ManifestBoardEntry* entries, int count, const char* name,
                                                       size_t len, const char* url) {

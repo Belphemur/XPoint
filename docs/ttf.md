@@ -1,10 +1,10 @@
-# TTF support: XPoint vs upstream CrossPoint
+# TTF support: Xerif vs upstream CrossPoint
 
 Both readers ship TrueType font support, but they built it in different places.
 This page has two sections: a plain-language summary first, then the full
 technical comparison for contributors.
 
-## ELI5: How XPoint's TTF support differs from upstream CrossPoint
+## ELI5: How Xerif's TTF support differs from upstream CrossPoint
 
 Both readers draw your `.ttf`/`.otf` files with the **same font engine**
 (FreeType, via the FreeInk SDK). The difference is what wraps around it.
@@ -15,26 +15,26 @@ renderer that was originally designed for pre-baked bitmap fonts. On PSRAM
 boards it can even stream huge fonts straight from the SD card so they never
 fully fit in RAM.
 
-XPoint instead **rebuilds the whole book-rendering pipeline around the engine**:
+Xerif instead **rebuilds the whole book-rendering pipeline around the engine**:
 fractional glyph metrics, real kerning, ligatures, anti-aliased grayscale
 rendering, and sections that are laid out once and cached on the SD card. The
-trade-off: the two readers are not drop-in compatible at the file level — XPoint
+trade-off: the two readers are not drop-in compatible at the file level — Xerif
 does not read upstream's `.ttf` pipeline files, and upstream does not read
-XPoint's cached sections — but the fonts themselves (any `.ttf`/`.otf`/`.ttc`
+Xerif's cached sections — but the fonts themselves (any `.ttf`/`.otf`/`.ttc`
 file) work on both.
 
 What that means for you as a reader:
 
-- **Typography quality**: XPoint renders kerned, hinted, anti-aliased text; the
+- **Typography quality**: Xerif renders kerned, hinted, anti-aliased text; the
   bitmap-pipeline port draws square-grid glyphs without those refinements.
-- **Big fonts**: both can stream oversized fonts from the SD card now (XPoint
-  adopted upstream's streaming design). XPoint streams with a PSRAM prefix
+- **Big fonts**: both can stream oversized fonts from the SD card now (Xerif
+  adopted upstream's streaming design). Xerif streams with a PSRAM prefix
   cache; give up on nothing else — small fonts still load fully into PSRAM.
 - **CJK in menus**: both now fall back to your TTF font when a menu string
   needs Chinese/Japanese/Korean (or Greek, Cyrillic, …) glyphs the built-in
-  bitmap UI fonts lack. XPoint shares the reader's already-loaded font, so the
+  bitmap UI fonts lack. Xerif shares the reader's already-loaded font, so the
   fallback costs almost no extra memory.
-- **`.cpfont` vs `.ttf`**: `.cpfont` is XPoint's pre-rasterized bitmap family
+- **`.cpfont` vs `.ttf`**: `.cpfont` is Xerif's pre-rasterized bitmap family
   format (fast, no engine needed, best for PSRAM-less boards). `.ttf`/`.otf`/
   `.ttc` use the native engine. Either can be selected in Settings; native TTF
   requires a PSRAM board (X4 Pro / X4 Classic).
@@ -43,7 +43,7 @@ What that means for you as a reader:
 
 ### Architecture
 
-| Aspect | Upstream CrossPoint (#3646) | XPoint fork |
+| Aspect | Upstream CrossPoint (#3646) | Xerif fork |
 | --- | --- | --- |
 | Adapter layer | `TtfEpdFont` + `VectorFontSupport.h`: an `EpdFont`-compatible view over `freeink::font::FtFont`, drawn through the legacy bitmap pipeline | Native `FontChain` (FreeInkBook) owns the TTF path end-to-end: `BookFontLoader` discovers families, `TtfBookRuntime` lays out, `EpdBookFont` adapts the *other* direction (bitmap → reader engine) for fallback tails |
 | Device gating | `CROSSPOINT_VECTOR_FONTS` (PSRAM boards) | `CROSSPOINT_TTF_READER` (PSRAM boards) + `CROSSPOINT_FONT_BACKEND_FT` |
@@ -56,7 +56,7 @@ What that means for you as a reader:
 | Cache invalidation | Fingerprint over loaded bytes | Content FNV over face bytes + per-slot path hashes + face indices + render-options tag + role-map tag |
 | Memory resilience | TtfEpdFont arenas registered as the `gfx.ttfGlyphArenas` eviction sink | `WordStore` bump arena + OOM latching + evict-and-retry (see below); **no** TTF sink — the loader's release path frees face bytes that `TtfUiFont` UI faces borrow, so evicting mid-layout would dangle FreeType faces |
 
-### What XPoint ported from upstream #3646
+### What Xerif ported from upstream #3646
 
 1. **Face-metadata style resolution** — real OS/2 weights replace filename
    guessing; deterministic role assignment; fingerprint-safe.
@@ -73,7 +73,7 @@ What that means for you as a reader:
    advance-table handoff (`buildAdvanceTablePacked`), and the
    `gfx.renderGlyphCache`/`gfx.sdFontMini` eviction sinks.
 
-### What XPoint deliberately did NOT adopt
+### What Xerif deliberately did NOT adopt
 
 - **`TtfEpdFont` / `VectorFontSupport.h` / `CROSSPOINT_VECTOR_FONTS`** — that
   pipeline duplicates the same `freeink::font::FtFont` engine through the legacy
@@ -81,7 +81,7 @@ What that means for you as a reader:
   device-class split exists to prevent.
 - **The `gfx.ttfGlyphArenas` eviction sink** — upstream's sink drops
   `TtfEpdFont` arenas, which are safe because its font BYTES stay resident. In
-  XPoint the loader's release path frees the borrowed bytes themselves (and the
+  Xerif the loader's release path frees the borrowed bytes themselves (and the
   TTF UI-fallback faces borrow them), so an equivalent sink would dangle. The
   loader's `releaseResidentCaches()` remains the coordinated release point.
 
