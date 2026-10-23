@@ -128,7 +128,9 @@ void ActivityManager::loop() {
       // The header back button shares this band; its taps stay Back.
       statusBarTap = mappedInput.wasScreenTapped(tx, ty) && ty < 44 && !HeaderBackTapTarget::contains(tx, ty);
     }
-    if (currentActivity->name != "FrontlightPanel" && (statusBarTap || mappedInput.wasLightPanelGesture())) {
+    // Only boards whose frontlight was detected get the panel.
+    if (Frontlight.present() && currentActivity->name != "FrontlightPanel" &&
+        (statusBarTap || mappedInput.wasLightPanelGesture())) {
       haptic_feedback::touchAction();
       pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
       return;

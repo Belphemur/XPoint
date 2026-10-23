@@ -327,6 +327,28 @@ bool renderTransparentOverlayPass(HalFile& file, const OverlayBmpInfo& info, con
 
 // Starts a gray plane under an overlay. Absolute planes keep the B/W base; other gray planes carry only
 // the overlay's gray. Cover + Transparent redraws a gray cover (set only for absolute planes) to keep its gray levels.
+// Overlay gray leaves a mask plane in the framebuffer, so a later B/W update of
+// the retained sleep frame (the Picco USB charge strip) needs the B/W frame back.
+// Absolute planes must keep the gray baseline: restoring the B/W frame there
+// makes the next fast refresh drop the grays (Picco SSD1677).
+class BwFrameKeeper {
+ public:
+  BwFrameKeeper(GfxRenderer& renderer, const bool keep)
+      : renderer(renderer), keep(keep), stored(!keep || renderer.storeBwBuffer()) {}
+  ~BwFrameKeeper() {
+    if (keep && stored) renderer.restoreBwBuffer();
+  }
+  // False when the B/W frame could not be kept; callers must skip the gray passes.
+  bool ready() const { return stored; }
+  BwFrameKeeper(const BwFrameKeeper&) = delete;
+  BwFrameKeeper& operator=(const BwFrameKeeper&) = delete;
+
+ private:
+  GfxRenderer& renderer;
+  const bool keep;
+  const bool stored;
+};
+
 bool beginOverlayGrayPlane(GfxRenderer& renderer, const Bitmap* grayCover, const GfxRenderer::RenderMode plane,
                            const bool absolute) {
   if (grayCover) {
@@ -391,6 +413,11 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
   if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::BW))
     return AlphaOverlayResult::Error;
   const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) {
+    renderer.displayBuffer(kSleepClean);
+    return AlphaOverlayResult::Rendered;
+  }
   if (absolute) {
     cleanBeforeAbsoluteGray(renderer);
     if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return AlphaOverlayResult::Error;
@@ -590,6 +617,15 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
   // absolute-quality base pass; the overlay pipeline repaints into cleared
   // planes over the OEM HALF base.
   const bool absolute = allowAbsolutePlanes && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  // Keep the B/W frame across the OEM (non-absolute) gray passes: the retained
+  // sleep frame (the Picco USB charge strip) needs the B/W frame back. Absolute
+  // planes must keep the gray baseline: restoring the B/W frame there makes the
+  // next fast refresh drop the grays (Picco SSD1677).
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) {
+    renderer.displayBuffer(kSleepClean);
+    return;
+  }
   if (absolute) {
     cleanBeforeAbsoluteGray(renderer);
     if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) return;
@@ -602,23 +638,24 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
   }
 
   constexpr GfxRenderer::RenderMode grayPasses[2] = {GfxRenderer::GRAYSCALE_LSB, GfxRenderer::GRAYSCALE_MSB};
+  bool ready = true;
   for (const auto mode : grayPasses) {
     if (bitmap.rewindToData() != BmpReaderError::Ok) {
-      LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
-      return;
+      ready = false;
+      break;
     }
     if (preserveBackground) {
       if (!beginOverlayGrayPlane(renderer, grayCover, mode, absolute)) {
-        LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
-        return;
+        ready = false;
+        break;
       }
     } else {
       renderer.clearScreen(absolute ? 0xFF : 0x00);
       renderer.setRenderMode(mode);
     }
     if (!renderer.drawBitmap(bitmap, x, y, maxW, maxH, cropX, cropY, preserveBackground)) {
-      LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
-      return;
+      ready = false;
+      break;
     }
     if (mode == GfxRenderer::GRAYSCALE_LSB) {
       renderer.copyGrayscaleLsbBuffers();
@@ -626,8 +663,10 @@ void displayImageWithGrayscale(GfxRenderer& renderer, const Bitmap& bitmap, cons
       renderer.copyGrayscaleMsbBuffers();
     }
   }
-
-  renderer.displayGrayBuffer();
+  if (ready)
+    renderer.displayGrayBuffer();
+  else
+    LOG_ERR("SLP", "Incomplete grayscale image; keeping the current display");
   renderer.setRenderMode(GfxRenderer::BW);
 }
 
@@ -940,6 +979,11 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
 
   if (!converter.decodeToFramebuffer(path, renderer, config)) return false;
   const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  const BwFrameKeeper bwFrame(renderer, !absolute);
+  if (!bwFrame.ready()) {
+    renderer.displayBuffer(kSleepClean);
+    return true;
+  }
   if (absolute) {
     // The cover replaces the previous screen, so clean it like the BMP paths do.
     if (overlayCover) cleanBeforeAbsoluteGray(renderer);

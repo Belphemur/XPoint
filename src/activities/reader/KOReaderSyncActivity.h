@@ -32,7 +32,8 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
                                 ,
                                 uint32_t ttfLayoutGeneration = 0, bool ttfLayoutValid = false
 #endif
-  );
+                                ,
+                                const bool pluginEventsOnly = false);
 
   void onEnter() override;
   void onExit() override;
@@ -89,6 +90,10 @@ class KOReaderSyncActivity final : public Activity, private UiAppHost {
   // WiFi.getMode() because performUpload() calls esp_wifi_stop() on the way out,
   // which makes WiFi.getMode() return WIFI_MODE_NULL.
   bool wifiActivated = false;
+
+  // Reuses the KOReader WiFi connect/drain/return flow without a server: flush
+  // plugged-outbox events instead of syncing progress.
+  bool pluginEventsOnly = false;
 
   void onWifiSelectionComplete(bool success);
   void performSync();
