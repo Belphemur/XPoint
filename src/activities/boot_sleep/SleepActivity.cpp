@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -28,6 +29,7 @@
 #include "fontIds.h"
 #include "images/Logo120Draw.h"
 #include "images/MoonIcon.h"
+#include "util/BookProgress.h"
 
 namespace {
 // Metalio: B/W sleep images use the full 0xF7 waveform instead of HALF (two
@@ -393,7 +395,7 @@ AlphaScanResult scanForUsefulAlpha(HalFile& file, const OverlayBmpInfo& info, ui
 }
 
 AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& renderer, const char* pathForLog,
-                                                  const Bitmap* grayCover) {
+                                                  const Bitmap* grayCover, const int progressPercent) {
   OverlayBmpInfo info;
   if (!parseOverlayBmpHeader(file, info, false)) return AlphaOverlayResult::NotAlphaOverlay;
 
@@ -412,7 +414,10 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
 
   if (!renderTransparentOverlayPass(file, info, placement, renderer, row.get(), TransparentOverlayPass::BW))
     return AlphaOverlayResult::Error;
-  const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  // With progress text in the base framebuffer the absolute planes would erase
+  // it (they repaint the whole panel from the plane content alone), so fall
+  // back to the OEM fold pipeline, same as renderTransparentOverlayPng.
+  const bool absolute = progressPercent < 0 && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
   const BwFrameKeeper bwFrame(renderer, !absolute);
   if (!bwFrame.ready()) {
     renderer.displayBuffer(kSleepClean);
@@ -685,6 +690,16 @@ void drawShutdownCaption(const GfxRenderer& renderer, const int captionY) {
   }
 }
 
+// Draw the current book's reading progress percentage, centered near the
+// bottom of the screen (or at an explicit y for the framed shutdown layout).
+// Negative progress draws nothing.
+void drawReadingProgressPercent(const GfxRenderer& renderer, const int progressPercent, const int y = -1) {
+  if (progressPercent < 0) return;
+  char text[8];
+  std::snprintf(text, sizeof(text), "%d%%", progressPercent);
+  renderer.drawCenteredText(UI_10_FONT_ID, y < 0 ? renderer.getScreenHeight() - 20 : y, text, true);
+}
+
 // Resolve the custom sleep art for the shutdown screen: same source order as
 // the custom sleep screen, but WITHOUT committing to the recent-sleep window
 // or persisting state (an SD write here would delay the timer-wake rail cut).
@@ -709,7 +724,8 @@ bool selectShutdownCustomImage(std::string& outPath) {
 // Flushes the panel itself (the bitmap must stay open through the grayscale
 // passes). Returns false when the BMP is unusable and the caller must fall
 // back.
-bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool dithering, const char* pathForLog) {
+bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool dithering, const char* pathForLog,
+                               const int progressPercent = -1) {
   Bitmap bitmap(file, dithering);
   const auto parseResult = bitmap.parseHeaders();
   if (parseResult != BmpReaderError::Ok) {
@@ -740,6 +756,9 @@ bool renderShutdownImageFramed(GfxRenderer& renderer, HalFile& file, const bool 
   // Caption BEFORE any inversion: invertScreen flips the whole framebuffer, so
   // drawing the caption after it would hide black ink on the flipped panel.
   drawShutdownCaption(renderer, frameY + frameH + 24);
+  // Progress sits between the frame and the caption, before any inversion so
+  // it lands in the same B/W layer as the caption.
+  drawReadingProgressPercent(renderer, progressPercent, frameY + frameH + 8);
 
   const bool hasGreyscale = bitmap.hasGreyscale() &&
                             SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER;
@@ -898,7 +917,8 @@ void SleepActivity::renderDefaultSleepScreen() const {
   renderer.displayBuffer(kSleepClean);
 }
 
-void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool preserveBackground) const {
+void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool preserveBackground,
+                                            const int progressPercent) const {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
   const auto placement = calculateBitmapPlacement(bitmap.getWidth(), bitmap.getHeight(), renderer);
@@ -920,6 +940,13 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     return;
   }
 
+  // Draw BEFORE the inversion filter and before the transparent-overlay
+  // branch and the grayscale passes. After the inversion the text would stay
+  // black ink over the already-flipped cover and become unreadable; the gray
+  // passes only repaint gray planes over the preserved B/W background, so the
+  // text placed here survives.
+  drawReadingProgressPercent(renderer, progressPercent);
+
   if (!preserveBackground &&
       SETTINGS.sleepScreenCoverFilter == CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::INVERTED_BLACK_AND_WHITE) {
     renderer.invertScreen();
@@ -930,17 +957,24 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     if (hasGreyscale && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported()) {
       overlayGrayCover = &bitmap;
     }
-    renderTransparentCustomSleepScreen();
+    // The cover call already drew the progress; forward it so the plain-cover
+    // fallback (no valid overlay) redraws it after its own clearScreen.
+    renderTransparentCustomSleepScreen(progressPercent);
     overlayGrayCover = nullptr;
     return;
   }
 
+  // Absolute planes repaint the whole panel from the plane content alone, so
+  // they would erase the progress text living in the base framebuffer. While
+  // text is shown, force the OEM fold pipeline, which keeps base content
+  // (same choice renderShutdownImageFramed makes for its frame + caption).
   displayImageWithGrayscale(renderer, bitmap, x, y, pageWidth, pageHeight, cropX, cropY, hasGreyscale,
-                            preserveBackground, /*allowAbsolutePlanes=*/true, overlayGrayCover);
+                            preserveBackground, /*allowAbsolutePlanes=*/progressPercent < 0, overlayGrayCover);
 }
 
-bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog) const {
-  const auto alphaResult = tryRenderTransparentOverlayBmp(file, renderer, pathForLog, overlayGrayCover);
+bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog, const int progressPercent) const {
+  const auto alphaResult =
+      tryRenderTransparentOverlayBmp(file, renderer, pathForLog, overlayGrayCover, progressPercent);
   if (alphaResult == AlphaOverlayResult::Rendered) return true;
   if (alphaResult == AlphaOverlayResult::Error) return false;
 
@@ -953,12 +987,14 @@ bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog
 
   LOG_DBG("SLP", "Rendering regular BMP sleep overlay: %s (%dx%d)", pathForLog, bitmap.getWidth(), bitmap.getHeight());
   // drawBitmap leaves white pixels untouched; skipping the initial clear makes
-  // them transparent while retaining the existing grayscale pipeline.
-  renderBitmapSleepScreen(bitmap, true);
+  // them transparent while retaining the existing grayscale pipeline. The
+  // forwarded percent keeps this flush off the absolute planes so it does not
+  // erase the progress text the cover pass already drew.
+  renderBitmapSleepScreen(bitmap, true, progressPercent);
   return true;
 }
 
-bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
+bool SleepActivity::renderTransparentOverlayPng(const std::string& path, const int progressPercent) const {
   ImageDimensions dimensions;
   if (!PngToFramebufferConverter::getDimensionsStatic(path, dimensions)) return false;
 
@@ -978,7 +1014,10 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   LOG_DBG("SLP", "Rendering transparent PNG overlay: %s (%dx%d)", path.c_str(), dimensions.width, dimensions.height);
 
   if (!converter.decodeToFramebuffer(path, renderer, config)) return false;
-  const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  // Same scene-content rule as displayImageWithGrayscale: with progress text
+  // in the base framebuffer, the absolute planes would erase it, so fall back
+  // to the OEM fold pipeline.
+  const bool absolute = progressPercent < 0 && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
   const BwFrameKeeper bwFrame(renderer, !absolute);
   if (!bwFrame.ready()) {
     renderer.displayBuffer(kSleepClean);
@@ -1012,52 +1051,52 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   return true;
 }
 
-bool SleepActivity::renderSleepOverlayPath(const std::string& path) const {
+bool SleepActivity::renderSleepOverlayPath(const std::string& path, const int progressPercent) const {
   if (FsHelpers::hasPngExtension(path)) {
-    return Storage.exists(path.c_str()) && renderTransparentOverlayPng(path);
+    return Storage.exists(path.c_str()) && renderTransparentOverlayPng(path, progressPercent);
   }
 
   HalFile file;
-  return Storage.openFileForRead("SLP", path, file) && renderSleepOverlayFile(file, path.c_str());
+  return Storage.openFileForRead("SLP", path, file) && renderSleepOverlayFile(file, path.c_str(), progressPercent);
 }
 
-void SleepActivity::renderTransparentCustomSleepScreen() const {
-  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP)) return;
-  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG)) return;
+void SleepActivity::renderTransparentCustomSleepScreen(const int progressPercent) const {
+  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP, progressPercent)) return;
+  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG, progressPercent)) return;
 
   std::string selectedPath;
   selectRandomSleepFile(TRANSPARENT_SLEEP_DIR, TRANSPARENT_SLEEP_LEGACY_DIR, SleepRecentKind::Overlay, selectedPath);
 
-  if (!selectedPath.empty() && renderSleepOverlayPath(selectedPath)) return;
+  if (!selectedPath.empty() && renderSleepOverlayPath(selectedPath, progressPercent)) return;
 
   LOG_ERR("SLP", "No valid transparent sleep overlay found");
   if (overlayCover) {
     // Show the plain cover.
     const Bitmap& cover = *overlayCover;
     overlayCover = nullptr;
-    if (cover.rewindToData() == BmpReaderError::Ok) return renderBitmapSleepScreen(cover);
+    if (cover.rewindToData() == BmpReaderError::Ok)
+      return renderBitmapSleepScreen(cover, /*preserveBackground=*/false, progressPercent);
   }
   renderDefaultSleepScreen();
 }
 
 void SleepActivity::renderCoverSleepScreen() const {
-  void (SleepActivity::*renderNoCoverSleepScreen)() const;
+  void (SleepActivity::*renderNoCoverSleepScreen)() const = &SleepActivity::renderDefaultSleepScreen;
   bool withOverlay = false;
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       renderNoCoverSleepScreen = &SleepActivity::renderCustomSleepScreen;
       break;
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT):
-      renderNoCoverSleepScreen = &SleepActivity::renderTransparentCustomSleepScreen;
       withOverlay = true;
       break;
     default:
-      renderNoCoverSleepScreen = &SleepActivity::renderDefaultSleepScreen;
       break;
   }
 
   std::string coverBmpPath;
   if (APP_STATE.openEpubPath.empty() || !resolveCoverBmpPath(renderer, APP_STATE.openEpubPath, coverBmpPath)) {
+    if (withOverlay) return renderTransparentCustomSleepScreen();
     return (this->*renderNoCoverSleepScreen)();
   }
 
@@ -1067,12 +1106,20 @@ void SleepActivity::renderCoverSleepScreen() const {
     if (bitmap.parseHeaders() == BmpReaderError::Ok) {
       LOG_DBG("SLP", "Rendering sleep cover: %s", coverBmpPath.c_str());
       if (withOverlay) overlayCover = &bitmap;
-      renderBitmapSleepScreen(bitmap);
+      int progressPercent = -1;
+      if (SETTINGS.sleepScreenCoverShowProgress && !APP_STATE.openEpubPath.empty()) {
+        // Seeded by the reader at exit; the SD reload only serves state from
+        // before the cache existed (no reader exit since the upgrade).
+        progressPercent = APP_STATE.openBookProgressPercent;
+        if (progressPercent < 0) progressPercent = loadBookProgress(APP_STATE.openEpubPath);
+      }
+      renderBitmapSleepScreen(bitmap, /*preserveBackground=*/false, progressPercent);
       overlayCover = nullptr;
       return;
     }
   }
 
+  if (withOverlay) return renderTransparentCustomSleepScreen();
   return (this->*renderNoCoverSleepScreen)();
 }
 
@@ -1143,11 +1190,18 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
       (sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM && APP_STATE.lastSleepFromReader);
 
   bool haveImage = false;
+  int progressPercent = -1;
   if (useCover) {
+    if (SETTINGS.sleepScreenCoverShowProgress && !APP_STATE.openEpubPath.empty()) {
+      // Seeded by the reader at exit (and persisted at sleep entry); the SD
+      // reload only serves state from before the cache existed.
+      progressPercent = APP_STATE.openBookProgressPercent;
+      if (progressPercent < 0) progressPercent = loadBookProgress(APP_STATE.openEpubPath);
+    }
     const std::string& coverPath = APP_STATE.autoPowerOffCoverBmpPath;
     HalFile file;
     if (!coverPath.empty() && Storage.openFileForRead("SLP", coverPath, file)) {
-      haveImage = renderShutdownImageFramed(renderer, file, /*dithering=*/false, coverPath.c_str());
+      haveImage = renderShutdownImageFramed(renderer, file, /*dithering=*/false, coverPath.c_str(), progressPercent);
     }
   }
 
@@ -1171,6 +1225,8 @@ void SleepActivity::renderShutdownScreen(GfxRenderer& renderer) {
     // BLANK stays faithful to the setting: blank panel, caption only.
     drawShutdownCaption(
         renderer, sleepMode == CrossPointSettings::SLEEP_SCREEN_MODE::BLANK ? pageHeight / 2 : pageHeight / 2 + 95);
+    // Cover mode that lost its image still shows progress below the caption.
+    drawReadingProgressPercent(renderer, progressPercent);
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
 

@@ -54,11 +54,14 @@ void CrossPointState::toJson(JsonDocument& doc) const {
   doc["readerActivityLoadCount"] = readerActivityLoadCount;
   doc["lastSleepFromReader"] = lastSleepFromReader;
   doc["showBootScreen"] = showBootScreen;
+  doc["openBookProgressPercent"] = openBookProgressPercent;
 }
 
 bool CrossPointState::fromJson(JsonVariantConst doc) {
   openEpubPath = doc["openEpubPath"] | "";
   autoPowerOffCoverBmpPath = doc["autoPowerOffCoverBmpPath"] | "";
+  const int cachedProgress = doc["openBookProgressPercent"] | -1;
+  openBookProgressPercent = (cachedProgress >= -1 && cachedProgress <= 100) ? static_cast<int8_t>(cachedProgress) : -1;
 
   memset(recentSleepImages, 0, sizeof(recentSleepImages));
   JsonArrayConst recentArr = doc["recentSleepImages"];

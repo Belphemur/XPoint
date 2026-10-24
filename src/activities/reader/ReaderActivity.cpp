@@ -68,6 +68,9 @@ void ReaderActivity::onEnter() {
   // Clear remembered book after opening it
   if (!APP_STATE.openEpubPath.empty()) {
     APP_STATE.openEpubPath.clear();
+    // Cached progress belongs to the cleared book; drop it so the cover
+    // screens recompute for the book being opened.
+    APP_STATE.openBookProgressPercent = -1;
     APP_STATE.saveToFile();
   }
 
@@ -110,6 +113,20 @@ void ReaderActivity::onExit() {
   // Flush BEFORE the ReaderExit event: the session's final progress must be
   // durable before a subscriber can act on the exit notification.
   flushReaderSession();
+
+  // Cache the session's final reading progress for the cover sleep/shutdown
+  // screens: SleepActivity reads this instead of reloading book metadata from
+  // SD during those transitions. Seeding before saveToFile() below also
+  // persists it for the timer-wake shutdown path.
+  if (bookRemembered) {
+    const ScreenshotInfo info = getScreenshotInfo();
+    // Without a laid-out page the percent was never computed; keep the cache
+    // unset so the sleep screens recompute from SD instead of showing a
+    // fabricated 0%.
+    if (info.progressKnown) {
+      APP_STATE.openBookProgressPercent = static_cast<int8_t>(std::clamp(info.progressPercent, 0, 100));
+    }
+  }
 
   if (pluginevents::anySubscriber(pluginevents::Event::ReaderExit)) {
     char percent[8];
