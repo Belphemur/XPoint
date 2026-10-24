@@ -954,7 +954,9 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     if (hasGreyscale && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported()) {
       overlayGrayCover = &bitmap;
     }
-    renderTransparentCustomSleepScreen();
+    // The cover call already drew the progress; forward it so the plain-cover
+    // fallback (no valid overlay) redraws it after its own clearScreen.
+    renderTransparentCustomSleepScreen(progressPercent);
     overlayGrayCover = nullptr;
     return;
   }
@@ -1049,7 +1051,7 @@ bool SleepActivity::renderSleepOverlayPath(const std::string& path) const {
   return Storage.openFileForRead("SLP", path, file) && renderSleepOverlayFile(file, path.c_str());
 }
 
-void SleepActivity::renderTransparentCustomSleepScreen() const {
+void SleepActivity::renderTransparentCustomSleepScreen(const int progressPercent) const {
   if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP)) return;
   if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG)) return;
 
@@ -1063,29 +1065,29 @@ void SleepActivity::renderTransparentCustomSleepScreen() const {
     // Show the plain cover.
     const Bitmap& cover = *overlayCover;
     overlayCover = nullptr;
-    if (cover.rewindToData() == BmpReaderError::Ok) return renderBitmapSleepScreen(cover);
+    if (cover.rewindToData() == BmpReaderError::Ok)
+      return renderBitmapSleepScreen(cover, /*preserveBackground=*/false, progressPercent);
   }
   renderDefaultSleepScreen();
 }
 
 void SleepActivity::renderCoverSleepScreen() const {
-  void (SleepActivity::*renderNoCoverSleepScreen)() const;
+  void (SleepActivity::*renderNoCoverSleepScreen)() const = &SleepActivity::renderDefaultSleepScreen;
   bool withOverlay = false;
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_CUSTOM):
       renderNoCoverSleepScreen = &SleepActivity::renderCustomSleepScreen;
       break;
     case (CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT):
-      renderNoCoverSleepScreen = &SleepActivity::renderTransparentCustomSleepScreen;
       withOverlay = true;
       break;
     default:
-      renderNoCoverSleepScreen = &SleepActivity::renderDefaultSleepScreen;
       break;
   }
 
   std::string coverBmpPath;
   if (APP_STATE.openEpubPath.empty() || !resolveCoverBmpPath(renderer, APP_STATE.openEpubPath, coverBmpPath)) {
+    if (withOverlay) return renderTransparentCustomSleepScreen();
     return (this->*renderNoCoverSleepScreen)();
   }
 
@@ -1108,6 +1110,7 @@ void SleepActivity::renderCoverSleepScreen() const {
     }
   }
 
+  if (withOverlay) return renderTransparentCustomSleepScreen();
   return (this->*renderNoCoverSleepScreen)();
 }
 
