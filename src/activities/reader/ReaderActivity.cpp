@@ -68,6 +68,9 @@ void ReaderActivity::onEnter() {
   // Clear remembered book after opening it
   if (!APP_STATE.openEpubPath.empty()) {
     APP_STATE.openEpubPath.clear();
+    // Cached progress belongs to the cleared book; drop it so the cover
+    // screens recompute for the book being opened.
+    APP_STATE.openBookProgressPercent = -1;
     APP_STATE.saveToFile();
   }
 

@@ -2704,6 +2704,9 @@ void EpubReaderActivity::beginLoanTimeSync() {
       return;
     }
     APP_STATE.openEpubPath = bookPath;
+    // New book: the cached progress belongs to the previous one, so let the
+    // cover screens recompute for this book.
+    APP_STATE.openBookProgressPercent = -1;
     APP_STATE.saveToFile();
     // Reboot straight back into this book with a clean heap (no-op on touch
     // boards, which fall through to the in-place relaunch below).
