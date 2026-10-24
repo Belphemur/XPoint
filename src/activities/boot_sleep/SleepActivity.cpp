@@ -417,8 +417,7 @@ AlphaOverlayResult tryRenderTransparentOverlayBmp(HalFile& file, GfxRenderer& re
   // With progress text in the base framebuffer the absolute planes would erase
   // it (they repaint the whole panel from the plane content alone), so fall
   // back to the OEM fold pipeline, same as renderTransparentOverlayPng.
-  const bool absolute =
-      progressPercent < 0 && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  const bool absolute = progressPercent < 0 && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
   const BwFrameKeeper bwFrame(renderer, !absolute);
   if (!bwFrame.ready()) {
     renderer.displayBuffer(kSleepClean);
@@ -974,7 +973,8 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
 }
 
 bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog, const int progressPercent) const {
-  const auto alphaResult = tryRenderTransparentOverlayBmp(file, renderer, pathForLog, overlayGrayCover, progressPercent);
+  const auto alphaResult =
+      tryRenderTransparentOverlayBmp(file, renderer, pathForLog, overlayGrayCover, progressPercent);
   if (alphaResult == AlphaOverlayResult::Rendered) return true;
   if (alphaResult == AlphaOverlayResult::Error) return false;
 
