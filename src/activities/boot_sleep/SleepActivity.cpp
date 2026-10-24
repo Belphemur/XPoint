@@ -969,7 +969,7 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
                             preserveBackground, /*allowAbsolutePlanes=*/progressPercent < 0, overlayGrayCover);
 }
 
-bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog) const {
+bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog, const int progressPercent) const {
   const auto alphaResult = tryRenderTransparentOverlayBmp(file, renderer, pathForLog, overlayGrayCover);
   if (alphaResult == AlphaOverlayResult::Rendered) return true;
   if (alphaResult == AlphaOverlayResult::Error) return false;
@@ -983,12 +983,14 @@ bool SleepActivity::renderSleepOverlayFile(HalFile& file, const char* pathForLog
 
   LOG_DBG("SLP", "Rendering regular BMP sleep overlay: %s (%dx%d)", pathForLog, bitmap.getWidth(), bitmap.getHeight());
   // drawBitmap leaves white pixels untouched; skipping the initial clear makes
-  // them transparent while retaining the existing grayscale pipeline.
-  renderBitmapSleepScreen(bitmap, true);
+  // them transparent while retaining the existing grayscale pipeline. The
+  // forwarded percent keeps this flush off the absolute planes so it does not
+  // erase the progress text the cover pass already drew.
+  renderBitmapSleepScreen(bitmap, true, progressPercent);
   return true;
 }
 
-bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
+bool SleepActivity::renderTransparentOverlayPng(const std::string& path, const int progressPercent) const {
   ImageDimensions dimensions;
   if (!PngToFramebufferConverter::getDimensionsStatic(path, dimensions)) return false;
 
@@ -1008,7 +1010,10 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   LOG_DBG("SLP", "Rendering transparent PNG overlay: %s (%dx%d)", path.c_str(), dimensions.width, dimensions.height);
 
   if (!converter.decodeToFramebuffer(path, renderer, config)) return false;
-  const bool absolute = renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
+  // Same scene-content rule as displayImageWithGrayscale: with progress text
+  // in the base framebuffer, the absolute planes would erase it, so fall back
+  // to the OEM fold pipeline.
+  const bool absolute = progressPercent < 0 && renderer.grayscaleCapabilities(sleepGrayscaleMode(renderer)).supported();
   const BwFrameKeeper bwFrame(renderer, !absolute);
   if (!bwFrame.ready()) {
     renderer.displayBuffer(kSleepClean);
@@ -1042,23 +1047,23 @@ bool SleepActivity::renderTransparentOverlayPng(const std::string& path) const {
   return true;
 }
 
-bool SleepActivity::renderSleepOverlayPath(const std::string& path) const {
+bool SleepActivity::renderSleepOverlayPath(const std::string& path, const int progressPercent) const {
   if (FsHelpers::hasPngExtension(path)) {
-    return Storage.exists(path.c_str()) && renderTransparentOverlayPng(path);
+    return Storage.exists(path.c_str()) && renderTransparentOverlayPng(path, progressPercent);
   }
 
   HalFile file;
-  return Storage.openFileForRead("SLP", path, file) && renderSleepOverlayFile(file, path.c_str());
+  return Storage.openFileForRead("SLP", path, file) && renderSleepOverlayFile(file, path.c_str(), progressPercent);
 }
 
 void SleepActivity::renderTransparentCustomSleepScreen(const int progressPercent) const {
-  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP)) return;
-  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG)) return;
+  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_BMP, progressPercent)) return;
+  if (renderSleepOverlayPath(TRANSPARENT_SLEEP_ROOT_PNG, progressPercent)) return;
 
   std::string selectedPath;
   selectRandomSleepFile(TRANSPARENT_SLEEP_DIR, TRANSPARENT_SLEEP_LEGACY_DIR, SleepRecentKind::Overlay, selectedPath);
 
-  if (!selectedPath.empty() && renderSleepOverlayPath(selectedPath)) return;
+  if (!selectedPath.empty() && renderSleepOverlayPath(selectedPath, progressPercent)) return;
 
   LOG_ERR("SLP", "No valid transparent sleep overlay found");
   if (overlayCover) {

@@ -7232,6 +7232,7 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
       if (pct < 0) pct = 0;
       if (pct > 100) pct = 100;
       info.progressPercent = pct;
+      info.progressKnown = true;
     }
     return info;
   }
@@ -7245,6 +7246,7 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
       if (pct < 0) pct = 0;
       if (pct > 100) pct = 100;
       info.progressPercent = pct;
+      info.progressKnown = true;
     }
   }
   return info;

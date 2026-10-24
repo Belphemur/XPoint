@@ -119,7 +119,13 @@ void ReaderActivity::onExit() {
   // SD during those transitions. Seeding before saveToFile() below also
   // persists it for the timer-wake shutdown path.
   if (bookRemembered) {
-    APP_STATE.openBookProgressPercent = static_cast<int8_t>(std::clamp(getScreenshotInfo().progressPercent, 0, 100));
+    const ScreenshotInfo info = getScreenshotInfo();
+    // Without a laid-out page the percent was never computed; keep the cache
+    // unset so the sleep screens recompute from SD instead of showing a
+    // fabricated 0%.
+    if (info.progressKnown) {
+      APP_STATE.openBookProgressPercent = static_cast<int8_t>(std::clamp(info.progressPercent, 0, 100));
+    }
   }
 
   if (pluginevents::anySubscriber(pluginevents::Event::ReaderExit)) {
