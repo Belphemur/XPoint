@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cstring>
 
+// One file entry per installed size is resident from boot; keep it to the
+// name pointer plus two bytes.
+static_assert(sizeof(SdCardFontFileInfo) == 2 * sizeof(void*), "SdCardFontFileInfo grew");
+
 // --- SdCardFontFamilyInfo helpers ---
 
 const SdCardFontFileInfo* SdCardFontFamilyInfo::findFile(uint8_t size, uint8_t style) const {
@@ -58,6 +62,45 @@ std::vector<uint8_t> SdCardFontFamilyInfo::availableSizes() const {
   return sizes;
 }
 
+namespace {
+// "_<size>.cpfont": the part of a canonical v4 filename after the family name.
+void cpfontTail(const uint8_t size, char* out, const size_t outSize) { snprintf(out, outSize, "_%u.cpfont", size); }
+constexpr size_t CPFONT_TAIL_SIZE = sizeof("_255.cpfont");
+
+// Heap copy of a filename for SdCardFontFileInfo::name; null when out of memory.
+std::unique_ptr<char[]> copyFileName(const char* filename) {
+  const size_t bytes = strlen(filename) + 1;
+  auto copy = makeUniqueNoThrow<char[]>(bytes);
+  if (!copy) {
+    LOG_ERR("SDREG", "OOM: %zu byte filename %s", bytes, filename);
+    return nullptr;
+  }
+  memcpy(copy.get(), filename, bytes);
+  return copy;
+}
+
+// Loaders rebuild the path through filePath() into a PATH_BUFFER_SIZE buffer,
+// so a file whose path does not fit can never be opened: drop it at discovery.
+// `family` must already carry its name and root.
+bool pathFits(const SdCardFontFamilyInfo& family, const SdCardFontFileInfo& file) {
+  char path[SdCardFontFamilyInfo::PATH_BUFFER_SIZE];
+  return family.filePath(file, path, sizeof(path));
+}
+}  // namespace
+
+bool SdCardFontFamilyInfo::filePath(const SdCardFontFileInfo& file, char* out, const size_t outSize) const {
+  if (!root) return false;
+  int n;
+  if (!file.name) {
+    char tail[CPFONT_TAIL_SIZE];
+    cpfontTail(file.pointSize, tail, sizeof(tail));
+    n = snprintf(out, outSize, "%s/%s/%s%s", root, name.c_str(), name.c_str(), tail);
+  } else {
+    n = snprintf(out, outSize, "%s/%s/%s", root, name.c_str(), file.name.get());
+  }
+  return n > 0 && static_cast<size_t>(n) < outSize;
+}
+
 // --- SdCardFontRegistry ---
 
 bool SdCardFontRegistry::parseFilename(const char* filename, uint8_t& size, uint8_t& style) {
@@ -96,6 +139,12 @@ bool SdCardFontRegistry::parseFilename(const char* filename, uint8_t& size, uint
   return true;
 }
 
+bool SdCardFontRegistry::isCanonicalCpfontName(const char* filename, const std::string& family, const uint8_t size) {
+  if (strncmp(filename, family.c_str(), family.size()) != 0) return false;
+  char tail[CPFONT_TAIL_SIZE];
+  cpfontTail(size, tail, sizeof(tail));
+  return strcmp(filename + family.size(), tail) == 0;
+}
 void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo& family) {
   HalFile dir = Storage.open(dirPath);
   if (!dir || !dir.isDirectory()) return;
@@ -135,9 +184,16 @@ void SdCardFontRegistry::scanDirectory(const char* dirPath, SdCardFontFamilyInfo
     }
 
     SdCardFontFileInfo info;
-    info.path = std::string(dirPath) + "/" + nameBuffer;
+    if (!isCanonicalCpfontName(nameBuffer, family.name, size)) {
+      info.name = copyFileName(nameBuffer);
+      if (!info.name) continue;
+    }
     info.pointSize = size;
     info.style = style;
+    if (!pathFits(family, info)) {
+      LOG_ERR("SDREG", "Path too long for %s in %s — skipping", nameBuffer, dirPath);
+      continue;
+    }
     family.files.push_back(std::move(info));
   }
 }
@@ -179,6 +235,7 @@ void SdCardFontRegistry::scanRoot(const char* rootPath, std::vector<SdCardFontFa
 
       SdCardFontFamilyInfo family;
       family.name = nameBuffer;
+      family.root = rootPath;
       std::string subDirPath = std::string(rootPath) + "/" + nameBuffer;
       SdCardFontRegistry::scanDirectory(subDirPath.c_str(), family);
 
