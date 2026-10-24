@@ -124,7 +124,6 @@ constexpr unsigned long fibpDeferTakeoverMs = 1500;
 // How long the reader waits for the worker to pick up a resume claim
 // before the margin fallback owns the extension (soak addendum).
 constexpr unsigned long kFibpResumeClaimGraceMs = 2000;
-constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 constexpr int CLIP_SELECTION_PAGE_WINDOW = 3;
 
@@ -7069,9 +7068,6 @@ void EpubReaderActivity::restoreSavedPosition() {
 
 void EpubReaderActivity::loadCachedBookmarks() {
   cachedBookmarks.clear();
-  if (cachedBookmarks.capacity() < initialBookmarkCacheCapacity) {
-    cachedBookmarks.reserve(initialBookmarkCacheCapacity);
-  }
   if (!epub) {
     currentPageBookmarked = false;
     return;
