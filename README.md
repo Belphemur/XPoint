@@ -2,9 +2,14 @@
 
 ![Xerif eReader logo](./docs/images/repo_logo.jpg)
 
-## 📣 XPoint is now Xerif eReader
+## 🎙️ How to say "Xerif"
 
-**Pronounced like *Xerox*: ZER-if, /ˈzɛr.ɪf/ — the X says "z", as in *Xerox*, never "ex".
+Xerif → ZER-if (/ˈzɛr.ɪf/): the X says z (like "Xerces," "Xerox"), then if as in "if." Same
+rhythm as Serif but with that leading X sound — "Xerif," not "zee-er-if."
+
+So the product reads: Xerif eReader — "ZER-if ee-reader."
+
+## 📣 XPoint is now Xerif eReader
 
 The project formerly known as **XPoint** is now **Xerif eReader**. The rename avoids any
 naming conflict with [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader),
